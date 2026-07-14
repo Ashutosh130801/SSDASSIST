@@ -147,6 +147,21 @@ jobs:
         working-directory: app/mobile
         run: npx cap sync android
 
+      - name: Force androidx.work version compatible with compileSdk 34
+        working-directory: app/mobile
+        run: |
+          cat >> android/app/build.gradle <<'EOF'
+
+          configurations.all {
+              resolutionStrategy {
+                  force 'androidx.work:work-runtime:2.9.1'
+                  force 'androidx.work:work-runtime-ktx:2.9.1'
+              }
+          }
+          EOF
+          echo "----- appended resolutionStrategy to android/app/build.gradle -----"
+          tail -12 android/app/build.gradle
+
       - name: Build debug APK
         working-directory: app/mobile/android
         run: |
