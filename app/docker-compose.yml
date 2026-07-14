@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ssd
+      POSTGRES_PASSWORD: ssd_password
+      POSTGRES_DB: ssd_recovery
+    ports:
+      - "5432:5432"
+    volumes:
+      - ssd_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ssd -d ssd_recovery"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://ssd:ssd_password@db:5432/ssd_recovery
+      SECRET_KEY: ${SECRET_KEY:-change-this-secret}
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      LOCATION_PING_SECONDS: ${LOCATION_PING_SECONDS:-60}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/code/backend
+      - ./frontend:/code/frontend
+    command: >
+      sh -c "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    working_dir: /code/backend
+
+volumes:
+  ssd_pgdata:

@@ -1,0 +1,9 @@
+{
+  "appId": "in.recoveriq.app",
+  "appName": "RecoverIQ",
+  "webDir": "www",
+  "server": {
+    "url": "https://REPLACE-WITH-YOUR-APP-URL",
+    "cleartext": false
+  }
+}

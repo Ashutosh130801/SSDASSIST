@@ -1,0 +1,17 @@
+{
+  "//": "OPTIONAL: put Firebase Hosting in front of Cloud Run for a custom domain/CDN.",
+  "//2": "Replace SERVICE_ID and REGION, then run:  firebase deploy --only hosting",
+  "hosting": {
+    "public": "public_placeholder",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {
+        "source": "**",
+        "run": {
+          "serviceId": "ssd-recovery",
+          "region": "asia-south1"
+        }
+      }
+    ]
+  }
+}

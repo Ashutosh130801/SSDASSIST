@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<meta name="theme-color" content="#F4F7FB" />
+<title>RecoverIQ — Collections & Recovery Intelligence</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="assets/logo.png" />
+<link rel="apple-touch-icon" href="assets/logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css?v=42" />
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+</head>
+<body>
+<script>
+  // Safety net: if the app throws, show the message on screen instead of a blank page.
+  function ssdShowError(msg){
+    var r=document.getElementById('root');
+    if(r) r.innerHTML='<div style="max-width:640px;margin:60px auto;padding:22px;border-radius:16px;'
+      +'background:#FDECEC;border:1px solid rgba(220,38,38,.4);color:#7f1d1d;'
+      +'font-family:system-ui;white-space:pre-wrap;font-size:14px;line-height:1.5">'
+      +'<b style="color:#F0776B">App error (please send this to support):</b>\n\n'+String(msg)+'</div>';
+  }
+  function ssdRootEmpty(){ var r=document.getElementById('root'); return !r || r.children.length===0 || (r.children.length===1 && r.querySelector('.spin')); }
+  // Only take over the screen for a genuine STARTUP crash (nothing rendered yet).
+  // Once the app is on screen, a failed API call or transient error must not blank it.
+  window.addEventListener('error', function(e){ if(ssdRootEmpty()) ssdShowError((e.error&&e.error.stack)||e.message); });
+  window.addEventListener('unhandledrejection', function(e){ if(ssdRootEmpty()) ssdShowError('Unhandled: '+((e.reason&&e.reason.stack)||e.reason)); else console.error('Unhandled rejection:', e.reason); });
+</script>
+<div id="root">
+  <div style="display:flex;height:100vh;align-items:center;justify-content:center">
+    <div class="spin"></div>
+  </div>
+</div>
+<script>
+  // Kill any previously-installed service worker + caches from older versions,
+  // then reload ONCE into a clean, worker-free state.
+  (function () {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.getRegistrations().then(function (regs) {
+      var hadController = !!navigator.serviceWorker.controller;
+      Promise.all(regs.map(function (r) { return r.unregister(); })).then(function () {
+        var clearCaches = window.caches
+          ? caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); })
+          : Promise.resolve();
+        clearCaches.then(function () {
+          if (hadController && !sessionStorage.getItem('sw_cleared')) {
+            sessionStorage.setItem('sw_cleared', '1');
+            location.reload();
+          }
+        });
+      });
+    }).catch(function () {});
+  })();
+</script>
+<!-- App source, transpiled in the browser by Babel (always serves the full latest file). -->
+<script type="text/babel" src="app.jsx?v=42" data-presets="react"></script>
+</body>
+</html>

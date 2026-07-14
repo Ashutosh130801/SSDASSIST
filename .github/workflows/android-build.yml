@@ -1,0 +1,102 @@
+name: Build Android APK
+
+# Builds the RecoverIQ Android wrapper (with background location) in the cloud.
+# Run it manually from the Actions tab (Run workflow), or it runs on any push
+# that touches app/mobile/**. The finished .apk is attached to the run as an artifact.
+#
+# Assumes this repo's root contains the `app/` folder (app/mobile/...). If your repo
+# is laid out differently, adjust the `working-directory` / paths below.
+#
+# Set your live app URL once: either pass it in the "Run workflow" box, or add a repo
+# secret named APP_URL (Settings → Secrets and variables → Actions → New repository secret).
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: "Live app URL the phone should load (e.g. https://recoveriq-xxxx.run.app)"
+        required: false
+        default: ""
+  push:
+    paths:
+      - "app/mobile/**"
+      - ".github/workflows/android-build.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Point the app at your live URL
+        working-directory: app/mobile
+        run: |
+          URL="${{ github.event.inputs.app_url }}"
+          if [ -z "$URL" ]; then URL="${{ secrets.APP_URL }}"; fi
+          if [ -n "$URL" ]; then
+            echo "Using app URL: $URL"
+            sed -i "s#https://REPLACE-WITH-YOUR-APP-URL#${URL}#" capacitor.config.json
+          else
+            echo "::warning::No APP_URL provided — the app will show the placeholder page. Set APP_URL secret or pass app_url when running."
+          fi
+
+      - name: Install dependencies
+        working-directory: app/mobile
+        run: npm install
+
+      - name: Add Android platform
+        working-directory: app/mobile
+        run: npx cap add android
+
+      - name: Inject location permissions into AndroidManifest
+        run: |
+          python3 - <<'PY'
+          p = "app/mobile/android/app/src/main/AndroidManifest.xml"
+          s = open(p, encoding="utf-8").read()
+          perms = (
+              '    <uses-permission android:name="android.permission.INTERNET" />\n'
+              '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n'
+              '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n'
+              '    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />\n'
+              '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n'
+              '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />\n'
+              '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
+          )
+          if "ACCESS_BACKGROUND_LOCATION" not in s:
+              s = s.replace("<application", perms + "\n    <application", 1)
+              open(p, "w", encoding="utf-8").write(s)
+              print("Permissions added.")
+          else:
+              print("Permissions already present.")
+          PY
+
+      - name: Sync Capacitor
+        working-directory: app/mobile
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: app/mobile/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: recoveriq-android-apk
+          path: app/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
