@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
 
-    location_ping_seconds: int = 60
+    location_ping_seconds: int = 3
 
     # Product branding (shown on login + sidebar). Change to your own brand.
     brand_name: str = "RecoverIQ"

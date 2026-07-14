@@ -71,7 +71,7 @@ const toMs = (iso) => {
 const toDate = (iso) => new Date(toMs(iso));
 
 // Field-officer presence: "live" if their app pinged within the last 3 minutes.
-const ONLINE_MS = 3 * 60 * 1000;
+const ONLINE_MS = 3 * 1000;   // "live" = reported within 3s
 const isOnline = (iso) => !!iso && (Date.now() - toMs(iso)) < ONLINE_MS;
 const agoLabel = (iso) => {
   if (!iso) return 'never';
@@ -722,6 +722,7 @@ function LiveMap({ config }) {
   const [status, setStatus] = useState('loading'); const [officers, setOfficers] = useState([]);
   const [histOfficer, setHistOfficer] = useState(null); const [dates, setDates] = useState(null);
   const [selDate, setSelDate] = useState(''); const [routeInfo, setRouteInfo] = useState(null);
+  const [, setTick] = useState(0);   // local 1s clock so live/offline + "seen ago" update on their own
 
   const refresh = useCallback(async () => {
     try {
@@ -753,10 +754,14 @@ function LiveMap({ config }) {
         center: { lat: 17.72, lng: 83.30 }, zoom: 11, disableDefaultUI: false, styles: DARK_MAP_STYLE,
       });
       setStatus('ready'); refresh();
-      timer = setInterval(refresh, 15000);   // near real-time (officers stream positions continuously)
+      timer = setInterval(refresh, 3000);   // real-time (officers stream positions continuously)
     }).catch(() => setStatus('nokey'));
     return () => timer && clearInterval(timer);
   }, []);
+
+  // re-render every second so the ● Live/Offline dots, the "X live · Y offline" count and the
+  // "seen … ago" text stay accurate on their own, without waiting for the next fetch or a manual refresh
+  useEffect(() => { const t = setInterval(() => setTick(x => (x + 1) % 100000), 1000); return () => clearInterval(t); }, []);
 
   const navigateTo = (o) => window.open(`https://www.google.com/maps/dir/?api=1&destination=${o.latitude},${o.longitude}`, '_blank');
 
@@ -793,7 +798,7 @@ function LiveMap({ config }) {
   return (
     <div>
       <div className="toolbar">
-        <span className="muted">Live field-officer positions · auto-refresh every {config.location_ping_seconds || 60}s</span>
+        <span className="muted">Live field-officer positions · auto-refresh every 3s</span>
         <div style={{ flex: 1 }} />
         {routeActive.current && <button className="btn sm" onClick={() => { clearRoute(); setRouteInfo(null); refresh(); }}>✕ Clear route</button>}
         <button className="btn sm" onClick={refresh}>↻ Refresh</button>
@@ -1028,7 +1033,7 @@ function LiveRouteModal({ officer, config, onClose }) {
     loadMaps(config && config.google_maps_api_key).then(() => {
       const g = window.google;
       map.current = new g.maps.Map(mapEl.current, { center: { lat: 17.72, lng: 83.30 }, zoom: 13, styles: DARK_MAP_STYLE });
-      draw(true); timer = setInterval(() => draw(false), 15000);
+      draw(true); timer = setInterval(() => draw(false), 3000);
     }).catch(() => {});
     return () => timer && clearInterval(timer);
   }, []);
@@ -1043,7 +1048,7 @@ function LiveRouteModal({ officer, config, onClose }) {
         </div>
         <div className="glass" style={{ padding: 6, marginTop: 10 }}><div className="map tall" ref={mapEl}></div></div>
         {info && info.points === 0 && <p className="muted" style={{ marginTop: 8 }}>No movement recorded today yet. The route appears here once the officer's app sends a location.</p>}
-        <p className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>Live — refreshes every 15s. Green “S” is where they started today; the labelled marker is their current position.</p>
+        <p className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>Live — refreshes every 3s. Green “S” is where they started today; the labelled marker is their current position.</p>
       </div>
     </div>
   );
@@ -1368,25 +1373,43 @@ function useLocationPing(user, config) {
     // ---- Native Android (Capacitor): true background tracking via a foreground service ----
     const Cap = window.Capacitor;
     if (Cap && (Cap.isNativePlatform ? Cap.isNativePlatform() : Cap.isNative) && Cap.registerPlugin) {
-      let watcherId = null, cleared = false;
+      // Transistor background-geolocation: the NATIVE service posts locations straight to the
+      // server (auto-sync), so it keeps reporting even when the app is locked, backgrounded, or
+      // killed — no JavaScript needed at runtime. We only configure it once here with the URL + token.
+      let cleared = false;
       try {
-        const BG = Cap.registerPlugin('BackgroundGeolocation');
-        BG.addWatcher({
-          requestPermissions: true, stale: false, distanceFilter: 20,
-          backgroundTitle: 'RecoverIQ — on duty',
-          backgroundMessage: 'Sharing your live location with your branch.',
-        }, (location, error) => {
-          if (error || !location) return;
-          api('/api/tracking/ping', { method: 'POST', body: { latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy, speed: location.speed } }).catch(() => {});
-        }).then(id => { watcherId = id; if (cleared) BG.removeWatcher({ id }); });
+        const BGL = Cap.registerPlugin('BackgroundGeolocation');
+        const url = (window.location.origin || '') + '/api/tracking/ping-native';
+        BGL.ready({
+          reset: true,
+          desiredAccuracy: -1,                 // HIGH accuracy
+          distanceFilter: 10,
+          locationUpdateInterval: 3000,        // Android: aim for a fix ~every 3s
+          fastestLocationUpdateInterval: 2000,
+          disableStopDetection: true,          // keep reporting even when standing still
+          pausesLocationUpdatesAutomatically: false,
+          stopOnTerminate: false,              // keep running if the app is killed
+          startOnBoot: true,                   // resume after a phone restart
+          foregroundService: true,
+          url: url,
+          autoSync: true,
+          batchSync: false,
+          headers: { Authorization: 'Bearer ' + (store.t || '') },
+          backgroundPermissionRationale: {
+            title: 'Allow background location',
+            message: 'RecoverIQ shares your location while you are on duty, even when the app is closed.',
+            positiveAction: 'Allow', negativeAction: 'Cancel',
+          },
+          notification: { title: 'RecoverIQ — on duty', text: 'Sharing your live location with your branch.' },
+        }).then(() => { if (!cleared) return BGL.start(); }).catch(() => {});
       } catch (e) {}
-      return () => { cleared = true; try { if (watcherId) Cap.registerPlugin('BackgroundGeolocation').removeWatcher({ id: watcherId }); } catch (e) {} };
+      return () => { cleared = true; };
     }
     // ---- Web fallback (foreground only) ----
     if (!navigator.geolocation) return;
     let alive = true, lastSent = 0, lastPos = null, watchId = null, wakeLock = null;
-    const minGap = 12 * 1000;                                   // don't hit the server more than ~every 12s
-    const heartbeatMs = Math.max(30, (config && config.location_ping_seconds) || 60) * 1000;
+    const minGap = 2 * 1000;                                    // allow a location send about every 3s
+    const heartbeatMs = 3 * 1000;                              // force a ping every 3s even when stationary
     const distM = (a, b) => { if (!a || !b) return 1e9; const R = 6371000, dLa = (b.latitude - a.latitude) * Math.PI / 180,
       dLo = (b.longitude - a.longitude) * Math.PI / 180, la1 = a.latitude * Math.PI / 180, la2 = b.latitude * Math.PI / 180;
       const h = Math.sin(dLa / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
@@ -2152,10 +2175,40 @@ const NAV = {
   fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
 };
+function NativeTrackingOnboard({ onDone }) {
+  const openSettings = () => { try { const BG = window.Capacitor.registerPlugin('BackgroundGeolocation'); if (BG.openSettings) BG.openSettings(); } catch (e) {} };
+  return (
+    <div className="modal-bg">
+      <div className="modal glass" onClick={e => e.stopPropagation()}>
+        <div className="section-h"><h3>Turn on always-on tracking</h3></div>
+        <p style={{ fontSize: 14, lineHeight: 1.6 }}>So your live location keeps sharing even when the phone is locked or you're using another app, please allow:</p>
+        <ol style={{ fontSize: 14, lineHeight: 1.8, paddingLeft: 18, marginTop: 0 }}>
+          <li>Location → tap <b>Allow</b>, then choose <b>"Allow all the time"</b></li>
+          <li>Notifications → <b>Allow</b> (keeps the "on duty" status)</li>
+          <li>Battery → <b>Unrestricted</b>; on Xiaomi/Oppo/Vivo also turn on <b>Autostart</b></li>
+        </ol>
+        <div className="toolbar" style={{ marginTop: 6 }}>
+          <button className="btn gold" onClick={openSettings}>Open settings</button>
+          <div style={{ flex: 1 }} />
+          <button className="btn" onClick={onDone}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Shell({ user, config, onLogout, installEvt, onInstall }) {
   const nav = NAV[user.role] || NAV.telecaller;
   const [view, setView] = useState(nav[0][0]);
+  const [trackOnboard, setTrackOnboard] = useState(false);
   useLocationPing(user, config);
+  useEffect(() => {
+    try {
+      const cap = window.Capacitor;
+      const native = cap && (cap.isNativePlatform ? cap.isNativePlatform() : cap.isNative);
+      if (native && user.role === 'fos' && !localStorage.getItem('ssd_trackonboard')) setTrackOnboard(true);
+    } catch (e) {}
+  }, []);
   const title = (nav.find(n => n[0] === view) || [, , ''])[2];
   const render = () => {
     switch (view) {
@@ -2197,6 +2250,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
               <div className="muted" style={{ fontSize: 12 }}>{user.branch || user.email}</div></div></div>
         </div>
         {render()}
+        {trackOnboard && <NativeTrackingOnboard onDone={() => { try { localStorage.setItem('ssd_trackonboard', '1'); } catch (e) {} setTrackOnboard(false); }} />}
       </main>
       <nav className="mobnav">
         {nav.map(([id, ic, label]) => <div key={id} className={cx('navitem', view === id && 'active')} onClick={() => setView(id)}>

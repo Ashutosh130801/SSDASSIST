@@ -1,7 +1,7 @@
 import io
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -25,6 +25,46 @@ def ping(body: schemas.PingCreate, db: Session = Depends(get_db),
     db.commit()
     db.refresh(p)
     return p
+
+
+def _extract_coords(obj):
+    """Pull {latitude, longitude, accuracy, speed} out of a Transistor location object,
+    which may be shaped as {coords:{...}} or nested under {location:{coords:{...}}}."""
+    if not isinstance(obj, dict):
+        return None
+    c = obj.get("coords") or (obj.get("location") or {}).get("coords") or obj
+    lat, lng = c.get("latitude"), c.get("longitude")
+    if lat is None or lng is None:
+        return None
+    return dict(latitude=float(lat), longitude=float(lng),
+                accuracy=c.get("accuracy"), speed=c.get("speed"))
+
+
+@router.post("/ping-native")
+async def ping_native(request: Request, db: Session = Depends(get_db),
+                      user: models.User = Depends(require_roles("fos", "admin"))):
+    """Receives locations POSTed directly by the native Android background-geolocation
+    service (Transistor auto-sync). Accepts a single location or a batch, in the plugin's
+    default shape. Stores each as a LocationPing for the authenticated officer."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = None
+    items = []
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        loc = data.get("location", data)
+        items = loc if isinstance(loc, list) else [loc]
+    stored = 0
+    for it in items:
+        c = _extract_coords(it)
+        if not c:
+            continue
+        db.add(models.LocationPing(officer_id=user.id, **c))
+        stored += 1
+    db.commit()
+    return {"stored": stored}
 
 
 @router.get("/live", response_model=list[schemas.OfficerLocation])
