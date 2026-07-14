@@ -64,11 +64,12 @@ jobs:
         working-directory: app/mobile
         run: npx cap add android
 
-      - name: Pin targetSdk to 33 (avoids Android 14 killing the location foreground service)
+      - name: Set SDK versions (minSdk 24 for Transistor, targetSdk 33 for the foreground service)
         working-directory: app/mobile
         run: |
           F=android/variables.gradle
           if [ -f "$F" ]; then
+            sed -i 's/minSdkVersion = 22/minSdkVersion = 24/' "$F"
             sed -i 's/targetSdkVersion = 34/targetSdkVersion = 33/' "$F"
             echo "----- variables.gradle -----"; cat "$F"
           fi
@@ -90,7 +91,6 @@ jobs:
           p = "app/mobile/android/app/src/main/AndroidManifest.xml"
           s = open(p, encoding="utf-8").read()
           perms = (
-              '    <uses-permission android:name="android.permission.INTERNET" />\n'
               '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n'
               '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n'
               '    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />\n'
