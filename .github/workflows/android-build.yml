@@ -71,6 +71,8 @@ jobs:
           if [ -f "$F" ]; then
             sed -i 's/minSdkVersion = 22/minSdkVersion = 24/' "$F"
             sed -i 's/targetSdkVersion = 34/targetSdkVersion = 33/' "$F"
+            # Force Play Services Location >= 21 so Transistor uses its matching native lib (tslocationmanager-v21)
+            grep -q 'playServicesLocationVersion' "$F" || sed -i 's/ext {/ext {\n    playServicesLocationVersion = "21.0.1"/' "$F"
             echo "----- variables.gradle -----"; cat "$F"
           fi
 
