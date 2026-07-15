@@ -149,6 +149,20 @@ jobs:
         working-directory: app/mobile
         run: npx cap sync android
 
+      - name: Register Transistor's bundled maven repos (tslocationmanager-v21 lives in the plugin's libs)
+        working-directory: app/mobile
+        run: |
+          cat >> android/build.gradle <<'EOF'
+
+          allprojects {
+              repositories {
+                  maven { url "${project(':transistorsoft-capacitor-background-geolocation').projectDir}/libs" }
+                  maven { url "${project(':transistorsoft-capacitor-background-fetch').projectDir}/libs" }
+              }
+          }
+          EOF
+          echo "----- tail of android/build.gradle -----"; tail -12 android/build.gradle
+
       - name: Force androidx.work version compatible with compileSdk 34
         working-directory: app/mobile
         run: |
