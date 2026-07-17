@@ -18,12 +18,13 @@ import `in`.recoveriq.app.data.Case
 import `in`.recoveriq.app.data.User
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.common.AsyncContent
+import `in`.recoveriq.app.ui.common.CaseCard
 import `in`.recoveriq.app.ui.common.InfoCard
 import `in`.recoveriq.app.ui.common.SectionTitle
 import `in`.recoveriq.app.ui.theme.Muted
 
 @Composable
-fun AdminDashboardScreen(vm: AuthViewModel, user: User) {
+fun AdminDashboardScreen(vm: AuthViewModel, user: User, onOpenCase: (Int) -> Unit) {
     AsyncContent(block = { vm.repo.allCases() }) { cases, _ ->
         val total = cases.size
         val recovered = cases.sumOf { it.receivedAmount }
@@ -51,10 +52,8 @@ fun AdminDashboardScreen(vm: AuthViewModel, user: User) {
                 }
             }
             item { SectionTitle("Highest outstanding") }
-            items(cases.sortedByDescending { it.pendingAmount }.take(15).size) { i ->
-                val c = cases.sortedByDescending { it.pendingAmount }.take(15)[i]
-                CaseLine(c)
-            }
+            val top = cases.sortedByDescending { it.pendingAmount }.take(15)
+            items(top.size) { i -> CaseCard(top[i], onClick = { onOpenCase(top[i].id) }) }
         }
     }
 }

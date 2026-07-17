@@ -1,6 +1,9 @@
 package `in`.recoveriq.app.data
 
 import android.content.Context
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
  * Thin repository over ApiService. Keeps the in-memory token cache (Api.token)
@@ -39,19 +42,107 @@ class Repository(context: Context) {
         session.clear()
     }
 
-    suspend fun myCases(): List<Case> = Api.service.cases(mine = true)
-    suspend fun allCases(status: String? = null, bank: String? = null): List<Case> =
-        Api.service.cases(status = status, bank = bank)
+    private suspend fun myId(): Int? = session.user()?.id
+
+    /** Cases assigned to the signed-in user (fos or caller), filtered client-side. */
+    suspend fun myCases(): List<Case> {
+        val id = myId()
+        return Api.service.cases(limit = 1000).filter { it.assignedFosId == id || it.assignedCallerId == id }
+    }
+
+    suspend fun allCases(
+        bank: String? = null, status: String? = null, search: String? = null,
+    ): List<Case> = Api.service.cases(bank = bank, status = status, search = search?.ifBlank { null })
+
     suspend fun case(id: Int): Case = Api.service.case(id)
     suspend fun updateCase(id: Int, update: CaseUpdate): Case = Api.service.updateCase(id, update)
-    suspend fun recordPayment(id: Int, amount: Double, mode: String?, ref: String?): Case =
-        Api.service.recordPayment(id, PaymentRequest(amount, mode, ref))
+    suspend fun recordPayment(id: Int, amount: Double, mode: String = "UPI", note: String? = null): Case =
+        Api.service.recordPayment(id, PaymentRequest(amount, mode, note))
+    suspend fun timeline(id: Int): List<TimelineEvent> = Api.service.timeline(id)
+    suspend fun callsForCase(id: Int): List<CallOut> = Api.service.callsForCase(id)
+    suspend fun visitsForCase(id: Int): List<VisitOut> = Api.service.visitsForCase(id)
+
+    suspend fun logCall(body: CallCreate): CallOut = Api.service.logCall(body)
+    suspend fun createVisit(body: VisitCreate): VisitOut = Api.service.createVisit(body)
 
     suspend fun liveOfficers(): List<OfficerLocation> = Api.service.liveOfficers()
     suspend fun myTodayRoute(): List<PingOut> = Api.service.myTodayRoute()
     suspend fun officerRoute(id: Int, date: String? = null): List<PingOut> =
         Api.service.officerRoute(id, date)
 
-    suspend fun callQueue(segment: String? = null): List<Case> = Api.service.callQueue(segment)
-    suspend fun ptpTracker(): List<Case> = Api.service.ptpTracker()
+    suspend fun callQueue(bank: String? = null): QueueResponse = Api.service.callQueue(bank)
+    suspend fun ptpTracker(bank: String? = null): PtpResponse = Api.service.ptpTracker(bank)
+
+    suspend fun templates(): List<Template> = Api.service.templates()
+    suspend fun logComm(caseId: Int, channel: String, text: String?) =
+        Api.service.logComm(CommLog(caseId, channel, text))
+
+    suspend fun aiAssist(prompt: String, context: String? = null): String =
+        Api.service.aiAssist(AIRequest(prompt, context)).reply
+
+    // --- Dashboard / activity ---
+    suspend fun dashboard(): DashboardResponse = Api.service.dashboard()
+    suspend fun activity(kind: String = "all"): List<ActivityItem> = Api.service.activity(kind)
+
+    // --- Litigation ---
+    suspend fun legalCases(): List<Legal> = Api.service.legalCases()
+    suspend fun legalInsights(): LegalInsights = Api.service.legalInsights()
+    suspend fun createLegal(body: LegalCreate): Legal = Api.service.createLegal(body)
+    suspend fun deleteLegal(id: Int) = Api.service.deleteLegal(id)
+
+    // --- Team ---
+    suspend fun users(): List<User> = Api.service.users()
+    suspend fun createUser(body: UserCreate): User = Api.service.createUser(body)
+    suspend fun updateUser(id: Int, body: UserUpdate): User = Api.service.updateUser(id, body)
+    suspend fun deleteUser(id: Int) = Api.service.deleteUser(id)
+
+    // --- Leave ---
+    suspend fun leaves(status: String? = null, scope: String = "auto"): List<Leave> =
+        Api.service.leaves(status, scope)
+    suspend fun applyLeave(body: LeaveCreate): Leave = Api.service.applyLeave(body)
+    suspend fun leaveBalance(): List<LeaveBalance> = Api.service.leaveBalance()
+    suspend fun decideLeave(id: Int, approve: Boolean): Leave =
+        Api.service.decideLeave(id, if (approve) "approve" else "reject")
+
+    // --- Devices ---
+    suspend fun devices(): List<Device> = Api.service.devices()
+    suspend fun approveDevice(id: Int) = Api.service.approveDevice(id)
+    suspend fun revokeDevice(id: Int) = Api.service.revokeDevice(id)
+    suspend fun deleteDevice(id: Int) = Api.service.deleteDevice(id)
+
+    // --- Templates ---
+    suspend fun createTemplate(body: TemplateCreate): Template = Api.service.createTemplate(body)
+    suspend fun deleteTemplate(id: Int) = Api.service.deleteTemplate(id)
+
+    // --- 2FA ---
+    suspend fun twoFAStatus(): TwoFAStatus = Api.service.twoFAStatus()
+    suspend fun twoFASetup(): TwoFASetup = Api.service.twoFASetup()
+    suspend fun twoFAEnable(otp: String): TwoFAStatus = Api.service.twoFAEnable(OtpBody(otp))
+    suspend fun twoFADisable(otp: String): TwoFAStatus = Api.service.twoFADisable(OtpBody(otp))
+
+    // --- Field visit (multipart, optional photo) ---
+    suspend fun createVisit(
+        caseId: Int, lat: Double?, lng: Double?, accuracy: Double?,
+        personMoved: Boolean, paid: Boolean, amount: Double,
+        disposition: String?, note: String?, photoJpeg: ByteArray?,
+    ): VisitOut {
+        fun t(v: String) = v.toRequestBody("text/plain".toMediaType())
+        val photoPart = photoJpeg?.let {
+            MultipartBody.Part.createFormData(
+                "photo", "visit.jpg", it.toRequestBody("image/jpeg".toMediaType()),
+            )
+        }
+        return Api.service.createVisit(
+            caseId = t(caseId.toString()),
+            latitude = lat?.let { t(it.toString()) },
+            longitude = lng?.let { t(it.toString()) },
+            gpsAccuracy = accuracy?.let { t(it.toString()) },
+            personMoved = t(personMoved.toString()),
+            paid = t(paid.toString()),
+            amountCollected = t(amount.toString()),
+            disposition = disposition?.let { t(it) },
+            note = note?.let { t(it) },
+            photo = photoPart,
+        )
+    }
 }

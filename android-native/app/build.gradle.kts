@@ -88,5 +88,8 @@ dependencies {
     // Images
     implementation("io.coil-kt:coil-compose:2.6.0")
 
+    // QR generation (2FA setup)
+    implementation("com.google.zxing:core:3.5.3")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
