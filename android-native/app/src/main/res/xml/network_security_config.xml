@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Enforces HTTPS everywhere (no cleartext). Certificate pinning is applied in code
+  (Network.kt via OkHttp CertificatePinner) so the pin can be supplied at build time.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

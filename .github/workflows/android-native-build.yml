@@ -1,0 +1,89 @@
+name: Build Native Android App
+
+# Builds the fully-native Kotlin RecoverIQ app in android-native/ and publishes an
+# installable APK to Releases (tag: android-native-latest).
+#
+# Set the live backend URL via the APP_URL repo secret (or pass app_url when running).
+# Optionally set CERT_PIN (sha256/... of your server SPKI) to enable certificate pinning.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: "Live backend URL (e.g. https://recoveriq-xxxx.run.app)"
+        required: false
+        default: ""
+  push:
+    paths:
+      - "android-native/**"
+      - ".github/workflows/android-native-build.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: android-native
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.9
+
+      - name: Resolve backend URL + cert pin
+        id: cfg
+        run: |
+          # Priority: manual input > APP_URL secret > whatever is in gradle.properties.
+          URL="${{ github.event.inputs.app_url }}"
+          if [ -z "$URL" ]; then URL="${{ secrets.APP_URL }}"; fi
+          if [ -n "$URL" ]; then
+            case "$URL" in */) ;; *) URL="$URL/";; esac   # ensure trailing slash
+            echo "url=$URL" >> "$GITHUB_OUTPUT"
+            echo "Using URL override: $URL"
+          else
+            echo "url=" >> "$GITHUB_OUTPUT"
+            echo "No override — using BASE_URL from gradle.properties."
+          fi
+          echo "pin=${{ secrets.CERT_PIN }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build debug APK
+        run: |
+          ARGS=""
+          if [ -n "${{ steps.cfg.outputs.url }}" ]; then ARGS="$ARGS -PBASE_URL=${{ steps.cfg.outputs.url }}"; fi
+          if [ -n "${{ steps.cfg.outputs.pin }}" ]; then ARGS="$ARGS -PCERT_PIN=${{ steps.cfg.outputs.pin }}"; fi
+          echo "Building with: $ARGS"
+          ./gradlew :app:assembleDebug --no-daemon $ARGS
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk ../RecoverIQ-native.apk
+
+      - name: Upload APK (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: recoveriq-native-apk
+          path: RecoverIQ-native.apk
+          if-no-files-found: error
+
+      - name: Publish to Releases (direct .apk download)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-native-latest
+          name: RecoverIQ Native Android (latest build)
+          body: "Fully-native Kotlin build. Open this page ON the phone and tap RecoverIQ-native.apk to install."
+          files: RecoverIQ-native.apk

@@ -1,0 +1,5 @@
+<resources>
+    <color name="brand_blue">@android:color/holo_blue_dark</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="black">#FF000000</color>
+</resources>

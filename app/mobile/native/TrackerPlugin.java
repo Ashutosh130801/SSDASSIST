@@ -3,6 +3,7 @@ package in.recoveriq.app;
 import android.Manifest;
 import android.content.Intent;
 import android.os.Build;
+import android.util.Log;
 
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -32,12 +33,14 @@ public class TrackerPlugin extends Plugin {
 
     @PluginMethod
     public void start(PluginCall call) {
+        Log.i("RQTrack", "Tracker.start() called, url=" + call.getString("url"));
         // Ask for location (and, on Android 13+, notification) permission, then start the service.
         requestAllPermissions(call, "afterPermission");
     }
 
     @PermissionCallback
     private void afterPermission(PluginCall call) {
+        Log.i("RQTrack", "permissions resolved, location=" + getPermissionState("location") + " — starting service");
         Intent i = new Intent(getContext(), LocationService.class);
         i.putExtra("url", call.getString("url"));
         i.putExtra("token", call.getString("token"));

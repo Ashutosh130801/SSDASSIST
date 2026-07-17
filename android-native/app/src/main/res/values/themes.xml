@@ -1,0 +1,8 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base theme; Compose drives the real colors. This just gives a clean splash/launch window. -->
+    <style name="Theme.RecoverIQ" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#F4F7FB</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">#FFFFFF</item>
+    </style>
+</resources>

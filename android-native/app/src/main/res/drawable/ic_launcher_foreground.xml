@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- White "R" mark, centered within the adaptive-icon safe zone -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M42,34 L58,34 C66,34 71,39 71,47 C71,53 68,57 63,59 L72,74 L63,74 L55,60 L50,60 L50,74 L42,74 Z M50,41 L50,53 L57,53 C61,53 63,51 63,47 C63,43 61,41 57,41 Z" />
+</vector>

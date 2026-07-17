@@ -9,6 +9,7 @@ import android.location.Location;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.Looper;
+import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -30,6 +31,7 @@ import java.net.URL;
  * with an ongoing notification, Android keeps it running when the app is backgrounded or locked.
  */
 public class LocationService extends Service {
+    private static final String TAG = "RQTrack";
     private static final String CHANNEL_ID = "recoveriq_tracking";
     private FusedLocationProviderClient client;
     private LocationCallback callback;
@@ -48,6 +50,7 @@ public class LocationService extends Service {
             if (intent.getStringExtra("url") != null) pingUrl = intent.getStringExtra("url");
             if (intent.getStringExtra("token") != null) token = intent.getStringExtra("token");
         }
+        Log.i(TAG, "onStartCommand: url=" + pingUrl + " hasToken=" + (token != null && token.length() > 0));
         startForeground(1001, buildNotification());
         startUpdates();
         return START_STICKY;
@@ -63,13 +66,19 @@ public class LocationService extends Service {
             @Override
             public void onLocationResult(LocationResult result) {
                 Location loc = result.getLastLocation();
-                if (loc != null) postLocation(loc);
+                if (loc != null) {
+                    Log.i(TAG, "location " + loc.getLatitude() + "," + loc.getLongitude() + " acc=" + loc.getAccuracy());
+                    postLocation(loc);
+                } else {
+                    Log.w(TAG, "location result had no location");
+                }
             }
         };
         try {
             client.requestLocationUpdates(req, callback, Looper.getMainLooper());
+            Log.i(TAG, "requested location updates OK");
         } catch (SecurityException e) {
-            // location permission not granted yet
+            Log.e(TAG, "NO LOCATION PERMISSION — cannot start updates", e);
         }
     }
 
@@ -97,9 +106,10 @@ public class LocationService extends Service {
                     os.write(body.getBytes("UTF-8"));
                     os.flush();
                     os.close();
-                    c.getResponseCode();
+                    int code = c.getResponseCode();
+                    Log.i(TAG, "POST " + url + " -> HTTP " + code);
                 } catch (Exception e) {
-                    // network error — the next fix will retry
+                    Log.e(TAG, "POST failed to " + url, e);
                 } finally {
                     if (c != null) c.disconnect();
                 }
