@@ -1,14 +1,10 @@
 name: Build Android APK
 
-# Builds the RecoverIQ Android wrapper (with background location) in the cloud.
-# Run it manually from the Actions tab (Run workflow), or it runs on any push
-# that touches app/mobile/**. The finished .apk is attached to the run as an artifact.
+# Builds the RecoverIQ Android wrapper (with a native background-location service) in the cloud.
+# Run it from the Actions tab (Run workflow), or it runs on any push touching app/mobile/**.
+# The finished .apk is attached to the run and published to Releases (tag: android-latest).
 #
-# Assumes this repo's root contains the `app/` folder (app/mobile/...). If your repo
-# is laid out differently, adjust the `working-directory` / paths below.
-#
-# Set your live app URL once: either pass it in the "Run workflow" box, or add a repo
-# secret named APP_URL (Settings → Secrets and variables → Actions → New repository secret).
+# Set your live app URL once: pass it in the "Run workflow" box, or add a repo secret APP_URL.
 
 on:
   workflow_dispatch:
@@ -64,15 +60,12 @@ jobs:
         working-directory: app/mobile
         run: npx cap add android
 
-      - name: Set SDK versions (minSdk 24 for Transistor, targetSdk 33 for the foreground service)
+      - name: Pin targetSdk to 33 (keeps the location foreground service alive on Android 14)
         working-directory: app/mobile
         run: |
           F=android/variables.gradle
           if [ -f "$F" ]; then
-            sed -i 's/minSdkVersion = 22/minSdkVersion = 24/' "$F"
             sed -i 's/targetSdkVersion = 34/targetSdkVersion = 33/' "$F"
-            # Force Play Services Location >= 21 so Transistor uses its matching native lib (tslocationmanager-v21)
-            grep -q 'playServicesLocationVersion' "$F" || sed -i 's/ext {/ext {\n    playServicesLocationVersion = "21.0.1"/' "$F"
             echo "----- variables.gradle -----"; cat "$F"
           fi
 
@@ -87,7 +80,7 @@ jobs:
             echo "No resources/icon.png found — using the default Capacitor icon."
           fi
 
-      - name: Inject location permissions into AndroidManifest
+      - name: Inject permissions + the location service into AndroidManifest
         run: |
           python3 - <<'PY'
           p = "app/mobile/android/app/src/main/AndroidManifest.xml"
@@ -103,66 +96,30 @@ jobs:
           )
           if "ACCESS_BACKGROUND_LOCATION" not in s:
               s = s.replace("<application", perms + "\n    <application", 1)
-              open(p, "w", encoding="utf-8").write(s)
-              print("Permissions added.")
-          else:
-              print("Permissions already present.")
+          if "LocationService" not in s:
+              s = s.replace("</application>", '    <service android:name=".LocationService" android:foregroundServiceType="location" android:exported="false" android:enabled="true" />\n</application>')
+          open(p, "w", encoding="utf-8").write(s)
+          print("Manifest patched (permissions + service).")
           PY
 
-      - name: Fire "ignore battery optimizations" dialog on launch (MainActivity)
+      - name: Install native tracking service (Java) + play-services-location
         working-directory: app/mobile
         run: |
-          MA=$(find android/app/src/main/java -name MainActivity.java | head -1)
-          PKG=$(grep -m1 '^package ' "$MA" | sed 's/package //; s/;//')
-          echo "Patching $MA (package $PKG)"
-          cat > "$MA" <<EOF
-          package ${PKG};
+          DEST=android/app/src/main/java/in/recoveriq/app
+          mkdir -p "$DEST"
+          cp native/LocationService.java native/TrackerPlugin.java native/MainActivity.java "$DEST/"
+          echo "Installed native files:"; ls -1 "$DEST"
+          cat >> android/app/build.gradle <<'EOF'
 
-          import android.content.Intent;
-          import android.net.Uri;
-          import android.os.Build;
-          import android.os.Bundle;
-          import android.os.PowerManager;
-          import android.provider.Settings;
-          import com.getcapacitor.BridgeActivity;
-
-          public class MainActivity extends BridgeActivity {
-              @Override
-              public void onCreate(Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
-                  try {
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                          PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-                          if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
-                              Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                              i.setData(Uri.parse("package:" + getPackageName()));
-                              startActivity(i);
-                          }
-                      }
-                  } catch (Exception e) { }
-              }
+          dependencies {
+              implementation "com.google.android.gms:play-services-location:21.0.1"
           }
           EOF
-          echo "----- MainActivity.java -----"; cat "$MA"
+          echo "----- tail app/build.gradle -----"; tail -6 android/app/build.gradle
 
       - name: Sync Capacitor
         working-directory: app/mobile
         run: npx cap sync android
-
-      - name: Force androidx.work version compatible with compileSdk 34
-        working-directory: app/mobile
-        run: |
-          cat >> android/app/build.gradle <<'EOF'
-
-          configurations.all {
-              resolutionStrategy {
-                  force 'androidx.work:work-runtime:2.9.1'
-                  force 'androidx.work:work-runtime-ktx:2.9.1'
-              }
-          }
-          EOF
-          echo "----- appended resolutionStrategy to android/app/build.gradle -----"
-          tail -12 android/app/build.gradle
 
       - name: Build debug APK
         working-directory: app/mobile/android
@@ -173,7 +130,7 @@ jobs:
       - name: Rename APK for a clean download
         run: cp app/mobile/android/app/build/outputs/apk/debug/app-debug.apk RecoverIQ.apk
 
-      - name: Upload APK (artifact — downloads as a .zip)
+      - name: Upload APK (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: recoveriq-android-apk

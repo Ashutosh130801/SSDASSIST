@@ -71,7 +71,10 @@ const toMs = (iso) => {
 const toDate = (iso) => new Date(toMs(iso));
 
 // Field-officer presence: "live" if their app pinged within the last 3 minutes.
-const ONLINE_MS = 3 * 1000;   // "live" = reported within 3s
+// "live" if a ping arrived within the last 12s (~3-4 of the 3s refresh cycles). Using a single
+// short window made the dot flicker on every tiny network delay; requiring several missed updates
+// before showing "offline" keeps the status steady.
+const ONLINE_MS = 12 * 1000;
 const isOnline = (iso) => !!iso && (Date.now() - toMs(iso)) < ONLINE_MS;
 const agoLabel = (iso) => {
   if (!iso) return 'never';
@@ -1422,33 +1425,14 @@ function useLocationPing(user, config) {
     // ---- Native Android (Capacitor): true background tracking via a foreground service ----
     const Cap = window.Capacitor;
     if (Cap && (Cap.isNativePlatform ? Cap.isNativePlatform() : Cap.isNative) && Cap.registerPlugin) {
-      // Community background-geolocation: runs an Android foreground service (the "on duty"
-      // notification) so it keeps delivering location while the app is backgrounded or the screen
-      // is locked. A 3s heartbeat re-sends the latest fix so the officer stays "live" even standing still.
-      let watcherId = null, cleared = false, lastLoc = null;
+      // Our own native foreground-location service (LocationService) reads GPS and POSTs to
+      // /api/tracking/ping from native code — so it keeps reporting when the app is locked,
+      // backgrounded, or switched away. It requests the location permission itself on start.
       try {
-        const BG = Cap.registerPlugin('BackgroundGeolocation');
-        let promptedSettings = false;
-        BG.addWatcher({
-          requestPermissions: true, stale: false, distanceFilter: 5,
-          backgroundTitle: 'RecoverIQ — on duty',
-          backgroundMessage: 'Sharing your live location with your branch.',
-        }, (location, error) => {
-          if (error) {
-            if (error.code === 'NOT_AUTHORIZED' && !promptedSettings) {
-              promptedSettings = true;
-              try { toast('Set Location to "Allow all the time" for background tracking.', 'err'); } catch (e) {}
-              try { if (BG.openSettings) BG.openSettings(); } catch (e) {}
-            }
-            return;
-          }
-          if (location) lastLoc = location;
-        }).then(id => { watcherId = id; if (cleared) BG.removeWatcher({ id }); });
+        const Tracker = Cap.registerPlugin('Tracker');
+        Tracker.start({ url: (window.location.origin || '') + '/api/tracking/ping', token: store.t || '' });
       } catch (e) {}
-      const hb = setInterval(() => {
-        if (lastLoc) api('/api/tracking/ping', { method: 'POST', body: { latitude: lastLoc.latitude, longitude: lastLoc.longitude, accuracy: lastLoc.accuracy, speed: lastLoc.speed } }).catch(() => {});
-      }, 3000);
-      return () => { cleared = true; clearInterval(hb); try { if (watcherId) Cap.registerPlugin('BackgroundGeolocation').removeWatcher({ id: watcherId }); } catch (e) {} };
+      return () => { try { Cap.registerPlugin('Tracker').stop(); } catch (e) {} };
     }
     // ---- Web fallback (foreground only) ----
     if (!navigator.geolocation) return;
