@@ -6,8 +6,7 @@
   "dependencies": {
     "@capacitor/core": "^6.1.2",
     "@capacitor/android": "^6.1.2",
-    "@transistorsoft/capacitor-background-geolocation": "^6.1.0",
-    "@transistorsoft/capacitor-background-fetch": "^6.0.0"
+    "@capacitor-community/background-geolocation": "^1.2.21"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.1.2"

@@ -262,6 +262,68 @@ function loadMaps() {
   });
   return _mapsPromise;
 }
+/* Draw a travelled route as a continuous line on the (Leaflet-backed) map:
+   - blue line along the actual path
+   - grey dashed segments where the officer was offline (a gap between pings)
+   - clickable dots + line: tapping shows the time & coordinates of that point
+   Returns { layers, path, points } so the caller can clear/replay it. */
+function clearRouteLayers(r) { if (r && r.layers) r.layers.forEach(function (l) { try { l.remove(); } catch (e) {} }); }
+function drawRouteLeaflet(gmap, pts, opts) {
+  opts = opts || {};
+  const L = window.L;
+  const out = { layers: [], path: [], points: [] };
+  if (!L || !gmap || !gmap._map) return out;
+  const lm = gmap._map;
+  const P = (pts || []).map(p => ({ lat: p.latitude, lng: p.longitude, t: toMs(p.created_at) }))
+    .filter(p => p.lat != null && p.lng != null && !isNaN(p.lat) && !isNaN(p.lng));
+  if (!P.length) return out;
+  out.points = P; out.path = P.map(p => [p.lat, p.lng]);
+  const GAP = 150 * 1000;   // pings more than 2.5 min apart = the officer was offline
+  const popupHtml = (p) => {
+    const d = new Date(p.t);
+    return '<div style="font-family:sans-serif;font-size:12.5px;color:#111;line-height:1.5">'
+      + '<b>' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '</b><br>'
+      + d.toLocaleDateString('en-IN') + '<br>' + p.lat.toFixed(6) + ', ' + p.lng.toFixed(6) + '</div>';
+  };
+  let run = [P[0]];
+  const flush = () => {
+    if (run.length >= 2) {
+      const ln = L.polyline(run.map(p => [p.lat, p.lng]), { color: '#2563EB', weight: 5, opacity: .9 }).addTo(lm);
+      const rc = run.slice();
+      ln.on('click', (e) => {
+        let b = rc[0], bd = Infinity;
+        rc.forEach(p => { const dd = (p.lat - e.latlng.lat) ** 2 + (p.lng - e.latlng.lng) ** 2; if (dd < bd) { bd = dd; b = p; } });
+        L.popup().setLatLng([b.lat, b.lng]).setContent(popupHtml(b)).openOn(lm);
+      });
+      out.layers.push(ln);
+    }
+  };
+  for (let i = 1; i < P.length; i++) {
+    if (P[i].t - P[i - 1].t > GAP) {
+      flush();
+      out.layers.push(L.polyline([[P[i - 1].lat, P[i - 1].lng], [P[i].lat, P[i].lng]],
+        { color: '#8494A8', weight: 4, opacity: .7, dashArray: '6,9' }).addTo(lm));
+      run = [P[i]];
+    } else run.push(P[i]);
+  }
+  flush();
+  const step = Math.max(1, Math.floor(P.length / 180));   // cap clickable dots ~180
+  for (let i = 0; i < P.length; i += step) {
+    const p = P[i];
+    const dot = L.circleMarker([p.lat, p.lng], { radius: 3.5, color: '#1D4ED8', fillColor: '#3B82F6', fillOpacity: .9, weight: 1 }).addTo(lm);
+    dot.on('click', () => L.popup().setLatLng([p.lat, p.lng]).setContent(popupHtml(p)).openOn(lm));
+    out.layers.push(dot);
+  }
+  const badge = (p, txt, color) => L.marker([p.lat, p.lng], { zIndexOffset: 500, icon: L.divIcon({
+    className: '', iconSize: [22, 22], iconAnchor: [11, 11],
+    html: '<div style="width:22px;height:22px;border-radius:50%;background:' + color + ';border:2px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.4)">' + txt + '</div>',
+  }) }).addTo(lm);
+  out.layers.push(badge(P[0], 'S', '#16A34A'));
+  if (!opts.noEnd) out.layers.push(badge(P[P.length - 1], 'E', '#DC2626'));
+  if (opts.fit !== false) { try { lm.fitBounds(L.latLngBounds(out.path), { padding: [50, 50] }); } catch (e) {} }
+  return out;
+}
+
 function getGPS(opts = {}) {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error('Geolocation unavailable'));
@@ -718,7 +780,7 @@ function CasesView({ user }) {
 /* ============================== Live Map (admin) ============================== */
 function LiveMap({ config }) {
   const mapEl = useRef(null); const map = useRef(null); const markers = useRef({});
-  const routeLine = useRef(null); const routeMarks = useRef([]); const routeActive = useRef(false);
+  const routeLine = useRef(null); const routeMarks = useRef([]); const routeActive = useRef(false); const routeObj = useRef(null);
   const [status, setStatus] = useState('loading'); const [officers, setOfficers] = useState([]);
   const [histOfficer, setHistOfficer] = useState(null); const [dates, setDates] = useState(null);
   const [selDate, setSelDate] = useState(''); const [routeInfo, setRouteInfo] = useState(null);
@@ -767,6 +829,7 @@ function LiveMap({ config }) {
 
   const clearRoute = () => {
     routeActive.current = false;
+    clearRouteLayers(routeObj.current); routeObj.current = null;
     if (routeLine.current) { routeLine.current.setMap(null); routeLine.current = null; }
     routeMarks.current.forEach(m => m.setMap(null)); routeMarks.current = [];
   };
@@ -783,13 +846,7 @@ function LiveMap({ config }) {
     try {
       const pts = await api(`/api/tracking/officer/${histOfficer.officer_id}/route?date=${selDate}`);
       if (!pts.length) { toast('No route recorded that day', 'err'); return; }
-      const g = window.google; const path = pts.map(p => ({ lat: p.latitude, lng: p.longitude }));
-      routeLine.current = new g.maps.Polyline({ path, strokeColor: '#E9C877', strokeWeight: 4, strokeOpacity: .95, map: map.current });
-      const mk = (pos, txt, fill, stroke) => new g.maps.Marker({ position: pos, map: map.current,
-        label: { text: txt, color: '#0b0a06', fontWeight: '700', fontSize: '11px' },
-        icon: { path: g.maps.SymbolPath.CIRCLE, scale: 11, fillColor: fill, fillOpacity: 1, strokeColor: stroke, strokeWeight: 2 } });
-      routeMarks.current = [mk(path[0], 'S', '#5FD08A', '#0b3d1f'), mk(path[path.length - 1], 'E', '#F0776B', '#5a1710')];
-      const b = new g.maps.LatLngBounds(); path.forEach(p => b.extend(p)); map.current.fitBounds(b, 60);
+      routeObj.current = drawRouteLeaflet(map.current, pts);
       routeActive.current = true;
       setRouteInfo((dates || []).find(d => d.date === selDate) || { points: pts.length });
     } catch (e) { toast(e.message, 'err'); }
@@ -922,7 +979,7 @@ function StaffModal({ editing, onClose, onDone }) {
   );
 }
 function RouteHistoryModal({ officer, config, onClose }) {
-  const mapEl = useRef(null); const map = useRef(null); const line = useRef(null); const marks = useRef([]);
+  const mapEl = useRef(null); const map = useRef(null); const routeObj = useRef(null);
   const mover = useRef(null); const timer = useRef(null); const pathRef = useRef([]); const idx = useRef(0);
   const [dates, setDates] = useState(null); const [selDate, setSelDate] = useState(''); const [info, setInfo] = useState(null);
   const [nokey, setNokey] = useState(false); const [playing, setPlaying] = useState(false); const [speed, setSpeed] = useState(2); const [ready, setReady] = useState(false);
@@ -936,8 +993,7 @@ function RouteHistoryModal({ officer, config, onClose }) {
   const stopPlay = () => { if (timer.current) { clearInterval(timer.current); timer.current = null; } setPlaying(false); };
   const clear = () => {
     stopPlay();
-    if (line.current) { line.current.setMap(null); line.current = null; }
-    marks.current.forEach(m => m.setMap(null)); marks.current = [];
+    clearRouteLayers(routeObj.current); routeObj.current = null;
     if (mover.current) { mover.current.setMap(null); mover.current = null; }
     setReady(false);
   };
@@ -946,18 +1002,14 @@ function RouteHistoryModal({ officer, config, onClose }) {
     try {
       const pts = await api(`/api/tracking/officer/${officer.id}/route?date=${selDate}`);
       if (!pts.length) { toast('No route recorded that day', 'err'); return; }
-      const path = pts.map(p => ({ lat: p.latitude, lng: p.longitude }));
-      pathRef.current = path; idx.current = 0;
       if (map.current && window.google) {
         const g = window.google;
-        line.current = new g.maps.Polyline({ path, strokeColor: '#E9C877', strokeWeight: 4, strokeOpacity: .95, map: map.current });
-        const mk = (pos, t, f, s) => new g.maps.Marker({ position: pos, map: map.current,
-          label: { text: t, color: '#0b0a06', fontWeight: '700', fontSize: '11px' },
-          icon: { path: g.maps.SymbolPath.CIRCLE, scale: 11, fillColor: f, fillOpacity: 1, strokeColor: s, strokeWeight: 2 } });
-        marks.current = [mk(path[0], 'S', '#5FD08A', '#0b3d1f'), mk(path[path.length - 1], 'E', '#F0776B', '#5a1710')];
-        mover.current = new g.maps.Marker({ position: path[0], map: map.current, zIndex: 999,
-          icon: { path: g.maps.SymbolPath.FORWARD_CLOSED_ARROW, scale: 5, fillColor: '#6BB6F0', fillOpacity: 1, strokeColor: '#0f2f4a', strokeWeight: 2 } });
-        const b = new g.maps.LatLngBounds(); path.forEach(p => b.extend(p)); map.current.fitBounds(b, 50);
+        const r = drawRouteLeaflet(map.current, pts);
+        routeObj.current = r; pathRef.current = r.path; idx.current = 0;
+        if (r.path.length) {
+          mover.current = new g.maps.Marker({ position: r.path[0], map: map.current, zIndex: 999,
+            icon: { path: g.maps.SymbolPath.CIRCLE, scale: 6, fillColor: '#F59E0B', fillOpacity: 1, strokeColor: '#ffffff', strokeWeight: 2 } });
+        }
         setReady(true);
       }
       setInfo((dates || []).find(d => d.date === selDate) || { points: pts.length });
@@ -1005,7 +1057,7 @@ function RouteHistoryModal({ officer, config, onClose }) {
 }
 
 function LiveRouteModal({ officer, config, onClose }) {
-  const mapEl = useRef(null), map = useRef(null), line = useRef(null), startMk = useRef(null), curMk = useRef(null);
+  const mapEl = useRef(null), map = useRef(null), curMk = useRef(null), routeObj = useRef(null);
   const [info, setInfo] = useState(null);
   const todayIST = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
   const draw = async (fit) => {
@@ -1014,18 +1066,15 @@ function LiveRouteModal({ officer, config, onClose }) {
       if (!map.current || !window.google) return;
       const g = window.google;
       if (!pts.length) { setInfo({ points: 0 }); return; }
-      const path = pts.map(p => ({ lat: p.latitude, lng: p.longitude }));
-      if (line.current) line.current.setPath(path);
-      else line.current = new g.maps.Polyline({ path, strokeColor: '#2563EB', strokeWeight: 4, strokeOpacity: .95, map: map.current });
-      if (!startMk.current) startMk.current = new g.maps.Marker({ position: path[0], map: map.current,
-        label: { text: 'S', color: '#fff' }, icon: { path: g.maps.SymbolPath.CIRCLE, scale: 10, fillColor: '#16A34A', fillOpacity: 1, strokeColor: '#0f6e2f', strokeWeight: 2 } });
+      clearRouteLayers(routeObj.current);
+      routeObj.current = drawRouteLeaflet(map.current, pts, { noEnd: true, fit: !!fit });
+      const P = routeObj.current.points, path = routeObj.current.path;
       const cur = path[path.length - 1], last = pts[pts.length - 1].created_at, on = isOnline(last);
       if (curMk.current) curMk.current.setPosition(cur);
       else curMk.current = new g.maps.Marker({ position: cur, map: map.current, zIndex: 999,
         label: { text: initials(officer.name), color: '#fff' }, icon: { path: g.maps.SymbolPath.CIRCLE, scale: 13, fillColor: on ? '#16A34A' : '#8494A8', fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2 } });
-      let d = 0; for (let i = 1; i < path.length; i++) d += kmBetween(path[i - 1], path[i]);
+      let d = 0; for (let i = 1; i < P.length; i++) d += kmBetween(P[i - 1], P[i]);
       setInfo({ points: pts.length, distance_km: d, last, online: on });
-      if (fit) { const b = new g.maps.LatLngBounds(); path.forEach(p => b.extend(p)); map.current.fitBounds(b, 60); }
     } catch (e) {}
   };
   useEffect(() => {
@@ -1373,37 +1422,33 @@ function useLocationPing(user, config) {
     // ---- Native Android (Capacitor): true background tracking via a foreground service ----
     const Cap = window.Capacitor;
     if (Cap && (Cap.isNativePlatform ? Cap.isNativePlatform() : Cap.isNative) && Cap.registerPlugin) {
-      // Transistor background-geolocation: the NATIVE service posts locations straight to the
-      // server (auto-sync), so it keeps reporting even when the app is locked, backgrounded, or
-      // killed — no JavaScript needed at runtime. We only configure it once here with the URL + token.
-      let cleared = false;
+      // Community background-geolocation: runs an Android foreground service (the "on duty"
+      // notification) so it keeps delivering location while the app is backgrounded or the screen
+      // is locked. A 3s heartbeat re-sends the latest fix so the officer stays "live" even standing still.
+      let watcherId = null, cleared = false, lastLoc = null;
       try {
-        const BGL = Cap.registerPlugin('BackgroundGeolocation');
-        const url = (window.location.origin || '') + '/api/tracking/ping-native';
-        BGL.ready({
-          reset: true,
-          desiredAccuracy: -1,                 // HIGH accuracy
-          distanceFilter: 10,
-          locationUpdateInterval: 3000,        // Android: aim for a fix ~every 3s
-          fastestLocationUpdateInterval: 2000,
-          disableStopDetection: true,          // keep reporting even when standing still
-          pausesLocationUpdatesAutomatically: false,
-          stopOnTerminate: false,              // keep running if the app is killed
-          startOnBoot: true,                   // resume after a phone restart
-          foregroundService: true,
-          url: url,
-          autoSync: true,
-          batchSync: false,
-          headers: { Authorization: 'Bearer ' + (store.t || '') },
-          backgroundPermissionRationale: {
-            title: 'Allow background location',
-            message: 'RecoverIQ shares your location while you are on duty, even when the app is closed.',
-            positiveAction: 'Allow', negativeAction: 'Cancel',
-          },
-          notification: { title: 'RecoverIQ — on duty', text: 'Sharing your live location with your branch.' },
-        }).then(() => { if (!cleared) return BGL.start(); }).catch(() => {});
+        const BG = Cap.registerPlugin('BackgroundGeolocation');
+        let promptedSettings = false;
+        BG.addWatcher({
+          requestPermissions: true, stale: false, distanceFilter: 5,
+          backgroundTitle: 'RecoverIQ — on duty',
+          backgroundMessage: 'Sharing your live location with your branch.',
+        }, (location, error) => {
+          if (error) {
+            if (error.code === 'NOT_AUTHORIZED' && !promptedSettings) {
+              promptedSettings = true;
+              try { toast('Set Location to "Allow all the time" for background tracking.', 'err'); } catch (e) {}
+              try { if (BG.openSettings) BG.openSettings(); } catch (e) {}
+            }
+            return;
+          }
+          if (location) lastLoc = location;
+        }).then(id => { watcherId = id; if (cleared) BG.removeWatcher({ id }); });
       } catch (e) {}
-      return () => { cleared = true; };
+      const hb = setInterval(() => {
+        if (lastLoc) api('/api/tracking/ping', { method: 'POST', body: { latitude: lastLoc.latitude, longitude: lastLoc.longitude, accuracy: lastLoc.accuracy, speed: lastLoc.speed } }).catch(() => {});
+      }, 3000);
+      return () => { cleared = true; clearInterval(hb); try { if (watcherId) Cap.registerPlugin('BackgroundGeolocation').removeWatcher({ id: watcherId }); } catch (e) {} };
     }
     // ---- Web fallback (foreground only) ----
     if (!navigator.geolocation) return;
