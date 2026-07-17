@@ -54,7 +54,7 @@ fun <T> AsyncContent(
         }
     }
 
-    val reload = { nonce++ }
+    val reload: () -> Unit = { nonce += 1 }
     when (val s = state) {
         is Load.Loading -> Box(modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
         is Load.Err -> Box(modifier.fillMaxSize(), Alignment.Center) {
