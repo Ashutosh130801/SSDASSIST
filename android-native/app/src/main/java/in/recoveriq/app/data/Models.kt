@@ -204,6 +204,13 @@ data class Template(
 )
 
 @JsonClass(generateAdapter = true)
+data class TemplateCreate(
+    val name: String,
+    val channel: String = "whatsapp",
+    val body: String,
+)
+
+@JsonClass(generateAdapter = true)
 data class CommLog(
     @Json(name = "case_id") val caseId: Int,
     val channel: String = "whatsapp",

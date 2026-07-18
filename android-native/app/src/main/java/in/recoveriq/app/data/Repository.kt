@@ -63,7 +63,6 @@ class Repository(context: Context) {
     suspend fun visitsForCase(id: Int): List<VisitOut> = Api.service.visitsForCase(id)
 
     suspend fun logCall(body: CallCreate): CallOut = Api.service.logCall(body)
-    suspend fun createVisit(body: VisitCreate): VisitOut = Api.service.createVisit(body)
 
     suspend fun liveOfficers(): List<OfficerLocation> = Api.service.liveOfficers()
     suspend fun myTodayRoute(): List<PingOut> = Api.service.myTodayRoute()
