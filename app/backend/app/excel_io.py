@@ -78,7 +78,18 @@ HEADER_MAP = {
     "accountno": "account_no", "accno": "account_no", "acc.no": "account_no", "accno.": "account_no",
     "ccno": "card_no", "cardno": "card_no",
     "cardtype": "product", "product": "product",
-    "address": "address",
+    # Address — accept the common header variants seen across bank allocation files.
+    "address": "address", "add": "address", "addr": "address",
+    "custaddress": "address", "customeraddress": "address", "custadd": "address",
+    "resaddress": "address", "residenceaddress": "address", "residentialaddress": "address",
+    "communicationaddress": "address", "commaddress": "address", "mailingaddress": "address",
+    "billingaddress": "address", "permanentaddress": "address", "currentaddress": "address",
+    "curraddress": "address", "fulladdress": "address", "completeaddress": "address",
+    "address1": "address", "addressline1": "address", "addressline": "address",
+    "location": "address", "custaddr": "address", "customeraddr": "address",
+    # Pincode — capture a dedicated column when present (else it's parsed from the address).
+    "pincode": "pincode", "pin": "pincode", "pincodeno": "pincode", "pinno": "pincode",
+    "zip": "pincode", "zipcode": "pincode", "postalcode": "pincode", "postcode": "pincode",
     "bkt": "bucket", "bucket": "bucket", "allocationdpdbracket": "bucket",
     "cyc": "cycle", "cycle": "cycle",
     "month": "month",
@@ -153,6 +164,13 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
             if not rec.get("customer_name") and not rec.get("account_no"):
                 continue
             rec["bank"] = rec.get("bank") or default_bank
+            # Normalise a dedicated pincode column (Excel may read it as a number).
+            if rec.get("pincode"):
+                pc = str(rec["pincode"]).strip()
+                if pc.endswith(".0"):
+                    pc = pc[:-2]
+                m = PIN_RE.search(pc)
+                rec["pincode"] = m.group(1) if m else (pc or None)
             if rec.get("address") and not rec.get("pincode"):
                 rec["pincode"] = extract_pincode(rec["address"])
             # derive pending if missing

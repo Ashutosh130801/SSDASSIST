@@ -36,6 +36,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,6 +54,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import `in`.recoveriq.app.data.Realtime
 import `in`.recoveriq.app.data.User
 import `in`.recoveriq.app.ui.AuthState
 import `in`.recoveriq.app.ui.AuthViewModel
@@ -99,6 +102,16 @@ private fun MainNav(
     onRequestBatteryExemption: () -> Unit,
 ) {
     val nav = rememberNavController()
+
+    // Live channel: connect while signed in; open a case the web pushed to this phone.
+    DisposableEffect(Unit) {
+        Realtime.connect()
+        onDispose { Realtime.disconnect() }
+    }
+    LaunchedEffect(Unit) {
+        Realtime.openCase.collect { id -> nav.navigate("case/$id") }
+    }
+
     NavHost(navController = nav, startDestination = "home") {
         composable("home") {
             HomeScaffold(

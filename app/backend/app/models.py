@@ -43,6 +43,8 @@ class User(Base):
     twofa_enabled = Column(Boolean, default=False)
     # WebAuthn passkey ceremony challenge (transient)
     webauthn_challenge = Column(String(255), nullable=True)
+    # Telecaller live-sheet layout (visible columns, order, widths, custom formula columns)
+    sheet_prefs = Column(JSON, default=dict)
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
     visits = relationship("Visit", back_populates="officer")

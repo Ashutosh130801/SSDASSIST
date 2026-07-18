@@ -21,6 +21,23 @@
 
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
+    <!-- Android 11+ package visibility: needed to open WhatsApp / Maps / dialer explicitly -->
+    <queries>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <package android:name="com.google.android.apps.maps" />
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+        </intent>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".RecoverIQApp"
         android:allowBackup="true"
@@ -50,6 +67,17 @@
             android:exported="false"
             android:enabled="true"
             android:foregroundServiceType="location" />
+
+        <!-- Shares visit photos to WhatsApp via a content:// uri -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- Restart the service after device reboot -->
         <receiver

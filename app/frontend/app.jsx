@@ -2198,11 +2198,282 @@ function SecurityView({ user }) {
 }
 
 /* ============================== Shell + App ============================== */
+/* ==================== Live Sheet (telecaller spreadsheet) ==================== */
+const SHEET_COLS = [
+  { k: 'customer_name', t: 'Customer', type: 'text' },
+  { k: 'phone', t: 'Phone', type: 'text', edit: true },
+  { k: 'alt_phone', t: 'Alt phone', type: 'text', edit: true },
+  { k: 'card_no', t: 'Card no', type: 'text' },
+  { k: 'account_no', t: 'A/C no', type: 'text' },
+  { k: 'bank', t: 'Bank', type: 'text' },
+  { k: 'branch', t: 'Branch', type: 'text' },
+  { k: 'product', t: 'Product', type: 'text' },
+  { k: 'bucket', t: 'Bucket', type: 'text' },
+  { k: 'cycle', t: 'Cycle', type: 'text' },
+  { k: 'month', t: 'Month', type: 'text' },
+  { k: 'total_outstanding', t: 'Outstanding', type: 'num' },
+  { k: 'principal_outstanding', t: 'Principal', type: 'num' },
+  { k: 'min_amount_due', t: 'Min due', type: 'num', edit: true },
+  { k: 'received_amount', t: 'Received', type: 'num', edit: true },
+  { k: 'pending_amount', t: 'Pending', type: 'num' },
+  { k: 'status', t: 'Status', type: 'sel', edit: true, opts: ['', 'new', 'ptp', 'callback', 'paid', 'closed'] },
+  { k: 'paid_status', t: 'Paid', type: 'sel', edit: true, opts: ['', 'PAID', 'PARTIAL', 'UNPAID'] },
+  { k: 'disposition', t: 'Disposition', type: 'sel', edit: true, opts: ['', 'PTP', 'RTP', 'PAID', 'CALLBACK', 'NO_CONTACT', 'WRONG_NUMBER', 'REFUSED'] },
+  { k: 'follow_up_date', t: 'Follow-up', type: 'date', edit: true },
+  { k: 'remarks', t: 'Remarks', type: 'text', edit: true },
+  { k: 'address', t: 'Address', type: 'text' },
+  { k: 'pincode', t: 'Pincode', type: 'text' },
+  { k: 'propensity', t: 'Score', type: 'num' },
+];
+const SHEET_DEFAULT_VISIBLE = ['customer_name', 'phone', 'bank', 'bucket', 'total_outstanding', 'received_amount', 'pending_amount', 'status', 'disposition', 'follow_up_date', 'remarks'];
+const SHEET_FUNCS = { ROUND: Math.round, ABS: Math.abs, MIN: Math.min, MAX: Math.max, SQRT: Math.sqrt, IF: (c, a, b) => (c ? a : b) };
+function sheetSafeCalc(expr) {
+  if (!/^[-+*/%(). ,0-9<>=?:A-Za-z_]*$/.test(expr)) throw new Error('bad expression');
+  const names = Object.keys(SHEET_FUNCS);
+  const fn = new Function(...names, 'return (' + expr + ');');
+  return fn(...names.map(n => SHEET_FUNCS[n]));
+}
+function sheetFmt(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (typeof v === 'number' && isFinite(v)) return (Math.round(v * 100) / 100).toLocaleString('en-IN');
+  return v;
+}
+function sheetWaNumber(p) {
+  let n = String(p || '').replace(/[^\d+]/g, '');
+  if (n.startsWith('+')) return n.slice(1);
+  n = n.replace(/^0+/, '');
+  return n.length === 10 ? '91' + n : n;
+}
+
+function SheetView({ user, config }) {
+  const [rows, setRows] = React.useState([]);
+  const [prefs, setPrefs] = React.useState(null);
+  const [err, setErr] = React.useState('');
+  const [drawer, setDrawer] = React.useState(null);
+  const [sort, setSort] = React.useState(null);
+  const [filters, setFilters] = React.useState({});
+  const [colMenu, setColMenu] = React.useState(false);
+  const [calc, setCalc] = React.useState('=SUM([pending_amount])');
+  const [calcRes, setCalcRes] = React.useState('');
+  const [live, setLive] = React.useState(false);
+  const saveTimer = React.useRef(null);
+
+  const load = () => api('/api/cases?limit=2000').then(d => setRows(Array.isArray(d) ? d : [])).catch(e => setErr(e.message || 'Could not load'));
+
+  React.useEffect(() => {
+    load();
+    api('/api/sheet/prefs').then(p => setPrefs({
+      visible: (p && p.visible) || SHEET_DEFAULT_VISIBLE,
+      order: (p && p.order) || SHEET_COLS.map(c => c.k),
+      custom: (p && p.custom) || [],
+      aggs: (p && p.aggs) || {},
+    })).catch(() => setPrefs({ visible: SHEET_DEFAULT_VISIBLE, order: SHEET_COLS.map(c => c.k), custom: [], aggs: {} }));
+  }, []);
+
+  // Live updates over WebSocket
+  React.useEffect(() => {
+    let stop = false, ws;
+    const connect = () => {
+      try {
+        ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
+        ws.onopen = () => { if (!stop) setLive(true); };
+        ws.onclose = () => { setLive(false); if (!stop) setTimeout(connect, 3000); };
+        ws.onmessage = (e) => {
+          try {
+            const m = JSON.parse(e.data);
+            if (m.type === 'case_update' && m.case) {
+              setRows(rs => { const i = rs.findIndex(r => r.id === m.case.id); if (i < 0) return rs; const cp = rs.slice(); cp[i] = { ...cp[i], ...m.case }; return cp; });
+            }
+          } catch (_) {}
+        };
+      } catch (_) { if (!stop) setTimeout(connect, 3000); }
+    };
+    connect();
+    return () => { stop = true; try { ws && ws.close(); } catch (_) {} };
+  }, []);
+
+  const allDefs = () => SHEET_COLS.concat((prefs ? prefs.custom : []).map(c => ({ ...c, custom: true })));
+  const defByKey = k => allDefs().find(c => c.k === k);
+  const savePrefs = (next) => { setPrefs(next); clearTimeout(saveTimer.current); saveTimer.current = setTimeout(() => api('/api/sheet/prefs', { method: 'PUT', body: next }).catch(() => {}), 600); };
+  const toggleCol = (k) => { if (!prefs) return; const vis = prefs.visible.includes(k) ? prefs.visible.filter(x => x !== k) : prefs.visible.concat(k); savePrefs({ ...prefs, visible: vis }); };
+  const addFormulaCol = () => {
+    const label = window.prompt('Column name'); if (!label) return;
+    const formula = window.prompt('Formula — reference columns like [pending_amount]\ne.g. =[pending_amount]*0.1 or =ROUND([received_amount]/[total_outstanding]*100)'); if (!formula) return;
+    const k = 'f_' + Date.now();
+    savePrefs({ ...prefs, custom: prefs.custom.concat({ k, t: label, type: 'num', formula }), order: prefs.order.concat(k), visible: prefs.visible.concat(k) });
+  };
+  const visibleCols = () => (prefs ? prefs.order : SHEET_COLS.map(c => c.k)).filter(k => prefs && prefs.visible.includes(k)).map(defByKey).filter(Boolean);
+
+  const rowFormula = (formula, row) => {
+    try { return sheetSafeCalc(String(formula).replace(/^=/, '').replace(/\[([a-z_0-9]+)\]/gi, (_, k) => Number(row[k] || 0))); } catch (_) { return '—'; }
+  };
+  const cellVal = (row, col) => col.custom ? rowFormula(col.formula, row) : row[col.k];
+  const cellText = (row, col) => sheetFmt(cellVal(row, col));
+
+  const viewRows = () => {
+    let out = rows.slice();
+    Object.keys(filters).forEach(k => { const f = (filters[k] || '').toLowerCase(); if (f) out = out.filter(r => String(r[k] == null ? '' : r[k]).toLowerCase().includes(f)); });
+    if (sort) { const d = defByKey(sort.k); out.sort((a, b) => { let x = d && d.custom ? rowFormula(d.formula, a) : a[sort.k], y = d && d.custom ? rowFormula(d.formula, b) : b[sort.k]; if (d && (d.type === 'num')) { x = Number(x) || 0; y = Number(y) || 0; } else { x = String(x == null ? '' : x); y = String(y == null ? '' : y); } return (x < y ? -1 : x > y ? 1 : 0) * (sort.dir === 'desc' ? -1 : 1); }); }
+    return out;
+  };
+
+  const editCell = (row, col, value) => {
+    setRows(rs => rs.map(r => r.id === row.id ? { ...r, [col.k]: value } : r));
+    api('/api/sheet/cell/' + row.id, { method: 'PATCH', body: { field: col.k, value } }).catch(() => { setErr('Save failed — reloading'); load(); });
+  };
+  const openCase = (row) => { setDrawer(row); api('/api/sheet/open/' + row.id, { method: 'POST' }).catch(() => {}); };
+
+  const agg = (fn, k) => { const xs = viewRows().map(r => Number(r[k] || 0)); if (!xs.length) return 0; fn = fn.toUpperCase(); if (fn === 'SUM') return xs.reduce((a, b) => a + b, 0); if (fn === 'COUNT') return xs.length; if (fn === 'MIN') return Math.min(...xs); if (fn === 'MAX') return Math.max(...xs); return xs.reduce((a, b) => a + b, 0) / xs.length; };
+  const runCalc = () => { try { let e = String(calc).replace(/^=/, '').replace(/(SUM|AVG|AVERAGE|MIN|MAX|COUNT)\(\s*\[([a-z_0-9]+)\]\s*\)/gi, (_, fn, k) => agg(fn === 'AVERAGE' ? 'AVG' : fn, k)); setCalcRes(sheetFmt(sheetSafeCalc(e))); } catch (_) { setCalcRes('error'); } };
+  const footAgg = (col) => { if (col.type !== 'num') return ''; const mode = (prefs && prefs.aggs[col.k]) || (col.custom ? '' : 'sum'); if (!mode) return ''; const xs = viewRows().map(r => Number(cellVal(r, col)) || 0); if (!xs.length) return ''; let v = 0; if (mode === 'sum') v = xs.reduce((a, b) => a + b, 0); else if (mode === 'avg') v = xs.reduce((a, b) => a + b, 0) / xs.length; else if (mode === 'min') v = Math.min(...xs); else if (mode === 'max') v = Math.max(...xs); else if (mode === 'count') v = xs.length; return mode.toUpperCase() + ' ' + sheetFmt(v); };
+  const cycleAgg = (k) => { const modes = ['sum', 'avg', 'min', 'max', 'count', '']; const cur = (prefs && prefs.aggs[k]) || 'sum'; const next = modes[(modes.indexOf(cur) + 1) % modes.length]; savePrefs({ ...prefs, aggs: { ...prefs.aggs, [k]: next } }); };
+
+  const exportCSV = () => {
+    const cols = visibleCols(); const esc = s => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
+    const lines = [cols.map(c => esc(c.t)).join(',')].concat(viewRows().map(r => cols.map(c => esc(cellText(r, c))).join(',')));
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'recoveriq-sheet.csv'; a.click();
+  };
+  const exportXLSX = () => {
+    if (!window.XLSX) return exportCSV();
+    const cols = visibleCols(); const aoa = [cols.map(c => c.t)].concat(viewRows().map(r => cols.map(c => col_isNum(c) ? Number(cellVal(r, c)) || 0 : (cellVal(r, c) == null ? '' : cellVal(r, c)))));
+    const ws = XLSX.utils.aoa_to_sheet(aoa); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Cases'); XLSX.writeFile(wb, 'recoveriq-sheet.xlsx');
+  };
+  const col_isNum = c => c.type === 'num';
+
+  if (!prefs) return <div className="glass" style={{ padding: 24, borderRadius: 16 }}>Loading sheet…</div>;
+
+  // KPI strip (computed live from the visible data)
+  const today = new Date().toISOString().slice(0, 10);
+  const contacted = rows.filter(r => (r.last_contacted_at || '').slice(0, 10) === today).length;
+  const ptp = rows.filter(r => r.disposition === 'PTP' || r.status === 'ptp').length;
+  const collected = rows.reduce((s, r) => s + Number(r.received_amount || 0), 0);
+  const pending = rows.reduce((s, r) => s + Number(r.pending_amount || 0), 0);
+  const cols = visibleCols();
+
+  return (
+    <div className="sv-wrap">
+      <style>{`
+        .sv-wrap{display:flex;flex-direction:column;gap:12px;height:100%}
+        .sv-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+        .sv-kpi{background:var(--glass-2);border:1px solid var(--stroke-soft);border-radius:14px;padding:12px 14px}
+        .sv-kpi b{display:block;font-size:20px;color:var(--gold)}
+        .sv-kpi span{font-size:12px;color:var(--ink-dim)}
+        .sv-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+        .sv-btn{border:1px solid var(--stroke-soft);background:var(--glass-2);border-radius:10px;padding:7px 12px;cursor:pointer;font-size:13px;color:var(--ink)}
+        .sv-btn:hover{border-color:var(--gold)}
+        .sv-btn.primary{background:var(--gold);color:#fff;border-color:var(--gold)}
+        .sv-dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px}
+        .sv-scroll{overflow:auto;border:1px solid var(--stroke-soft);border-radius:14px;background:var(--glass-2);flex:1}
+        table.sv{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
+        table.sv th,table.sv td{padding:7px 10px;border-bottom:1px solid var(--stroke-soft);white-space:nowrap;text-align:left}
+        table.sv thead th{position:sticky;top:0;background:#EEF3FB;cursor:pointer;z-index:2;font-weight:600;color:var(--ink)}
+        table.sv tr:hover td{background:#F7FAFF}
+        table.sv td input,table.sv td select{width:100%;min-width:80px;border:1px solid transparent;background:transparent;border-radius:6px;padding:4px 6px;font-size:13px}
+        table.sv td input:focus,table.sv td select:focus{border-color:var(--gold);background:#fff;outline:none}
+        .sv-fil input{width:100%;border:1px solid var(--stroke-soft);border-radius:6px;padding:3px 6px;font-size:12px}
+        table.sv tfoot td{position:sticky;bottom:0;background:#EEF3FB;font-weight:600;cursor:pointer;color:var(--gold)}
+        .sv-name{color:var(--gold);cursor:pointer;font-weight:600}
+        .sv-ico{border:none;background:transparent;cursor:pointer;font-size:15px;padding:0 3px}
+        .sv-menu{position:absolute;right:0;top:38px;background:#fff;border:1px solid var(--stroke-soft);border-radius:12px;padding:10px;max-height:340px;overflow:auto;z-index:20;box-shadow:var(--shadow);min-width:230px}
+        .sv-menu label{display:flex;gap:8px;align-items:center;padding:4px 2px;font-size:13px;cursor:pointer}
+        @media(max-width:720px){.sv-kpis{grid-template-columns:repeat(2,1fr)}}
+      `}</style>
+
+      <div className="sv-kpis">
+        <div className="sv-kpi"><b>{contacted}</b><span>Contacted today</span></div>
+        <div className="sv-kpi"><b>{ptp}</b><span>Active PTP</span></div>
+        <div className="sv-kpi"><b>₹{sheetFmt(collected)}</b><span>Collected</span></div>
+        <div className="sv-kpi"><b>₹{sheetFmt(pending)}</b><span>Pending</span></div>
+      </div>
+
+      <div className="sv-bar" style={{ position: 'relative' }}>
+        <span><i className="sv-dot" style={{ background: live ? 'var(--good)' : '#c9ced8' }} />{live ? 'Live' : 'Reconnecting…'}</span>
+        <span style={{ color: 'var(--ink-dim)', fontSize: 12 }}>{viewRows().length} rows</span>
+        <div style={{ flex: 1 }} />
+        <input value={calc} onChange={e => setCalc(e.target.value)} placeholder="=SUM([pending_amount])"
+          style={{ width: 220, border: '1px solid var(--stroke-soft)', borderRadius: 10, padding: '7px 10px', fontSize: 13 }} />
+        <button className="sv-btn" onClick={runCalc}>ƒx</button>
+        {calcRes !== '' && <span style={{ fontWeight: 600, color: 'var(--gold)' }}>= {calcRes}</span>}
+        <button className="sv-btn" onClick={exportCSV}>⬇ CSV</button>
+        <button className="sv-btn" onClick={exportXLSX}>⬇ Excel</button>
+        <button className="sv-btn" onClick={() => setColMenu(v => !v)}>⚙ Columns</button>
+        {colMenu && (
+          <div className="sv-menu">
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>Show columns</div>
+            {allDefs().map(c => (
+              <label key={c.k}><input type="checkbox" checked={prefs.visible.includes(c.k)} onChange={() => toggleCol(c.k)} />{c.t}{c.custom ? ' (ƒ)' : ''}</label>
+            ))}
+            <button className="sv-btn" style={{ width: '100%', marginTop: 8 }} onClick={addFormulaCol}>＋ Formula column</button>
+          </div>
+        )}
+      </div>
+
+      {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
+
+      <div className="sv-scroll">
+        <table className="sv">
+          <thead>
+            <tr>
+              <th style={{ minWidth: 70 }}>Act</th>
+              {cols.map(c => (
+                <th key={c.k} onClick={() => setSort(s => s && s.k === c.k ? { k: c.k, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { k: c.k, dir: 'asc' })}>
+                  {c.t}{c.edit ? ' ✎' : ''}{sort && sort.k === c.k ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
+              ))}
+            </tr>
+            <tr className="sv-fil">
+              <th></th>
+              {cols.map(c => <th key={c.k}>{!c.custom && <input value={filters[c.k] || ''} placeholder="filter" onChange={e => setFilters(f => ({ ...f, [c.k]: e.target.value }))} />}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {viewRows().map(row => (
+              <tr key={row.id}>
+                <td>
+                  {row.phone && <a className="sv-ico" href={'tel:' + row.phone} title="Call">📞</a>}
+                  {row.phone && <button className="sv-ico" title="WhatsApp" onClick={() => window.open('https://wa.me/' + sheetWaNumber(row.phone), '_blank')}>💬</button>}
+                  <button className="sv-ico" title="Open on my phone" onClick={() => openCase(row)}>📲</button>
+                </td>
+                {cols.map(c => (
+                  <td key={c.k}>
+                    {c.custom ? sheetFmt(rowFormula(c.formula, row))
+                      : c.k === 'customer_name' ? <span className="sv-name" onClick={() => openCase(row)}>{row.customer_name || '—'}</span>
+                      : !c.edit ? cellText(row, c)
+                      : c.type === 'sel' ? (
+                        <select value={row[c.k] || ''} onChange={e => editCell(row, c, e.target.value)}>
+                          {c.opts.map(o => <option key={o} value={o}>{o || '—'}</option>)}
+                        </select>
+                      ) : c.type === 'date' ? (
+                        <input type="date" value={(row[c.k] || '').slice(0, 10)} onChange={e => editCell(row, c, e.target.value)} />
+                      ) : (
+                        <input key={row.id + '-' + c.k} type={c.type === 'num' ? 'number' : 'text'} defaultValue={row[c.k] == null ? '' : row[c.k]}
+                          onBlur={e => { if (String(e.target.value) !== String(row[c.k] == null ? '' : row[c.k])) editCell(row, c, e.target.value); }}
+                          onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }} />
+                      )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td></td>
+              {cols.map(c => <td key={c.k} onClick={() => c.type === 'num' && cycleAgg(c.k)} title={c.type === 'num' ? 'Click to change aggregation' : ''}>{footAgg(c)}</td>)}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
+    </div>
+  );
+}
+
 const NAV = {
   admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['staff', '👥', 'Team'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
 };
 function NativeTrackingOnboard({ onDone }) {
   const openSettings = () => { try { const BG = window.Capacitor.registerPlugin('BackgroundGeolocation'); if (BG.openSettings) BG.openSettings(); } catch (e) {} };
@@ -2253,6 +2524,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
       case 'fcases': return <FOCases config={config} />;
       case 'fmap': return <FOLiveMap config={config} />;
       case 'queue': return <CallQueue />;
+      case 'sheet': return <SheetView user={user} config={config} />;
       case 'ptp': return <PTPTracker />;
       case 'ai': return <AIAssist user={user} />;
       case 'security': return <SecurityView user={user} />;

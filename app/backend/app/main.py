@@ -11,7 +11,7 @@ from .database import Base, engine
 from .config import get_settings
 from . import models  # noqa: F401  (register models)
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
-                      devices, leaves, templates, legal, twofa, webauthn_auth)
+                      devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime)
 
 settings = get_settings()
 
@@ -37,6 +37,7 @@ def _ensure_columns():
             "totp_secret": "VARCHAR(64)",
             "twofa_enabled": "BOOLEAN",
             "webauthn_challenge": "VARCHAR(255)",
+            "sheet_prefs": "JSON",
         },
         "visits": {
             "distance_from_case_m": "FLOAT",
@@ -100,7 +101,7 @@ async def _security_headers(request, call_next):
 
 
 for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, devices,
-          leaves, templates, legal, twofa, webauthn_auth):
+          leaves, templates, legal, twofa, webauthn_auth, sheet, realtime):
     app.include_router(r.router)
 
 

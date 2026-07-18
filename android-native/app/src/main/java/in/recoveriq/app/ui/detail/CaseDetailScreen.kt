@@ -143,14 +143,18 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     onDismiss = { showVisit = false },
                     onConfirm = { v ->
                         scope.launch {
-                            runCatching {
+                            val ok = runCatching {
                                 vm.repo.createVisit(
                                     caseId = caseId, lat = v.lat, lng = v.lng, accuracy = v.accuracy,
                                     personMoved = v.personMoved, paid = v.paid, amount = v.amount,
                                     disposition = v.disposition, note = v.note, photoJpeg = v.photoJpeg,
                                 )
-                            }
+                            }.isSuccess
                             showVisit = false; refresh++
+                            if (ok) {
+                                // Send the agent a copy of the visit (photo + details) on their own WhatsApp.
+                                Actions.shareVisitToSelf(context, user.phone, buildVisitMessage(case, user, v), v.photoJpeg)
+                            }
                         }
                     },
                 )
@@ -236,17 +240,64 @@ private fun ActionBtn(label: String, icon: androidx.compose.ui.graphics.vector.I
 
 @Composable
 private fun DetailFields(case: Case) {
+    SectionTitle("Customer")
     InfoCard {
+        Field("Name", case.customerName)
         Field("Phone", case.phone)
         Field("Alt phone", case.altPhone)
+        Field("Card no", case.cardNo)
         Field("Account no", case.accountNo)
         Field("Address", case.address)
         Field("Pincode", case.pincode)
+    }
+    SectionTitle("Account")
+    InfoCard {
+        Field("Bank", case.bank)
         Field("Branch", case.branch)
+        Field("Product", case.product)
+        Field("Bucket", case.bucket)
+        Field("Cycle", case.cycle)
+        Field("Month", case.month)
+        Field("Total outstanding", money(case.totalOutstanding))
+        Field("Principal", money(case.principalOutstanding))
+        Field("Min due", money(case.minAmountDue))
+        Field("Funding target", money(case.fundingAmount))
+        Field("Received", money(case.receivedAmount))
+        Field("Pending", money(case.pendingAmount))
+    }
+    SectionTitle("Status")
+    InfoCard {
+        Field("Status", case.status)
+        Field("Paid status", case.paidStatus)
         Field("Disposition", case.disposition)
         Field("Follow-up", case.followUpDate?.let { DateUtil.humanDate(it) })
         Field("Remarks", case.remarks)
+        if (case.latitude != null && case.longitude != null)
+            Field("Location", "${"%.5f".format(case.latitude)}, ${"%.5f".format(case.longitude)}")
     }
+}
+
+private fun money(v: Double): String? = if (v > 0.0) "₹${"%,.0f".format(v)}" else null
+
+/** WhatsApp copy of a just-logged visit, sent to the agent's own number. */
+private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = buildString {
+    appendLine("🧾 RecoverIQ — Field visit logged")
+    appendLine("Customer: ${case.customerName ?: "—"}")
+    case.phone?.let { appendLine("Phone: $it") }
+    case.cardNo?.let { appendLine("Card no: $it") }
+    case.accountNo?.let { appendLine("A/C no: $it") }
+    val bankBits = listOfNotNull(case.bank, case.bucket)
+    if (bankBits.isNotEmpty()) appendLine("Bank: ${bankBits.joinToString(" · ")}")
+    case.address?.let { appendLine("Address: $it" + (case.pincode?.let { p -> ", $p" } ?: "")) }
+    appendLine("Outcome: ${v.disposition ?: "—"}")
+    if (v.paid && v.amount > 0) appendLine("Collected: ₹${"%,.0f".format(v.amount)}")
+    if (v.personMoved) appendLine("⚠ Person has moved")
+    v.note?.let { appendLine("Note: $it") }
+    if (v.lat != null && v.lng != null) {
+        appendLine("Location: ${"%.5f".format(v.lat)}, ${"%.5f".format(v.lng)}")
+        appendLine("Map: https://maps.google.com/?q=${v.lat},${v.lng}")
+    }
+    append("Agent: ${user.name}")
 }
 
 @Composable
