@@ -1,6 +1,7 @@
 package `in`.recoveriq.app.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -19,6 +20,12 @@ class Session(private val context: Context) {
     private val KEY_TOKEN = stringPreferencesKey("jwt")
     private val KEY_USER = stringPreferencesKey("user_json")
     private val KEY_DEVICE = stringPreferencesKey("device_id")
+    private val KEY_ONDUTY = booleanPreferencesKey("on_duty")
+
+    /** Persisted "on duty" flag so the tracking toggle survives tab switches / process death. */
+    val onDutyFlow: Flow<Boolean> = context.dataStore.data.map { it[KEY_ONDUTY] ?: false }
+    suspend fun setOnDuty(v: Boolean) { context.dataStore.edit { it[KEY_ONDUTY] = v } }
+    suspend fun onDuty(): Boolean = context.dataStore.data.first()[KEY_ONDUTY] ?: false
 
     val tokenFlow: Flow<String?> = context.dataStore.data.map { it[KEY_TOKEN] }
     val userFlow: Flow<User?> = context.dataStore.data.map { prefs ->
@@ -41,6 +48,7 @@ class Session(private val context: Context) {
         context.dataStore.edit {
             it.remove(KEY_TOKEN)
             it.remove(KEY_USER)
+            it[KEY_ONDUTY] = false
         }
     }
 

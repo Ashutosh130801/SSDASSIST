@@ -112,6 +112,17 @@ private fun MainNav(
         Realtime.openCase.collect { id -> nav.navigate("case/$id") }
     }
 
+    // Field officers are signed out at 7pm each day (checked while the app is open).
+    if (user.isFieldAgent) {
+        LaunchedEffect(Unit) {
+            while (true) {
+                val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+                if (hour >= 19) { vm.logout(); break }
+                kotlinx.coroutines.delay(60_000)
+            }
+        }
+    }
+
     NavHost(navController = nav, startDestination = "home") {
         composable("home") {
             HomeScaffold(
@@ -204,13 +215,14 @@ private fun HomeScaffold(
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
+                        containerColor = androidx.compose.ui.graphics.Color(0xF2FFFFFF),
                         titleContentColor = MaterialTheme.colorScheme.primary,
                         navigationIconContentColor = MaterialTheme.colorScheme.primary,
                         actionIconContentColor = MaterialTheme.colorScheme.primary,
                     ),
                 )
             },
+            containerColor = androidx.compose.ui.graphics.Color.Transparent,
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) { current.screen() }
         }

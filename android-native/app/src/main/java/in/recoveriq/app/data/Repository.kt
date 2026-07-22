@@ -17,6 +17,11 @@ class Repository(context: Context) {
         Api.token = session.token()
     }
 
+    // On-duty flag (persisted) so the tracking toggle reflects real state everywhere.
+    val onDutyFlow get() = session.onDutyFlow
+    suspend fun setOnDuty(v: Boolean) = session.setOnDuty(v)
+    suspend fun onDuty(): Boolean = session.onDuty()
+
     suspend fun currentUser(): User? = session.user()
 
     suspend fun isLoggedIn(): Boolean = !session.token().isNullOrBlank()
@@ -65,7 +70,7 @@ class Repository(context: Context) {
     suspend fun logCall(body: CallCreate): CallOut = Api.service.logCall(body)
 
     suspend fun liveOfficers(): List<OfficerLocation> = Api.service.liveOfficers()
-    suspend fun myTodayRoute(): List<PingOut> = Api.service.myTodayRoute()
+    suspend fun myTodayRoute(): TodayRoute = Api.service.myTodayRoute()
     suspend fun officerRoute(id: Int, date: String? = null): List<PingOut> =
         Api.service.officerRoute(id, date)
 

@@ -10,6 +10,9 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
@@ -17,7 +20,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import `in`.recoveriq.app.ui.AuthState
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.nav.AppRoot
+import `in`.recoveriq.app.ui.theme.AppBackground
 import `in`.recoveriq.app.ui.theme.RecoverIQTheme
+import androidx.compose.ui.Modifier
 
 class MainActivity : ComponentActivity() {
 
@@ -41,11 +46,13 @@ class MainActivity : ComponentActivity() {
             RecoverIQTheme {
                 val vm: AuthViewModel = viewModel()
                 val state by vm.state.collectAsState()
-                AppRoot(
-                    vm = vm,
-                    onNeedTrackingPermissions = { ensureLocationPermissions() },
-                    onRequestBatteryExemption = { requestBatteryExemption() },
-                )
+                Box(Modifier.fillMaxSize().background(AppBackground)) {
+                    AppRoot(
+                        vm = vm,
+                        onNeedTrackingPermissions = { ensureLocationPermissions() },
+                        onRequestBatteryExemption = { requestBatteryExemption() },
+                    )
+                }
                 // Once a field agent is signed in, make sure permissions are in place.
                 if (state is AuthState.LoggedIn && (state as AuthState.LoggedIn).user.isFieldAgent) {
                     // no-op here; the FieldAgent screen calls onNeedTrackingPermissions()

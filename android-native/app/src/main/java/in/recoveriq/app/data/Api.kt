@@ -37,8 +37,12 @@ object Api {
         val b = chain.request().newBuilder()
         // Skip ngrok's free-tier browser-warning interstitial so API calls get real JSON.
         b.header("ngrok-skip-browser-warning", "true")
+        val hadToken = !token.isNullOrBlank()
         token?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
-        chain.proceed(b.build())
+        val resp = chain.proceed(b.build())
+        // Token rejected (e.g. FOS 7pm expiry) — signal the app to drop to login.
+        if (resp.code == 401 && hadToken) AuthEvents.forceLogout.tryEmit(Unit)
+        resp
     }
 
     private val client: OkHttpClient by lazy {

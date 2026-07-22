@@ -37,6 +37,7 @@ import `in`.recoveriq.app.data.LeaveCreate
 import `in`.recoveriq.app.data.User
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.common.AsyncContent
+import `in`.recoveriq.app.ui.common.DatePickerField
 import `in`.recoveriq.app.ui.common.DateUtil
 import `in`.recoveriq.app.ui.common.EmptyState
 import `in`.recoveriq.app.ui.common.InfoCard
@@ -133,11 +134,10 @@ private fun LeaveCard(lv: Leave, canApprove: Boolean, onDecide: (Boolean) -> Uni
 private fun ApplyLeaveDialog(onDismiss: () -> Unit, onConfirm: (LeaveCreate) -> Unit) {
     val types = listOf("Casual", "Sick", "Earned", "Unpaid")
     var type by remember { mutableStateOf("Casual") }
-    var startOffset by remember { mutableIntStateOf(0) }
-    var days by remember { mutableIntStateOf(1) }
+    var startIso by remember { mutableStateOf(DateUtil.plusDaysIso(0)) }
+    var endIso by remember { mutableStateOf(DateUtil.plusDaysIso(0)) }
     var reason by remember { mutableStateOf("") }
-    val startIso = DateUtil.plusDaysIso(startOffset)
-    val endIso = DateUtil.plusDaysIso(startOffset + days - 1)
+    val days = DateUtil.daysInclusive(startIso, endIso)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -151,19 +151,14 @@ private fun ApplyLeaveDialog(onDismiss: () -> Unit, onConfirm: (LeaveCreate) -> 
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     types.forEach { t -> FilterChip(selected = type == t, onClick = { type = t }, label = { Text(t) }) }
                 }
-                Text("Start", style = MaterialTheme.typography.labelSmall, color = Muted)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("Today" to 0, "Tomorrow" to 1, "+7d" to 7).forEach { (l, o) ->
-                        FilterChip(selected = startOffset == o, onClick = { startOffset = o }, label = { Text(l) })
-                    }
+                DatePickerField("Start date", startIso) { picked ->
+                    startIso = picked
+                    if ((DateUtil.millisFromIso(endIso) ?: 0) < (DateUtil.millisFromIso(picked) ?: 0)) endIso = picked
                 }
-                Text("Days", style = MaterialTheme.typography.labelSmall, color = Muted)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(1, 2, 3, 5, 7).forEach { n ->
-                        FilterChip(selected = days == n, onClick = { days = n }, label = { Text("$n") })
-                    }
+                DatePickerField("End date", endIso) { picked ->
+                    endIso = if ((DateUtil.millisFromIso(picked) ?: 0) < (DateUtil.millisFromIso(startIso) ?: 0)) startIso else picked
                 }
-                Text("${DateUtil.humanDate(startIso)} → ${DateUtil.humanDate(endIso)}",
+                Text("Duration: $days day${if (days > 1) "s" else ""}",
                     style = MaterialTheme.typography.labelSmall, color = Muted)
                 Fld(reason, "Reason (optional)") { reason = it }
             }

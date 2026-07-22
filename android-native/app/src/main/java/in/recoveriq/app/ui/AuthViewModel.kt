@@ -1,10 +1,13 @@
 package `in`.recoveriq.app.ui
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import `in`.recoveriq.app.data.AuthEvents
 import `in`.recoveriq.app.data.Repository
 import `in`.recoveriq.app.data.User
+import `in`.recoveriq.app.location.Tracking
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,6 +43,12 @@ class AuthViewModel(app: Application) : AndroidViewModel(app) {
             val user = repo.currentUser()
             _state.value = if (user != null && repo.isLoggedIn()) AuthState.LoggedIn(user) else AuthState.LoggedOut
         }
+        // Server rejected the token (e.g. field officer's 7pm expiry) → drop to login.
+        viewModelScope.launch {
+            AuthEvents.forceLogout.collect {
+                if (_state.value is AuthState.LoggedIn) logout()
+            }
+        }
     }
 
     fun login(email: String, password: String, otp: String?) {
@@ -74,6 +83,7 @@ class AuthViewModel(app: Application) : AndroidViewModel(app) {
 
     fun logout() {
         viewModelScope.launch {
+            runCatching { Tracking.stop(getApplication<Application>() as Context) }   // stop background location if on duty
             repo.logout()
             _needsOtp.value = false
             _state.value = AuthState.LoggedOut

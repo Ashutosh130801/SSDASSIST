@@ -1,5 +1,6 @@
 package `in`.recoveriq.app.ui.common
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -11,8 +12,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +25,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import `in`.recoveriq.app.data.Case
 import `in`.recoveriq.app.ui.theme.BrandBlue
+import `in`.recoveriq.app.ui.theme.CardWhite
+import `in`.recoveriq.app.ui.theme.GlassStroke
 import `in`.recoveriq.app.ui.theme.Good
 import `in`.recoveriq.app.ui.theme.Muted
 import `in`.recoveriq.app.ui.theme.MutedDim
@@ -57,10 +58,12 @@ fun CaseCard(
     subtitle: String? = null,
 ) {
     val context = LocalContext.current
-    Card(
+    Surface(
         modifier = Modifier.fillMaxWidth().clickable { onClick() },
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = CardWhite,
+        border = BorderStroke(1.dp, GlassStroke),
+        shadowElevation = 5.dp,
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

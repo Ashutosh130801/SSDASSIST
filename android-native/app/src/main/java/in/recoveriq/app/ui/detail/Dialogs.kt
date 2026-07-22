@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import `in`.recoveriq.app.data.CallCreate
+import `in`.recoveriq.app.ui.common.DatePickerField
 import `in`.recoveriq.app.ui.common.DateUtil
 import `in`.recoveriq.app.ui.theme.MutedDim
 
@@ -83,16 +84,7 @@ fun LogCallDialog(onDismiss: () -> Unit, onConfirm: (CallCreate) -> Unit) {
                 if (showDate) {
                     Text(if (disp == "CALLBACK") "Call back on" else "Promised date",
                         style = MaterialTheme.typography.labelSmall, color = MutedDim)
-                    ChipRow(
-                        options = listOf("Tomorrow", "+3 days", "+7 days"),
-                        selectedLabelFor = dateIso,
-                        labelToValue = mapOf(
-                            "Tomorrow" to DateUtil.plusDaysIso(1),
-                            "+3 days" to DateUtil.plusDaysIso(3),
-                            "+7 days" to DateUtil.plusDaysIso(7),
-                        ),
-                    ) { dateIso = it }
-                    Text("Date: ${DateUtil.humanDate(dateIso)}", style = MaterialTheme.typography.labelSmall, color = MutedDim)
+                    DatePickerField("Pick date", dateIso) { dateIso = it }
                 }
 
                 OutlinedTextField(

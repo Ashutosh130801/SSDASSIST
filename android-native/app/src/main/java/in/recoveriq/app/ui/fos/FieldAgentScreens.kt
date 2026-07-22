@@ -20,10 +20,11 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -48,7 +49,11 @@ fun FieldAgentTrackingScreen(
     onRequestBatteryExemption: () -> Unit,
 ) {
     val context = LocalContext.current
-    var onDuty by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val onDuty by vm.repo.onDutyFlow.collectAsState(initial = false)
+
+    // If duty was left on (survived a restart), make sure the service is actually running.
+    LaunchedEffect(onDuty) { if (onDuty) Tracking.start(context) }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -72,7 +77,7 @@ fun FieldAgentTrackingScreen(
                     )
                 }
                 Switch(checked = onDuty, onCheckedChange = { want ->
-                    onDuty = want
+                    scope.launch { vm.repo.setOnDuty(want) }
                     if (want) {
                         onNeedTrackingPermissions()
                         Tracking.start(context)
@@ -99,14 +104,17 @@ fun FieldAgentTrackingScreen(
         }
 
         SectionTitle("Today's activity")
-        AsyncContent(block = { vm.repo.myTodayRoute() }) { pings, _ ->
+        AsyncContent(block = { vm.repo.myTodayRoute() }) { route, _ ->
             InfoCard {
-                Text("${pings.size} location updates recorded today",
+                Text("${route.count} location updates recorded today",
                     style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                val last = pings.maxByOrNull { it.createdAt }
-                if (last != null) {
+                if (route.distanceKm > 0) {
                     Spacer(Modifier.height(4.dp))
-                    Text("Last fix: ${"%.5f".format(last.latitude)}, ${"%.5f".format(last.longitude)}",
+                    Text("Distance covered: ${route.distanceKm} km",
+                        style = MaterialTheme.typography.bodySmall, color = Muted)
+                }
+                route.points.lastOrNull()?.let { last ->
+                    Text("Last fix: ${"%.5f".format(last.lat)}, ${"%.5f".format(last.lng)}",
                         style = MaterialTheme.typography.bodySmall, color = Muted)
                 }
             }

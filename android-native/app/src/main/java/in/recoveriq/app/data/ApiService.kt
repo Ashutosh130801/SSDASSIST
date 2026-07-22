@@ -29,7 +29,7 @@ interface ApiService {
     suspend fun liveOfficers(): List<OfficerLocation>
 
     @GET("api/tracking/me/today")
-    suspend fun myTodayRoute(): List<PingOut>
+    suspend fun myTodayRoute(): TodayRoute
 
     @GET("api/tracking/officer/{id}/route")
     suspend fun officerRoute(

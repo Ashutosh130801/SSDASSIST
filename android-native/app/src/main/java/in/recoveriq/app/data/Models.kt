@@ -72,6 +72,16 @@ data class PingOut(
 )
 
 @JsonClass(generateAdapter = true)
+data class RoutePoint(val lat: Double, val lng: Double, val at: String? = null)
+
+@JsonClass(generateAdapter = true)
+data class TodayRoute(
+    val count: Int = 0,
+    @Json(name = "distance_km") val distanceKm: Double = 0.0,
+    val points: List<RoutePoint> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
 data class OfficerLocation(
     @Json(name = "officer_id") val officerId: Int,
     val name: String,
