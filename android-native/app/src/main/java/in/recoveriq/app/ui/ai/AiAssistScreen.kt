@@ -1,6 +1,6 @@
 package `in`.recoveriq.app.ui.ai
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,7 +42,10 @@ import androidx.compose.ui.unit.dp
 import `in`.recoveriq.app.data.User
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.theme.BrandBlue
+import `in`.recoveriq.app.ui.theme.CardWhite
+import `in`.recoveriq.app.ui.theme.GlassStroke
 import `in`.recoveriq.app.ui.theme.Muted
+import `in`.recoveriq.app.ui.theme.TextDark
 import kotlinx.coroutines.launch
 
 private data class Msg(val text: String, val fromUser: Boolean)
@@ -76,18 +79,20 @@ fun AiAssistScreen(vm: AuthViewModel, user: User, onBack: () -> Unit) {
     }
 
     Scaffold(
+        containerColor = androidx.compose.ui.graphics.Color.Transparent,
         topBar = {
             TopAppBar(
                 title = { Text("AI Assist") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    containerColor = androidx.compose.ui.graphics.Color(0xF2FFFFFF),
+                    titleContentColor = BrandBlue,
+                    navigationIconContentColor = BrandBlue,
                 ),
             )
         },
         bottomBar = {
-            Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
+            Surface(color = CardWhite, shadowElevation = 8.dp) {
                 Row(
                     Modifier.fillMaxWidth().padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -121,13 +126,15 @@ fun AiAssistScreen(vm: AuthViewModel, user: User, onBack: () -> Unit) {
 
 @Composable
 private fun Bubble(msg: Msg) {
-    val bg = if (msg.fromUser) BrandBlue else MaterialTheme.colorScheme.surface
-    val fg = if (msg.fromUser) androidx.compose.ui.graphics.Color.White else MaterialTheme.colorScheme.onSurface
+    val bg = if (msg.fromUser) BrandBlue else CardWhite
+    val fg = if (msg.fromUser) androidx.compose.ui.graphics.Color.White else TextDark
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (msg.fromUser) Arrangement.End else Arrangement.Start) {
         Surface(
             color = bg,
+            contentColor = fg,
             shape = RoundedCornerShape(14.dp),
-            shadowElevation = if (msg.fromUser) 0.dp else 1.dp,
+            border = if (msg.fromUser) null else BorderStroke(1.dp, GlassStroke),
+            shadowElevation = if (msg.fromUser) 0.dp else 2.dp,
             modifier = Modifier.widthIn(max = 300.dp),
         ) {
             Text(msg.text, color = fg, style = MaterialTheme.typography.bodyMedium,
@@ -139,7 +146,8 @@ private fun Bubble(msg: Msg) {
 @Composable
 private fun TypingBubble() {
     Row(horizontalArrangement = Arrangement.Start) {
-        Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp) {
+        Surface(color = CardWhite, shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, GlassStroke), shadowElevation = 2.dp) {
             Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)

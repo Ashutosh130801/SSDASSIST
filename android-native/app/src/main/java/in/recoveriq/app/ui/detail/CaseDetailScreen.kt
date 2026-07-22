@@ -79,11 +79,13 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    containerColor = androidx.compose.ui.graphics.Color(0xF2FFFFFF),
+                    titleContentColor = BrandBlue,
+                    navigationIconContentColor = BrandBlue,
                 ),
             )
-        }
+        },
+        containerColor = androidx.compose.ui.graphics.Color.Transparent,
     ) { pad ->
         AsyncContent(key = refresh, modifier = Modifier.padding(pad), block = { vm.repo.case(caseId) }) { case, _ ->
             Column(

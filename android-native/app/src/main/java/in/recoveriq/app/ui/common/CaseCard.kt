@@ -30,6 +30,7 @@ import `in`.recoveriq.app.ui.theme.GlassStroke
 import `in`.recoveriq.app.ui.theme.Good
 import `in`.recoveriq.app.ui.theme.Muted
 import `in`.recoveriq.app.ui.theme.MutedDim
+import `in`.recoveriq.app.ui.theme.TextDark
 import `in`.recoveriq.app.ui.theme.Warn
 
 @Composable
@@ -62,6 +63,7 @@ fun CaseCard(
         modifier = Modifier.fillMaxWidth().clickable { onClick() },
         shape = RoundedCornerShape(16.dp),
         color = CardWhite,
+        contentColor = TextDark,
         border = BorderStroke(1.dp, GlassStroke),
         shadowElevation = 5.dp,
     ) {

@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import `in`.recoveriq.app.ui.theme.CardWhite
 import `in`.recoveriq.app.ui.theme.GlassStroke
+import `in`.recoveriq.app.ui.theme.TextDark
 
 sealed interface Load<out T> {
     data object Loading : Load<Nothing>
@@ -86,6 +87,7 @@ fun InfoCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         color = CardWhite,
+        contentColor = TextDark,
         border = BorderStroke(1.dp, GlassStroke),
         shadowElevation = 6.dp,
     ) {

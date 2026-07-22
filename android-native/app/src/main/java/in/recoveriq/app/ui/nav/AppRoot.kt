@@ -30,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -69,6 +70,10 @@ import `in`.recoveriq.app.ui.detail.CaseDetailScreen
 import `in`.recoveriq.app.ui.fos.FieldAgentTrackingScreen
 import `in`.recoveriq.app.ui.fos.FieldTrackingScreen
 import `in`.recoveriq.app.ui.fos.MyCasesScreen
+import `in`.recoveriq.app.ui.theme.BrandBlue
+import `in`.recoveriq.app.ui.theme.CardWhite
+import `in`.recoveriq.app.ui.theme.Muted
+import `in`.recoveriq.app.ui.theme.TextDark
 import `in`.recoveriq.app.ui.screens.ActivityScreen
 import `in`.recoveriq.app.ui.screens.CommunicationScreen
 import `in`.recoveriq.app.ui.screens.DevicesScreen
@@ -165,10 +170,20 @@ private fun HomeScaffold(
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
-            ModalDrawerSheet {
+            ModalDrawerSheet(
+                drawerContainerColor = CardWhite,
+                drawerContentColor = TextDark,
+            ) {
+                val itemColors = NavigationDrawerItemDefaults.colors(
+                    selectedContainerColor = BrandBlue.copy(alpha = 0.12f),
+                    selectedIconColor = BrandBlue,
+                    selectedTextColor = BrandBlue,
+                    unselectedIconColor = Muted,
+                    unselectedTextColor = TextDark,
+                )
                 Column(Modifier.padding(16.dp)) {
                     Text("RecoverIQ", style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        fontWeight = FontWeight.Bold, color = BrandBlue)
                     Text(user.name + " · " + user.roleLabel, style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -178,6 +193,7 @@ private fun HomeScaffold(
                             label = { Text(entry.label) },
                             icon = { Icon(entry.icon, null) },
                             selected = entry.key == currentKey,
+                            colors = itemColors,
                             onClick = { currentKey = entry.key; scope.launch { drawerState.close() } },
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                         )
@@ -186,6 +202,7 @@ private fun HomeScaffold(
                         label = { Text("AI Assist") },
                         icon = { Icon(Icons.Filled.AutoAwesome, null) },
                         selected = false,
+                        colors = itemColors,
                         onClick = { scope.launch { drawerState.close() }; onOpenAi() },
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                     )
@@ -193,6 +210,7 @@ private fun HomeScaffold(
                         label = { Text("Sign out") },
                         icon = { Icon(Icons.AutoMirrored.Filled.Logout, null) },
                         selected = false,
+                        colors = itemColors,
                         onClick = { scope.launch { drawerState.close() }; vm.logout() },
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                     )
