@@ -93,19 +93,25 @@ HEADER_MAP = {
     "bkt": "bucket", "bucket": "bucket", "allocationdpdbracket": "bucket",
     "cyc": "cycle", "cycle": "cycle",
     "month": "month",
-    "fundingamount": "funding_amount", "amount": "funding_amount", "stab": "min_amount_due",
-    "receivedamount": "received_amount",
-    "pendingamount": "pending_amount",
+    "fundingamount": "funding_amount", "stab": "stab_amount", "norm": "norm_amount",
+    "amount": "received_amount", "receivedamount": "received_amount", "cashcoll": "received_amount",
+    "pendingamount": "pending_amount", "pending": "pending_amount",
     "totalouts": "total_outstanding", "tos": "total_outstanding", "currbal": "total_outstanding",
     "pos": "principal_outstanding", "principaloutstd": "principal_outstanding", "pri": "principal_outstanding",
     "tad": "total_outstanding", "mad": "min_amount_due",
+    # MIS core inputs
+    "enr": "enr", "emios": "_emi_os", "emi0s": "_emi_os",
+    "normstab": "norm_stab", "nstab": "norm_stab", "ns": "norm_stab",
     "caller": "_caller", "tcname": "_caller",
-    "fos": "_fos",
+    "fos": "_fos", "fosname": "_fos",
     "area": "_area",
+    "team": "team_lead",
+    "catallo": "cat", "cat": "cat", "category": "cat",
+    "visits": "_visits", "visit": "_visits", "fosdispo": "_fosdispo",
     "paidunpaid": "paid_status",
     "status": "final_status",
-    "dispo": "disposition", "disposition": "disposition",
-    "remarks": "remarks",
+    "dispo": "disposition", "disposition": "disposition", "tcdispo": "disposition",
+    "remarks": "remarks", "tcremark": "remarks",
     "finalstatus": "final_status",
     "cardlimit": "_ignore", "creditlimi": "_ignore",
 }
@@ -113,6 +119,7 @@ HEADER_MAP = {
 MONEY_FIELDS = {
     "funding_amount", "received_amount", "pending_amount",
     "total_outstanding", "principal_outstanding", "min_amount_due",
+    "enr", "norm_amount", "stab_amount", "_emi_os",
 }
 
 
@@ -188,15 +195,47 @@ def record_to_case_kwargs(rec: dict) -> dict:
         "total_outstanding", "principal_outstanding", "min_amount_due",
         "funding_amount", "received_amount", "pending_amount",
         "disposition", "remarks", "final_status",
+        # MIS
+        "enr", "norm_amount", "stab_amount", "norm_stab", "cat", "team_lead",
     }
     kwargs = {k: v for k, v in rec.items() if k in fields and v is not None}
 
     funding = rec.get("funding_amount") or Decimal("0.00")
     received = rec.get("received_amount") or Decimal("0.00")
+
+    # ENR = End Net Receivables = EMI 0/S + CURR_BAL (fallback if no ENR column).
+    if not kwargs.get("enr"):
+        emi = rec.get("_emi_os") or Decimal("0.00")
+        curr = rec.get("total_outstanding") or Decimal("0.00")
+        if emi or curr:
+            kwargs["enr"] = (Decimal(emi) + Decimal(curr)).quantize(TWO)
+
     pending = rec.get("pending_amount")
     if pending is None:
-        pending = (funding - received).quantize(TWO)
+        # unpaid STAB (settlement) target outstanding, else funding - received
+        stab = rec.get("stab_amount")
+        pending = ((Decimal(stab) - received) if stab else (funding - received)).quantize(TWO)
     kwargs["pending_amount"] = pending
+
+    # MIS text dimensions
+    caller = _clean(rec.get("_caller"))
+    if caller:
+        kwargs["caller_name"] = caller
+    fos = _clean(rec.get("_fos"))
+    if fos:
+        kwargs["fos_name"] = fos
+    area = _clean(rec.get("_area"))
+    if area:
+        kwargs["team"] = area                      # AREA / region code (GTR, KDP, TS...)
+    ns = _clean(rec.get("norm_stab"))
+    if ns:
+        kwargs["norm_stab"] = "STAB" if "STAB" in ns.upper() else ("NORM" if "NORM" in ns.upper() else ns)
+
+    # VISITED — from VISITS column (or an explicit FOS disposition)
+    vis = _clean(rec.get("_visits")) or _clean(rec.get("_fosdispo"))
+    if vis:
+        vu = vis.upper()
+        kwargs["visited"] = ("VISIT" in vu and "NOT" not in vu)
 
     paid = _clean(rec.get("paid_status"))
     if paid:

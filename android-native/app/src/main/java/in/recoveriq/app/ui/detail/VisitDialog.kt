@@ -43,18 +43,20 @@ data class VisitDraft(
     val lat: Double?, val lng: Double?, val accuracy: Double?,
     val personMoved: Boolean, val paid: Boolean, val amount: Double,
     val disposition: String?, val note: String?, val photoJpeg: ByteArray?,
+    val normStab: String? = null,
 )
 
 @OptIn(ExperimentalLayoutApi::class)
 @SuppressLint("MissingPermission")
 @Composable
-fun LogVisitDialog(onDismiss: () -> Unit, onConfirm: (VisitDraft) -> Unit) {
+fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (VisitDraft) -> Unit) {
     val context = LocalContext.current
     val dispositions = listOf("Met customer", "Not available", "Paid", "Wrong address", "Person moved", "PTP")
     var disp by remember { mutableStateOf("Met customer") }
     var paid by remember { mutableStateOf(false) }
     var moved by remember { mutableStateOf(false) }
     var amount by remember { mutableStateOf("") }
+    var normStab by remember { mutableStateOf("STAB") }
     var note by remember { mutableStateOf("") }
     var photo by remember { mutableStateOf<Bitmap?>(null) }
     var lat by remember { mutableStateOf<Double?>(null) }
@@ -102,6 +104,14 @@ fun LogVisitDialog(onDismiss: () -> Unit, onConfirm: (VisitDraft) -> Unit) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (paid && isCreditCard) {
+                    Text("Paid at (credit card)", style = MaterialTheme.typography.labelSmall, color = Muted)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("STAB", "NORM").forEach { o ->
+                            FilterChip(selected = normStab == o, onClick = { normStab = o }, label = { Text(o) })
+                        }
+                    }
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                     Text("Person has moved"); Switch(checked = moved, onCheckedChange = { moved = it })
@@ -128,6 +138,7 @@ fun LogVisitDialog(onDismiss: () -> Unit, onConfirm: (VisitDraft) -> Unit) {
                     personMoved = moved, paid = paid,
                     amount = amount.toDoubleOrNull() ?: 0.0,
                     disposition = disp, note = note.ifBlank { null }, photoJpeg = jpeg,
+                    normStab = if (paid && isCreditCard) normStab else null,
                 ))
             }) { Text("Save visit") }
         },

@@ -3,7 +3,7 @@ from decimal import Decimal
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -126,6 +126,8 @@ def list_cases(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
     bank: str | None = None,
+    product: str | None = None,
+    segment: str | None = None,
     status: str | None = None,
     paid_status: str | None = None,
     search: str | None = None,
@@ -135,6 +137,10 @@ def list_cases(
     q = _scope(db.query(models.Case), user)
     if bank:
         q = q.filter(models.Case.bank == bank)
+    if product:
+        q = q.filter(models.Case.product == product)
+    if segment:
+        q = q.filter(models.Case.segment == segment)
     if status:
         q = q.filter(models.Case.status == status)
     if paid_status:
@@ -148,6 +154,29 @@ def list_cases(
             models.Case.pincode.ilike(like),
         ))
     return _with_score(q.order_by(models.Case.updated_at.desc()).offset(offset).limit(limit).all())
+
+
+@router.get("/product-summary")
+def product_summary(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Product cards: one row per bank + product + segment with case counts and money,
+    scoped to what the user may see (admin all, manager their branch)."""
+    rows = (
+        _scope(db.query(
+            models.Case.bank, models.Case.product, models.Case.segment,
+            func.count(models.Case.id),
+            func.coalesce(func.sum(models.Case.pending_amount), 0),
+            func.coalesce(func.sum(models.Case.received_amount), 0),
+        ), user)
+        .group_by(models.Case.bank, models.Case.product, models.Case.segment)
+        .all()
+    )
+    out = [
+        {"bank": b or "—", "product": p or "—", "segment": s,
+         "count": c, "pending": float(pd or 0), "received": float(rc or 0)}
+        for b, p, s, c, pd, rc in rows
+    ]
+    out.sort(key=lambda x: (x["bank"], x["product"]))
+    return out
 
 
 @router.get("/{case_id}", response_model=schemas.CaseOut)
@@ -203,6 +232,7 @@ class PaymentIn(BaseModel):
     amount: Decimal
     mode: str = "UPI"
     note: str | None = None
+    norm_stab: str | None = None      # NORM / STAB paid (credit-card cases)
 
 
 @router.post("/{case_id}/payment", response_model=schemas.CaseOut)
@@ -225,12 +255,17 @@ def record_payment(case_id: int, body: PaymentIn, db: Session = Depends(get_db),
         case.follow_up_date = None
     else:
         case.paid_status = "PARTIAL"
+    if body.norm_stab:
+        ns = body.norm_stab.upper()
+        case.norm_stab = "STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab)
 
     note = f"₹{amt} via {body.mode}" + (f" — {body.note}" if body.note else "")
     db.add(models.CallLog(case_id=case.id, caller_id=user.id,
                           disposition="PAYMENT", ptp_amount=amt, note=note))
     db.commit()
     db.refresh(case)
+    from .realtime import notify_data_changed
+    notify_data_changed(case.bank, case.product)
     return case
 
 

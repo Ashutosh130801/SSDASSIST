@@ -81,7 +81,7 @@ def live(minutes: int = 30, db: Session = Depends(get_db),
         .subquery()
     )
     q = (
-        db.query(models.LocationPing, models.User.name)
+        db.query(models.LocationPing, models.User.name, models.User.branch, models.User.banks)
         .join(sub, (models.LocationPing.officer_id == sub.c.officer_id) &
               (models.LocationPing.created_at == sub.c.mx))
         .join(models.User, models.User.id == models.LocationPing.officer_id)
@@ -93,8 +93,9 @@ def live(minutes: int = 30, db: Session = Depends(get_db),
         schemas.OfficerLocation(
             officer_id=p.officer_id, name=name, latitude=p.latitude, longitude=p.longitude,
             accuracy=p.accuracy, active_case_id=p.active_case_id, last_seen=p.created_at,
+            branch=branch, banks=banks or [],
         )
-        for p, name in rows
+        for p, name, branch, banks in rows
     ]
 
 

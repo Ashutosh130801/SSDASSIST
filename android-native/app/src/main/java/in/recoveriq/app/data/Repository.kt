@@ -61,8 +61,8 @@ class Repository(context: Context) {
 
     suspend fun case(id: Int): Case = Api.service.case(id)
     suspend fun updateCase(id: Int, update: CaseUpdate): Case = Api.service.updateCase(id, update)
-    suspend fun recordPayment(id: Int, amount: Double, mode: String = "UPI", note: String? = null): Case =
-        Api.service.recordPayment(id, PaymentRequest(amount, mode, note))
+    suspend fun recordPayment(id: Int, amount: Double, mode: String = "UPI", note: String? = null, normStab: String? = null): Case =
+        Api.service.recordPayment(id, PaymentRequest(amount, mode, note, normStab))
     suspend fun timeline(id: Int): List<TimelineEvent> = Api.service.timeline(id)
     suspend fun callsForCase(id: Int): List<CallOut> = Api.service.callsForCase(id)
     suspend fun visitsForCase(id: Int): List<VisitOut> = Api.service.visitsForCase(id)
@@ -128,7 +128,7 @@ class Repository(context: Context) {
     suspend fun createVisit(
         caseId: Int, lat: Double?, lng: Double?, accuracy: Double?,
         personMoved: Boolean, paid: Boolean, amount: Double,
-        disposition: String?, note: String?, photoJpeg: ByteArray?,
+        disposition: String?, note: String?, photoJpeg: ByteArray?, normStab: String? = null,
     ): VisitOut {
         fun t(v: String) = v.toRequestBody("text/plain".toMediaType())
         val photoPart = photoJpeg?.let {
@@ -144,6 +144,7 @@ class Repository(context: Context) {
             personMoved = t(personMoved.toString()),
             paid = t(paid.toString()),
             amountCollected = t(amount.toString()),
+            normStab = normStab?.let { t(it) },
             disposition = disposition?.let { t(it) },
             note = note?.let { t(it) },
             photo = photoPart,

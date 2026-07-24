@@ -28,9 +28,10 @@ import `in`.recoveriq.app.ui.common.DateUtil
 import `in`.recoveriq.app.ui.theme.MutedDim
 
 @Composable
-fun PaymentDialog(maxAmount: Double, onDismiss: () -> Unit, onConfirm: (Double, String) -> Unit) {
+fun PaymentDialog(maxAmount: Double, isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (Double, String, String?) -> Unit) {
     var amount by remember { mutableStateOf(if (maxAmount > 0) "%.0f".format(maxAmount) else "") }
     var mode by remember { mutableStateOf("UPI") }
+    var normStab by remember { mutableStateOf("STAB") }
     val amt = amount.toDoubleOrNull() ?: 0.0
 
     AlertDialog(
@@ -46,19 +47,24 @@ fun PaymentDialog(maxAmount: Double, onDismiss: () -> Unit, onConfirm: (Double, 
                 )
                 Text("Mode", style = MaterialTheme.typography.labelSmall, color = MutedDim)
                 ChipRow(listOf("UPI", "Cash", "Bank", "Card", "Cheque"), mode) { mode = it }
+                if (isCreditCard) {
+                    Text("Paid at (credit card)", style = MaterialTheme.typography.labelSmall, color = MutedDim)
+                    ChipRow(listOf("STAB", "NORM"), normStab) { normStab = it }
+                }
             }
         },
-        confirmButton = { TextButton(enabled = amt > 0, onClick = { onConfirm(amt, mode) }) { Text("Save") } },
+        confirmButton = { TextButton(enabled = amt > 0, onClick = { onConfirm(amt, mode, if (isCreditCard) normStab else null) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
 @Composable
-fun LogCallDialog(onDismiss: () -> Unit, onConfirm: (CallCreate) -> Unit) {
+fun LogCallDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (CallCreate) -> Unit) {
     val dispositions = listOf("PTP", "RTP", "PAID", "CALLBACK", "NO_CONTACT", "WRONG_NUMBER", "REFUSED")
     var disp by remember { mutableStateOf("PTP") }
     var amount by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
+    var normStab by remember { mutableStateOf("STAB") }
     var dateIso by remember { mutableStateOf(DateUtil.plusDaysIso(1)) }
 
     val showAmount = disp == "PTP" || disp == "RTP" || disp == "PAID"
@@ -80,6 +86,10 @@ fun LogCallDialog(onDismiss: () -> Unit, onConfirm: (CallCreate) -> Unit) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (disp == "PAID" && isCreditCard) {
+                    Text("Paid at (credit card)", style = MaterialTheme.typography.labelSmall, color = MutedDim)
+                    ChipRow(listOf("STAB", "NORM"), normStab) { normStab = it }
+                }
 
                 if (showDate) {
                     Text(if (disp == "CALLBACK") "Call back on" else "Promised date",
@@ -103,6 +113,7 @@ fun LogCallDialog(onDismiss: () -> Unit, onConfirm: (CallCreate) -> Unit) {
                         ptpDate = if (disp == "PTP" || disp == "RTP") dateIso else null,
                         followUpDate = if (disp == "CALLBACK") dateIso else null,
                         paidAmount = if (disp == "PAID") amt else 0.0,
+                        normStab = if (disp == "PAID" && isCreditCard) normStab else null,
                         note = note.ifBlank { null },
                     )
                 )

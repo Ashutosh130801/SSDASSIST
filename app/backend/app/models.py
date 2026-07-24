@@ -58,7 +58,8 @@ class Case(Base):
     # identity
     bank = Column(String(40), index=True)       # ICICI / RBL / AXIS
     branch = Column(String(80))
-    product = Column(String(80))                 # card type etc
+    product = Column(String(80))                 # bank product, e.g. "2 BKT", "180+", "DR"
+    segment = Column(String(30))                 # "Credit Card" or "PL/BL" (chosen at upload)
     account_no = Column(String(60), index=True)
     card_no = Column(String(40))
     customer_name = Column(String(160))
@@ -79,8 +80,21 @@ class Case(Base):
     principal_outstanding = Column(Numeric(14, 2), default=0)
     min_amount_due = Column(Numeric(14, 2), default=0)
     funding_amount = Column(Numeric(14, 2), default=0)     # committed / target
-    received_amount = Column(Numeric(14, 2), default=0)
+    received_amount = Column(Numeric(14, 2), default=0)    # AMOUNT collected (= CASH COLL)
     pending_amount = Column(Numeric(14, 2), default=0)
+
+    # MIS core fields (from the CC/MAIN loading sheet)
+    enr = Column(Numeric(14, 2), default=0)               # End Net Receivables = EMI 0/S + CURR_BAL
+    norm_amount = Column(Numeric(14, 2), default=0)       # NORM target amount
+    stab_amount = Column(Numeric(14, 2), default=0)       # STAB (settlement) target amount
+    norm_stab = Column(String(10))                        # "NORM" / "STAB" — given in the file
+    caller_name = Column(String(80), index=True)          # CALLER (as named in the sheet)
+    fos_name = Column(String(120), index=True)            # FOS NAME (name/area,phone text)
+    team = Column(String(40), index=True)                 # AREA / region code (GTR, KDP, TS...)
+    team_lead = Column(String(40), index=True)            # TEAM column — caller team lead (SAMBA...)
+    cat = Column(String(20), index=True)                  # CAT ALLO category (J / I / C ...)
+    visited = Column(Boolean, default=False)              # FOS logged a visit
+    extra = Column(JSON, default=dict)                    # free-form caller-added sheet columns
 
     # workflow
     status = Column(String(30), default="new", index=True)   # new/allocated/in_progress/paid/unpaid/ptp/closed
@@ -262,3 +276,15 @@ class WebAuthnCredential(Base):
     last_used = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User")
+
+
+class MisTarget(Base):
+    """Per-employee monthly target % for a product's MIS (manager-entered)."""
+    __tablename__ = "mis_targets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bank = Column(String(40), index=True)
+    product = Column(String(80), index=True)
+    emp_name = Column(String(120), index=True)
+    target_pct = Column(Numeric(6, 2), default=0)     # e.g. 30 means 30%
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

@@ -11,7 +11,8 @@ from .database import Base, engine
 from .config import get_settings
 from . import models  # noqa: F401  (register models)
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
-                      devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime)
+                      devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
+                      team, mis)
 
 settings = get_settings()
 
@@ -25,6 +26,18 @@ def _ensure_columns():
         "cases": {
             "last_contacted_at": "TIMESTAMP",
             "follow_up_date": "DATE",
+            "segment": "VARCHAR(30)",
+            "enr": "NUMERIC(14,2)",
+            "norm_amount": "NUMERIC(14,2)",
+            "stab_amount": "NUMERIC(14,2)",
+            "norm_stab": "VARCHAR(10)",
+            "caller_name": "VARCHAR(80)",
+            "fos_name": "VARCHAR(120)",
+            "team": "VARCHAR(40)",
+            "team_lead": "VARCHAR(40)",
+            "cat": "VARCHAR(20)",
+            "visited": "BOOLEAN",
+            "extra": "JSON",
         },
         "users": {
             "employment_type": "VARCHAR(30)",
@@ -101,13 +114,22 @@ async def _security_headers(request, call_next):
 
 
 for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, devices,
-          leaves, templates, legal, twofa, webauthn_auth, sheet, realtime):
+          leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis):
     app.include_router(r.router)
+
+
+@app.on_event("startup")
+async def _capture_loop():
+    import asyncio
+    from .routers import realtime as _rt
+    _rt.set_loop(asyncio.get_running_loop())
 
 
 @app.get("/api/config")
 def config():
+    from .products import catalog
     return {
+        "bank_products": catalog(),
         "google_maps_api_key": settings.google_maps_api_key,
         "google_client_id": settings.google_client_id,
         "location_ping_seconds": settings.location_ping_seconds,

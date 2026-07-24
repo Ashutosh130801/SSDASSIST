@@ -98,6 +98,7 @@ data class Case(
     val bank: String? = null,
     val branch: String? = null,
     val product: String? = null,
+    val segment: String? = null,
     @Json(name = "account_no") val accountNo: String? = null,
     @Json(name = "card_no") val cardNo: String? = null,
     @Json(name = "customer_name") val customerName: String? = null,
@@ -131,6 +132,7 @@ data class PaymentRequest(
     val amount: Double,
     val mode: String = "UPI",
     val note: String? = null,
+    @Json(name = "norm_stab") val normStab: String? = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -166,6 +168,7 @@ data class CallCreate(
     @Json(name = "ptp_date") val ptpDate: String? = null,
     @Json(name = "follow_up_date") val followUpDate: String? = null,
     @Json(name = "paid_amount") val paidAmount: Double = 0.0,
+    @Json(name = "norm_stab") val normStab: String? = null,
     val note: String? = null,
 )
 

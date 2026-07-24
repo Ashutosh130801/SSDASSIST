@@ -404,7 +404,7 @@ const GOLD = '#2563EB', GOLD2 = '#1D4ED8';
 const PALETTE = ['#2563EB', '#0EA5E9', '#16A34A', '#F97316', '#8B5CF6', '#14B8A6', '#EAB308'];
 
 /* Role display labels (internal keys stay admin/manager/fos/telecaller for RBAC) */
-const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', fos: 'Field Agent', telecaller: 'Tele-calling Agent' };
+const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official' };
 const roleName = (r) => ROLE_LABEL[r] || r;
 
 /* ============================== Login ============================== */
@@ -519,9 +519,16 @@ const STAGE_META = {
   unpaid: { label: 'Unpaid', color: '#DC2626' },
 };
 
-function Dashboard({ user }) {
-  const [d, setD] = useState(null); const [err, setErr] = useState('');
-  useEffect(() => { api('/api/analytics/dashboard').then(setD).catch(e => setErr(e.message)); }, []);
+function Dashboard({ user, branch }) {
+  const [d, setD] = useState(null); const [err, setErr] = useState(''); const [hl, setHl] = useState(null);
+  const isMgr = (user.role === 'admin' || user.role === 'manager') && !branch;
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const loadDash = () => {
+    api('/api/analytics/dashboard' + (branch ? '?branch=' + encodeURIComponent(branch) : '')).then(setD).catch(e => setErr(e.message));
+    if (isMgr) api('/api/mis/highlights').then(setHl).catch(() => {});
+  };
+  useEffect(() => { loadDash(); }, [branch]);
+  useDataChanged(loadDash);   // live: refresh dashboard on any log/payment/edit
   if (err) return <div className="glass card" style={{ color: 'var(--bad)' }}>{err}</div>;
   if (!d) return <Loader />;
   const k = d.kpis;
@@ -546,6 +553,26 @@ function Dashboard({ user }) {
         <StatCard icon="⏳" label="Pending" accent="amber" value={INR(k.pending)} valueColor="var(--warn)"
           sub={<span>{INR(collectedToday)} collected today</span>} />
       </div>
+
+      {hl && <div className="glass card" style={{ padding: 14, marginTop: 4 }}>
+        <div className="section-h" style={{ marginBottom: 8 }}><h3 style={{ margin: 0 }}>📈 MIS highlights</h3>
+          <span className="muted" style={{ fontSize: 12 }}>live · open MIS for full detail</span></div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 10 }}>
+          <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>Target gap (ENR)</div><b style={{ fontSize: 19, color: 'var(--bad)' }}>{money(hl.target_gap)}</b><div className="muted" style={{ fontSize: 11 }}>{hl.employees_behind}/{hl.employees_total} behind target</div></div>
+          <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>Untouched cases</div><b style={{ fontSize: 19, color: 'var(--warn)' }}>{hl.untouched}</b><div className="muted" style={{ fontSize: 11 }}>{money(hl.untouched_pending)} pending</div></div>
+          <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>PTP broken</div><b style={{ fontSize: 19, color: 'var(--bad)' }}>{hl.ptp_broken}</b></div>
+          <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>Realization</div><b style={{ fontSize: 19 }}>{hl.realization_pct}%</b><div className="muted" style={{ fontSize: 11 }}>collected ÷ NORM</div></div>
+          <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>Achieved (ENR)</div><b style={{ fontSize: 19, color: 'var(--good)' }}>{hl.achieved_pct}%</b><div className="muted" style={{ fontSize: 11 }}>{money(hl.paid_enr)} of {money(hl.total_enr)}</div></div>
+        </div>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+          <div><div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>Most behind target</div>
+            {(hl.behind_targets || []).slice(0, 5).map((r, i) => <div key={i} className="stat-row"><span className="k">{r.emp} <span className="muted" style={{ fontSize: 11 }}>· {r.product}</span></span><b style={{ color: 'var(--bad)' }}>{money(r.gap_enr)}</b></div>)}
+            {(!hl.behind_targets || !hl.behind_targets.length) && <div className="muted" style={{ fontSize: 12 }}>No targets set yet.</div>}</div>
+          <div><div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>Top untouched high-value</div>
+            {(hl.top_untouched || []).slice(0, 5).map((r, i) => <div key={i} className="stat-row"><span className="k">{r.customer || '—'} <span className="muted" style={{ fontSize: 11 }}>· {r.product}</span></span><b style={{ color: 'var(--warn)' }}>{money(r.pending)}</b></div>)}
+            {(!hl.top_untouched || !hl.top_untouched.length) && <div className="muted" style={{ fontSize: 12 }}>All cases have been contacted.</div>}</div>
+        </div>
+      </div>}
 
       <div className="grid2" style={{ marginBottom: 16 }}>
         <div className="glass card">
@@ -634,44 +661,60 @@ function Dashboard({ user }) {
 
 /* ============================== Cases (admin) ============================== */
 function UploadModal({ onClose, onDone }) {
-  const [file, setFile] = useState(null); const [bank, setBank] = useState('');
-  const [branch, setBranch] = useState(''); const [prev, setPrev] = useState(null);
+  const [cat, setCat] = useState(null);
+  const [file, setFile] = useState(null); const [bank, setBank] = useState(''); const [product, setProduct] = useState('');
+  const [segment, setSegment] = useState(''); const [branch, setBranch] = useState(''); const [prev, setPrev] = useState(null);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  useEffect(() => { api('/api/config').then(c => setCat(c.bank_products)).catch(() => {}); }, []);
+  const products = (cat && bank && cat.products[bank]) || [];
+  const ready = file && bank && product && segment;
+  const buildForm = () => {
+    const f = new FormData(); f.append('file', file);
+    f.append('default_bank', bank); f.append('product', product); f.append('segment', segment);
+    if (branch) f.append('branch', branch); return f;
+  };
   const doPreview = async () => {
     if (!file) return; setErr(''); setBusy(true);
-    try { const f = new FormData(); f.append('file', file); if (bank) f.append('default_bank', bank);
-      setPrev(await api('/api/import/preview', { method: 'POST', form: f }));
-    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+    try { setPrev(await api('/api/import/preview', { method: 'POST', form: buildForm() })); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
   const doCommit = async () => {
-    if (!file) return; setErr(''); setBusy(true);
-    try { const f = new FormData(); f.append('file', file); if (bank) f.append('default_bank', bank);
-      if (branch) f.append('branch', branch); f.append('auto_allocate', 'true');
+    if (!ready) return; setErr(''); setBusy(true);
+    try { const f = buildForm(); f.append('auto_allocate', 'true');
       const r = await api('/api/import/commit', { method: 'POST', form: f });
-      toast(`Imported ${r.imported}, updated ${r.updated}. ${r.assigned_fos_total}/${r.total_cases} cases assigned to field agents.`);
+      toast(`Imported ${r.imported} ${bank} ${product} cases, updated ${r.updated}. ${r.assigned_fos_total}/${r.total_cases} assigned to field agents.`);
       onDone();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()}>
-        <div className="section-h"><h3>Upload accounts from Excel</h3>
+        <div className="section-h"><h3>Upload accounts — one product per file</h3>
           <button className="btn ghost sm" onClick={onClose}>✕</button></div>
-        <p className="muted" style={{ fontSize: 13 }}>Reads your loading-file / live-sheet formats and creates or updates cases, then auto-allocates by pincode &amp; nearest FO.</p>
-        <div className="field"><label>Excel file (.xlsx)</label>
-          <input className="input" type="file" accept=".xlsx,.xls"
-            onChange={e => { setFile(e.target.files[0]); setPrev(null); }} /></div>
+        <p className="muted" style={{ fontSize: 13 }}>Choose the bank, product and segment this file belongs to; every row will be tagged accordingly, then auto-allocated by pincode &amp; nearest FO.</p>
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
-          <div className="field"><label>Default bank (if not in sheet)</label>
-            <select className="input" value={bank} onChange={e => setBank(e.target.value)}>
-              <option value="">— auto —</option><option>ICICI</option><option>RBL</option><option>AXIS</option></select></div>
+          <div className="field"><label>Bank</label>
+            <select className="input" value={bank} onChange={e => { setBank(e.target.value); setProduct(''); }}>
+              <option value="">— select bank —</option>
+              {(cat ? cat.banks : []).map(b => <option key={b} value={b}>{b}</option>)}</select></div>
+          <div className="field"><label>Product</label>
+            <select className="input" value={product} onChange={e => setProduct(e.target.value)} disabled={!bank}>
+              <option value="">— select product —</option>
+              {products.map(p => <option key={p} value={p}>{p}</option>)}</select></div>
+          <div className="field"><label>Segment</label>
+            <select className="input" value={segment} onChange={e => setSegment(e.target.value)}>
+              <option value="">— select —</option>
+              {(cat ? cat.segments : ['Credit Card', 'PL/BL']).map(s => <option key={s} value={s}>{s}</option>)}</select></div>
           <div className="field"><label>Branch (optional)</label>
             <input className="input" value={branch} onChange={e => setBranch(e.target.value)} placeholder="Visakhapatnam" /></div>
         </div>
+        <div className="field"><label>Excel file (.xlsx)</label>
+          <input className="input" type="file" accept=".xlsx,.xls"
+            onChange={e => { setFile(e.target.files[0]); setPrev(null); }} /></div>
         {err && <div style={{ color: 'var(--bad)', fontSize: 13, marginBottom: 8 }}>{err}</div>}
         <div className="toolbar">
           <button className="btn" onClick={doPreview} disabled={!file || busy}>Preview</button>
-          <button className="btn gold" onClick={doCommit} disabled={!file || busy}>{busy ? 'Working…' : 'Import & Allocate'}</button>
+          <button className="btn gold" onClick={doCommit} disabled={!ready || busy}>{busy ? 'Working…' : 'Import & Allocate'}</button>
         </div>
         {prev && <div className="glass card" style={{ marginTop: 6 }}>
           <b>{prev.total_rows}</b> rows found in sheet <b>{prev.sheet}</b>. Preview:
@@ -687,15 +730,28 @@ function UploadModal({ onClose, onDone }) {
 }
 
 function CasesView({ user }) {
+  const canUpload = user.role === 'admin' || user.role === 'backend';
+  const isAdmin = user.role === 'admin';
+  const [mode, setMode] = useState('products');
+  const [summary, setSummary] = useState(null); const [staff, setStaff] = useState({});
   const [cases, setCases] = useState(null); const [bank, setBank] = useState('');
+  const [product, setProduct] = useState(''); const [segment, setSegment] = useState('');
   const [paid, setPaid] = useState(''); const [q, setQ] = useState('');
   const [upload, setUpload] = useState(false); const [busy, setBusy] = useState(false); const [drawer, setDrawer] = useState(null); const [campaign, setCampaign] = useState(false);
   const [resetOpen, setResetOpen] = useState(false); const [resetTxt, setResetTxt] = useState('');
+  const loadSummary = () => api('/api/cases/product-summary').then(setSummary).catch(() => setSummary([]));
   const load = useCallback(() => {
-    const p = new URLSearchParams(); if (bank) p.set('bank', bank); if (paid) p.set('paid_status', paid); if (q) p.set('search', q);
+    const p = new URLSearchParams();
+    if (bank) p.set('bank', bank); if (product) p.set('product', product); if (segment) p.set('segment', segment);
+    if (paid) p.set('paid_status', paid); if (q) p.set('search', q);
     api('/api/cases?' + p).then(setCases);
-  }, [bank, paid, q]);
-  useEffect(() => { const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load]);
+  }, [bank, product, segment, paid, q]);
+  useEffect(() => { loadSummary(); api('/api/users').then(us => { const m = {}; (us || []).forEach(u => { m[u.id] = u.name; }); setStaff(m); }).catch(() => {}); }, []);
+  useEffect(() => { if (mode !== 'list') return; const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load, mode]);
+  useDataChanged(() => { loadSummary(); if (mode === 'list') load(); });   // live product cards / list
+  const openProduct = (c) => { setBank(c.bank === '—' ? '' : c.bank); setProduct(c.product === '—' ? '' : c.product); setSegment(c.segment || ''); setMode('list'); };
+  const backToProducts = () => { setProduct(''); setSegment(''); setBank(''); setMode('products'); loadSummary(); };
+  const INRc = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const allocate = async () => { setBusy(true); try {
     const r = await api('/api/cases/allocate', { method: 'POST', body: { only_unallocated: true } });
     toast(`Allocated ${r.fos_allocated} to FOs, ${r.caller_allocated} to callers.`); load();
@@ -724,15 +780,11 @@ function CasesView({ user }) {
   return (
     <div>
       <div className="toolbar">
-        <input className="input" style={{ maxWidth: 260 }} placeholder="Search name / account / phone / pincode"
-          value={q} onChange={e => setQ(e.target.value)} />
-        <select className="input" style={{ maxWidth: 130 }} value={bank} onChange={e => setBank(e.target.value)}>
-          <option value="">All banks</option><option>ICICI</option><option>RBL</option><option>AXIS</option><option>BRBL</option></select>
-        {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>
-          <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(s)}>{s || 'All'}</div>)}
+        <div className={cx('chip', mode === 'products' && 'on')} onClick={() => setMode('products')}>🧩 Products</div>
+        <div className={cx('chip', mode === 'list' && 'on')} onClick={() => setMode('list')}>📋 All cases (Excel)</div>
         <div style={{ flex: 1 }} />
-        {user.role === 'admin' && <>
-          <button className="btn" onClick={() => setUpload(true)}>⬆ Upload</button>
+        {canUpload && <button className="btn gold" onClick={() => setUpload(true)}>⬆ Upload</button>}
+        {isAdmin && <>
           <button className="btn" onClick={allocate} disabled={busy}>⚡ Auto-allocate</button>
           <button className="btn" onClick={geocode} disabled={busy} title="Fill map coordinates from addresses">📍 Geocode</button>
           <button className="btn" onClick={() => setCampaign(true)} disabled={!cases || !cases.length}>💬 Campaign</button>
@@ -741,24 +793,50 @@ function CasesView({ user }) {
             title="Delete all cases so you can upload a fresh loading file">🗑 Reset all</button>
         </>}
       </div>
-      {!cases ? <Loader /> : (
-        <div className="glass card" style={{ padding: 6 }}>
-          <div className="tablewrap"><table>
-            <thead><tr><th>Customer</th><th>Bank</th><th>Account</th><th>Target</th><th>Received</th>
-              <th>Pending</th><th>Status</th><th>Paid</th><th>Score</th><th>Pincode</th><th>Dispo</th></tr></thead>
-            <tbody>{cases.map(c => <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
-              <td><b>{c.customer_name || '—'}</b><div className="muted" style={{ fontSize: 12 }}>{c.phone}</div></td>
-              <td>{c.bank}</td><td className="mono">{c.account_no}</td>
-              <td className="mono">{INR(c.funding_amount)}</td>
-              <td className="mono" style={{ color: 'var(--good)' }}>{INR(c.received_amount)}</td>
-              <td className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</td>
-              <td><StatusBadge s={c.status} /></td><td><PaidBadge s={c.paid_status} /></td>
-              <td><PropBadge score={c.propensity} /></td>
-              <td>{c.pincode || '—'}</td><td className="muted">{c.disposition || '—'}</td></tr>)}
-            </tbody></table></div>
-          {cases.length === 0 && <p className="muted" style={{ padding: 16 }}>No cases. Upload an Excel to get started.</p>}
+
+      {mode === 'products' ? (
+        !summary ? <Loader /> : summary.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No cases uploaded yet.{canUpload && ' Use ⬆ Upload to add a product file.'}</div> :
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: 14 }}>
+            {summary.map((c, i) => (
+              <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => openProduct(c)}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <b style={{ fontSize: 15 }}>{c.bank} · {c.product}</b><span className="badge allocated">{c.count}</span></div>
+                {c.segment && <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{c.segment}</div>}
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
+                  <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(c.received)}</b></div>
+                  <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(c.pending)}</b></div></div>
+              </div>))}
+          </div>
+      ) : (<>
+        <div className="toolbar">
+          {product && <button className="btn ghost" onClick={backToProducts}>← Products</button>}
+          {product && <span className="badge allocated">{bank} · {product}{segment ? ' · ' + segment : ''}</span>}
+          <input className="input" style={{ maxWidth: 240 }} placeholder="Search name / account / phone / pincode"
+            value={q} onChange={e => setQ(e.target.value)} />
+          {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>
+            <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(s)}>{s || 'All'}</div>)}
         </div>
-      )}
+        {!cases ? <Loader /> : (
+          <div className="glass card" style={{ padding: 6 }}>
+            <div className="tablewrap"><table>
+              <thead><tr><th>Customer</th><th>Bank</th><th>Product</th><th>Caller</th><th>FOS</th><th>Account</th><th>Target</th><th>Received</th>
+                <th>Pending</th><th>Status</th><th>Paid</th><th>Pincode</th><th>Dispo</th></tr></thead>
+              <tbody>{cases.map(c => <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
+                <td><b>{c.customer_name || '—'}</b><div className="muted" style={{ fontSize: 12 }}>{c.phone}</div></td>
+                <td>{c.bank}</td><td>{c.product || '—'}</td>
+                <td className="muted">{staff[c.assigned_caller_id] || '—'}</td>
+                <td className="muted">{staff[c.assigned_fos_id] || '—'}</td>
+                <td className="mono">{c.account_no}</td>
+                <td className="mono">{INR(c.funding_amount)}</td>
+                <td className="mono" style={{ color: 'var(--good)' }}>{INR(c.received_amount)}</td>
+                <td className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</td>
+                <td><StatusBadge s={c.status} /></td><td><PaidBadge s={c.paid_status} /></td>
+                <td>{c.pincode || '—'}</td><td className="muted">{c.disposition || '—'}</td></tr>)}
+              </tbody></table></div>
+            {cases.length === 0 && <p className="muted" style={{ padding: 16 }}>No cases here.</p>}
+          </div>
+        )}
+      </>)}
       {upload && <UploadModal onClose={() => setUpload(false)} onDone={() => { setUpload(false); load(); }} />}
       {campaign && <CampaignModal cases={cases || []} onClose={() => setCampaign(false)} />}
       {resetOpen && <div className="modal-bg" onClick={() => setResetOpen(false)}>
@@ -788,6 +866,10 @@ function LiveMap({ config }) {
   const [histOfficer, setHistOfficer] = useState(null); const [dates, setDates] = useState(null);
   const [selDate, setSelDate] = useState(''); const [routeInfo, setRouteInfo] = useState(null);
   const [, setTick] = useState(0);   // local 1s clock so live/offline + "seen ago" update on their own
+  const [branch, setBranch] = useState(''); const branchRef = useRef('');
+  const visitMarks = useRef([]);
+  const [dayVisits, setDayVisits] = useState(null); const [selVisit, setSelVisit] = useState(null);
+  const [showReport, setShowReport] = useState(false); const [drawerCase, setDrawerCase] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -797,7 +879,7 @@ function LiveMap({ config }) {
       if (map.current && window.google) {
         const g = window.google; const bounds = new g.maps.LatLngBounds();
         Object.values(markers.current).forEach(m => m.setMap(null)); markers.current = {};
-        list.forEach(o => {
+        list.filter(o => !branchRef.current || o.branch === branchRef.current).forEach(o => {
           const pos = { lat: o.latitude, lng: o.longitude };
           const on = isOnline(o.last_seen);
           markers.current[o.officer_id] = new g.maps.Marker({
@@ -827,6 +909,7 @@ function LiveMap({ config }) {
   // re-render every second so the ● Live/Offline dots, the "X live · Y offline" count and the
   // "seen … ago" text stay accurate on their own, without waiting for the next fetch or a manual refresh
   useEffect(() => { const t = setInterval(() => setTick(x => (x + 1) % 100000), 1000); return () => clearInterval(t); }, []);
+  useEffect(() => { branchRef.current = branch; refresh(); }, [branch]);
 
   const navigateTo = (o) => window.open(`https://www.google.com/maps/dir/?api=1&destination=${o.latitude},${o.longitude}`, '_blank');
 
@@ -835,6 +918,7 @@ function LiveMap({ config }) {
     clearRouteLayers(routeObj.current); routeObj.current = null;
     if (routeLine.current) { routeLine.current.setMap(null); routeLine.current = null; }
     routeMarks.current.forEach(m => m.setMap(null)); routeMarks.current = [];
+    visitMarks.current.forEach(m => { try { m.setMap(null); } catch (e) {} }); visitMarks.current = []; setDayVisits(null);
   };
 
   const openHistory = async (o) => {
@@ -852,13 +936,44 @@ function LiveMap({ config }) {
       routeObj.current = drawRouteLeaflet(map.current, pts);
       routeActive.current = true;
       setRouteInfo((dates || []).find(d => d.date === selDate) || { points: pts.length });
+      // Overlay the day's field visits as numbered tags on the route.
+      try {
+        const dv = await api(`/api/visits/officer/${histOfficer.officer_id}/day?date=${selDate}`);
+        setDayVisits(dv);
+        const g = window.google;
+        (dv.visits || []).forEach((v, idx) => {
+          if (v.lat == null || v.lng == null) return;
+          const mk = new g.maps.Marker({
+            position: { lat: v.lat, lng: v.lng }, map: map.current,
+            title: `#${idx + 1} · ${v.time} · ${v.customer || ''}${v.paid ? ' · ₹' + v.amount : ''}`,
+            label: { text: String(idx + 1), color: '#fff', fontWeight: '700' },
+            icon: { path: g.maps.SymbolPath.CIRCLE, scale: 12, fillColor: v.paid ? '#16A34A' : (v.off_location ? '#DC2626' : '#D97706'), fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2 },
+          });
+          try { mk.addListener('click', () => setSelVisit(v)); } catch (e) {}
+          visitMarks.current.push(mk);
+        });
+      } catch (e) {}
     } catch (e) { toast(e.message, 'err'); }
   };
+  const dlDayExcel = () => {
+    if (!dayVisits || !window.XLSX) return;
+    const cols = ['#', 'Time', 'Customer', 'Account', 'Bank', 'Product', 'Disposition', 'Paid', 'Amount', 'N/S', 'Off-loc', 'Note'];
+    const aoa = [cols].concat((dayVisits.visits || []).map((v, i) => [i + 1, v.time, v.customer, v.account, v.bank, v.product, v.disposition, v.paid ? 'Yes' : '', v.amount, v.norm_stab, v.off_location ? 'Yes' : '', v.note]));
+    const ws = XLSX.utils.aoa_to_sheet(aoa); const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Visits');
+    XLSX.writeFile(wb, `Visits_${histOfficer.name}_${selDate}.xlsx`.replace(/[^\w.-]/g, '_'));
+  };
+
+  const shown = officers.filter(o => !branch || o.branch === branch);
 
   return (
     <div>
       <div className="toolbar">
         <span className="muted">Live field-officer positions · auto-refresh every 3s</span>
+        <select className="input" style={{ maxWidth: 190 }} value={branch} onChange={e => setBranch(e.target.value)}>
+          <option value="">All branches</option>
+          {[...new Set(officers.map(o => o.branch).filter(Boolean))].map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
         <div style={{ flex: 1 }} />
         {routeActive.current && <button className="btn sm" onClick={() => { clearRoute(); setRouteInfo(null); refresh(); }}>✕ Clear route</button>}
         <button className="btn sm" onClick={refresh}>↻ Refresh</button>
@@ -870,19 +985,20 @@ function LiveMap({ config }) {
         <div className="glass" style={{ padding: 6 }}><div className="map tall" ref={mapEl}></div></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div className="glass card">
-            <div className="section-h"><h3>Officers</h3>
+            <div className="section-h"><h3>Officers{branch ? ' · ' + branch : ''}</h3>
               <span style={{ fontSize: 12 }}>
-                <span style={{ color: 'var(--good)', fontWeight: 600 }}>● {officers.filter(o => isOnline(o.last_seen)).length} live</span>
-                <span className="muted"> · {officers.filter(o => !isOnline(o.last_seen)).length} offline</span>
+                <span style={{ color: 'var(--good)', fontWeight: 600 }}>● {shown.filter(o => isOnline(o.last_seen)).length} live</span>
+                <span className="muted"> · {shown.filter(o => !isOnline(o.last_seen)).length} offline</span>
               </span></div>
-            {officers.length === 0 && <p className="muted">No field officers active today. They appear here once their app has sent a location.</p>}
-            {officers.map(o => { const on = isOnline(o.last_seen); return <div key={o.officer_id} style={{ padding: '9px 0', borderBottom: '1px solid var(--stroke-soft)', opacity: on ? 1 : .62 }}>
+            {shown.length === 0 && <p className="muted">No field officers{branch ? ' in ' + branch : ''} active today. They appear here once their app has sent a location.</p>}
+            {shown.map(o => { const on = isOnline(o.last_seen); return <div key={o.officer_id} style={{ padding: '9px 0', borderBottom: '1px solid var(--stroke-soft)', opacity: on ? 1 : .62 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <div><b><span style={{ color: on ? 'var(--good)' : 'var(--ink-dim)' }}>●</span> {o.name}</b>
-                  <div className="muted" style={{ fontSize: 11.5 }}>{on ? 'Live now' : 'Offline · seen ' + agoLabel(o.last_seen)}</div></div>
+                  <div className="muted" style={{ fontSize: 11.5 }}>{on ? 'Live now' : 'Offline · seen ' + agoLabel(o.last_seen)}</div>
+                  <div className="muted" style={{ fontSize: 11 }}>🏢 {o.branch || '—'}{o.banks && o.banks.length ? ' · 🏦 ' + o.banks.join('/') : ''}</div></div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button className="btn sm gold" onClick={() => navigateTo(o)} title="Directions to live location">🧭</button>
-                  <button className="btn sm" onClick={() => openHistory(o)} title="Route history">🕘</button>
+                  <button className="btn sm" onClick={() => openHistory(o)} title="Route & visits">🕘</button>
                 </div>
               </div>
             </div>; })}
@@ -903,10 +1019,44 @@ function LiveMap({ config }) {
                 {routeInfo.first_seen && <div className="stat-row"><span className="k">Active</span><b>{routeInfo.first_seen}–{routeInfo.last_seen}</b></div>}
                 <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>🟢 S = start · 🔴 E = end of day</div>
               </div>}
+              {dayVisits && <div style={{ marginTop: 12, borderTop: '1px solid var(--stroke-soft)', paddingTop: 10 }}>
+                <div className="stat-row"><span className="k">Field visits</span><b>{dayVisits.count}</b></div>
+                <div className="stat-row"><span className="k">Collected on visits</span><b style={{ color: 'var(--good)' }}>{INR2(dayVisits.collected)}</b></div>
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>🟢 paid · 🟠 visit · 🔴 off-location — tap a numbered tag on the map for details</div>
+                <button className="btn block" style={{ marginTop: 8 }} onClick={() => setShowReport(true)}>📋 View day report / Excel</button>
+              </div>}
             </>}
           </div>}
         </div>
       </div>
+
+      {selVisit && <div className="modal-bg" onClick={() => setSelVisit(null)}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+        <div className="section-h"><h3>Visit — {selVisit.customer || '—'}</h3><button className="btn ghost sm" onClick={() => setSelVisit(null)}>✕</button></div>
+        <div className="stat-row"><span className="k">Time</span><b>{selVisit.time}</b></div>
+        <div className="stat-row"><span className="k">Account</span><b className="mono">{selVisit.account || '—'}</b></div>
+        <div className="stat-row"><span className="k">Bank / Product</span><b>{[selVisit.bank, selVisit.product].filter(Boolean).join(' · ') || '—'}</b></div>
+        <div className="stat-row"><span className="k">Disposition</span><b>{selVisit.disposition || '—'}</b></div>
+        {selVisit.paid && <div className="stat-row"><span className="k">Payment</span><b style={{ color: 'var(--good)' }}>{INR2(selVisit.amount)}{selVisit.norm_stab ? ' · ' + selVisit.norm_stab : ''}</b></div>}
+        {selVisit.person_moved && <div className="stat-row"><span className="k">Flag</span><b style={{ color: 'var(--warn)' }}>Person moved</b></div>}
+        {selVisit.off_location && <div className="stat-row"><span className="k">⚠ Location</span><b style={{ color: 'var(--bad)' }}>{Math.round(selVisit.distance_m)}m off case</b></div>}
+        {selVisit.note && <div style={{ marginTop: 8 }}><div className="muted" style={{ fontSize: 12 }}>Log submitted</div><div style={{ fontSize: 13, lineHeight: 1.5 }}>{selVisit.note}</div></div>}
+        {selVisit.photo && <img src={selVisit.photo} alt="visit" style={{ width: '100%', borderRadius: 10, marginTop: 10 }} />}
+        <button className="btn gold block" style={{ marginTop: 10 }} onClick={async () => { try { const c = await api('/api/cases/' + selVisit.case_id); setDrawerCase(c); setSelVisit(null); } catch (e) { toast(e.message, 'err'); } }}>Open full case</button>
+      </div></div>}
+
+      {showReport && dayVisits && <div className="modal-bg" onClick={() => setShowReport(false)}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 860, width: '96%' }}>
+        <div className="section-h"><h3>{histOfficer.name} — {selDate} field report</h3>
+          <div style={{ display: 'flex', gap: 6 }}><button className="btn sm gold" onClick={dlDayExcel}>⬇ Excel</button><button className="btn ghost sm" onClick={() => setShowReport(false)}>✕</button></div></div>
+        <div className="toolbar"><span>Visits <b>{dayVisits.count}</b></span><span>Collected <b style={{ color: 'var(--good)' }}>{INR2(dayVisits.collected)}</b></span></div>
+        <div className="tablewrap" style={{ maxHeight: 440, overflow: 'auto' }}><table><thead><tr><th>#</th><th>Time</th><th>Customer</th><th>Bank</th><th>Dispo</th><th>Paid</th><th>N/S</th><th>Log</th></tr></thead>
+          <tbody>{dayVisits.visits.map((v, i) => <tr key={i} style={{ cursor: 'pointer' }} onClick={() => setSelVisit(v)}>
+            <td>{i + 1}</td><td>{v.time}</td><td><b>{v.customer || '—'}</b></td><td>{v.bank}</td><td>{v.disposition || '—'}</td>
+            <td className="mono" style={{ color: 'var(--good)' }}>{v.paid ? INR2(v.amount) : '—'}</td><td>{v.norm_stab || '—'}</td>
+            <td className="muted" style={{ maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.note || '—'}</td></tr>)}</tbody></table></div>
+        {dayVisits.count === 0 && <div className="muted" style={{ padding: 16 }}>No visits logged this day.</div>}
+      </div></div>}
+
+      {drawerCase && <CaseDrawer c={drawerCase} onClose={() => setDrawerCase(null)} onChanged={() => {}} />}
     </div>
   );
 }
@@ -920,8 +1070,10 @@ const DARK_MAP_STYLE = [
 ];
 
 /* ============================== Staff (admin) ============================== */
-function StaffModal({ editing, onClose, onDone }) {
-  const [f, setF] = useState(editing || { name: '', email: '', role: 'fos', branch: '', password: '',
+function StaffModal({ editing, onClose, onDone, presetBranch, me }) {
+  const isMgr = me && me.role === 'manager';
+  const [f, setF] = useState(editing || { name: '', email: '', role: 'fos',
+    branch: isMgr ? (me.branch || '') : (presetBranch || ''), password: '',
     banks: [], assigned_pincodes: [], home_lat: '', home_lng: '' });
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
   const upd = (k, v) => setF(s => ({ ...s, [k]: v }));
@@ -948,8 +1100,9 @@ function StaffModal({ editing, onClose, onDone }) {
           <div className="field"><label>Name</label><input className="input" value={f.name} onChange={e => upd('name', e.target.value)} /></div>
           <div className="field"><label>Email</label><input className="input" value={f.email} disabled={!!editing} onChange={e => upd('email', e.target.value)} /></div>
           <div className="field"><label>Role</label><select className="input" value={f.role} onChange={e => upd('role', e.target.value)}>
-            <option value="fos">Field Agent</option><option value="telecaller">Tele-calling Agent</option><option value="manager">Collections Manager</option><option value="admin">Administrator</option></select></div>
-          <div className="field"><label>Branch</label><input className="input" value={f.branch || ''} onChange={e => upd('branch', e.target.value)} /></div>
+            <option value="fos">Field Agent</option><option value="telecaller">Tele-calling Agent</option><option value="backend">Back-office Official</option><option value="manager">Collections Manager</option>
+            {!isMgr && <option value="admin">Administrator</option>}</select></div>
+          <div className="field"><label>Branch</label><input className="input" value={f.branch || ''} disabled={isMgr} title={isMgr ? 'Locked to your branch' : ''} onChange={e => upd('branch', e.target.value)} /></div>
           <div className="field"><label>Phone</label><input className="input" value={f.phone || ''} onChange={e => upd('phone', e.target.value)} /></div>
           <div className="field"><label>{editing ? 'New password (blank = keep)' : 'Password'}</label>
             <input className="input" type="password" value={f.password || ''} onChange={e => upd('password', e.target.value)} /></div>
@@ -1132,36 +1285,204 @@ function ReportModal({ officers, onClose }) {
   );
 }
 
-function StaffView({ config }) {
-  const [users, setUsers] = useState(null); const [modal, setModal] = useState(false); const [editing, setEditing] = useState(null);
+function StaffView({ config, user }) {
+  const isAdmin = user.role === 'admin';
+  const [users, setUsers] = useState(null);
+  const [branches, setBranches] = useState(null);
+  const [openBranch, setOpenBranch] = useState(isAdmin ? null : (user.branch || 'Unassigned'));
+  const [modal, setModal] = useState(false); const [editing, setEditing] = useState(null); const [presetBranch, setPresetBranch] = useState('');
+  const [addBranch, setAddBranch] = useState(false);
   const [routeOfficer, setRouteOfficer] = useState(null); const [showReport, setShowReport] = useState(false);
-  const [liveOfficer, setLiveOfficer] = useState(null);
-  const load = () => api('/api/users').then(setUsers);
+  const [liveOfficer, setLiveOfficer] = useState(null); const [perfUser, setPerfUser] = useState(null); const [showChart, setShowChart] = useState(false); const [dashUser, setDashUser] = useState(null);
+  const load = () => { api('/api/users').then(setUsers); api('/api/team/branches').then(setBranches).catch(() => setBranches([])); };
   useEffect(() => { load(); }, []);
+
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+
+  // ---- Admin: branch grid ----
+  if (isAdmin && !openBranch) {
+    return (
+      <div>
+        <div className="toolbar"><div style={{ flex: 1 }} />
+          <button className="btn" onClick={() => setShowReport(true)}>📅 Attendance</button>
+          <button className="btn gold" onClick={() => setAddBranch(true)}>+ Add branch</button></div>
+        {!branches ? <Loader /> : branches.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No branches yet. Add one to assign a manager.</div> :
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 14 }}>
+            {branches.map(b => (
+              <div key={b.branch} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => setOpenBranch(b.branch)}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <b style={{ fontSize: 16 }}>{b.branch}</b><span className="badge allocated">{b.staff} staff</span></div>
+                <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>{b.manager ? '👤 ' + b.manager.name : '⚠ No manager'}</div>
+                <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 12 }} className="muted">
+                  <span>FOS {b.fos}</span><span>Callers {b.telecaller}</span><span>Back-office {b.backend}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10 }}>
+                  <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{money(b.received)}</b></div>
+                  <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--gold)' }}>{money(b.pending)}</b></div></div>
+              </div>))}
+          </div>}
+        {addBranch && <AddBranchModal onClose={() => setAddBranch(false)} onDone={() => { setAddBranch(false); load(); }} />}
+        {showReport && users && <ReportModal officers={users} onClose={() => setShowReport(false)} />}
+      </div>);
+  }
+
+  // ---- Branch detail: staff + stats ----
+  const branchName = openBranch;
+  const card = (branches || []).find(b => b.branch === branchName) || { branch: branchName, staff: 0, fos: 0, telecaller: 0, backend: 0, received: 0, pending: 0, cases: 0, manager: null };
+  const staff = (users || []).filter(u => (u.branch || 'Unassigned') === branchName);
   return (
     <div>
-      <div className="toolbar"><div style={{ flex: 1 }} />
-        <button className="btn" onClick={() => setShowReport(true)}>📅 Attendance report</button>
-        <button className="btn gold" onClick={() => { setEditing(null); setModal(true); }}>+ Add staff</button></div>
+      <div className="toolbar">
+        {isAdmin && <button className="btn ghost" onClick={() => setOpenBranch(null)}>← Branches</button>}
+        <h3 style={{ margin: 0 }}>{branchName}</h3><div style={{ flex: 1 }} />
+        <button className="btn" onClick={() => setShowChart(v => !v)}>📊 {showChart ? 'Hide analytics' : 'Analytics'}</button>
+        <button className="btn" onClick={() => setShowReport(true)}>📅 Attendance</button>
+        <button className="btn gold" onClick={() => { setEditing(null); setPresetBranch(branchName); setModal(true); }}>+ Add staff</button></div>
+
+      {showChart && <div style={{ marginBottom: 16 }}><Dashboard user={user} branch={branchName} /></div>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12, marginBottom: 14 }}>
+        <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Manager</div><b>{card.manager ? card.manager.name : '—'}</b></div>
+        <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Staff</div><b>{card.staff}</b></div>
+        <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Cases</div><b>{card.cases}</b></div>
+        <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{money(card.received)}</b></div>
+        <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Pending</div><b style={{ color: 'var(--gold)' }}>{money(card.pending)}</b></div>
+      </div>
+
       {!users ? <Loader /> : <div className="glass card" style={{ padding: 6 }}>
         <div className="tablewrap"><table>
-          <thead><tr><th>Name</th><th>Role</th><th>Branch</th><th>Banks</th><th>Pincodes</th><th>Status</th><th></th></tr></thead>
-          <tbody>{users.map(u => <tr key={u.id}>
-            <td><b>{u.name}</b><div className="muted" style={{ fontSize: 12 }}>{u.email}</div></td>
-            <td><span className="badge allocated">{roleName(u.role)}</span></td><td>{u.branch || '—'}</td>
-            <td>{(u.banks || []).join(', ') || '—'}</td><td>{(u.assigned_pincodes || []).join(', ') || '—'}</td>
+          <thead><tr><th>Name</th><th>Role</th><th>Banks</th><th>Status</th><th></th></tr></thead>
+          <tbody>{staff.map(u => <tr key={u.id}>
+            <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} title="Open full dashboard" onClick={() => setDashUser(u)}>{u.name}</b><div className="muted" style={{ fontSize: 12 }}>{u.email}</div></td>
+            <td><span className="badge allocated">{roleName(u.role)}</span></td>
+            <td>{(u.banks || []).join(', ') || '—'}</td>
             <td>{u.is_active ? <span className="badge paid">active</span> : <span className="badge unpaid">off</span>}</td>
             <td style={{ whiteSpace: 'nowrap' }}>
-              {u.role === 'fos' && <button className="btn sm gold" onClick={() => setLiveOfficer(u)} title="Today's live route & movement">📍 Live route</button>}
-              {' '}{u.role === 'fos' && <button className="btn sm" onClick={() => setRouteOfficer(u)} title="3-month route history">🕘 History</button>}
-              {' '}<button className="btn sm" onClick={() => { setEditing(u); setModal(true); }}>Edit</button></td></tr>)}
-          </tbody></table></div></div>}
-      {modal && <StaffModal editing={editing} onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
+              {(u.role === 'fos' || u.role === 'telecaller') && <button className="btn sm gold" onClick={() => setPerfUser(u)} title="Daily / weekly / monthly performance">📈 Performance</button>}
+              {' '}{u.role === 'fos' && <button className="btn sm" onClick={() => setLiveOfficer(u)} title="Today's live route">📍 Live</button>}
+              {' '}{u.role === 'fos' && <button className="btn sm" onClick={() => setRouteOfficer(u)} title="Route history">🕘 History</button>}
+              {' '}<button className="btn sm" onClick={() => { setEditing(u); setPresetBranch(branchName); setModal(true); }}>Edit</button></td></tr>)}
+          </tbody></table></div>
+        {staff.length === 0 && <div className="muted" style={{ padding: 18, textAlign: 'center' }}>No staff in this branch yet.</div>}</div>}
+
+      {modal && <StaffModal me={user} editing={editing} presetBranch={presetBranch} onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
+      {perfUser && <PerformanceModal u={perfUser} onClose={() => setPerfUser(null)} />}
+      {dashUser && <EmployeeDashboard u={dashUser} config={config} onClose={() => setDashUser(null)} />}
       {routeOfficer && <RouteHistoryModal officer={routeOfficer} config={config} onClose={() => setRouteOfficer(null)} />}
       {liveOfficer && <LiveRouteModal officer={liveOfficer} config={config} onClose={() => setLiveOfficer(null)} />}
       {showReport && users && <ReportModal officers={users} onClose={() => setShowReport(false)} />}
     </div>
   );
+}
+
+function AddBranchModal({ onClose, onDone }) {
+  const [branch, setBranch] = useState(''); const [name, setName] = useState(''); const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState(''); const [password, setPassword] = useState(''); const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const save = async () => {
+    setBusy(true); setErr('');
+    try { await api('/api/team/branches', { method: 'POST', body: { branch, manager: { name, email, phone, password } } }); onDone(); }
+    catch (e) { setErr(e.message || 'Could not create branch'); } finally { setBusy(false); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+      <div className="section-h"><h3>New branch + manager</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+      <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>Creating a branch assigns its Collections Manager, who can then add staff under it.</p>
+      <div className="field"><label>Branch name</label><input className="input" value={branch} onChange={e => setBranch(e.target.value)} placeholder="e.g. Vizag" /></div>
+      <div className="field"><label>Manager name</label><input className="input" value={name} onChange={e => setName(e.target.value)} /></div>
+      <div className="field"><label>Manager email</label><input className="input" value={email} onChange={e => setEmail(e.target.value)} /></div>
+      <div className="field"><label>Manager phone</label><input className="input" value={phone} onChange={e => setPhone(e.target.value)} /></div>
+      <div className="field"><label>Temp password</label><input className="input" value={password} onChange={e => setPassword(e.target.value)} /></div>
+      {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
+      <button className="btn gold block" disabled={busy || !branch || !name || !email || !password} onClick={save}>{busy ? 'Creating…' : 'Create branch'}</button>
+    </div></div>);
+}
+
+function PerformanceModal({ u, onClose }) {
+  const [data, setData] = useState(null); const [err, setErr] = useState('');
+  useEffect(() => { api('/api/team/user/' + u.id + '/performance').then(setData).catch(e => setErr(e.message || 'Could not load')); }, [u.id]);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const Row = ({ label, w }) => (
+    <div className="glass card" style={{ padding: 14 }}>
+      <div className="muted" style={{ fontSize: 12 }}>{label}</div>
+      <div style={{ display: 'flex', gap: 18, marginTop: 6 }}>
+        <div><b style={{ fontSize: 20 }}>{w.count}</b><div className="muted" style={{ fontSize: 11 }}>{w.label}</div></div>
+        {w.ptp != null && <div><b style={{ fontSize: 20 }}>{w.ptp}</b><div className="muted" style={{ fontSize: 11 }}>PTP</div></div>}
+        <div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(w.collected)}</b><div className="muted" style={{ fontSize: 11 }}>collected</div></div>
+      </div></div>);
+  return (
+    <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+      <div className="section-h"><h3>{u.name} — performance</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+      {err ? <div style={{ color: 'var(--bad)' }}>{err}</div> : !data ? <Loader /> :
+        <div style={{ display: 'grid', gap: 10 }}>
+          <Row label="Today" w={data.daily} /><Row label="This week" w={data.weekly} />
+          <Row label="This month" w={data.monthly} /><Row label="Overall" w={data.overall} />
+        </div>}
+    </div></div>);
+}
+
+function EKpi({ label, val, color }) {
+  return <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>{label}</div><b style={{ fontSize: 18, color: color || 'inherit' }}>{val}</b></div>;
+}
+
+function EmployeeDashboard({ u, config, onClose }) {
+  const [d, setD] = useState(null); const [err, setErr] = useState('');
+  const [route, setRoute] = useState(null); const [live, setLive] = useState(null);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const loadEmp = () => api('/api/team/user/' + u.id + '/dashboard').then(setD).catch(e => setErr(e.message || 'Could not load'));
+  useEffect(() => { loadEmp(); }, [u.id]);
+  useDataChanged(loadEmp);   // live: employee dashboard refreshes on any log
+  const isFos = u.role === 'fos';
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 920, width: '96%' }}>
+        <div className="section-h"><h3 style={{ margin: 0 }}>{u.name} <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>· {roleName(u.role)}{u.branch ? ' · ' + u.branch : ''}</span></h3>
+          <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        {err && <div style={{ color: 'var(--bad)' }}>{err}</div>}
+        {!d ? <Loader /> : <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(120px,1fr))', gap: 10 }}>
+            <EKpi label="Assigned" val={d.kpis.assigned} />
+            <EKpi label="Resolved" val={d.kpis.resolved} color="var(--good)" />
+            <EKpi label="Pending" val={d.kpis.pending_count} color="var(--warn)" />
+            <EKpi label="Recovered" val={money(d.kpis.recovered)} color="var(--good)" />
+            <EKpi label="Recovery %" val={d.kpis.recovery_pct + '%'} />
+            <EKpi label="Cash coll" val={money(d.kpis.cash_collected)} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 10, marginTop: 12 }}>
+            {['daily', 'weekly', 'monthly', 'overall'].map(w => { const p = d.performance[w]; return (
+              <div key={w} className="glass card" style={{ padding: 12 }}>
+                <div className="muted" style={{ fontSize: 12, textTransform: 'capitalize' }}>{w}</div>
+                <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
+                  <div><b style={{ fontSize: 18 }}>{p.count}</b><div className="muted" style={{ fontSize: 10 }}>{p.label}</div></div>
+                  {p.ptp != null && <div><b style={{ fontSize: 18 }}>{p.ptp}</b><div className="muted" style={{ fontSize: 10 }}>PTP</div></div>}
+                  <div><b style={{ fontSize: 18, color: 'var(--good)' }}>{money(p.collected)}</b><div className="muted" style={{ fontSize: 10 }}>coll</div></div>
+                </div></div>); })}
+          </div>
+          <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+            <div className="glass card" style={{ padding: 12 }}><b>Collection trend (30d)</b>
+              <ChartBox type="line" height={200} data={{ labels: d.trend.map(t => t.date.slice(5)), datasets: [{ data: d.trend.map(t => t.collected), borderColor: '#2563EB', backgroundColor: 'rgba(37,99,235,.12)', fill: true, tension: .3 }] }} options={{ plugins: { legend: { display: false } } }} /></div>
+            <div className="glass card" style={{ padding: 12 }}><b>Dispositions</b>
+              {d.dispositions.length ? <ChartBox type="doughnut" height={200} options={{ cutout: '60%' }} data={{ labels: d.dispositions.map(x => x.label), datasets: [{ data: d.dispositions.map(x => x.count), backgroundColor: ['#2563EB', '#16A34A', '#D97706', '#DC2626', '#3B82F6', '#8494A8', '#1D4ED8', '#F59E0B'] }] }} /> : <div className="muted" style={{ padding: 20 }}>No dispositions yet.</div>}</div>
+          </div>
+          <div className="glass card" style={{ padding: 12, marginTop: 12 }}>
+            {isFos ? <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+              <span>Visits <b>{d.field.visits}</b></span><span>Today <b>{d.field.visits_today}</b></span>
+              <span>Distance <b>{d.field.distance_km} km</b></span><span>Off-location <b style={{ color: 'var(--bad)' }}>{d.field.off_location}</b></span>
+              <div style={{ flex: 1 }} />
+              <button className="btn sm gold" onClick={() => setLive(u)}>📍 Live route</button>
+              <button className="btn sm" onClick={() => setRoute(u)}>🕘 History</button>
+            </div> : <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+              <span>Calls <b>{d.field.calls}</b></span><span>Today <b>{d.field.calls_today}</b></span>
+              <span>PTP <b>{d.field.ptp_total}</b></span><span>Kept <b style={{ color: 'var(--good)' }}>{d.field.ptp_kept}</b></span><span>Broken <b style={{ color: 'var(--bad)' }}>{d.field.ptp_broken}</b></span>
+            </div>}
+          </div>
+          <div className="glass card" style={{ padding: 6, marginTop: 12 }}>
+            <div className="section-h" style={{ padding: '6px 8px' }}><h3 style={{ margin: 0, fontSize: 15 }}>Assigned cases ({d.recent_cases.length})</h3></div>
+            <div className="tablewrap" style={{ maxHeight: 300, overflow: 'auto' }}><table><thead><tr><th>Customer</th><th>Bank</th><th>Product</th><th>Pending</th><th>Status</th><th>Paid</th><th>Dispo</th></tr></thead>
+              <tbody>{d.recent_cases.map((c, i) => <tr key={i}><td><b>{c.customer || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{c.account}</div></td><td>{c.bank}</td><td>{c.product || '—'}</td><td className="mono" style={{ color: 'var(--warn)' }}>{money(c.pending)}</td><td><StatusBadge s={c.status} /></td><td><PaidBadge s={c.paid_status} /></td><td className="muted">{c.disposition || '—'}</td></tr>)}</tbody></table></div>
+          </div>
+        </>}
+        {route && <RouteHistoryModal officer={route} config={config} onClose={() => setRoute(null)} />}
+        {live && <LiveRouteModal officer={live} config={config} onClose={() => setLive(null)} />}
+      </div></div>);
 }
 
 /* ============================== Field Officer ============================== */
@@ -1476,14 +1797,14 @@ const DISPOS_CALL = ['RTP', 'PTP', 'RNR', 'SWITCHED OFF', 'WRONG NUMBER', 'BUSY'
 function CallModal({ c, onClose, onDone }) {
   const [dispo, setDispo] = useState('PTP'); const [amt, setAmt] = useState('');
   const [ptpDate, setPtpDate] = useState(''); const [followDate, setFollowDate] = useState('');
-  const [paidAmt, setPaidAmt] = useState(''); const [note, setNote] = useState('');
+  const [paidAmt, setPaidAmt] = useState(''); const [note, setNote] = useState(''); const [normStab, setNormStab] = useState('STAB');
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
-  const isPTP = dispo === 'PTP' || dispo === 'RTP'; const isPaid = dispo === 'PAID';
+  const isPTP = dispo === 'PTP' || dispo === 'RTP'; const isPaid = dispo === 'PAID'; const isCC = c.segment === 'Credit Card';
   const save = async () => {
     setErr(''); setBusy(true);
     const body = { case_id: c.id, disposition: dispo, note };
     if (isPTP) { body.ptp_amount = amt || '0'; body.ptp_date = ptpDate || null; }
-    else if (isPaid) { body.paid_amount = paidAmt || '0'; }
+    else if (isPaid) { body.paid_amount = paidAmt || '0'; if (isCC) body.norm_stab = normStab; }
     else { body.follow_up_date = followDate || null; }
     try { await api('/api/calls', { method: 'POST', body });
       toast(isPaid ? 'Marked paid — removed from queue.' : 'Call logged.'); onDone();
@@ -1508,8 +1829,12 @@ function CallModal({ c, onClose, onDone }) {
           <div className="field"><label>PTP amount (₹)</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} /></div>
           <div className="field"><label>PTP date</label><input className="input" type="date" value={ptpDate} onChange={e => setPtpDate(e.target.value)} /></div>
         </div>}
-        {isPaid && <div className="field"><label>Amount collected (₹)</label>
-          <input className="input" type="number" value={paidAmt} onChange={e => setPaidAmt(e.target.value)} placeholder="0.00" /></div>}
+        {isPaid && <div className="grid2" style={{ gridTemplateColumns: isCC ? '1fr 1fr' : '1fr' }}>
+          <div className="field"><label>Amount collected (₹)</label>
+            <input className="input" type="number" value={paidAmt} onChange={e => setPaidAmt(e.target.value)} placeholder="0.00" /></div>
+          {isCC && <div className="field"><label>Paid at (credit card)</label>
+            <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option></select></div>}
+        </div>}
         {!isPTP && !isPaid && <div className="field"><label>Schedule next call (optional)</label>
           <input className="input" type="date" value={followDate} onChange={e => setFollowDate(e.target.value)} /></div>}
         <div className="field"><label>Note</label><textarea className="input" value={note} onChange={e => setNote(e.target.value)} /></div>
@@ -1536,9 +1861,9 @@ function CaseDrawer({ c, onClose, onChanged }) {
   const [tpls, setTpls] = useState([]); const [tplId, setTplId] = useState(''); const [msg, setMsg] = useState('');
   const [dispo, setDispo] = useState('PTP'); const [amt, setAmt] = useState(''); const [ptpDate, setPtpDate] = useState('');
   const [followDate, setFollowDate] = useState(''); const [callNote, setCallNote] = useState('');
-  const [payAmt, setPayAmt] = useState(''); const [payMode, setPayMode] = useState('UPI'); const [payNote, setPayNote] = useState('');
+  const [payAmt, setPayAmt] = useState(''); const [payMode, setPayMode] = useState('UPI'); const [payNote, setPayNote] = useState(''); const [normStab, setNormStab] = useState('STAB');
   const [busy, setBusy] = useState(false);
-  const isPTP = dispo === 'PTP' || dispo === 'RTP'; const isPaid = dispo === 'PAID';
+  const isPTP = dispo === 'PTP' || dispo === 'RTP'; const isPaid = dispo === 'PAID'; const isCC = cur.segment === 'Credit Card';
   const refresh = () => Promise.all([
     api(`/api/cases/${c.id}`).then(setCur).catch(() => {}),
     api(`/api/cases/${c.id}/timeline`).then(setHist).catch(() => setHist([])),
@@ -1554,7 +1879,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
     setBusy(true);
     const body = { case_id: c.id, disposition: dispo, note: callNote };
     if (isPTP) { body.ptp_amount = amt || '0'; body.ptp_date = ptpDate || null; }
-    else if (isPaid) { body.paid_amount = amt || '0'; }
+    else if (isPaid) { body.paid_amount = amt || '0'; if (isCC) body.norm_stab = normStab; }
     else { body.follow_up_date = followDate || null; }
     try { await api('/api/calls', { method: 'POST', body }); toast('Call logged.');
       setCallNote(''); await refresh(); onChanged && onChanged();
@@ -1562,7 +1887,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
   };
   const recordPay = async () => {
     if (!payAmt) return; setBusy(true);
-    try { const updated = await api(`/api/cases/${c.id}/payment`, { method: 'POST', body: { amount: payAmt, mode: payMode, note: payNote } });
+    try { const updated = await api(`/api/cases/${c.id}/payment`, { method: 'POST', body: { amount: payAmt, mode: payMode, note: payNote, norm_stab: isCC ? normStab : null } });
       setCur(updated); setPayAmt(''); setPayNote(''); toast('Payment recorded.'); await refresh(); onChanged && onChanged();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
@@ -1612,7 +1937,9 @@ function CaseDrawer({ c, onClose, onChanged }) {
           {isPTP && <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
             <div className="field"><label>PTP amount (₹)</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} /></div>
             <div className="field"><label>PTP date</label><input className="input" type="date" value={ptpDate} onChange={e => setPtpDate(e.target.value)} /></div></div>}
-          {isPaid && <div className="field"><label>Amount collected (₹)</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} /></div>}
+          {isPaid && <div className="grid2" style={{ gridTemplateColumns: isCC ? '1fr 1fr' : '1fr' }}>
+            <div className="field"><label>Amount collected (₹)</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} /></div>
+            {isCC && <div className="field"><label>Paid at (credit card)</label><select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option></select></div>}</div>}
           {!isPTP && !isPaid && <div className="field"><label>Schedule next call (optional)</label><input className="input" type="date" value={followDate} onChange={e => setFollowDate(e.target.value)} /></div>}
           <div className="field"><label>Note</label><textarea className="input" value={callNote} onChange={e => setCallNote(e.target.value)} /></div>
           <button className="btn gold block" onClick={logCall} disabled={busy}>Save call</button>
@@ -1622,6 +1949,8 @@ function CaseDrawer({ c, onClose, onChanged }) {
             <div className="field"><label>Amount (₹)</label><input className="input" type="number" value={payAmt} onChange={e => setPayAmt(e.target.value)} placeholder="0.00" /></div>
             <div className="field"><label>Mode</label><select className="input" value={payMode} onChange={e => setPayMode(e.target.value)}>
               <option>UPI</option><option>Cash</option><option>Bank Transfer</option><option>Cheque</option><option>BBPS</option></select></div></div>
+          {isCC && <div className="field"><label>Paid at (credit card)</label>
+            <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option></select></div>}
           <div className="field"><label>Note (optional)</label><input className="input" value={payNote} onChange={e => setPayNote(e.target.value)} /></div>
           <button className="btn gold block" onClick={recordPay} disabled={busy || !payAmt}>Save payment</button>
           {(() => {
@@ -1810,17 +2139,28 @@ function PTPTracker() {
 }
 
 /* ============================== Records / Activity (admin) ============================== */
-function RecordsView() {
+function RecordsView({ user }) {
   const [sum, setSum] = useState(null); const [items, setItems] = useState(null);
   const [kind, setKind] = useState('all'); const [drawer, setDrawer] = useState(null); const [flagOnly, setFlagOnly] = useState(false);
+  const [opts, setOpts] = useState({ banks: [], branches: [], products: [], areas: [], employees: [] });
+  const [f, setF] = useState({ bank: '', branch: '', product: '', area: '', emp: '' });
+  const isManager = user && user.role === 'manager';
+  useEffect(() => { api('/api/analytics/activity/filters').then(setOpts).catch(() => {}); }, []);
   const load = () => {
     api('/api/analytics/summary').then(setSum).catch(() => {});
-    api('/api/analytics/activity?kind=' + kind + '&limit=200').then(setItems).catch(() => setItems([]));
+    const qs = new URLSearchParams({ kind, limit: '250' });
+    ['bank', 'branch', 'product', 'area', 'emp'].forEach(k => { if (f[k]) qs.set(k, f[k]); });
+    api('/api/analytics/activity?' + qs.toString()).then(setItems).catch(() => setItems([]));
   };
-  useEffect(() => { load(); }, [kind]);
+  useEffect(() => { load(); }, [kind, f]);
+  useDataChanged(load);
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const reset = () => setF({ bank: '', branch: '', product: '', area: '', emp: '' });
+  const activeCount = Object.values(f).filter(Boolean).length;
   const icon = t => t === 'payment' ? '💰' : t === 'call' ? '📞' : '📍';
   const shown = (items || []).filter(r => !flagOnly || r.off_location);
   const flagged = (items || []).filter(r => r.off_location).length;
+  const sel = { minWidth: 130, maxWidth: 180, height: 34, padding: '0 8px', fontSize: 13 };
   return (
     <div>
       {sum && <div className="kpis">
@@ -1832,20 +2172,40 @@ function RecordsView() {
         <div className="glass kpi"><div className="l">Location pings</div><div className="v">{sum.location_pings}</div>
           <div className="sub">{sum.import_batches} uploads</div></div>
       </div>}
+      <div className="glass card" style={{ padding: 10, marginBottom: 12 }}>
+        <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <select className="input" style={sel} value={f.bank} onChange={e => set('bank', e.target.value)}>
+            <option value="">All banks</option>{opts.banks.map(b => <option key={b} value={b}>{b}</option>)}</select>
+          {!isManager && <select className="input" style={sel} value={f.branch} onChange={e => set('branch', e.target.value)}>
+            <option value="">All branches</option>{opts.branches.map(b => <option key={b} value={b}>{b}</option>)}</select>}
+          <select className="input" style={sel} value={f.product} onChange={e => set('product', e.target.value)}>
+            <option value="">All products</option>{opts.products.map(p => <option key={p} value={p}>{p}</option>)}</select>
+          <select className="input" style={sel} value={f.area} onChange={e => set('area', e.target.value)}>
+            <option value="">All areas (code)</option>{opts.areas.map(a => <option key={a} value={a}>{a}</option>)}</select>
+          <select className="input" style={sel} value={f.emp} onChange={e => set('emp', e.target.value)}>
+            <option value="">All FOS &amp; callers</option>
+            {opts.employees.map(e => <option key={e.id} value={e.id}>{e.name} · {e.role === 'fos' ? 'FOS' : 'Caller'}</option>)}</select>
+          {activeCount > 0 && <button className="btn sm" onClick={reset}>✕ Clear ({activeCount})</button>}
+        </div>
+      </div>
       <div className="toolbar">
         {[['all', 'All activity'], ['visits', 'Field visits'], ['calls', 'Calls'], ['payments', 'Payments']].map(([k, l]) =>
           <div key={k} className={cx('chip', kind === k && 'on')} onClick={() => { setKind(k); setFlagOnly(false); }}>{l}</div>)}
         <div className={cx('chip', flagOnly && 'on')} onClick={() => setFlagOnly(v => !v)}>⚠ Off-location{flagged ? ` (${flagged})` : ''}</div>
-        <div style={{ flex: 1 }} /><button className="btn sm" onClick={load}>↻ Refresh</button>
+        <div style={{ flex: 1 }} />
+        <span className="muted" style={{ fontSize: 12, marginRight: 8 }}>{shown.length} record{shown.length === 1 ? '' : 's'}</span>
+        <button className="btn sm" onClick={load}>↻ Refresh</button>
       </div>
-      {!items ? <Loader /> : shown.length === 0 ? <p className="muted">{flagOnly ? 'No off-location visits — all clear.' : 'No records yet.'}</p> :
+      {!items ? <Loader /> : shown.length === 0 ? <p className="muted">{flagOnly ? 'No off-location visits — all clear.' : 'No activity matches these filters.'}</p> :
         <div className="glass card" style={{ padding: 6 }}>
           <div className="tablewrap"><table>
-            <thead><tr><th></th><th>When</th><th>Customer</th><th>Bank</th><th>By</th><th>Detail</th><th>Amount</th><th></th></tr></thead>
+            <thead><tr><th></th><th>When</th><th>Customer</th><th>Bank</th><th>Product</th><th>Area</th><th>Branch</th><th>By</th><th>Detail</th><th>Amount</th><th></th></tr></thead>
             <tbody>{shown.map((r, i) => <tr key={i} style={r.off_location ? { background: 'rgba(240,119,107,.08)' } : null}>
               <td>{icon(r.type)}</td>
               <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{toDate(r.at).toLocaleString()}</td>
-              <td><b>{r.customer || '—'}</b></td><td>{r.bank || '—'}</td><td>{r.by || '—'}</td>
+              <td><b>{r.customer || '—'}</b></td><td>{r.bank || '—'}</td>
+              <td className="muted">{r.product || '—'}</td><td className="muted">{r.area || '—'}</td><td className="muted">{r.branch || '—'}</td>
+              <td>{r.by || '—'}</td>
               <td className="muted">{r.detail || '—'}
                 {r.photo && <a href={r.photo} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📷</a>}
                 {r.lat && <a href={`https://maps.google.com/?q=${r.lat},${r.lng}`} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📍</a>}
@@ -2198,6 +2558,179 @@ function SecurityView({ user }) {
 }
 
 /* ============================== Shell + App ============================== */
+/* Live refresh — runs cb (debounced) whenever the server broadcasts a data change
+   (any FOS/caller log, payment, or sheet edit). Used by MIS, dashboards, cases. */
+function useDataChanged(cb) {
+  const ref = React.useRef(cb); ref.current = cb;
+  React.useEffect(() => {
+    let stop = false, ws, timer;
+    const connect = () => {
+      try {
+        ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
+        ws.onmessage = e => { try { const m = JSON.parse(e.data); if (m.type === 'data_changed' || m.type === 'case_update') { clearTimeout(timer); timer = setTimeout(() => ref.current(m), 700); } } catch (_) {} };
+        ws.onclose = () => { if (!stop) setTimeout(connect, 3000); };
+      } catch (_) { if (!stop) setTimeout(connect, 3000); }
+    };
+    connect();
+    return () => { stop = true; clearTimeout(timer); try { ws && ws.close(); } catch (_) {} };
+  }, []);
+}
+
+/* ==================== MIS (analysis core) ==================== */
+function MISView({ user }) {
+  const canTarget = user.role === 'admin' || user.role === 'manager';
+  const [prods, setProds] = useState(null); const [sel, setSel] = useState(null); const [ov, setOv] = useState(null);
+  const [d, setD] = useState(null); const [err, setErr] = useState(''); const [emp, setEmp] = useState('');
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  useEffect(() => {
+    api('/api/cases/product-summary').then(rows => {
+      const seen = {}, list = [];
+      (rows || []).forEach(r => { const k = r.bank + '||' + r.product; if (!seen[k] && r.product !== '—') { seen[k] = 1; list.push({ bank: r.bank, product: r.product }); } });
+      setProds(list); if (list[0]) setSel(list[0]);
+    }).catch(() => setProds([]));
+    api('/api/mis/overview').then(setOv).catch(() => {});
+  }, []);
+  const load = () => { if (!sel) { setD(null); return; } api(`/api/mis?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}`).then(setD).catch(e => setErr(e.message || 'Could not load MIS')); };
+  useEffect(() => { setErr(''); setD(null); load(); }, [sel]);
+  // Real-time: recompute the MIS instantly whenever any log/payment/edit lands.
+  useDataChanged(m => { if (!sel) return; if (m && m.product && m.product !== sel.product) return; load(); api('/api/mis/overview').then(setOv).catch(() => {}); });
+  const saveTarget = (e, emp) => {
+    const v = parseFloat(e.target.value) || 0;
+    api('/api/mis/target', { method: 'PUT', body: { bank: sel.bank, product: sel.product, emp, target_pct: v } }).then(load).catch(() => {});
+  };
+  const dl = (tables) => download(`/api/mis/download?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&tables=${tables}`, `MIS_${sel.bank}_${sel.product}.xlsx`);
+
+  if (!prods) return <Loader />;
+  if (!prods.length) return <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No products with cases yet. Upload a product file first.</div>;
+
+  const fmtCell = (k, v) => {
+    if (v === null || v === undefined || v === '') return '—';
+    if (/(_pct$|^pct$)/.test(k)) return v + '%';
+    if (typeof v === 'boolean') return v ? 'Yes' : '—';
+    if (/(enr|amount|pending|collected|cash|coll|leakage|target_enr|achieved_enr|gap)/.test(k) && typeof v === 'number') return money(v);
+    return v;
+  };
+  const printTable = (title, headers, rows2d) => {
+    const w = window.open('', '_blank'); if (!w) return;
+    const th = headers.map(h => '<th>' + h + '</th>').join('');
+    const body = rows2d.map(r => '<tr>' + r.map(c => '<td>' + (c == null ? '' : String(c)) + '</td>').join('') + '</tr>').join('');
+    w.document.write('<html><head><title>' + title + '</title><style>body{font-family:system-ui;padding:22px}h2{color:#2563EB}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #cbd5e1;padding:5px 8px;text-align:left}th{background:#EEF3FB}</style></head><body><h2>' + title + ' — ' + sel.bank + ' ' + sel.product + '</h2><table><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table></body></html>');
+    w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch (e) {} }, 350);
+  };
+  const goto = tk => { const el = document.getElementById('mis-' + tk); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+
+  const GROUP = [['label', 'Name'], ['count', 'Count'], ['paid', 'Paid'], ['unpaid', 'Unpaid'], ['enr', 'ENR'], ['paid_enr', 'Paid ENR'], ['pct', 'Paid %'], ['norm_pct', 'NORM %'], ['stab_pct', 'STAB %'], ['amount', 'Cash'], ['visited', 'Vis'], ['not_visited', 'Not vis']];
+  const CASES = [['customer', 'Customer'], ['account', 'Account'], ['pending', 'Pending'], ['enr', 'ENR'], ['propensity', 'Score'], ['fos', 'FOS'], ['caller', 'Caller']];
+  const TABLES = [
+    ['by_fos', GROUP], ['by_caller', GROUP], ['by_area', GROUP], ['by_team_lead', GROUP], ['by_cat', GROUP], ['by_dpd', GROUP],
+    ['aging', [['label', 'Recency'], ['count', 'Count'], ['pending', 'Pending']]],
+    ['untouched_table', CASES], ['top_pending', CASES], ['priority', CASES],
+    ['obstacles', [['caller', 'Caller'], ['total', 'Total'], ['obstacles', 'Obstacles'], ['rate_pct', 'Rate %']]],
+    ['productivity', [['emp', 'Employee'], ['calls_today', 'Calls'], ['visits_today', 'Visits'], ['idle', 'Idle']]],
+    ['field_efficiency', [['fos', 'FOS'], ['visits', 'Visits'], ['distance_km', 'Dist km'], ['off_location', 'Off-loc'], ['collected', 'Collected']]],
+    ['trend', [['date', 'Date'], ['collected', 'Collected']]],
+  ];
+  const MisTable = ({ tk, cols }) => {
+    const rows = (d && d[tk]) || [];
+    const title = (d && d.table_names && d.table_names[tk]) || tk;
+    const doPrint = () => printTable(title, cols.map(c => c[1]), rows.map(r => cols.map(c => fmtCell(c[0], r[c[0]]))));
+    return <div id={'mis-' + tk} className="glass card" style={{ padding: 10, marginTop: 14 }}>
+      <div className="section-h"><h3 style={{ margin: 0 }}>{title}</h3>
+        <div style={{ display: 'flex', gap: 6 }}><button className="btn sm" onClick={() => dl(tk)}>⬇</button><button className="btn sm" onClick={doPrint}>🖨</button></div></div>
+      <div className="tablewrap"><table><thead><tr>{cols.map(c => <th key={c[0]}>{c[1]}</th>)}</tr></thead>
+        <tbody>{rows.map((r, i) => <tr key={i}>{cols.map(c => <td key={c[0]} className={typeof r[c[0]] === 'number' ? 'mono' : ''}>{fmtCell(c[0], r[c[0]])}</td>)}</tr>)}</tbody></table></div>
+      {rows.length === 0 && <div className="muted" style={{ padding: 12 }}>No data.</div>}
+    </div>;
+  };
+  const STATUS_COLOR = { green: 'var(--good)', amber: 'var(--warn)', red: 'var(--bad)', none: '#c9ced8' };
+  const lb = d ? (emp ? d.leaderboard.filter(x => x.emp === emp) : d.leaderboard) : [];
+  const proj = d && d.projection; const fn = d && d.funnel; const st = d && d.settlement;
+
+  return (
+    <div>
+      <div className="toolbar">
+        <select className="input" style={{ maxWidth: 260 }} value={sel ? sel.bank + '||' + sel.product : ''}
+          onChange={e => { const [b, p] = e.target.value.split('||'); setSel({ bank: b, product: p }); setEmp(''); }}>
+          {prods.map((p, i) => <option key={i} value={p.bank + '||' + p.product}>{p.bank} · {p.product}</option>)}
+        </select>
+        {d && <select className="input" style={{ maxWidth: 220 }} value={emp} onChange={e => setEmp(e.target.value)}>
+          <option value="">All employees</option>
+          {d.by_fos.map((r, i) => <option key={i} value={r.label}>{r.label}</option>)}
+        </select>}
+        <div style={{ flex: 1 }} />
+        {d && <button className="btn gold" onClick={() => dl(Object.keys(d.table_names || {}).join(','))}>⬇ Download all MIS</button>}
+      </div>
+      {err && <div className="glass card" style={{ color: 'var(--bad)' }}>{err}</div>}
+      {!d ? <Loader /> : <>
+        {/* Table index */}
+        <div className="glass card" style={{ padding: 10, marginBottom: 12 }}>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>MIS tables — jump to</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            <div className="chip" onClick={() => goto('leaderboard')}>Leaderboard</div>
+            {TABLES.map(([tk]) => <div key={tk} className="chip" onClick={() => goto(tk)}>{(d.table_names && d.table_names[tk]) || tk}</div>)}
+          </div>
+        </div>
+
+        {/* KPIs + projection */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12 }}>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total cases</div><b style={{ fontSize: 20 }}>{d.overall.count}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total ENR</div><b style={{ fontSize: 20 }}>{money(d.overall.enr)}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Paid ENR</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(d.overall.paid_enr)}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Achieved %</div><b style={{ fontSize: 20, color: 'var(--gold)' }}>{d.overall.pct}%</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Collected (MTD)</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(proj.collected_mtd)}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Projected month-end</div><b style={{ fontSize: 20 }}>{money(proj.projected_month_end)}</b><div className="muted" style={{ fontSize: 11 }}>{proj.projected_pct}% of target</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>PTP kept</div><b style={{ fontSize: 20 }}>{fn.ptp_kept}/{fn.ptp_total}</b><div className="muted" style={{ fontSize: 11 }}>{fn.ptp_kept_pct}% · {fn.ptp_broken} broken</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Untouched</div><b style={{ fontSize: 20, color: 'var(--bad)' }}>{fn.untouched}</b><div className="muted" style={{ fontSize: 11 }}>{money(fn.untouched_pending)} pending</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Realization</div><b style={{ fontSize: 20 }}>{st.realization_pct}%</b><div className="muted" style={{ fontSize: 11 }}>leak {money(st.leakage)}</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Conversion</div><b style={{ fontSize: 20 }}>{fn.conversion_pct}%</b><div className="muted" style={{ fontSize: 11 }}>{fn.paid_of_contacted}/{fn.contacted} contacted</div></div>
+        </div>
+
+        {/* Charts */}
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14 }}>
+          <div className="glass card" style={{ padding: 12 }}><b>Collection trend (30 days)</b>
+            <ChartBox type="line" height={220} data={{ labels: d.trend.map(t => t.date.slice(5)), datasets: [{ label: 'Collected', data: d.trend.map(t => t.collected), borderColor: '#2563EB', backgroundColor: 'rgba(37,99,235,.12)', fill: true, tension: .3 }] }} options={{ plugins: { legend: { display: false } } }} /></div>
+          <div className="glass card" style={{ padding: 12 }}><b>Top FOS — achieved ENR</b>
+            <ChartBox type="bar" height={220} data={{ labels: d.leaderboard.slice(0, 10).map(r => (r.emp || '').split('/')[0]), datasets: [{ data: d.leaderboard.slice(0, 10).map(r => r.achieved_enr), backgroundColor: '#2563EB' }] }} options={{ plugins: { legend: { display: false } } }} /></div>
+          <div className="glass card" style={{ padding: 12 }}><b>Settlement — STAB vs NORM ENR</b>
+            <ChartBox type="doughnut" height={220} options={{ cutout: '65%' }} data={{ labels: ['STAB', 'NORM'], datasets: [{ data: [st.stab_enr, st.norm_enr], backgroundColor: ['#D97706', '#16A34A'] }] }} /></div>
+          <div className="glass card" style={{ padding: 12 }}><b>PTP kept vs broken</b>
+            <ChartBox type="doughnut" height={220} options={{ cutout: '65%' }} data={{ labels: ['Kept', 'Broken', 'Pending'], datasets: [{ data: [fn.ptp_kept, fn.ptp_broken, Math.max(fn.ptp_total - fn.ptp_kept - fn.ptp_broken, 0)], backgroundColor: ['#16A34A', '#DC2626', '#E3E9F1'] }] }} /></div>
+          <div className="glass card" style={{ padding: 12 }}><b>Area-wise achieved %</b>
+            <ChartBox type="bar" height={220} data={{ labels: d.by_area.map(r => r.label), datasets: [{ data: d.by_area.map(r => r.pct), backgroundColor: '#3B82F6' }] }} options={{ plugins: { legend: { display: false } } }} /></div>
+          <div className="glass card" style={{ padding: 12 }}><b>Recovery % by bucket (DPD)</b>
+            <ChartBox type="bar" height={220} data={{ labels: d.by_dpd.map(r => r.label), datasets: [{ data: d.by_dpd.map(r => r.pct), backgroundColor: '#1D4ED8' }] }} options={{ plugins: { legend: { display: false } } }} /></div>
+          <div className="glass card" style={{ padding: 12 }}><b>Contact aging (pending ₹)</b>
+            <ChartBox type="bar" height={220} data={{ labels: d.aging.map(r => r.label), datasets: [{ data: d.aging.map(r => r.pending), backgroundColor: '#D97706' }] }} options={{ plugins: { legend: { display: false } } }} /></div>
+          {ov && <div className="glass card" style={{ padding: 12 }}><b>Recovery % across products</b>
+            <ChartBox type="bar" height={220} data={{ labels: ov.by_product.map(r => r.label), datasets: [{ data: ov.by_product.map(r => r.pct), backgroundColor: '#16A34A' }] }} options={{ indexAxis: 'y', plugins: { legend: { display: false } } }} /></div>}
+        </div>
+
+        {/* Leaderboard (editable target) */}
+        <div id="mis-leaderboard" className="glass card" style={{ padding: 10, marginTop: 14 }}>
+          <div className="section-h"><h3 style={{ margin: 0 }}>Employee performance & leaderboard</h3>
+            <div style={{ display: 'flex', gap: 6 }}><button className="btn sm" onClick={() => dl('leaderboard')}>⬇</button>
+              <button className="btn sm" onClick={() => printTable('Leaderboard', ['#', 'Employee', 'Count', 'Unpaid', 'Paid', 'ENR', 'Target %', 'Target ENR', 'Achieved %', 'Achieved ENR', 'Gap ENR', 'To target %', 'Pending visit', 'Cash coll'], lb.map((r, i) => [i + 1, r.emp, r.count, r.unpaid, r.paid, money(r.enr), r.target_pct + '%', money(r.target_enr), r.achieved_pct + '%', money(r.achieved_enr), money(r.gap_enr), r.to_target_pct + '%', r.pending_visit, money(r.cash_coll)]))}>🖨</button></div></div>
+          <div className="tablewrap"><table><thead><tr>
+            <th>#</th><th></th><th>Employee</th><th>Count</th><th>Unpaid</th><th>Paid</th><th>ENR</th><th>Target %</th><th>Target ENR</th>
+            <th>Achieved %</th><th>Achieved ENR</th><th>Gap ENR</th><th>To target</th><th>Pend. visit</th><th>Cash coll</th></tr></thead>
+            <tbody>{lb.map((r, i) => <tr key={i}>
+              <td>{i + 1}</td><td><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: STATUS_COLOR[r.status] || '#c9ced8' }} /></td>
+              <td><b>{r.emp}</b></td><td>{r.count}</td><td>{r.unpaid}</td><td style={{ color: 'var(--good)' }}>{r.paid}</td>
+              <td className="mono">{money(r.enr)}</td>
+              <td>{canTarget ? <input className="input" style={{ width: 62, padding: '3px 6px' }} type="number" defaultValue={r.target_pct} onBlur={e => saveTarget(e, r.emp)} /> : (r.target_pct + '%')}</td>
+              <td className="mono">{money(r.target_enr)}</td>
+              <td><b>{r.achieved_pct}%</b></td><td className="mono" style={{ color: 'var(--good)' }}>{money(r.achieved_enr)}</td>
+              <td className="mono" style={{ color: 'var(--bad)' }}>{money(r.gap_enr)}</td><td>{r.to_target_pct}%</td>
+              <td style={{ color: 'var(--warn)' }}>{r.pending_visit}</td><td className="mono">{money(r.cash_coll)}</td></tr>)}
+            </tbody></table></div>
+        </div>
+
+        {TABLES.map(([tk, cols]) => <MisTable key={tk} tk={tk} cols={cols} />)}
+      </>}
+    </div>
+  );
+}
+
 /* ==================== Live Sheet (telecaller spreadsheet) ==================== */
 const SHEET_COLS = [
   { k: 'customer_name', t: 'Customer', type: 'text' },
@@ -2213,19 +2746,28 @@ const SHEET_COLS = [
   { k: 'month', t: 'Month', type: 'text' },
   { k: 'total_outstanding', t: 'Outstanding', type: 'num' },
   { k: 'principal_outstanding', t: 'Principal', type: 'num' },
+  { k: 'enr', t: 'ENR', type: 'num' },
+  { k: 'norm_amount', t: 'NORM', type: 'num' },
+  { k: 'stab_amount', t: 'STAB', type: 'num' },
   { k: 'min_amount_due', t: 'Min due', type: 'num', edit: true },
-  { k: 'received_amount', t: 'Received', type: 'num', edit: true },
-  { k: 'pending_amount', t: 'Pending', type: 'num' },
+  { k: 'received_amount', t: 'Amount', type: 'num', edit: true },
+  { k: 'pending_amount', t: 'Pending', type: 'num', edit: true },
+  { k: 'norm_stab', t: 'N/S paid', type: 'sel', edit: true, opts: ['', 'NORM', 'STAB'] },
   { k: 'status', t: 'Status', type: 'sel', edit: true, opts: ['', 'new', 'ptp', 'callback', 'paid', 'closed'] },
   { k: 'paid_status', t: 'Paid', type: 'sel', edit: true, opts: ['', 'PAID', 'PARTIAL', 'UNPAID'] },
   { k: 'disposition', t: 'Disposition', type: 'sel', edit: true, opts: ['', 'PTP', 'RTP', 'PAID', 'CALLBACK', 'NO_CONTACT', 'WRONG_NUMBER', 'REFUSED'] },
   { k: 'follow_up_date', t: 'Follow-up', type: 'date', edit: true },
   { k: 'remarks', t: 'Remarks', type: 'text', edit: true },
+  { k: 'caller_name', t: 'Caller', type: 'text', edit: true },
+  { k: 'fos_name', t: 'FOS', type: 'text', edit: true },
+  { k: 'team', t: 'Area', type: 'text', edit: true },
+  { k: 'team_lead', t: 'Team lead', type: 'text', edit: true },
+  { k: 'cat', t: 'Cat', type: 'text', edit: true },
   { k: 'address', t: 'Address', type: 'text' },
   { k: 'pincode', t: 'Pincode', type: 'text' },
   { k: 'propensity', t: 'Score', type: 'num' },
 ];
-const SHEET_DEFAULT_VISIBLE = ['customer_name', 'phone', 'bank', 'bucket', 'total_outstanding', 'received_amount', 'pending_amount', 'status', 'disposition', 'follow_up_date', 'remarks'];
+const SHEET_DEFAULT_VISIBLE = ['customer_name', 'phone', 'bank', 'product', 'enr', 'norm_amount', 'stab_amount', 'received_amount', 'norm_stab', 'paid_status', 'status', 'disposition', 'caller_name', 'fos_name', 'remarks'];
 const SHEET_FUNCS = { ROUND: Math.round, ABS: Math.abs, MIN: Math.min, MAX: Math.max, SQRT: Math.sqrt, IF: (c, a, b) => (c ? a : b) };
 function sheetSafeCalc(expr) {
   if (!/^[-+*/%(). ,0-9<>=?:A-Za-z_]*$/.test(expr)) throw new Error('bad expression');
@@ -2302,12 +2844,17 @@ function SheetView({ user, config }) {
     const k = 'f_' + Date.now();
     savePrefs({ ...prefs, custom: prefs.custom.concat({ k, t: label, type: 'num', formula }), order: prefs.order.concat(k), visible: prefs.visible.concat(k) });
   };
+  const addDataCol = () => {
+    const label = window.prompt('New column name (free text you fill per row)'); if (!label) return;
+    const k = 'x_' + label.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '_' + String(Date.now()).slice(-4);
+    savePrefs({ ...prefs, custom: prefs.custom.concat({ k, t: label, type: 'text', data: true }), order: prefs.order.concat(k), visible: prefs.visible.concat(k) });
+  };
   const visibleCols = () => (prefs ? prefs.order : SHEET_COLS.map(c => c.k)).filter(k => prefs && prefs.visible.includes(k)).map(defByKey).filter(Boolean);
 
   const rowFormula = (formula, row) => {
     try { return sheetSafeCalc(String(formula).replace(/^=/, '').replace(/\[([a-z_0-9]+)\]/gi, (_, k) => Number(row[k] || 0))); } catch (_) { return '—'; }
   };
-  const cellVal = (row, col) => col.custom ? rowFormula(col.formula, row) : row[col.k];
+  const cellVal = (row, col) => col.data ? ((row.extra || {})[col.k] ?? '') : (col.custom ? rowFormula(col.formula, row) : row[col.k]);
   const cellText = (row, col) => sheetFmt(cellVal(row, col));
 
   const viewRows = () => {
@@ -2318,7 +2865,9 @@ function SheetView({ user, config }) {
   };
 
   const editCell = (row, col, value) => {
-    setRows(rs => rs.map(r => r.id === row.id ? { ...r, [col.k]: value } : r));
+    setRows(rs => rs.map(r => r.id === row.id
+      ? (col.data ? { ...r, extra: { ...(r.extra || {}), [col.k]: value } } : { ...r, [col.k]: value })
+      : r));
     api('/api/sheet/cell/' + row.id, { method: 'PATCH', body: { field: col.k, value } }).catch(() => { setErr('Save failed — reloading'); load(); });
   };
   const openCase = (row) => { setDrawer(row); api('/api/sheet/open/' + row.id, { method: 'POST' }).catch(() => {}); };
@@ -2403,7 +2952,8 @@ function SheetView({ user, config }) {
             {allDefs().map(c => (
               <label key={c.k}><input type="checkbox" checked={prefs.visible.includes(c.k)} onChange={() => toggleCol(c.k)} />{c.t}{c.custom ? ' (ƒ)' : ''}</label>
             ))}
-            <button className="sv-btn" style={{ width: '100%', marginTop: 8 }} onClick={addFormulaCol}>＋ Formula column</button>
+            <button className="sv-btn" style={{ width: '100%', marginTop: 8 }} onClick={addDataCol}>＋ Data column</button>
+            <button className="sv-btn" style={{ width: '100%', marginTop: 6 }} onClick={addFormulaCol}>＋ Formula column (ƒ)</button>
           </div>
         )}
       </div>
@@ -2436,7 +2986,10 @@ function SheetView({ user, config }) {
                 </td>
                 {cols.map(c => (
                   <td key={c.k}>
-                    {c.custom ? sheetFmt(rowFormula(c.formula, row))
+                    {c.data ? <input key={row.id + '-' + c.k} defaultValue={(row.extra || {})[c.k] || ''}
+                        onBlur={e => { if (String(e.target.value) !== String((row.extra || {})[c.k] || '')) editCell(row, c, e.target.value); }}
+                        onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }} />
+                      : c.custom ? sheetFmt(rowFormula(c.formula, row))
                       : c.k === 'customer_name' ? <span className="sv-name" onClick={() => openCase(row)}>{row.customer_name || '—'}</span>
                       : !c.edit ? cellText(row, c)
                       : c.type === 'sel' ? (
@@ -2470,10 +3023,11 @@ function SheetView({ user, config }) {
 }
 
 const NAV = {
-  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['staff', '👥', 'Team'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['mis', '📈', 'MIS'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
 };
 function NativeTrackingOnboard({ onDone }) {
   const openSettings = () => { try { const BG = window.Capacitor.registerPlugin('BackgroundGeolocation'); if (BG.openSettings) BG.openSettings(); } catch (e) {} };
@@ -2515,8 +3069,8 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
       case 'dashboard': return <Dashboard user={user} />;
       case 'cases': return <CasesView user={user} />;
       case 'map': return <LiveMap config={config} />;
-      case 'staff': return <StaffView config={config} />;
-      case 'records': return <RecordsView />;
+      case 'staff': return <StaffView config={config} user={user} />;
+      case 'records': return <RecordsView user={user} />;
       case 'devices': return <DevicesView />;
       case 'leave': return <LeaveView user={user} />;
       case 'templates': return <TemplatesView />;
@@ -2524,6 +3078,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
       case 'fcases': return <FOCases config={config} />;
       case 'fmap': return <FOLiveMap config={config} />;
       case 'queue': return <CallQueue />;
+      case 'mis': return <MISView user={user} />;
       case 'sheet': return <SheetView user={user} config={config} />;
       case 'ptp': return <PTPTracker />;
       case 'ai': return <AIAssist user={user} />;

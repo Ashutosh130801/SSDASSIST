@@ -3,12 +3,40 @@
 Single-instance broadcaster: fine for the current Cloud Run deployment. For multiple
 instances, put a Redis (or Cloud Pub/Sub) fan-out behind `broadcast`/`send_to_user`.
 """
+import asyncio
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError
 
 from ..security import decode_token
 
 router = APIRouter()
+
+# The main event loop, captured at startup so sync endpoints can schedule broadcasts.
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def set_loop(loop: asyncio.AbstractEventLoop) -> None:
+    global _loop
+    _loop = loop
+
+
+def notify_data_changed(bank: str | None = None, product: str | None = None) -> None:
+    """Sync-safe fan-out: tell every client that data changed (a log/payment/edit landed),
+    so live views (MIS, dashboards, sheet) can refresh instantly."""
+    payload = {"type": "data_changed"}
+    if bank:
+        payload["bank"] = bank
+    if product:
+        payload["product"] = product
+    loop = _loop
+    try:
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+        else:
+            asyncio.run(manager.broadcast(payload))
+    except Exception:
+        pass
 
 
 class ConnectionManager:

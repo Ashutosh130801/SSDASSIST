@@ -14,16 +14,22 @@ router = APIRouter(prefix="/api/import", tags=["import"])
 
 @router.post("/preview")
 async def preview(file: UploadFile = File(...), default_bank: str | None = Form(None),
-                  admin: models.User = Depends(require_roles("admin"))):
+                  product: str | None = Form(None), segment: str | None = Form(None),
+                  admin: models.User = Depends(require_roles("admin", "backend"))):
     content = await file.read()
     try:
         records, sheet = import_workbook(content, default_bank=default_bank)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
     sample = [record_to_case_kwargs(r) for r in records[:10]]
-    # Decimals -> str for JSON
     for s in sample:
-        for k, v in list(s.items()):
+        if default_bank:
+            s["bank"] = default_bank
+        if product:
+            s["product"] = product
+        if segment:
+            s["segment"] = segment
+        for k, v in list(s.items()):        # Decimals -> str for JSON
             if hasattr(v, "quantize"):
                 s[k] = str(v)
     return {"sheet": sheet, "total_rows": len(records), "sample": sample}
@@ -31,8 +37,9 @@ async def preview(file: UploadFile = File(...), default_bank: str | None = Form(
 
 @router.post("/commit")
 async def commit(file: UploadFile = File(...), default_bank: str | None = Form(None),
+                 product: str | None = Form(None), segment: str | None = Form(None),
                  branch: str | None = Form(None), auto_allocate: bool = Form(True),
-                 admin: models.User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+                 admin: models.User = Depends(require_roles("admin", "backend")), db: Session = Depends(get_db)):
     content = await file.read()
     try:
         records, sheet = import_workbook(content, default_bank=default_bank)
@@ -57,10 +64,23 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                       "disposition", "remarks", "address", "pincode", "phone"):
                 if kwargs.get(k) is not None:
                     setattr(existing, k, kwargs[k])
+            if default_bank:
+                existing.bank = default_bank
+            if product:
+                existing.product = product
+            if segment:
+                existing.segment = segment
             if branch:                       # allow a re-upload to (re)assign the branch
                 existing.branch = branch
             skipped += 1
             continue
+        # This upload is for one bank + product + segment — stamp every new row.
+        if default_bank:
+            kwargs["bank"] = default_bank
+        if product:
+            kwargs["product"] = product
+        if segment:
+            kwargs["segment"] = segment
         if branch:
             kwargs["branch"] = branch
         kwargs["import_batch_id"] = batch.id
@@ -93,7 +113,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
 
 
 @router.get("/export")
-def export(db: Session = Depends(get_db), admin: models.User = Depends(require_roles("admin"))):
+def export(db: Session = Depends(get_db), admin: models.User = Depends(require_roles("admin", "backend"))):
     data = export_cases(db)
     return StreamingResponse(
         io.BytesIO(data),

@@ -54,6 +54,10 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
         case.paid_status = "PAID"
         case.status = "paid"
         case.follow_up_date = None                        # out of the queue
+        # Credit-card cases record whether the customer paid at NORM or STAB level.
+        if body.norm_stab:
+            ns = body.norm_stab.upper()
+            case.norm_stab = "STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab)
     elif disp in ("PTP", "RTP"):
         case.status = "ptp"
         case.follow_up_date = body.ptp_date or body.follow_up_date   # re-queues on the promised date
@@ -63,6 +67,8 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
 
     db.commit()
     db.refresh(call)
+    from .realtime import notify_data_changed
+    notify_data_changed(case.bank, case.product)
     return call
 
 

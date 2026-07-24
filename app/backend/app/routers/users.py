@@ -27,10 +27,11 @@ def list_users(role: str | None = None, db: Session = Depends(get_db),
 
 
 def _guard_manager(actor: models.User, body_role: str | None, body_branch: str | None):
-    """Managers may only manage non-admin staff inside their own branch."""
+    """Managers may manage staff — including fellow branch managers — inside their own
+    branch, but never admins."""
     if actor.role == "manager":
-        if body_role in ("admin", "manager"):
-            raise HTTPException(status_code=403, detail="Managers can only manage field officers and telecallers")
+        if body_role == "admin":
+            raise HTTPException(status_code=403, detail="Managers cannot create or manage admins")
         if body_branch and body_branch != actor.branch:
             raise HTTPException(status_code=403, detail="Managers can only manage staff in their own branch")
 

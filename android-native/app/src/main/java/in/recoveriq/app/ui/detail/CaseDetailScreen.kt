@@ -117,13 +117,15 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                 Spacer(Modifier.height(24.dp))
             }
 
+            val isCC = case.segment == "Credit Card"
             if (showPay) {
                 PaymentDialog(
                     maxAmount = case.pendingAmount,
+                    isCreditCard = isCC,
                     onDismiss = { showPay = false },
-                    onConfirm = { amount, mode ->
+                    onConfirm = { amount, mode, normStab ->
                         scope.launch {
-                            runCatching { vm.repo.recordPayment(caseId, amount, mode) }
+                            runCatching { vm.repo.recordPayment(caseId, amount, mode, normStab = normStab) }
                             showPay = false; refresh++
                         }
                     },
@@ -131,6 +133,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
             }
             if (showLogCall) {
                 LogCallDialog(
+                    isCreditCard = isCC,
                     onDismiss = { showLogCall = false },
                     onConfirm = { call ->
                         scope.launch {
@@ -142,6 +145,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
             }
             if (showVisit) {
                 LogVisitDialog(
+                    isCreditCard = isCC,
                     onDismiss = { showVisit = false },
                     onConfirm = { v ->
                         scope.launch {
@@ -150,6 +154,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                                     caseId = caseId, lat = v.lat, lng = v.lng, accuracy = v.accuracy,
                                     personMoved = v.personMoved, paid = v.paid, amount = v.amount,
                                     disposition = v.disposition, note = v.note, photoJpeg = v.photoJpeg,
+                                    normStab = v.normStab,
                                 )
                             }.isSuccess
                             showVisit = false; refresh++

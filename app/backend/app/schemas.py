@@ -179,6 +179,19 @@ class CaseBase(BaseModel):
     bank: Optional[str] = None
     branch: Optional[str] = None
     product: Optional[str] = None
+    segment: Optional[str] = None
+    # MIS fields
+    enr: Decimal = Decimal("0")
+    norm_amount: Decimal = Decimal("0")
+    stab_amount: Decimal = Decimal("0")
+    norm_stab: Optional[str] = None
+    caller_name: Optional[str] = None
+    fos_name: Optional[str] = None
+    team: Optional[str] = None
+    team_lead: Optional[str] = None
+    cat: Optional[str] = None
+    visited: Optional[bool] = None
+    extra: Optional[dict] = None
     account_no: Optional[str] = None
     card_no: Optional[str] = None
     customer_name: Optional[str] = None
@@ -275,6 +288,7 @@ class CallCreate(BaseModel):
     ptp_date: Optional[date] = None          # when a PTP is promised
     follow_up_date: Optional[date] = None    # when to call back for non-PTP outcomes
     paid_amount: Decimal = Decimal("0")      # amount collected if disposition is PAID
+    norm_stab: Optional[str] = None          # NORM / STAB paid (credit-card cases)
     note: Optional[str] = None
 
 
@@ -318,6 +332,8 @@ class OfficerLocation(BaseModel):
     accuracy: Optional[float] = None
     active_case_id: Optional[int] = None
     last_seen: datetime
+    branch: Optional[str] = None
+    banks: List[str] = []
 
 
 # ---------- AI ----------

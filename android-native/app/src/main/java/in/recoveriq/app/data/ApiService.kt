@@ -86,6 +86,7 @@ interface ApiService {
         @Part("person_moved") personMoved: RequestBody,
         @Part("paid") paid: RequestBody,
         @Part("amount_collected") amountCollected: RequestBody,
+        @Part("norm_stab") normStab: RequestBody?,
         @Part("disposition") disposition: RequestBody?,
         @Part("note") note: RequestBody?,
         @Part photo: MultipartBody.Part?,

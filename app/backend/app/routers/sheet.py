@@ -19,10 +19,12 @@ router = APIRouter(prefix="/api/sheet", tags=["sheet"])
 # Fields a telecaller may edit inline. Everything else is read-only in the grid.
 EDITABLE = {
     "status", "disposition", "remarks", "follow_up_date",
-    "received_amount", "phone", "alt_phone", "paid_status", "min_amount_due",
+    "received_amount", "pending_amount", "phone", "alt_phone", "paid_status",
+    "min_amount_due", "norm_stab", "cat", "team", "team_lead", "caller_name", "fos_name",
 }
+NUMERIC = {"received_amount", "pending_amount", "min_amount_due", "enr", "norm_amount", "stab_amount"}
 # Editing any of these counts as "contacted today" for performance stats.
-CONTACT_FIELDS = {"status", "disposition", "remarks", "received_amount", "paid_status"}
+CONTACT_FIELDS = {"status", "disposition", "remarks", "received_amount", "paid_status", "norm_stab"}
 
 
 class CellUpdate(BaseModel):
@@ -45,7 +47,7 @@ def put_prefs(body: dict = Body(...), db: Session = Depends(get_db),
 
 
 def _coerce(field: str, value: Any):
-    if field in ("received_amount", "min_amount_due"):
+    if field in NUMERIC:
         try:
             return Decimal(str(value or 0))
         except (InvalidOperation, ValueError):
@@ -63,7 +65,8 @@ def _coerce(field: str, value: Any):
 @router.patch("/cell/{case_id}")
 async def update_cell(case_id: int, body: CellUpdate, db: Session = Depends(get_db),
                       user: models.User = Depends(get_current_user)):
-    if body.field not in EDITABLE:
+    is_extra = body.field.startswith("x_")     # free-form caller-added column
+    if body.field not in EDITABLE and not is_extra:
         raise HTTPException(status_code=400, detail=f"'{body.field}' is not editable")
 
     case = _scope(db.query(models.Case), user).filter(models.Case.id == case_id).first()
@@ -73,7 +76,15 @@ async def update_cell(case_id: int, body: CellUpdate, db: Session = Depends(get_
     if user.role == "telecaller" and case.assigned_caller_id != user.id:
         raise HTTPException(status_code=403, detail="This case is not in your queue")
 
-    setattr(case, body.field, _coerce(body.field, body.value))
+    if is_extra:
+        extra = dict(case.extra or {})
+        if body.value in (None, ""):
+            extra.pop(body.field, None)
+        else:
+            extra[body.field] = body.value
+        case.extra = extra
+    else:
+        setattr(case, body.field, _coerce(body.field, body.value))
 
     if body.field == "received_amount":
         case.pending_amount = (Decimal(case.funding_amount or 0) - Decimal(case.received_amount or 0))
@@ -88,6 +99,7 @@ async def update_cell(case_id: int, body: CellUpdate, db: Session = Depends(get_
 
     payload = schemas.CaseOut.model_validate(case).model_dump(mode="json")
     await manager.broadcast({"type": "case_update", "case": payload})
+    await manager.broadcast({"type": "data_changed", "bank": case.bank, "product": case.product})
     return payload
 
 
