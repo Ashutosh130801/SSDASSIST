@@ -27,34 +27,57 @@ def _bank_ok(user: models.User, bank: Optional[str]) -> bool:
     return bank.upper() in [b.upper() for b in user.banks]
 
 
+def _product_ok(user: models.User, product: Optional[str]) -> bool:
+    """Does this FOS cover the case's product? Empty coverage = covers nothing specific."""
+    if not product:
+        return True
+    prods = getattr(user, "assigned_products", None) or []
+    return product.upper() in [p.upper() for p in prods]
+
+
 def choose_fos(db: Session, case: models.Case, fos_users: List[models.User]) -> Optional[models.User]:
-    candidates = [u for u in fos_users if _bank_ok(u, case.bank)]
+    """Assignment rule (per the agency): PRODUCT TYPE FIRST — the FOS must cover the
+    case's bank + product. If two or more FOS cover that product, decide by PINCODE
+    (the officer whose assigned pincodes include the case pincode); ties/no-pincode
+    fall back to nearest-by-GPS, then least-loaded."""
+    bank_ok = [u for u in fos_users if _bank_ok(u, case.bank)]
+
+    # 1) PRODUCT-first gate: officers who cover this bank + product.
+    candidates = [u for u in bank_ok if _product_ok(u, case.product)]
+    reason_base = f"{case.product}"
     if not candidates:
-        candidates = fos_users
+        # No one is assigned this product → don't strand the case; use bank coverage.
+        candidates = bank_ok or fos_users
+        reason_base = "bank (no product match)"
     if not candidates:
         return None
 
-    # 1) pincode match
+    # Only one officer covers the product → straight assignment.
+    if len(candidates) == 1:
+        case.allocation_reason = reason_base
+        return candidates[0]
+
+    # 2) Two or more cover the product → PINCODE-based.
     if case.pincode:
         pin_matches = [u for u in candidates if u.assigned_pincodes and case.pincode in u.assigned_pincodes]
         if pin_matches:
             pin_matches.sort(key=lambda u: _open_load(db, u.id))
-            case.allocation_reason = f"pincode {case.pincode}"
+            case.allocation_reason = f"{reason_base} · pincode {case.pincode}"
             return pin_matches[0]
 
-    # 2) nearest by GPS
+    # 3) No pincode match → nearest by GPS among the product-covering officers.
     if case.latitude is not None and case.longitude is not None:
         geo = [u for u in candidates if u.home_lat is not None and u.home_lng is not None]
         if geo:
             geo.sort(key=lambda u: haversine_km(case.latitude, case.longitude, u.home_lat, u.home_lng))
             nearest = geo[0]
             d = haversine_km(case.latitude, case.longitude, nearest.home_lat, nearest.home_lng)
-            case.allocation_reason = f"nearest FO ~{d:.1f}km"
+            case.allocation_reason = f"{reason_base} · nearest ~{d:.1f}km"
             return nearest
 
-    # 3) fallback: least loaded
+    # 4) Fallback: least loaded among the product-covering officers.
     candidates.sort(key=lambda u: _open_load(db, u.id))
-    case.allocation_reason = "load-balanced"
+    case.allocation_reason = f"{reason_base} · load-balanced"
     return candidates[0]
 
 
@@ -104,11 +127,13 @@ def run_allocation(db: Session, only_unallocated: bool = True, bank: Optional[st
                 case.assigned_fos_id = fos.id
                 if case.status == "new":
                     case.status = "allocated"
+                if not case.branch and fos.branch:      # inherit branch from the assigned FOS
+                    case.branch = fos.branch
                 allocated_fos += 1
         if case.assigned_caller_id is None and callers:
             caller = choose_caller(db, case, callers)
             if caller:
-                case.assigned_caller_id = caller.id
+                case.assigned_caller_id = caller.id     # caller is cross-branch — do NOT set branch from caller
                 allocated_caller += 1
     db.commit()
     return {"fos_allocated": allocated_fos, "caller_allocated": allocated_caller}

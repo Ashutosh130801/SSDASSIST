@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.google.android.gms.location.LocationServices
+import `in`.recoveriq.app.ui.common.DatePickerField
 import `in`.recoveriq.app.ui.theme.Muted
 import java.io.ByteArrayOutputStream
 
@@ -44,6 +45,7 @@ data class VisitDraft(
     val personMoved: Boolean, val paid: Boolean, val amount: Double,
     val disposition: String?, val note: String?, val photoJpeg: ByteArray?,
     val normStab: String? = null,
+    val ptpDate: String? = null,
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -57,6 +59,7 @@ fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (Vis
     var moved by remember { mutableStateOf(false) }
     var amount by remember { mutableStateOf("") }
     var normStab by remember { mutableStateOf("STAB") }
+    var ptpDate by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var photo by remember { mutableStateOf<Bitmap?>(null) }
     var lat by remember { mutableStateOf<Double?>(null) }
@@ -112,6 +115,11 @@ fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (Vis
                         }
                     }
                 }
+                // Promise-to-pay date — the visit re-surfaces the case on that day (rollover).
+                if (!paid && (disp == "PTP" || disp == "RTP")) {
+                    Text("PTP date (promised)", style = MaterialTheme.typography.labelSmall, color = Muted)
+                    DatePickerField(label = "Pick date", iso = ptpDate, onPick = { ptpDate = it })
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                     Text("Person has moved"); Switch(checked = moved, onCheckedChange = { moved = it })
@@ -139,6 +147,7 @@ fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (Vis
                     amount = amount.toDoubleOrNull() ?: 0.0,
                     disposition = disp, note = note.ifBlank { null }, photoJpeg = jpeg,
                     normStab = if (paid && isCreditCard) normStab else null,
+                    ptpDate = if (!paid && (disp == "PTP" || disp == "RTP") && ptpDate.isNotBlank()) ptpDate else null,
                 ))
             }) { Text("Save visit") }
         },

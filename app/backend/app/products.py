@@ -5,8 +5,9 @@ Keep this in sync with the agency's live product sheet.
 """
 
 BANK_PRODUCTS = {
-    "ICICI": ["DR", "FR", "FCPU", "2 BKT", "4 BKT", "SFFRC", "180+", "3 BKT"],
-    "AXIS": ["X BKT", "BL X BKT", "PL X BKT", "PL NPA", "180+", "2 BKT", "3 BKT", "CC NPA"],
+    "ICICI": ["DR", "FR", "FCPU", "2 BKT", "4 BKT", "SFFRC", "180+", "3 BKT",
+              "PL X BKT", "BL X BKT", "PL NPA", "BL NPA"],
+    "AXIS": ["X BKT", "BL X BKT", "PL X BKT", "PL NPA", "BL NPA", "180+", "2 BKT", "3 BKT", "CC NPA"],
     "RBL": ["BRBL BKT 3"],
     "PIRAMAL": ["2 BKT"],
     "NAVI": ["X-5 BKT", "180+"],

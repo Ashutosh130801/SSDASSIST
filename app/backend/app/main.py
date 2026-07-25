@@ -5,14 +5,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, func
 
 from .database import Base, engine
 from .config import get_settings
 from . import models  # noqa: F401  (register models)
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
-                      team, mis)
+                      team, mis, feedback, reminders)
 
 settings = get_settings()
 
@@ -38,6 +38,10 @@ def _ensure_columns():
             "cat": "VARCHAR(20)",
             "visited": "BOOLEAN",
             "extra": "JSON",
+            "escalated": "BOOLEAN",
+            "escalated_to": "INTEGER",
+            "escalated_by": "INTEGER",
+            "escalated_at": "TIMESTAMP",
         },
         "users": {
             "employment_type": "VARCHAR(30)",
@@ -51,6 +55,8 @@ def _ensure_columns():
             "twofa_enabled": "BOOLEAN",
             "webauthn_challenge": "VARCHAR(255)",
             "sheet_prefs": "JSON",
+            "assigned_products": "JSON",
+            "emp_code": "VARCHAR(20)",
         },
         "visits": {
             "distance_from_case_m": "FLOAT",
@@ -68,6 +74,51 @@ def _ensure_columns():
 
 
 _ensure_columns()
+
+
+def _backfill_emp_codes():
+    """Give every existing staff member a caller/staff ID (emp_code) if they don't have one."""
+    from .database import SessionLocal
+    from .routers.users import generate_emp_code
+    from . import models as _m
+    db = SessionLocal()
+    try:
+        missing = db.query(_m.User).filter((_m.User.emp_code.is_(None)) | (_m.User.emp_code == "")).all()
+        for u in missing:
+            u.emp_code = generate_emp_code(db, u.role)
+            db.flush()
+        if missing:
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _backfill_norm_stab():
+    """Retrofit the NORM/STAB mark onto cases imported before that rule existed, using the
+    STATUS (final_status) they already carry — so the MIS NORM%/STAB% populate on restart
+    without re-uploading."""
+    from .database import SessionLocal
+    from . import models as _m
+    db = SessionLocal()
+    try:
+        rows = db.query(_m.Case).filter(
+            (_m.Case.norm_stab.is_(None)) | (_m.Case.norm_stab == ""),
+            func.upper(_m.Case.final_status).in_(("NORM", "STAB")),
+        ).all()
+        for c in rows:
+            c.norm_stab = (c.final_status or "").upper()
+        if rows:
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+_backfill_emp_codes()
+_backfill_norm_stab()
 
 
 def _maybe_seed():
@@ -114,7 +165,7 @@ async def _security_headers(request, call_next):
 
 
 for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, devices,
-          leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis):
+          leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis, feedback, reminders):
     app.include_router(r.router)
 
 

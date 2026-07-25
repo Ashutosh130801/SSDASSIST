@@ -154,7 +154,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                                     caseId = caseId, lat = v.lat, lng = v.lng, accuracy = v.accuracy,
                                     personMoved = v.personMoved, paid = v.paid, amount = v.amount,
                                     disposition = v.disposition, note = v.note, photoJpeg = v.photoJpeg,
-                                    normStab = v.normStab,
+                                    normStab = v.normStab, ptpDate = v.ptpDate,
                                 )
                             }.isSuccess
                             showVisit = false; refresh++

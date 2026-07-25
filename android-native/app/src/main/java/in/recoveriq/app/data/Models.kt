@@ -117,14 +117,54 @@ data class Case(
     @Json(name = "funding_amount") val fundingAmount: Double = 0.0,
     @Json(name = "received_amount") val receivedAmount: Double = 0.0,
     @Json(name = "pending_amount") val pendingAmount: Double = 0.0,
+    @Json(name = "enr") val enr: Double = 0.0,
+    @Json(name = "norm_amount") val normAmount: Double = 0.0,
+    @Json(name = "stab_amount") val stabAmount: Double = 0.0,
+    @Json(name = "norm_stab") val normStab: String? = null,
     val status: String? = null,
     @Json(name = "paid_status") val paidStatus: String? = null,
     val disposition: String? = null,
     val remarks: String? = null,
+    @Json(name = "caller_name") val callerName: String? = null,
+    @Json(name = "fos_name") val fosName: String? = null,
     @Json(name = "assigned_fos_id") val assignedFosId: Int? = null,
     @Json(name = "assigned_caller_id") val assignedCallerId: Int? = null,
     @Json(name = "follow_up_date") val followUpDate: String? = null,
+    @Json(name = "last_contacted_at") val lastContactedAt: String? = null,
+    val visited: Boolean = false,
+    @Json(name = "visited_today") val visitedToday: Boolean = false,
+    @Json(name = "contacted_today") val contactedToday: Boolean = false,
+    val escalated: Boolean = false,
     val propensity: Int? = null,
+) {
+    /** Working state for FOS/caller lists: fresh (untouched) → touched today → paid. */
+    val workState: String
+        get() = when {
+            (paidStatus ?: "") == "PAID" || status == "paid" -> "paid"
+            visitedToday || contactedToday || status == "in_progress" || status == "ptp" || status == "callback" -> "touched"
+            else -> "fresh"
+        }
+}
+
+@JsonClass(generateAdapter = true)
+data class ReminderItem(
+    @Json(name = "case_id") val caseId: Int,
+    val customer: String? = null,
+    val account: String? = null,
+    val bank: String? = null,
+    val phone: String? = null,
+    @Json(name = "ptp_date") val ptpDate: String? = null,
+    val pending: Double = 0.0,
+    val overdue: Boolean = false,
+)
+
+@JsonClass(generateAdapter = true)
+data class RemindersResponse(
+    val date: String? = null,
+    val count: Int = 0,
+    val overdue: Int = 0,
+    @Json(name = "due_today") val dueToday: Int = 0,
+    val rows: List<ReminderItem> = emptyList(),
 )
 
 @JsonClass(generateAdapter = true)

@@ -69,7 +69,7 @@ async def ping_native(request: Request, db: Session = Depends(get_db),
 
 @router.get("/live", response_model=list[schemas.OfficerLocation])
 def live(minutes: int = 30, db: Session = Depends(get_db),
-         viewer: models.User = Depends(require_roles("admin", "manager"))):
+         viewer: models.User = Depends(require_roles("admin", "manager", "headoffice"))):
     """Latest known position of every field officer seen in the last N minutes.
     A branch manager only sees officers in their own branch."""
     since = datetime.now(timezone.utc) - timedelta(minutes=minutes)

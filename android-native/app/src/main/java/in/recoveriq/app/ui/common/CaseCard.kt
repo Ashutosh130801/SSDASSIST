@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -52,6 +53,17 @@ fun StatusChip(status: String?) {
 }
 
 @Composable
+fun TouchTag(text: String, color: Color) {
+    Surface(color = color.copy(alpha = 0.15f), shape = RoundedCornerShape(6.dp)) {
+        Text(
+            text, color = color, style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+        )
+    }
+}
+
+@Composable
 fun CaseCard(
     case: Case,
     onClick: () -> Unit,
@@ -59,12 +71,23 @@ fun CaseCard(
     subtitle: String? = null,
 ) {
     val context = LocalContext.current
+    val state = case.workState
+    val cardColor = when (state) {
+        "paid" -> Good.copy(alpha = 0.10f)
+        "touched" -> Warn.copy(alpha = 0.12f)
+        else -> CardWhite
+    }
+    val cardBorder = when (state) {
+        "paid" -> Good.copy(alpha = 0.5f)
+        "touched" -> Warn.copy(alpha = 0.5f)
+        else -> GlassStroke
+    }
     Surface(
         modifier = Modifier.fillMaxWidth().clickable { onClick() },
         shape = RoundedCornerShape(16.dp),
-        color = CardWhite,
+        color = cardColor,
         contentColor = TextDark,
-        border = BorderStroke(1.dp, GlassStroke),
+        border = BorderStroke(1.dp, cardBorder),
         shadowElevation = 5.dp,
     ) {
         Column(Modifier.padding(14.dp)) {
@@ -89,7 +112,12 @@ fun CaseCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                StatusChip(case.status)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    StatusChip(case.status)
+                    if (state == "paid") TouchTag("PAID", Good)
+                    else if (state == "touched") TouchTag(if (case.visitedToday) "VISITED" else "DONE TODAY", Warn)
+                    if (case.escalated) TouchTag("ESCALATED", Warn)
+                }
                 if (showQuickActions && !case.phone.isNullOrBlank()) {
                     Row {
                         IconButton(onClick = { Actions.dial(context, case.phone) }, modifier = Modifier.size(34.dp)) {

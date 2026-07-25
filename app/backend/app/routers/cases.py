@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import datetime, time, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -121,6 +122,28 @@ def _with_score(cases):
     return cases
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _mark_today(db, cases):
+    """Tag each case with contacted_today / visited_today so the FOS & caller views can
+    sink touched cases and keep untouched work on top."""
+    today = datetime.now(_IST).date()
+    start = datetime.combine(today, time.min, tzinfo=_IST).astimezone(timezone.utc)
+    ids = [c.id for c in cases]
+    visited = set()
+    if ids:
+        visited = {vid for (vid,) in db.query(models.Visit.case_id).filter(
+            models.Visit.case_id.in_(ids), models.Visit.created_at >= start).distinct().all()}
+    for c in cases:
+        c.visited_today = c.id in visited
+        lc = c.last_contacted_at
+        if lc and lc.tzinfo is None:
+            lc = lc.replace(tzinfo=timezone.utc)
+        c.contacted_today = bool(lc and lc.astimezone(_IST).date() == today)
+    return cases
+
+
 @router.get("", response_model=list[schemas.CaseOut])
 def list_cases(
     db: Session = Depends(get_db),
@@ -153,7 +176,73 @@ def list_cases(
             models.Case.phone.ilike(like),
             models.Case.pincode.ilike(like),
         ))
-    return _with_score(q.order_by(models.Case.updated_at.desc()).offset(offset).limit(limit).all())
+    return _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).offset(offset).limit(limit).all()))
+
+
+class EscalateIn(BaseModel):
+    to_user_id: int | None = None       # default: escalate to the actor themselves
+    note: str | None = None
+
+
+def _manager_owns(db, actor, case):
+    if actor.role == "manager" and case.branch != actor.branch:
+        raise HTTPException(status_code=403, detail="Not in your branch")
+
+
+@router.get("/escalated", response_model=list[schemas.CaseOut])
+def escalated_cases(mine: bool = False, db: Session = Depends(get_db),
+                    actor: models.User = Depends(require_roles("admin", "manager", "backend", "headoffice"))):
+    """Cases pulled off the field/calling staff. `mine=true` limits to ones escalated to me."""
+    q = db.query(models.Case).filter(models.Case.escalated.is_(True))
+    if actor.role == "manager":
+        q = q.filter(models.Case.branch == actor.branch)
+    if mine:
+        q = q.filter(models.Case.escalated_to == actor.id)
+    return _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).all()))
+
+
+@router.post("/{case_id}/escalate")
+def escalate_case(case_id: int, body: EscalateIn = EscalateIn(), db: Session = Depends(get_db),
+                  actor: models.User = Depends(require_roles("admin", "manager", "backend"))):
+    """Take a hard/high-value case away from its FOS & caller and own it personally.
+    It leaves their queues and individual performance, but stays in MIS & feedback
+    (which key off the case's own fos_name/caller/product, not the live assignment)."""
+    case = db.query(models.Case).filter(models.Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    _manager_owns(db, actor, case)
+    owner_id = body.to_user_id or actor.id
+    owner = db.query(models.User).filter(models.User.id == owner_id).first()
+    if not owner or owner.role not in ("admin", "manager", "backend", "headoffice"):
+        raise HTTPException(status_code=400, detail="Escalation owner must be admin, manager, back-office or head office")
+    case.escalated = True
+    case.escalated_to = owner_id
+    case.escalated_by = actor.id
+    case.escalated_at = datetime.now(timezone.utc)
+    case.assigned_fos_id = None            # drop from the FOS queue / performance
+    case.assigned_caller_id = None         # drop from the caller queue / performance
+    if body.note:
+        case.allocation_reason = f"Escalated: {body.note}"
+    db.commit()
+    from .realtime import notify_data_changed
+    notify_data_changed(case.bank, case.product)
+    return {"ok": True, "escalated_to": owner_id}
+
+
+@router.post("/{case_id}/deescalate")
+def deescalate_case(case_id: int, db: Session = Depends(get_db),
+                    actor: models.User = Depends(require_roles("admin", "manager", "backend", "headoffice"))):
+    """Release an escalated case back to the pool (admin can re-run allocation to reassign)."""
+    case = db.query(models.Case).filter(models.Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    _manager_owns(db, actor, case)
+    case.escalated = False
+    case.escalated_to = None
+    db.commit()
+    from .realtime import notify_data_changed
+    notify_data_changed(case.bank, case.product)
+    return {"ok": True}
 
 
 @router.get("/product-summary")

@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Column, Integer, String, Numeric, DateTime, Date, Boolean, ForeignKey, Text, JSON, Float
+    Column, Integer, String, Numeric, DateTime, Date, Boolean, ForeignKey, Text, JSON, Float,
+    UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 
@@ -23,8 +24,10 @@ class User(Base):
     hashed_password = Column(String(255))
     google_sub = Column(String(120), unique=True, nullable=True)
     role = Column(String(20), nullable=False, default="telecaller")
+    emp_code = Column(String(20), unique=True, index=True, nullable=True)  # e.g. TC001 — caller ID used in upload sheets
     branch = Column(String(80))                 # e.g. Vizag, Hyderabad
     banks = Column(JSON, default=list)          # ["ICICI","RBL","AXIS"]
+    assigned_products = Column(JSON, default=list)  # ["PL X BKT","BL X BKT","DR"] — FOS product coverage
     assigned_pincodes = Column(JSON, default=list)  # ["530001","530016"]
     home_lat = Column(Float)                    # base location for GPS allocation
     home_lng = Column(Float)
@@ -111,6 +114,13 @@ class Case(Base):
     assigned_fos_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     assigned_caller_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     allocation_reason = Column(String(120))
+
+    # escalation — pulled off the FOS/caller by admin/manager/backend to handle personally.
+    # Excluded from the FOS/caller's individual performance, but STILL counted in MIS & feedback.
+    escalated = Column(Boolean, default=False, index=True)
+    escalated_to = Column(Integer, ForeignKey("users.id"), nullable=True)   # who owns it now
+    escalated_by = Column(Integer, nullable=True)
+    escalated_at = Column(DateTime(timezone=True), nullable=True)
 
     import_batch_id = Column(Integer, ForeignKey("import_batches.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
@@ -288,3 +298,38 @@ class MisTarget(Base):
     emp_name = Column(String(120), index=True)
     target_pct = Column(Numeric(6, 2), default=0)     # e.g. 30 means 30%
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class FeedbackEntry(Base):
+    """Daily feedback row a caller/back-office maintains per case, to hand to the bank.
+    One row per (case, day). Log-derived fields are auto-filled from the latest call /
+    visit and remain editable; manual edits are preserved."""
+    __tablename__ = "feedback_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    case_id = Column(Integer, ForeignKey("cases.id"), index=True, nullable=False)
+    bank = Column(String(40), index=True)
+    product = Column(String(80), index=True)
+    day = Column(Date, index=True)                     # feedback day (IST)
+
+    agency_name = Column(String(160))                  # AGENCY NAME
+    visited = Column(String(20))                       # Visited / Not Visited
+    dispo_code = Column(String(40))                    # Dispo Code
+    visit_date = Column(String(20))                    # Visit Date
+    nature_of_business = Column(String(60))            # Nature Of Business
+    default_reason = Column(String(60))                # Default Reason
+    tc_code = Column(String(30))                       # Tc Code
+    fe_code = Column(String(30))                       # Fe Code
+    tc_final_code = Column(String(30))                 # Tc Final Code
+    fe_final_code = Column(String(30))                 # Fe Final Code
+    tc_remarks = Column(Text)                          # Tc Remarks
+    fe_remark = Column(Text)                           # Fe Remark
+    ptp_date = Column(String(20))                      # PTP Date
+
+    edited = Column(JSON, default=dict)                # {field: true} — fields a human overrode
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    case = relationship("Case")
+    __table_args__ = (UniqueConstraint("case_id", "day", name="uq_feedback_case_day"),)

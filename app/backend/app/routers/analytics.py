@@ -40,16 +40,28 @@ def dashboard(branch: str | None = None, db: Session = Depends(get_db),
     base = _scope(db.query(models.Case), user, branch)
 
     total_cases = base.count()
-    target = base.with_entities(func.coalesce(func.sum(models.Case.funding_amount), 0)).scalar()
-    received = base.with_entities(func.coalesce(func.sum(models.Case.received_amount), 0)).scalar()
-    pending = base.with_entities(func.coalesce(func.sum(models.Case.pending_amount), 0)).scalar()
+    cash = _d(base.with_entities(func.coalesce(func.sum(models.Case.received_amount), 0)).scalar())
+    # ENR is the recovery base for credit-card/PL-BL data; fall back to funding for older loads.
+    total_enr = _d(base.with_entities(func.coalesce(func.sum(models.Case.enr), 0)).scalar())
+    paid_enr = _d(_scope(db.query(models.Case), user, branch)
+                  .filter(models.Case.paid_status == "PAID")
+                  .with_entities(func.coalesce(func.sum(models.Case.enr), 0)).scalar())
+    funding = _d(base.with_entities(func.coalesce(func.sum(models.Case.funding_amount), 0)).scalar())
 
     paid = _scope(db.query(models.Case), user, branch).filter(models.Case.paid_status == "PAID").count()
     unpaid = _scope(db.query(models.Case), user, branch).filter(models.Case.paid_status == "UNPAID").count()
     partial = _scope(db.query(models.Case), user, branch).filter(models.Case.paid_status == "PARTIAL").count()
 
-    target_f, received_f = _d(target), _d(received)
-    recovery_rate = round((received_f / target_f * 100), 2) if target_f else 0.0
+    if total_enr > 0:                       # ENR-based (matches the MIS sheet)
+        target_f = round(total_enr, 2)
+        received_f = round(paid_enr, 2)
+        pending_f = round(total_enr - paid_enr, 2)
+        recovery_rate = round(paid_enr / total_enr * 100, 2)
+    else:                                    # funding-based fallback
+        target_f = funding
+        received_f = cash
+        pending_f = _d(base.with_entities(func.coalesce(func.sum(models.Case.pending_amount), 0)).scalar())
+        recovery_rate = round((cash / funding * 100), 2) if funding else 0.0
 
     # by bank
     bank_rows = (
@@ -114,8 +126,9 @@ def dashboard(branch: str | None = None, db: Session = Depends(get_db),
             "total_cases": total_cases,
             "target": target_f,
             "received": received_f,
-            "pending": _d(pending),
+            "pending": pending_f,
             "recovery_rate": recovery_rate,
+            "cash_collected": cash,
             "paid": paid, "unpaid": unpaid, "partial": partial,
         },
         "by_bank": by_bank,
@@ -144,7 +157,7 @@ def db_summary(db: Session = Depends(get_db), admin: models.User = Depends(requi
 
 @router.get("/activity/filters")
 def activity_filters(db: Session = Depends(get_db),
-                     viewer: models.User = Depends(require_roles("admin", "manager"))):
+                     viewer: models.User = Depends(require_roles("admin", "manager", "headoffice"))):
     """Distinct values to populate the Activity filters (scoped for managers)."""
     cq = db.query(models.Case)
     uq = db.query(models.User).filter(models.User.role.in_(("fos", "telecaller")))

@@ -37,10 +37,14 @@ def to_decimal(v) -> Decimal:
         return Decimal("0.00")
 
 
+_XML_ESC = re.compile(r"_x[0-9A-Fa-f]{4}_")          # openpyxl escape for illegal XML chars
+_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def _clean(v):
     if v is None:
         return None
-    s = str(v).strip()
+    s = _CTRL.sub("", _XML_ESC.sub("", str(v))).strip()
     return s if s and s.lower() != "none" else None
 
 
@@ -67,6 +71,7 @@ def extract_pincode(address):
 HEADER_MAP = {
     "bank": "bank",
     "cusname": "customer_name", "names": "customer_name", "name": "customer_name",
+    "customername": "customer_name", "custname": "customer_name", "customorname": "customer_name",
     "phone": "phone", "phoneno": "phone", "phonenumber": "phone", "phoneno1": "phone",
     "mobile": "phone", "mobileno": "phone", "mobilenumber": "phone", "mobno": "phone", "mob": "phone",
     "mobile1": "phone", "custmobile": "phone", "customermobile": "phone", "customermobileno": "phone",
@@ -104,7 +109,7 @@ HEADER_MAP = {
     "normstab": "norm_stab", "nstab": "norm_stab", "ns": "norm_stab",
     "caller": "_caller", "tcname": "_caller",
     "fos": "_fos", "fosname": "_fos",
-    "area": "_area",
+    "area": "_area", "aera": "_area",                       # AERA = common misspelling of AREA
     "team": "team_lead",
     "catallo": "cat", "cat": "cat", "category": "cat",
     "visits": "_visits", "visit": "_visits", "fosdispo": "_fosdispo",
@@ -112,7 +117,38 @@ HEADER_MAP = {
     "status": "final_status",
     "dispo": "disposition", "disposition": "disposition", "tcdispo": "disposition",
     "remarks": "remarks", "tcremark": "remarks",
-    "finalstatus": "final_status",
+    "finalstatus": "final_status", "miscode": "final_status",   # MIS CODE = the status code
+    # ---- PL/BL (personal / business loan) layout ----
+    # BL carries TWO daily-updated targets: OD STAB and OD NORM (paid one is marked in STATUS).
+    "odstab": "stab_amount", "stabemi": "stab_amount", "emistab": "stab_amount",
+    "odnorm": "norm_amount",
+    "dpd": "bucket",                                           # R30 / X-BKT bucket
+    "account2": "account_no", "acc2": "account_no",
+    "curadrs": "address",                                      # CUR_ADRS master column
+    "location": "x:city", "currentcity": "x:city", "finalcity": "x:city",
+    "paidamount": "received_amount",                           # PAID AMOUNT = CASH COLL
+    "emi": "x:emi",                                            # PL: monthly EMI (no norm/stab)
+    "posovdamt": "x:pos_ovd", "posovd": "x:pos_ovd",
+    "interestovdamt": "x:interest_ovd", "interestovd": "x:interest_ovd",
+    "chargesoverdue": "x:charges_ovd", "chargesovd": "x:charges_ovd",
+    "lastmonthriskcate": "x:risk", "lastmonthriskcategory": "x:risk", "riskcategory": "x:risk",
+    # loan / caller working fields → free-form extra (x_ so they're inline-editable)
+    "totod": "x:tot_od", "totalod": "x:tot_od", "od": "x:od",
+    "ptpdate": "x:ptp_date", "paiddate": "x:paid_date",
+    "modeofpayment": "x:mode_of_payment", "mode": "x:mode_of_payment",
+    "tracedcontactno": "x:traced_contact", "tracedcontact": "x:traced_contact",
+    "tracedaddress": "x:traced_address",
+    "peradrs": "x:per_address", "peraddress": "x:per_address",
+    "workadrs": "x:work_address", "workaddress": "x:work_address",
+    "tenure": "x:tenure", "balancetenure": "x:balance_tenure", "billedemi": "x:billed_emi",
+    "lastpaymentdate": "x:last_payment_date", "lastpaymentamount": "x:last_payment_amount",
+    "organisation": "x:organisation", "organization": "x:organisation", "designation": "x:designation",
+    "loanstartdate": "x:loan_start_date", "loanenddate": "x:loan_end_date",
+    "si": "x:si", "sirerun": "x:si_rerun", "block": "x:block", "excesslimit": "x:excess_limit",
+    "creditdisbursementam": "x:disbursement", "disbursementam": "x:disbursement",
+    "disbursementamount": "x:disbursement", "creditdisbursementamount": "x:disbursement",
+    "allocdate": "x:alloc_date", "allocationdate": "x:alloc_date", "duedate": "x:due_date",
+    "pnpadates": "x:pnpa_dates",
     "cardlimit": "_ignore", "creditlimi": "_ignore",
 }
 
@@ -160,11 +196,12 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
                 if idx >= len(r) or field in ("_ignore",):
                     continue
                 val = r[idx]
-                if field in MONEY_FIELDS:
+                if field.startswith("x:"):                     # free-form loan / caller column → extra
+                    cv = _clean(val)
+                    if cv is not None:
+                        rec.setdefault("_extra", {})["x_" + field[2:]] = cv
+                elif field in MONEY_FIELDS:
                     rec[field] = to_decimal(val)
-                elif field in ("_caller", "_fos", "_area", "paid_status", "final_status",
-                               "disposition", "remarks", "bucket", "cycle", "month", "product"):
-                    rec[field] = _clean(val)
                 else:
                     rec[field] = _clean(val)
             # must have at least a name or account no to be a real case
@@ -230,6 +267,11 @@ def record_to_case_kwargs(rec: dict) -> dict:
     ns = _clean(rec.get("norm_stab"))
     if ns:
         kwargs["norm_stab"] = "STAB" if "STAB" in ns.upper() else ("NORM" if "NORM" in ns.upper() else ns)
+    # BL: the STATUS column carries NORM / STAB / FLOW — the paid target is marked there.
+    if not kwargs.get("norm_stab"):
+        fs = (_clean(rec.get("final_status")) or "").upper()
+        if fs in ("NORM", "STAB"):
+            kwargs["norm_stab"] = fs
 
     # VISITED — from VISITS column (or an explicit FOS disposition)
     vis = _clean(rec.get("_visits")) or _clean(rec.get("_fosdispo"))
@@ -243,6 +285,11 @@ def record_to_case_kwargs(rec: dict) -> dict:
         kwargs["paid_status"] = "PAID" if "PAID" in pu and "UN" not in pu else ("UNPAID" if "UNPAID" in pu else pu)
         if received > 0 and pending <= 0:
             kwargs["status"] = "paid"
+
+    # free-form loan / caller columns (PL/BL: tenure, OD, PTP/paid date, mode, addresses, ...)
+    extra = rec.get("_extra")
+    if extra:
+        kwargs["extra"] = extra
     return kwargs
 
 

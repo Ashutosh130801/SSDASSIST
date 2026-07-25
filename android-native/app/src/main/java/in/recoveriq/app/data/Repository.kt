@@ -76,6 +76,7 @@ class Repository(context: Context) {
 
     suspend fun callQueue(bank: String? = null): QueueResponse = Api.service.callQueue(bank)
     suspend fun ptpTracker(bank: String? = null): PtpResponse = Api.service.ptpTracker(bank)
+    suspend fun reminders(): RemindersResponse = Api.service.reminders()
 
     suspend fun templates(): List<Template> = Api.service.templates()
     suspend fun logComm(caseId: Int, channel: String, text: String?) =
@@ -129,6 +130,7 @@ class Repository(context: Context) {
         caseId: Int, lat: Double?, lng: Double?, accuracy: Double?,
         personMoved: Boolean, paid: Boolean, amount: Double,
         disposition: String?, note: String?, photoJpeg: ByteArray?, normStab: String? = null,
+        ptpDate: String? = null,
     ): VisitOut {
         fun t(v: String) = v.toRequestBody("text/plain".toMediaType())
         val photoPart = photoJpeg?.let {
@@ -146,6 +148,7 @@ class Repository(context: Context) {
             amountCollected = t(amount.toString()),
             normStab = normStab?.let { t(it) },
             disposition = disposition?.let { t(it) },
+            ptpDate = ptpDate?.let { t(it) },
             note = note?.let { t(it) },
             photo = photoPart,
         )

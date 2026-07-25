@@ -27,7 +27,7 @@ OBSTACLE = {"DISPUTE", "WRONG NUMBER", "WRONG_NUMBER", "RNR", "SWITCHED OFF", "S
 
 router = APIRouter(prefix="/api/mis", tags=["mis"])
 
-MIS_ROLES = ("admin", "manager", "backend")
+MIS_ROLES = ("admin", "manager", "backend", "headoffice")
 
 
 def _f(x) -> float:
@@ -82,29 +82,40 @@ def _group(cases: list, keyfn) -> list:
 
 
 def compute_mis(db: Session, user: models.User, bank: str, product: str) -> dict:
+    from .cases import propensity as _prop
     q = _scope(db.query(models.Case), user).filter(models.Case.bank == bank, models.Case.product == product)
     cases = q.all()
+    for c in cases:                     # score is a transient attribute — set it for the insight tables
+        c.propensity = _prop(c)
 
     targets = {t.emp_name: _f(t.target_pct) for t in
                db.query(models.MisTarget).filter(models.MisTarget.bank == bank,
                                                  models.MisTarget.product == product).all()}
+    # ONE product-wide target % (manager/back-office sets it once) — same goal for every
+    # FOS and caller, not per-person. Stored under the sentinel emp_name "*ALL*".
+    product_target = targets.get("*ALL*", 0.0)
+
+    def _leaderboard(groups):
+        lb = []
+        for r in groups:
+            tgt = product_target
+            tenr = round(r["enr"] * tgt / 100.0, 2)
+            to_tgt = _pct(r["paid_enr"], tenr) if tenr else 0.0
+            lb.append({
+                "emp": r["label"], "count": r["count"], "unpaid": r["unpaid"], "paid": r["paid"],
+                "enr": r["enr"], "target_pct": tgt, "target_enr": tenr,
+                "achieved_pct": r["pct"], "achieved_enr": r["paid_enr"],
+                "gap_enr": round(max(tenr - r["paid_enr"], 0), 2), "to_target_pct": to_tgt,
+                "status": ("none" if not tenr else "green" if to_tgt >= 100 else "amber" if to_tgt >= 60 else "red"),
+                "pending_visit": r["not_visited"], "cash_coll": r["amount"],
+            })
+        lb.sort(key=lambda x: x["achieved_enr"], reverse=True)
+        return lb
 
     by_fos = _group(cases, lambda c: c.fos_name)
-    # Leaderboard / employee performance (FOS-based) with attainment gap + RAG status.
-    leaderboard = []
-    for r in by_fos:
-        tgt = targets.get(r["label"], 0.0)
-        tenr = round(r["enr"] * tgt / 100.0, 2)
-        to_tgt = _pct(r["paid_enr"], tenr) if tenr else 0.0
-        leaderboard.append({
-            "emp": r["label"], "count": r["count"], "unpaid": r["unpaid"], "paid": r["paid"],
-            "enr": r["enr"], "target_pct": tgt, "target_enr": tenr,
-            "achieved_pct": r["pct"], "achieved_enr": r["paid_enr"],
-            "gap_enr": round(max(tenr - r["paid_enr"], 0), 2), "to_target_pct": to_tgt,
-            "status": ("none" if not tenr else "green" if to_tgt >= 100 else "amber" if to_tgt >= 60 else "red"),
-            "pending_visit": r["not_visited"], "cash_coll": r["amount"],
-        })
-    leaderboard.sort(key=lambda x: x["achieved_enr"], reverse=True)
+    by_caller_g = _group(cases, lambda c: c.caller_name)
+    leaderboard = _leaderboard(by_fos)                 # FOS performance vs the one target
+    caller_leaderboard = _leaderboard(by_caller_g)     # caller performance vs the same target
 
     # ---- extra insights ----
     ids = [c.id for c in cases]
@@ -155,9 +166,12 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str) -> dict
         "untouched": len(untouched), "untouched_pending": round(sum(_f(c.pending_amount) for c in untouched), 2),
     }
 
+    from .cases import propensity as _prop
+
     def case_row(c):
         return {"customer": c.customer_name, "account": c.account_no, "pending": _f(c.pending_amount),
-                "enr": _f(c.enr), "propensity": c.propensity or 0, "fos": c.fos_name, "caller": c.caller_name,
+                "enr": _f(c.enr), "propensity": getattr(c, "propensity", None) or _prop(c),
+                "fos": c.fos_name, "caller": c.caller_name,
                 "contacted": bool(c.last_contacted_at or c.visited)}
 
     untouched_tbl = [case_row(c) for c in sorted(untouched, key=lambda x: _f(x.pending_amount), reverse=True)[:25]]
@@ -233,12 +247,17 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str) -> dict
         "leakage": round(sum(max(_f(c.norm_amount) - _f(c.received_amount), 0) for c in stab_paid), 2),
     }
 
+    is_plbl = any((c.segment or "") == "PL/BL" for c in cases)
     return {
         "bank": bank, "product": product,
+        "segment": "PL/BL" if is_plbl else (cases[0].segment if cases else None),
+        "base_label": "TOS" if is_plbl else "ENR",   # PL/BL recovery base is Total Outstanding
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "overall": _agg(cases),
+        "product_target": product_target,
+        "caller_leaderboard": caller_leaderboard,
         "by_fos": by_fos,
-        "by_caller": _group(cases, lambda c: c.caller_name),
+        "by_caller": by_caller_g,
         "by_area": _group(cases, lambda c: c.team),
         "by_team_lead": _group(cases, lambda c: c.team_lead),
         "by_cat": _group(cases, lambda c: c.cat),
@@ -270,25 +289,26 @@ def mis(bank: str = Query(...), product: str = Query(...),
 
 @router.put("/target")
 def set_target(body: dict = Body(...), db: Session = Depends(get_db),
-               user: models.User = Depends(require_roles("admin", "manager"))):
+               user: models.User = Depends(require_roles("admin", "manager", "backend", "headoffice"))):
+    """Set the ONE product-wide target % (applies to every FOS and caller for this
+    bank+product). Set it to 85 and everyone's target becomes 85."""
     bank = (body.get("bank") or "").strip()
     product = (body.get("product") or "").strip()
-    emp = (body.get("emp") or "").strip()
     try:
         pct = float(body.get("target_pct") or 0)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="target_pct must be a number")
-    if not (bank and product and emp):
-        raise HTTPException(status_code=400, detail="bank, product and emp are required")
+    if not (bank and product):
+        raise HTTPException(status_code=400, detail="bank and product are required")
     row = (db.query(models.MisTarget)
            .filter(models.MisTarget.bank == bank, models.MisTarget.product == product,
-                   models.MisTarget.emp_name == emp).first())
+                   models.MisTarget.emp_name == "*ALL*").first())
     if not row:
-        row = models.MisTarget(bank=bank, product=product, emp_name=emp)
+        row = models.MisTarget(bank=bank, product=product, emp_name="*ALL*")
         db.add(row)
     row.target_pct = pct
     db.commit()
-    return {"ok": True, "emp": emp, "target_pct": pct}
+    return {"ok": True, "target_pct": pct}
 
 
 # ---- Download selected MIS tables as an Excel workbook ----
@@ -333,6 +353,43 @@ def download(bank: str = Query(...), product: str = Query(...),
              tables: str = Query(",".join(TABLE_NAMES.keys())),
              db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    HEAD = PatternFill("solid", fgColor="1D4ED8")
+    HEADF = Font(bold=True, color="FFFFFF", size=11)
+    ZEBRA = PatternFill("solid", fgColor="F5F8FE")
+    GREEN = PatternFill("solid", fgColor="C6EFCE")
+    AMBER = PatternFill("solid", fgColor="FFEB9C")
+    RED = PatternFill("solid", fgColor="FFC7CE")
+    _s = Side(style="thin", color="D6DEEA")
+    THIN = Border(left=_s, right=_s, top=_s, bottom=_s)
+
+    def _style(ws, first_col_bold=False):
+        header = [str(c.value) if c.value is not None else "" for c in ws[1]]
+        pct_idx = [i for i, h in enumerate(header) if "%" in h]
+        for cell in ws[1]:
+            cell.fill = HEAD; cell.font = HEADF
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = THIN
+        ws.freeze_panes = "A2"
+        for ri, row in enumerate(ws.iter_rows(min_row=2), start=2):
+            for cell in row:
+                cell.border = THIN
+                if ri % 2 == 0:
+                    cell.fill = ZEBRA
+            if first_col_bold and row:
+                row[0].font = Font(bold=True)
+            for i in pct_idx:
+                if i < len(row):
+                    try:
+                        v = float(row[i].value)
+                    except (TypeError, ValueError):
+                        continue
+                    row[i].fill = GREEN if v >= 60 else AMBER if v >= 30 else RED
+                    row[i].font = Font(bold=True)
+        for col in ws.columns:
+            w = max((len(str(c.value)) for c in col if c.value is not None), default=10)
+            ws.column_dimensions[col[0].column_letter].width = min(max(w + 2, 12), 42)
+
     data = compute_mis(db, user, bank, product)
     wanted = [t.strip() for t in tables.split(",") if t.strip()]
     wb = openpyxl.Workbook()
@@ -344,11 +401,13 @@ def download(bank: str = Query(...), product: str = Query(...),
             ws.append(["Metric", "Value"])
             for k, v in block.items():
                 ws.append([k, v])
+            _style(ws, first_col_bold=True)
         elif isinstance(block, list) and name in _TABLE_COLS:
             cols = _TABLE_COLS[name]
             ws.append([c[1] for c in cols])
             for r in block:
                 ws.append([r.get(k) for k, _ in cols])
+            _style(ws, first_col_bold=True)
     if not wb.sheetnames:
         wb.create_sheet(title="MIS")
     buf = io.BytesIO()
@@ -361,7 +420,7 @@ def download(bank: str = Query(...), product: str = Query(...),
 
 
 @router.get("/highlights")
-def highlights(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "manager"))):
+def highlights(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "manager", "headoffice"))):
     """A few headline MIS signals across everything the user can see — for the main dashboard."""
     cases = _scope(db.query(models.Case), user).all()
     today = datetime.now(IST).date()

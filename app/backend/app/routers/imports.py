@@ -51,6 +51,30 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     db.add(batch)
     db.flush()
 
+    # Resolve the sheet's CALLER column to a caller: it now carries the caller's ID
+    # (emp_code, e.g. TC001) generated at profile creation. Fall back to matching by name
+    # for older sheets. When matched we also normalise caller_name to the real name (MIS).
+    _users = db.query(models.User).all()
+    _by_code = {u.emp_code.strip().upper(): u for u in _users if u.emp_code}
+    _by_name = {u.name.strip().upper(): u for u in _users if u.name}
+    # FOS is resolved the same way as caller — straight from the sheet's FOS column
+    # (its ID or name), CROSS-BRANCH. A Vizag caller can work a case whose FOS is in
+    # another branch; both come from the file, not from any branch rule.
+    _fos_by_code = {u.emp_code.strip().upper(): u for u in _users if u.emp_code and u.role == "fos"}
+    _fos_by_name = {u.name.strip().upper(): u for u in _users if u.name and u.role == "fos"}
+
+    def _resolve_caller(val):
+        if not val:
+            return None
+        key = str(val).strip().upper()
+        return _by_code.get(key) or _by_name.get(key)
+
+    def _resolve_fos(val):
+        if not val:
+            return None
+        key = str(val).strip().upper()
+        return _fos_by_code.get(key) or _fos_by_name.get(key)
+
     imported, skipped = 0, 0
     for rec in records:
         kwargs = record_to_case_kwargs(rec)
@@ -61,9 +85,24 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
         if existing:
             # update amounts / status, don't duplicate
             for k in ("funding_amount", "received_amount", "pending_amount", "paid_status",
-                      "disposition", "remarks", "address", "pincode", "phone"):
+                      "disposition", "remarks", "address", "pincode", "phone",
+                      "enr", "norm_amount", "stab_amount", "norm_stab",
+                      "total_outstanding", "principal_outstanding",
+                      "caller_name", "fos_name", "team", "bucket", "cycle", "final_status"):
                 if kwargs.get(k) is not None:
                     setattr(existing, k, kwargs[k])
+            if kwargs.get("extra"):                 # merge new loan/caller columns
+                existing.extra = {**(existing.extra or {}), **kwargs["extra"]}
+            cu = _resolve_caller(kwargs.get("caller_name"))
+            if cu:
+                existing.assigned_caller_id = cu.id
+                existing.caller_name = cu.name
+            fu = _resolve_fos(kwargs.get("fos_name"))
+            if fu:
+                existing.assigned_fos_id = fu.id
+                existing.fos_name = fu.name
+                if fu.branch and not branch:            # case's branch = its field owner (FOS) branch
+                    existing.branch = fu.branch
             if default_bank:
                 existing.bank = default_bank
             if product:
@@ -83,6 +122,16 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             kwargs["segment"] = segment
         if branch:
             kwargs["branch"] = branch
+        cu = _resolve_caller(kwargs.get("caller_name"))
+        if cu:
+            kwargs["assigned_caller_id"] = cu.id
+            kwargs["caller_name"] = cu.name
+        fu = _resolve_fos(kwargs.get("fos_name"))
+        if fu:
+            kwargs["assigned_fos_id"] = fu.id
+            kwargs["fos_name"] = fu.name
+            if fu.branch and not kwargs.get("branch"):   # case's branch = its field owner (FOS) branch
+                kwargs["branch"] = fu.branch
         kwargs["import_batch_id"] = batch.id
         db.add(models.Case(**kwargs))
         imported += 1

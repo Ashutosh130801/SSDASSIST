@@ -8,12 +8,14 @@ from pydantic import BaseModel, EmailStr, ConfigDict, Field
 # ---------- Auth / Users ----------
 class UserBase(BaseModel):
     name: str
-    email: EmailStr
+    email: str        # plain string — internal logins may use non-RFC domains (e.g. .local)
     phone: Optional[str] = None
     role: str = "telecaller"
     branch: Optional[str] = None
-    banks: List[str] = []
-    assigned_pincodes: List[str] = []
+    # Tolerate NULL from older rows (columns added via ALTER TABLE default to NULL, not []).
+    banks: Optional[List[str]] = []
+    assigned_products: Optional[List[str]] = []
+    assigned_pincodes: Optional[List[str]] = []
     home_lat: Optional[float] = None
     home_lng: Optional[float] = None
     employment_type: Optional[str] = None
@@ -33,6 +35,7 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     branch: Optional[str] = None
     banks: Optional[List[str]] = None
+    assigned_products: Optional[List[str]] = None
     assigned_pincodes: Optional[List[str]] = None
     home_lat: Optional[float] = None
     home_lng: Optional[float] = None
@@ -48,6 +51,7 @@ class UserUpdate(BaseModel):
 class UserOut(UserBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    emp_code: Optional[str] = None
     is_active: bool
     created_at: datetime
 
@@ -59,7 +63,7 @@ class Token(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str        # plain string — internal logins may use non-RFC domains (e.g. .local)
     password: str
     device_id: Optional[str] = None
     device_label: Optional[str] = None
@@ -181,9 +185,9 @@ class CaseBase(BaseModel):
     product: Optional[str] = None
     segment: Optional[str] = None
     # MIS fields
-    enr: Decimal = Decimal("0")
-    norm_amount: Decimal = Decimal("0")
-    stab_amount: Decimal = Decimal("0")
+    enr: Optional[Decimal] = Decimal("0")
+    norm_amount: Optional[Decimal] = Decimal("0")
+    stab_amount: Optional[Decimal] = Decimal("0")
     norm_stab: Optional[str] = None
     caller_name: Optional[str] = None
     fos_name: Optional[str] = None
@@ -191,6 +195,10 @@ class CaseBase(BaseModel):
     team_lead: Optional[str] = None
     cat: Optional[str] = None
     visited: Optional[bool] = None
+    visited_today: Optional[bool] = None
+    contacted_today: Optional[bool] = None
+    escalated: Optional[bool] = None
+    escalated_to: Optional[int] = None
     extra: Optional[dict] = None
     account_no: Optional[str] = None
     card_no: Optional[str] = None
@@ -204,12 +212,12 @@ class CaseBase(BaseModel):
     bucket: Optional[str] = None
     cycle: Optional[str] = None
     month: Optional[str] = None
-    total_outstanding: Decimal = Decimal("0")
-    principal_outstanding: Decimal = Decimal("0")
-    min_amount_due: Decimal = Decimal("0")
-    funding_amount: Decimal = Decimal("0")
-    received_amount: Decimal = Decimal("0")
-    pending_amount: Decimal = Decimal("0")
+    total_outstanding: Optional[Decimal] = Decimal("0")
+    principal_outstanding: Optional[Decimal] = Decimal("0")
+    min_amount_due: Optional[Decimal] = Decimal("0")
+    funding_amount: Optional[Decimal] = Decimal("0")
+    received_amount: Optional[Decimal] = Decimal("0")
+    pending_amount: Optional[Decimal] = Decimal("0")
 
 
 class CaseCreate(CaseBase):

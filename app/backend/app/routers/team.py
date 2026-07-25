@@ -10,7 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import models, schemas
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_roles
@@ -26,7 +26,7 @@ def _d(x) -> float:
 
 
 @router.get("/branches")
-def branches(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "manager"))):
+def branches(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "manager", "headoffice"))):
     """Branch cards: manager, staff counts by role, and case/collection stats.
     Admin sees all branches; a manager sees only their own."""
     users = db.query(models.User).filter(models.User.is_active == True).all()  # noqa: E712
@@ -85,16 +85,51 @@ def create_branch(body: dict = Body(...), db: Session = Depends(get_db),
     return {"ok": True, "branch": name, "manager_id": mgr.id}
 
 
+@router.patch("/branches/{name}")
+def edit_branch(name: str, body: dict = Body(...), db: Session = Depends(get_db),
+                admin: models.User = Depends(require_roles("admin"))):
+    """Rename a branch (cascades to its staff and cases) and/or (re)assign its manager."""
+    new = (body.get("new_name") or "").strip()
+    if new and new != name:
+        db.query(models.User).filter(models.User.branch == name).update({models.User.branch: new})
+        db.query(models.Case).filter(models.Case.branch == name).update({models.Case.branch: new})
+        name = new
+    mid = body.get("manager_id")
+    if mid:
+        m = db.query(models.User).filter(models.User.id == mid).first()
+        if m:
+            m.role = "manager"
+            m.branch = name
+    db.commit()
+    return {"ok": True, "branch": name}
+
+
+@router.delete("/branches/{name}")
+def delete_branch(name: str, reassign: str | None = None, db: Session = Depends(get_db),
+                  admin: models.User = Depends(require_roles("admin"))):
+    """Delete a branch. Its staff and cases are moved to `reassign` (another branch) or
+    left unassigned. Staff accounts are NOT deleted — use the staff Remove action for that."""
+    target = (reassign or "").strip() or None
+    n_staff = db.query(models.User).filter(models.User.branch == name).update({models.User.branch: target})
+    n_cases = db.query(models.Case).filter(models.Case.branch == name).update({models.Case.branch: target})
+    db.commit()
+    return {"ok": True, "moved_staff": n_staff, "moved_cases": n_cases, "to": target}
+
+
 def _window(db: Session, u: models.User, start):
+    from sqlalchemy import select
+    esc = select(models.Case.id).where(models.Case.escalated.is_(True))   # exclude escalated work
     if u.role == "fos":
-        q = db.query(models.Visit).filter(models.Visit.officer_id == u.id)
+        q = db.query(models.Visit).filter(models.Visit.officer_id == u.id,
+                                          ~models.Visit.case_id.in_(esc))
         if start:
             q = q.filter(models.Visit.created_at >= start)
         items = q.all()
         return {"label": "visits", "count": len(items),
                 "collected": _d(sum(_d(v.amount_collected) for v in items))}
     # telecaller (and any calling role)
-    q = db.query(models.CallLog).filter(models.CallLog.caller_id == u.id)
+    q = db.query(models.CallLog).filter(models.CallLog.caller_id == u.id,
+                                        ~models.CallLog.case_id.in_(esc))
     if start:
         q = q.filter(models.CallLog.created_at >= start)
     calls = q.all()
@@ -140,12 +175,14 @@ def employee_dashboard(uid: int, db: Session = Depends(get_db),
     if actor.role in ("fos", "telecaller", "backend") and actor.id != u.id:
         raise HTTPException(status_code=403, detail="Not allowed")
 
+    from sqlalchemy import select
+    esc = select(models.Case.id).where(models.Case.escalated.is_(True))    # escalated → not their perf
     is_caller = u.role == "telecaller"
-    cq = db.query(models.Case)
+    cq = db.query(models.Case).filter(models.Case.escalated.isnot(True))
     cq = cq.filter(models.Case.assigned_caller_id == uid) if is_caller else cq.filter(models.Case.assigned_fos_id == uid)
     cases = cq.all()
-    calls = db.query(models.CallLog).filter(models.CallLog.caller_id == uid).all()
-    visits = db.query(models.Visit).filter(models.Visit.officer_id == uid).all()
+    calls = db.query(models.CallLog).filter(models.CallLog.caller_id == uid, ~models.CallLog.case_id.in_(esc)).all()
+    visits = db.query(models.Visit).filter(models.Visit.officer_id == uid, ~models.Visit.case_id.in_(esc)).all()
 
     def paid(c):
         return (c.paid_status or "").upper() == "PAID"
@@ -217,3 +254,22 @@ def employee_dashboard(uid: int, db: Session = Depends(get_db),
         "field": field,
         "recent_cases": recent,
     }
+
+
+@router.get("/user/{uid}/cases", response_model=list[schemas.CaseOut])
+def employee_cases(uid: int, db: Session = Depends(get_db),
+                   actor: models.User = Depends(get_current_user)):
+    """Every case assigned to this employee (as FOS or telecaller), tagged with today's
+    touch flags & propensity — for the clickable clusters on their dashboard."""
+    from .cases import _with_score, _mark_today
+    u = db.query(models.User).filter(models.User.id == uid).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    if actor.role == "manager" and u.branch != actor.branch:
+        raise HTTPException(status_code=403, detail="Not in your branch")
+    if actor.role in ("fos", "telecaller", "backend") and actor.id != u.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    q = db.query(models.Case)
+    q = q.filter(models.Case.assigned_caller_id == uid) if u.role == "telecaller" \
+        else q.filter(models.Case.assigned_fos_id == uid)
+    return _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).all()))

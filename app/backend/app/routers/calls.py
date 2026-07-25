@@ -86,6 +86,7 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
         q = q.filter(models.Case.bank == bank)
     cases = q.all()
 
+    from .cases import propensity
     due, contacted, upcoming = [], [], []
     for c in cases:
         if _contacted_today(c):
@@ -95,16 +96,27 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
         else:
             due.append(c)
 
-    due.sort(key=lambda c: float(c.pending_amount or 0), reverse=True)
+    # Untouched work first, highest recovery-propensity & biggest balance on top.
+    due.sort(key=lambda c: (propensity(c), float(c.pending_amount or 0)), reverse=True)
     upcoming.sort(key=lambda c: (c.follow_up_date or today))
     contacted.sort(key=lambda c: c.last_contacted_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+    # Paid-today cases (kept out of the working queue) — shown green so wins are visible.
+    pq = db.query(models.Case).filter(models.Case.paid_status == "PAID")
+    if user.role == "telecaller":
+        pq = pq.filter(models.Case.assigned_caller_id == user.id)
+    if bank:
+        pq = pq.filter(models.Case.bank == bank)
+    paid_today = [c for c in pq.all() if _contacted_today(c)]
+    paid_today.sort(key=lambda c: c.last_contacted_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
     def ser(lst):
         return [schemas.CaseOut.model_validate(x) for x in lst]
 
     return {
-        "due": ser(due), "contacted_today": ser(contacted), "upcoming": ser(upcoming),
-        "counts": {"due": len(due), "contacted_today": len(contacted), "upcoming": len(upcoming)},
+        "due": ser(due), "contacted_today": ser(contacted), "upcoming": ser(upcoming), "paid_today": ser(paid_today),
+        "counts": {"due": len(due), "contacted_today": len(contacted),
+                   "upcoming": len(upcoming), "paid_today": len(paid_today)},
     }
 
 

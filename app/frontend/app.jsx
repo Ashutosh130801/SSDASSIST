@@ -404,7 +404,7 @@ const GOLD = '#2563EB', GOLD2 = '#1D4ED8';
 const PALETTE = ['#2563EB', '#0EA5E9', '#16A34A', '#F97316', '#8B5CF6', '#14B8A6', '#EAB308'];
 
 /* Role display labels (internal keys stay admin/manager/fos/telecaller for RBAC) */
-const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official' };
+const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office' };
 const roleName = (r) => ROLE_LABEL[r] || r;
 
 /* ============================== Login ============================== */
@@ -521,7 +521,7 @@ const STAGE_META = {
 
 function Dashboard({ user, branch }) {
   const [d, setD] = useState(null); const [err, setErr] = useState(''); const [hl, setHl] = useState(null);
-  const isMgr = (user.role === 'admin' || user.role === 'manager') && !branch;
+  const isMgr = (user.role === 'admin' || user.role === 'manager' || user.role === 'headoffice') && !branch;
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const loadDash = () => {
     api('/api/analytics/dashboard' + (branch ? '?branch=' + encodeURIComponent(branch) : '')).then(setD).catch(e => setErr(e.message));
@@ -1074,10 +1074,20 @@ function StaffModal({ editing, onClose, onDone, presetBranch, me }) {
   const isMgr = me && me.role === 'manager';
   const [f, setF] = useState(editing || { name: '', email: '', role: 'fos',
     branch: isMgr ? (me.branch || '') : (presetBranch || ''), password: '',
-    banks: [], assigned_pincodes: [], home_lat: '', home_lng: '' });
+    banks: [], assigned_products: [], assigned_pincodes: [], home_lat: '', home_lng: '' });
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const [cat, setCat] = useState(null);
+  useEffect(() => { api('/api/config').then(c => setCat(c.bank_products)).catch(() => {}); }, []);
   const upd = (k, v) => setF(s => ({ ...s, [k]: v }));
-  const toggleBank = (b) => setF(s => ({ ...s, banks: s.banks.includes(b) ? s.banks.filter(x => x !== b) : [...s.banks, b] }));
+  const toggleIn = (k, v) => setF(s => { const arr = s[k] || []; return { ...s, [k]: arr.includes(v) ? arr.filter(x => x !== v) : [...arr, v] }; });
+  const toggleBank = (b) => toggleIn('banks', b);
+  const allBanks = cat && cat.banks ? cat.banks : ['ICICI', 'RBL', 'AXIS'];
+  const prodOptions = () => {                       // products across the FOS's selected banks
+    if (!cat || !cat.products) return [];
+    const seen = new Set(); const out = [];
+    (f.banks.length ? f.banks : allBanks).forEach(b => (cat.products[b] || []).forEach(p => { if (!seen.has(p)) { seen.add(p); out.push(p); } }));
+    return out;
+  };
   const save = async () => { setErr(''); setBusy(true);
     const body = { ...f,
       assigned_pincodes: typeof f.assigned_pincodes === 'string'
@@ -1094,22 +1104,30 @@ function StaffModal({ editing, onClose, onDone, presetBranch, me }) {
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()}>
-        <div className="section-h"><h3>{editing ? 'Edit' : 'Add'} staff</h3>
+        <div className="section-h"><h3>{editing ? 'Edit' : 'Add'} staff
+          {editing && editing.emp_code && <span className="badge allocated" style={{ marginLeft: 8, fontFamily: 'var(--mono, monospace)' }}>ID {editing.emp_code}</span>}</h3>
           <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        {!editing && <p className="muted" style={{ fontSize: 12, margin: '0 0 8px' }}>A staff/caller ID (e.g. TC001) is generated automatically on save — use it in the CALLER column of upload sheets.</p>}
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
           <div className="field"><label>Name</label><input className="input" value={f.name} onChange={e => upd('name', e.target.value)} /></div>
           <div className="field"><label>Email</label><input className="input" value={f.email} disabled={!!editing} onChange={e => upd('email', e.target.value)} /></div>
           <div className="field"><label>Role</label><select className="input" value={f.role} onChange={e => upd('role', e.target.value)}>
             <option value="fos">Field Agent</option><option value="telecaller">Tele-calling Agent</option><option value="backend">Back-office Official</option><option value="manager">Collections Manager</option>
+            {!isMgr && <option value="headoffice">Head Office (all portfolios)</option>}
             {!isMgr && <option value="admin">Administrator</option>}</select></div>
           <div className="field"><label>Branch</label><input className="input" value={f.branch || ''} disabled={isMgr} title={isMgr ? 'Locked to your branch' : ''} onChange={e => upd('branch', e.target.value)} /></div>
           <div className="field"><label>Phone</label><input className="input" value={f.phone || ''} onChange={e => upd('phone', e.target.value)} /></div>
           <div className="field"><label>{editing ? 'New password (blank = keep)' : 'Password'}</label>
             <input className="input" type="password" value={f.password || ''} onChange={e => upd('password', e.target.value)} /></div>
         </div>
-        <div className="field"><label>Banks</label><div className="toolbar" style={{ margin: 0 }}>
-          {['ICICI', 'RBL', 'AXIS'].map(b => <div key={b} className={cx('chip', f.banks.includes(b) && 'on')} onClick={() => toggleBank(b)}>{b}</div>)}
+        <div className="field"><label>Banks</label><div className="toolbar" style={{ margin: 0, flexWrap: 'wrap' }}>
+          {allBanks.map(b => <div key={b} className={cx('chip', f.banks.includes(b) && 'on')} onClick={() => toggleBank(b)}>{b}</div>)}
         </div></div>
+        {f.role === 'fos' && <div className="field"><label>Assigned products <span className="muted" style={{ fontWeight: 400 }}>(cases of these products route here first)</span></label>
+          <div className="toolbar" style={{ margin: 0, flexWrap: 'wrap' }}>
+            {prodOptions().length === 0 ? <span className="muted" style={{ fontSize: 12 }}>Pick a bank to see its products.</span> :
+              prodOptions().map(p => <div key={p} className={cx('chip', (f.assigned_products || []).includes(p) && 'on')} onClick={() => toggleIn('assigned_products', p)}>{p}</div>)}
+          </div></div>}
         {f.role === 'fos' && <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
           <div className="field"><label>Assigned pincodes (comma-separated)</label>
             <input className="input" value={Array.isArray(f.assigned_pincodes) ? f.assigned_pincodes.join(', ') : f.assigned_pincodes}
@@ -1128,6 +1146,11 @@ function StaffModal({ editing, onClose, onDone, presetBranch, me }) {
           <div className="field"><label>Photo URL (optional)</label><input className="input" value={f.photo_url || ''} onChange={e => upd('photo_url', e.target.value)} /></div>
         </div>
         <div className="field"><label>Address</label><textarea className="input" value={f.address || ''} onChange={e => upd('address', e.target.value)} /></div>
+        {editing && <div className="field"><label>Employment status</label>
+          <div className="toolbar" style={{ margin: 0 }}>
+            <div className={cx('chip', f.is_active !== false && 'on')} onClick={() => upd('is_active', true)}>✓ Active</div>
+            <div className={cx('chip', f.is_active === false && 'on')} onClick={() => upd('is_active', false)}>Inactive / left</div>
+          </div></div>}
         {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
         <button className="btn gold block" onClick={save} disabled={busy} style={{ marginTop: 8 }}>{busy ? 'Saving…' : 'Save'}</button>
       </div>
@@ -1287,9 +1310,10 @@ function ReportModal({ officers, onClose }) {
 
 function StaffView({ config, user }) {
   const isAdmin = user.role === 'admin';
+  const seesAll = user.role === 'admin' || user.role === 'headoffice';   // cross-branch grid
   const [users, setUsers] = useState(null);
   const [branches, setBranches] = useState(null);
-  const [openBranch, setOpenBranch] = useState(isAdmin ? null : (user.branch || 'Unassigned'));
+  const [openBranch, setOpenBranch] = useState(seesAll ? null : (user.branch || 'Unassigned'));
   const [modal, setModal] = useState(false); const [editing, setEditing] = useState(null); const [presetBranch, setPresetBranch] = useState('');
   const [addBranch, setAddBranch] = useState(false);
   const [routeOfficer, setRouteOfficer] = useState(null); const [showReport, setShowReport] = useState(false);
@@ -1299,8 +1323,8 @@ function StaffView({ config, user }) {
 
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
 
-  // ---- Admin: branch grid ----
-  if (isAdmin && !openBranch) {
+  // ---- Admin / Head Office: branch grid ----
+  if (seesAll && !openBranch) {
     return (
       <div>
         <div className="toolbar"><div style={{ flex: 1 }} />
@@ -1329,13 +1353,36 @@ function StaffView({ config, user }) {
   const branchName = openBranch;
   const card = (branches || []).find(b => b.branch === branchName) || { branch: branchName, staff: 0, fos: 0, telecaller: 0, backend: 0, received: 0, pending: 0, cases: 0, manager: null };
   const staff = (users || []).filter(u => (u.branch || 'Unassigned') === branchName);
+  const renameBranch = () => {
+    const nn = (window.prompt('Rename branch', branchName) || '').trim();
+    if (!nn || nn === branchName) return;
+    api('/api/team/branches/' + encodeURIComponent(branchName), { method: 'PATCH', body: { new_name: nn } })
+      .then(() => { toast('Branch renamed'); setOpenBranch(nn); load(); }).catch(e => toast(e.message, 'err'));
+  };
+  const deleteBranch = () => {
+    if (!window.confirm(`Delete branch "${branchName}"? Its staff & cases become unassigned (staff accounts are kept).`)) return;
+    api('/api/team/branches/' + encodeURIComponent(branchName), { method: 'DELETE' })
+      .then(() => { toast('Branch deleted'); setOpenBranch(isAdmin ? null : branchName); load(); }).catch(e => toast(e.message, 'err'));
+  };
+  const removeStaff = (u) => {
+    if (u.is_active === false) {
+      api('/api/users/' + u.id, { method: 'PATCH', body: { is_active: true } })
+        .then(() => { toast(u.name + ' reactivated'); load(); }).catch(e => toast(e.message, 'err'));
+      return;
+    }
+    if (!window.confirm(`Remove ${u.name}? They'll be marked inactive (kept in records, not counted going forward).`)) return;
+    api('/api/users/' + u.id, { method: 'DELETE' })
+      .then(() => { toast(u.name + ' removed'); load(); }).catch(e => toast(e.message, 'err'));
+  };
   return (
     <div>
       <div className="toolbar">
-        {isAdmin && <button className="btn ghost" onClick={() => setOpenBranch(null)}>← Branches</button>}
+        {seesAll && <button className="btn ghost" onClick={() => setOpenBranch(null)}>← Branches</button>}
         <h3 style={{ margin: 0 }}>{branchName}</h3><div style={{ flex: 1 }} />
         <button className="btn" onClick={() => setShowChart(v => !v)}>📊 {showChart ? 'Hide analytics' : 'Analytics'}</button>
         <button className="btn" onClick={() => setShowReport(true)}>📅 Attendance</button>
+        {isAdmin && branchName !== 'Unassigned' && <button className="btn" onClick={renameBranch} title="Rename this branch">✏ Rename</button>}
+        {isAdmin && branchName !== 'Unassigned' && <button className="btn" onClick={deleteBranch} title="Delete this branch">🗑 Delete</button>}
         <button className="btn gold" onClick={() => { setEditing(null); setPresetBranch(branchName); setModal(true); }}>+ Add staff</button></div>
 
       {showChart && <div style={{ marginBottom: 16 }}><Dashboard user={user} branch={branchName} /></div>}
@@ -1352,15 +1399,19 @@ function StaffView({ config, user }) {
         <div className="tablewrap"><table>
           <thead><tr><th>Name</th><th>Role</th><th>Banks</th><th>Status</th><th></th></tr></thead>
           <tbody>{staff.map(u => <tr key={u.id}>
-            <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} title="Open full dashboard" onClick={() => setDashUser(u)}>{u.name}</b><div className="muted" style={{ fontSize: 12 }}>{u.email}</div></td>
+            <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} title="Open full dashboard" onClick={() => setDashUser(u)}>{u.name}</b>
+              {u.emp_code && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10.5 }}>{u.emp_code}</span>}
+              <div className="muted" style={{ fontSize: 12 }}>{u.email}</div></td>
             <td><span className="badge allocated">{roleName(u.role)}</span></td>
             <td>{(u.banks || []).join(', ') || '—'}</td>
-            <td>{u.is_active ? <span className="badge paid">active</span> : <span className="badge unpaid">off</span>}</td>
+            <td>{u.is_active ? <span className="badge paid">active</span> : <span className="badge unpaid">inactive</span>}
+              {u.employment_type && <div className="muted" style={{ fontSize: 11 }}>{u.employment_type}</div>}</td>
             <td style={{ whiteSpace: 'nowrap' }}>
               {(u.role === 'fos' || u.role === 'telecaller') && <button className="btn sm gold" onClick={() => setPerfUser(u)} title="Daily / weekly / monthly performance">📈 Performance</button>}
               {' '}{u.role === 'fos' && <button className="btn sm" onClick={() => setLiveOfficer(u)} title="Today's live route">📍 Live</button>}
               {' '}{u.role === 'fos' && <button className="btn sm" onClick={() => setRouteOfficer(u)} title="Route history">🕘 History</button>}
-              {' '}<button className="btn sm" onClick={() => { setEditing(u); setPresetBranch(branchName); setModal(true); }}>Edit</button></td></tr>)}
+              {' '}<button className="btn sm" onClick={() => { setEditing(u); setPresetBranch(branchName); setModal(true); }}>Edit</button>
+              {' '}{u.id !== user.id && <button className="btn sm" style={u.is_active === false ? { color: 'var(--good)' } : { color: 'var(--bad)' }} onClick={() => removeStaff(u)}>{u.is_active === false ? 'Restore' : 'Remove'}</button>}</td></tr>)}
           </tbody></table></div>
         {staff.length === 0 && <div className="muted" style={{ padding: 18, textAlign: 'center' }}>No staff in this branch yet.</div>}</div>}
 
@@ -1423,14 +1474,32 @@ function EKpi({ label, val, color }) {
   return <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>{label}</div><b style={{ fontSize: 18, color: color || 'inherit' }}>{val}</b></div>;
 }
 
+const EMP_CLUSTERS = [
+  ['all', 'All', c => true],
+  ['unpaid', 'Unpaid', c => (c.paid_status || '') === 'UNPAID'],
+  ['partial', 'Partial', c => (c.paid_status || '') === 'PARTIAL'],
+  ['paid', 'Paid', c => (c.paid_status || '') === 'PAID'],
+  ['pending', 'Pending ₹', c => (c.paid_status || '') !== 'PAID' && Number(c.pending_amount || 0) > 0],
+  ['recovered', 'Recovered', c => Number(c.received_amount || 0) > 0],
+  ['resolved', 'Resolved', c => c.status === 'paid' || c.status === 'closed'],
+  ['ptp', 'PTP', c => ['PTP', 'RTP'].includes((c.disposition || '').toUpperCase())],
+  ['visited', 'Visited', c => c.visited || c.visited_today],
+  ['notvisited', 'Not visited', c => !(c.visited || c.visited_today)],
+  ['contacted', 'Contacted', c => !!c.last_contacted_at || c.contacted_today],
+  ['notcontacted', 'Not contacted', c => !c.last_contacted_at && !c.contacted_today],
+];
 function EmployeeDashboard({ u, config, onClose }) {
   const [d, setD] = useState(null); const [err, setErr] = useState('');
   const [route, setRoute] = useState(null); const [live, setLive] = useState(null);
+  const [cases, setCases] = useState(null); const [cluster, setCluster] = useState('all'); const [drawer, setDrawer] = useState(null);
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const loadEmp = () => api('/api/team/user/' + u.id + '/dashboard').then(setD).catch(e => setErr(e.message || 'Could not load'));
-  useEffect(() => { loadEmp(); }, [u.id]);
-  useDataChanged(loadEmp);   // live: employee dashboard refreshes on any log
+  const loadCases = () => api('/api/team/user/' + u.id + '/cases').then(setCases).catch(() => setCases([]));
+  useEffect(() => { loadEmp(); loadCases(); }, [u.id]);
+  useDataChanged(() => { loadEmp(); loadCases(); });   // live: refreshes on any log
   const isFos = u.role === 'fos';
+  const clFn = (EMP_CLUSTERS.find(x => x[0] === cluster) || EMP_CLUSTERS[0])[2];
+  const clCases = (cases || []).filter(clFn);
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 920, width: '96%' }}>
@@ -1475,13 +1544,28 @@ function EmployeeDashboard({ u, config, onClose }) {
             </div>}
           </div>
           <div className="glass card" style={{ padding: 6, marginTop: 12 }}>
-            <div className="section-h" style={{ padding: '6px 8px' }}><h3 style={{ margin: 0, fontSize: 15 }}>Assigned cases ({d.recent_cases.length})</h3></div>
-            <div className="tablewrap" style={{ maxHeight: 300, overflow: 'auto' }}><table><thead><tr><th>Customer</th><th>Bank</th><th>Product</th><th>Pending</th><th>Status</th><th>Paid</th><th>Dispo</th></tr></thead>
-              <tbody>{d.recent_cases.map((c, i) => <tr key={i}><td><b>{c.customer || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{c.account}</div></td><td>{c.bank}</td><td>{c.product || '—'}</td><td className="mono" style={{ color: 'var(--warn)' }}>{money(c.pending)}</td><td><StatusBadge s={c.status} /></td><td><PaidBadge s={c.paid_status} /></td><td className="muted">{c.disposition || '—'}</td></tr>)}</tbody></table></div>
+            <div className="section-h" style={{ padding: '6px 8px' }}><h3 style={{ margin: 0, fontSize: 15 }}>Cases {cases ? `· ${clCases.length}` : ''}</h3>
+              <span className="muted" style={{ fontSize: 11.5 }}>Click a count to filter · click a row for details &amp; log</span></div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '2px 8px 8px' }}>
+              {EMP_CLUSTERS.map(([id, label, fn]) => {
+                const n = (cases || []).filter(fn).length;
+                return <div key={id} className={cx('chip', cluster === id && 'on')} onClick={() => setCluster(id)}>{label} ({n})</div>;
+              })}
+            </div>
+            {!cases ? <Loader /> : clCases.length === 0 ? <div className="muted" style={{ padding: 16, textAlign: 'center' }}>No cases in this group.</div> :
+              <div className="tablewrap" style={{ maxHeight: 320, overflow: 'auto' }}><table><thead><tr><th>Customer</th><th>Bank</th><th>Product</th><th>Pending</th><th>Status</th><th>Paid</th><th>Dispo</th><th>Touch</th></tr></thead>
+                <tbody>{clCases.map(c => <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
+                  <td><b style={{ color: 'var(--gold)' }}>{c.customer_name || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{c.account_no}</div></td>
+                  <td>{c.bank}</td><td>{c.product || '—'}</td>
+                  <td className="mono" style={{ color: 'var(--warn)' }}>{money(c.pending_amount)}</td>
+                  <td><StatusBadge s={c.status} /></td><td><PaidBadge s={c.paid_status} /></td>
+                  <td className="muted">{c.disposition || '—'}</td>
+                  <td style={{ fontSize: 11 }}>{c.visited_today ? '📍 visited' : c.contacted_today ? '📞 called' : c.visited ? 'visited' : '—'}</td></tr>)}</tbody></table></div>}
           </div>
         </>}
         {route && <RouteHistoryModal officer={route} config={config} onClose={() => setRoute(null)} />}
         {live && <LiveRouteModal officer={live} config={config} onClose={() => setLive(null)} />}
+        {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={() => { loadEmp(); loadCases(); }} />}
       </div></div>);
 }
 
@@ -1493,7 +1577,7 @@ function VisitModal({ c, onClose, onDone }) {
   const fileRef = useRef(null); const [stamping, setStamping] = useState(false);
   const [locOk, setLocOk] = useState(true); const [moved, setMoved] = useState(false);
   const [paid, setPaid] = useState(false); const [amount, setAmount] = useState('');
-  const [dispo, setDispo] = useState('PTP'); const [note, setNote] = useState('');
+  const [dispo, setDispo] = useState('PTP'); const [note, setNote] = useState(''); const [ptpDate, setPtpDate] = useState('');
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(''); const [gps, setGps] = useState('idle');
   const grab = async () => { setGps('getting'); try { const c = await getGPS(); setCoords(c); setGps('ok'); }
     catch (e) { setGps('fail'); setErr('GPS: ' + e.message); } };
@@ -1515,6 +1599,7 @@ function VisitModal({ c, onClose, onDone }) {
       f.append('location_correct', locOk); f.append('person_moved', moved);
       f.append('paid', paid); f.append('amount_collected', paid ? (amount || '0') : '0');
       f.append('disposition', moved ? 'MOVED' : dispo); f.append('note', note);
+      if (ptpDate && (dispo === 'PTP' || dispo === 'RTP') && !paid) f.append('ptp_date', ptpDate);
       if (photo) f.append('photo', photo);
       await api('/api/visits', { method: 'POST', form: f });
       toast('Visit saved.'); onDone();
@@ -1548,6 +1633,8 @@ function VisitModal({ c, onClose, onDone }) {
         {!moved && <div className="field"><label>Disposition</label>
           <select className="input" value={dispo} onChange={e => setDispo(e.target.value)}>
             {DISPOS_FIELD.map(d => <option key={d}>{d}</option>)}</select></div>}
+        {!moved && !paid && (dispo === 'PTP' || dispo === 'RTP') && <div className="field"><label>PTP date <span className="muted" style={{ fontWeight: 400 }}>(promised date — case re-surfaces then)</span></label>
+          <input className="input" type="date" value={ptpDate} onChange={e => setPtpDate(e.target.value)} /></div>}
         <div className="field"><label>Note</label>
           <textarea className="input" value={note} onChange={e => setNote(e.target.value)} placeholder="What happened at the location…" /></div>
         {err && <div style={{ color: 'var(--bad)', fontSize: 13, marginBottom: 8 }}>{err}</div>}
@@ -1572,6 +1659,53 @@ function casePriority(c) {
   if (/[23456789]/.test(b) || pend >= 10000) return { label: 'Medium', cls: 'partial' };
   return { label: 'Low', cls: 'paid' };
 }
+/* Case working-state for the FOS/caller views: fresh (untouched, top) → touched today
+   (yellow) → paid (green, bottom). Priority/high-value stays on top within a state. */
+function caseState(c) {
+  if ((c.paid_status || '') === 'PAID' || c.status === 'paid') return 'paid';
+  if (c.visited_today || c.contacted_today || c.status === 'in_progress' || c.status === 'ptp' || c.status === 'callback') return 'touched';
+  return 'fresh';
+}
+const STATE_RANK = { fresh: 0, touched: 1, paid: 2 };
+function caseCompare(a, b) {
+  const ra = STATE_RANK[caseState(a)], rb = STATE_RANK[caseState(b)];
+  if (ra !== rb) return ra - rb;
+  return (Number(b.propensity || 0) - Number(a.propensity || 0)) || (Number(b.pending_amount || 0) - Number(a.pending_amount || 0));
+}
+const STATE_STYLE = {
+  paid: { borderColor: 'rgba(22,163,74,.55)', background: 'rgba(22,163,74,.09)' },
+  touched: { borderColor: 'rgba(217,119,6,.5)', background: 'rgba(245,200,66,.14)' },
+  fresh: null,
+};
+
+function RemindersBanner() {
+  const [d, setD] = useState(null); const [open, setOpen] = useState(true); const [drawer, setDrawer] = useState(null);
+  const load = () => api('/api/reminders').then(setD).catch(() => {});
+  useEffect(() => { load(); }, []);
+  useDataChanged(load);
+  if (!d || !d.count) return null;
+  return (
+    <div className="glass card" style={{ padding: 10, marginBottom: 12, borderColor: 'rgba(217,119,6,.5)', background: 'rgba(245,200,66,.10)' }}>
+      <div className="section-h" style={{ margin: 0, cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>🔔 PTP reminders · {d.count}
+          <span className="muted" style={{ fontWeight: 400, fontSize: 12.5 }}> — {d.overdue} overdue · {d.due_today} due today</span></h3>
+        <span className="muted">{open ? '▾' : '▸'}</span>
+      </div>
+      {open && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+        {d.rows.slice(0, 30).map(r => <div key={r.case_id} onClick={() => setDrawer({ id: r.case_id })}
+          className="glass" style={{ padding: '7px 10px', borderRadius: 10, cursor: 'pointer', minWidth: 190,
+            border: '1px solid ' + (r.overdue ? 'rgba(220,38,38,.4)' : 'rgba(217,119,6,.35)') }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <b style={{ fontSize: 13 }}>{r.customer || r.account || 'Case'}</b>
+            <span className="badge" style={{ background: r.overdue ? 'rgba(220,38,38,.15)' : 'rgba(217,119,6,.15)', color: r.overdue ? 'var(--bad)' : 'var(--gold-2)' }}>{r.overdue ? 'Overdue' : 'Today'}</span></div>
+          <div className="muted" style={{ fontSize: 11.5 }}>{r.bank} · 📅 {r.ptp_date} · {INR(r.pending)} pending</div>
+        </div>)}
+      </div>}
+      {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
+    </div>
+  );
+}
+
 function groupCases(cases) {
   const banks = {};
   cases.forEach(c => {
@@ -1581,7 +1715,7 @@ function groupCases(cases) {
   });
   return Object.keys(banks).sort().map(bank => {
     const buckets = Object.keys(banks[bank]).sort((a, b) => bucketRank(a) - bucketRank(b)).map(bucket => {
-      const list = banks[bank][bucket].slice().sort((a, b) => Number(b.pending_amount || 0) - Number(a.pending_amount || 0));
+      const list = banks[bank][bucket].slice().sort(caseCompare);
       return { bucket, cases: list, pending: list.reduce((s, c) => s + Number(c.pending_amount || 0), 0) };
     });
     return { bank, buckets,
@@ -1591,11 +1725,14 @@ function groupCases(cases) {
 }
 function CaseCard({ c, onVisit, onNav }) {
   const p = casePriority(c);
+  const st = caseState(c);
+  const tag = st === 'paid' ? { t: 'PAID', c: 'paid' } : st === 'touched' ? { t: c.visited_today ? 'VISITED TODAY' : 'DONE TODAY', c: 'partial' } : null;
   return (
-    <div className="glass card">
+    <div className="glass card" style={STATE_STYLE[st]}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
         <b>{c.customer_name}</b>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {tag && <span className={cx('badge', tag.c)}>{tag.t}</span>}
           <span className={cx('badge', p.cls)}>{p.label}</span><PropBadge score={c.propensity} /></div></div>
       <div className="muted" style={{ fontSize: 13, margin: '4px 0 8px' }}>{c.bank} · {c.bucket || '—'} · cyc {c.cycle || '—'}</div>
       <div style={{ fontSize: 13, color: 'var(--ink-soft)', minHeight: 34 }}>{c.address || 'No address'} {c.pincode ? `(${c.pincode})` : ''}</div>
@@ -1679,6 +1816,7 @@ function FOCases({ config }) {
   const mapEl = useRef(null); const map = useRef(null);
   const load = () => api('/api/cases').then(setCases);
   useEffect(() => { load(); }, []);
+  useDataChanged(load);
   useEffect(() => {
     if (view !== 'map' || !cases) return;
     const pts = bucketFilter ? cases.filter(c => (c.bucket || 'No bucket') === bucketFilter) : cases;
@@ -1702,10 +1840,17 @@ function FOCases({ config }) {
   const toggle = (bank) => setCollapsed(s => ({ ...s, [bank]: !s[bank] }));
   return (
     <div>
+      <RemindersBanner />
       <div className="toolbar">
         <div className={cx('chip', view === 'list' && 'on')} onClick={() => setView('list')}>☰ Grouped</div>
         <div className={cx('chip', view === 'map' && 'on')} onClick={() => setView('map')}>◎ Map</div>
-        <div style={{ flex: 1 }} /><span className="muted">{shown.length}{bucketFilter ? ` of ${cases.length}` : ''} assigned</span>
+        <div style={{ flex: 1 }} />
+        <span className="muted" style={{ fontSize: 11.5, display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 2, background: '#E3E9F1', marginRight: 3 }} />To do</span>
+          <span><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 2, background: 'rgba(245,200,66,.9)', marginRight: 3 }} />Visited</span>
+          <span><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 2, background: 'rgba(22,163,74,.8)', marginRight: 3 }} />Paid</span>
+        </span>
+        <span className="muted">{shown.length}{bucketFilter ? ` of ${cases.length}` : ''} assigned</span>
       </div>
       <div className="toolbar" style={{ marginTop: -2 }}>
         <span className="muted" style={{ fontSize: 12.5 }}>Bucket:</span>
@@ -1891,6 +2036,16 @@ function CaseDrawer({ c, onClose, onChanged }) {
       setCur(updated); setPayAmt(''); setPayNote(''); toast('Payment recorded.'); await refresh(); onChanged && onChanged();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
+  const canEscalate = ['admin', 'manager', 'backend'].includes((store.u || {}).role);
+  const escalate = async () => {
+    setBusy(true);
+    try {
+      const path = cur.escalated ? 'deescalate' : 'escalate';
+      await api(`/api/cases/${c.id}/${path}`, { method: 'POST', body: {} });
+      toast(cur.escalated ? 'Released back to the pool.' : 'Escalated to you — off the FOS/caller’s performance.');
+      await refresh(); onChanged && onChanged();
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
   const row = (k, v) => <React.Fragment key={k}><div className="dt">{k}</div><div className="dd">{v || '—'}</div></React.Fragment>;
   return (
     <div className="drawer-bg" onClick={onClose}>
@@ -1903,7 +2058,9 @@ function CaseDrawer({ c, onClose, onChanged }) {
         <div className="toolbar" style={{ margin: '12px 0' }}>
           {cur.phone && <a className="btn sm gold" href={'tel:' + cur.phone}>📞 Call</a>}
           {cur.phone && <a className="btn sm" href={'https://wa.me/' + String(cur.phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a>}
+          {canEscalate && <button className="btn sm" disabled={busy} onClick={escalate} title={cur.escalated ? 'Return to the FOS/caller pool' : 'Pull off the FOS/caller and own it (stays in MIS & feedback)'}>{cur.escalated ? '↩ Release' : '🚩 Escalate to me'}</button>}
           <StatusBadge s={cur.status} /><PaidBadge s={cur.paid_status} /><PropBadge score={cur.propensity} />
+          {cur.escalated && <span className="badge" style={{ background: 'rgba(220,38,38,.15)', color: 'var(--bad)' }}>Escalated</span>}
         </div>
         <div className="kpi3">
           <div className="b"><div className="l">Funded</div><div className="v">{INR(cur.funding_amount)}</div></div>
@@ -2008,11 +2165,11 @@ function CaseDrawer({ c, onClose, onChanged }) {
   );
 }
 
-const QUEUE_SEG = [['due', '⏰ Due now', 'due'], ['today', '✓ Contacted today', 'contacted_today'], ['upcoming', '📅 Upcoming', 'upcoming']];
+const QUEUE_SEG = [['due', '⏰ Due now', 'due'], ['today', '✓ Contacted today', 'contacted_today'], ['upcoming', '📅 Upcoming', 'upcoming'], ['paid', '💰 Paid today', 'paid_today']];
 function CallQueue() {
   const [data, setData] = useState(null); const [active, setActive] = useState(null); const [err, setErr] = useState('');
   const [seg, setSeg] = useState('due'); const [bank, setBank] = useState(''); const [bucket, setBucket] = useState(''); const [q, setQ] = useState('');
-  const EMPTY = { due: [], contacted_today: [], upcoming: [], counts: { due: 0, contacted_today: 0, upcoming: 0 } };
+  const EMPTY = { due: [], contacted_today: [], upcoming: [], paid_today: [], counts: { due: 0, contacted_today: 0, upcoming: 0, paid_today: 0 } };
   const load = () => {
     const p = new URLSearchParams(); if (bank) p.set('bank', bank);
     api('/api/calls/queue' + (p.toString() ? '?' + p : ''))
@@ -2020,6 +2177,7 @@ function CallQueue() {
       .catch(e => { setErr(e.message || 'Could not load queue'); setData(EMPTY); });
   };
   useEffect(() => { load(); }, [bank]);
+  useDataChanged(load);
   if (!data) return <Loader />;
   if (err) return <div className="glass card" style={{ color: 'var(--warn)' }}>
     Couldn’t load the call queue: {err}. If you just updated the app, restart the server and reload. <button className="btn sm" style={{ marginLeft: 10 }} onClick={load}>Retry</button></div>;
@@ -2029,8 +2187,10 @@ function CallQueue() {
   let list = data[key] || [];
   if (bucket) list = list.filter(c => (c.bucket || 'No bucket') === bucket);
   if (q) { const s = q.toLowerCase(); list = list.filter(c => (c.customer_name || '').toLowerCase().includes(s) || (c.phone || '').includes(q) || (c.account_no || '').includes(q)); }
+  const cardStyle = seg === 'paid' ? STATE_STYLE.paid : seg === 'today' ? STATE_STYLE.touched : null;
   return (
     <div>
+      <RemindersBanner />
       <div className="toolbar">
         {QUEUE_SEG.map(([id, label, k]) => <div key={id} className={cx('chip', seg === id && 'on')} onClick={() => setSeg(id)}>{label} ({data.counts[k]})</div>)}
         <div style={{ flex: 1 }} />
@@ -2046,7 +2206,7 @@ function CallQueue() {
       </div>
       {list.length === 0 ? <p className="muted">{seg === 'due' ? 'Nothing due — nicely done. Check Upcoming for scheduled callbacks.' : 'Nothing here.'}</p> :
         <div className="grid3">
-          {list.map(c => <div key={c.id} className="glass card">
+          {list.map(c => <div key={c.id} className="glass card" style={cardStyle}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><b>{c.customer_name}</b><PaidBadge s={c.paid_status} /></div>
             <div className="muted" style={{ fontSize: 13, margin: '4px 0' }}>{c.bank} · {c.bucket || ''} · cyc {c.cycle || '—'}</div>
             <div className="stat-row"><span className="k">Pending</span><b className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</b></div>
@@ -2578,9 +2738,10 @@ function useDataChanged(cb) {
 
 /* ==================== MIS (analysis core) ==================== */
 function MISView({ user }) {
-  const canTarget = user.role === 'admin' || user.role === 'manager';
+  const canTarget = ['admin', 'manager', 'backend', 'headoffice'].includes(user.role);
   const [prods, setProds] = useState(null); const [sel, setSel] = useState(null); const [ov, setOv] = useState(null);
   const [d, setD] = useState(null); const [err, setErr] = useState(''); const [emp, setEmp] = useState('');
+  const [full, setFull] = useState(false);
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   useEffect(() => {
     api('/api/cases/product-summary').then(rows => {
@@ -2594,9 +2755,9 @@ function MISView({ user }) {
   useEffect(() => { setErr(''); setD(null); load(); }, [sel]);
   // Real-time: recompute the MIS instantly whenever any log/payment/edit lands.
   useDataChanged(m => { if (!sel) return; if (m && m.product && m.product !== sel.product) return; load(); api('/api/mis/overview').then(setOv).catch(() => {}); });
-  const saveTarget = (e, emp) => {
+  const saveTarget = (e) => {          // ONE product-wide target for every FOS & caller
     const v = parseFloat(e.target.value) || 0;
-    api('/api/mis/target', { method: 'PUT', body: { bank: sel.bank, product: sel.product, emp, target_pct: v } }).then(load).catch(() => {});
+    api('/api/mis/target', { method: 'PUT', body: { bank: sel.bank, product: sel.product, target_pct: v } }).then(load).catch(() => {});
   };
   const dl = (tables) => download(`/api/mis/download?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&tables=${tables}`, `MIS_${sel.bank}_${sel.product}.xlsx`);
 
@@ -2637,17 +2798,39 @@ function MISView({ user }) {
     return <div id={'mis-' + tk} className="glass card" style={{ padding: 10, marginTop: 14 }}>
       <div className="section-h"><h3 style={{ margin: 0 }}>{title}</h3>
         <div style={{ display: 'flex', gap: 6 }}><button className="btn sm" onClick={() => dl(tk)}>⬇</button><button className="btn sm" onClick={doPrint}>🖨</button></div></div>
-      <div className="tablewrap"><table><thead><tr>{cols.map(c => <th key={c[0]}>{c[1]}</th>)}</tr></thead>
-        <tbody>{rows.map((r, i) => <tr key={i}>{cols.map(c => <td key={c[0]} className={typeof r[c[0]] === 'number' ? 'mono' : ''}>{fmtCell(c[0], r[c[0]])}</td>)}</tr>)}</tbody></table></div>
+      <div className="tablewrap"><table className="mis-grid"><thead><tr>{cols.map(c => <th key={c[0]}>{c[1]}</th>)}</tr></thead>
+        <tbody>{rows.map((r, i) => <tr key={i}>{cols.map(c => {
+          const v = r[c[0]]; const pct = /(_pct$|^pct$)/.test(c[0]) && typeof v === 'number';
+          return <td key={c[0]} className={typeof v === 'number' ? 'mono' : ''}
+            style={pct ? { background: v >= 60 ? 'rgba(22,163,74,.16)' : v >= 30 ? 'rgba(217,119,6,.16)' : 'rgba(220,38,38,.13)', fontWeight: 600 } : null}>{fmtCell(c[0], v)}</td>;
+        })}</tr>)}</tbody></table></div>
       {rows.length === 0 && <div className="muted" style={{ padding: 12 }}>No data.</div>}
     </div>;
   };
   const STATUS_COLOR = { green: 'var(--good)', amber: 'var(--warn)', red: 'var(--bad)', none: '#c9ced8' };
   const lb = d ? (emp ? d.leaderboard.filter(x => x.emp === emp) : d.leaderboard) : [];
   const proj = d && d.projection; const fn = d && d.funnel; const st = d && d.settlement;
+  const LB_COLS = [['emp', 'Employee'], ['count', 'Count'], ['unpaid', 'Unpaid'], ['paid', 'Paid'], ['enr', 'ENR'], ['target_pct', 'Target %'], ['target_enr', 'Target ENR'], ['achieved_pct', 'Achieved %'], ['achieved_enr', 'Achieved ENR'], ['gap_enr', 'Gap ENR'], ['to_target_pct', 'To target %'], ['pending_visit', 'Pend visit'], ['cash_coll', 'Cash coll']];
+  const sheetTables = () => [['Employee performance & leaderboard', LB_COLS, lb]].concat(
+    TABLES.map(([tk, cols]) => [(d.table_names && d.table_names[tk]) || tk, cols, (d[tk] || [])]));
+  const printAll = () => {
+    const w = window.open('', '_blank'); if (!w) return;
+    let html = '<html><head><title>MIS ' + sel.bank + ' ' + sel.product + '</title><style>body{font-family:system-ui;padding:20px}h1{font-size:18px;color:#1e293b}h2{color:#2563EB;margin:18px 0 6px;font-size:14px}table{border-collapse:collapse;width:100%;font-size:11px;margin-bottom:14px}th,td{border:1px solid #cbd5e1;padding:4px 7px;text-align:left}th{background:#EEF3FB}</style></head><body><h1>MIS — ' + sel.bank + ' · ' + sel.product + '</h1>';
+    sheetTables().forEach(([title, cols, rows]) => {
+      html += '<h2>' + title + '</h2><table><thead><tr>' + cols.map(c => '<th>' + c[1] + '</th>').join('') + '</tr></thead><tbody>'
+        + rows.map(r => '<tr>' + cols.map(c => '<td>' + String(fmtCell(c[0], r[c[0]]) ?? '') + '</td>').join('') + '</tr>').join('') + '</tbody></table>';
+    });
+    html += '</body></html>'; w.document.write(html); w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch (e) {} }, 400);
+  };
 
   return (
     <div>
+      <style>{`
+        table.mis-grid thead th{background:linear-gradient(180deg,#2563EB,#1D4ED8);color:#fff;font-weight:600;position:sticky;top:0;z-index:1}
+        table.mis-grid tbody tr:nth-child(even) td{background:#F5F8FE}
+        table.mis-grid tbody tr:hover td{background:#EAF1FF}
+        table.mis-grid td,table.mis-grid th{border-color:#dbe3ef}
+      `}</style>
       <div className="toolbar">
         <select className="input" style={{ maxWidth: 260 }} value={sel ? sel.bank + '||' + sel.product : ''}
           onChange={e => { const [b, p] = e.target.value.split('||'); setSel({ bank: b, product: p }); setEmp(''); }}>
@@ -2658,9 +2841,11 @@ function MISView({ user }) {
           {d.by_fos.map((r, i) => <option key={i} value={r.label}>{r.label}</option>)}
         </select>}
         <div style={{ flex: 1 }} />
+        {d && <button className="btn" onClick={() => setFull(true)}>📄 Full sheet</button>}
         {d && <button className="btn gold" onClick={() => dl(Object.keys(d.table_names || {}).join(','))}>⬇ Download all MIS</button>}
       </div>
       {err && <div className="glass card" style={{ color: 'var(--bad)' }}>{err}</div>}
+      {d && d.base_label === 'TOS' && <div className="muted" style={{ fontSize: 12, margin: '2px 2px 8px' }}>PL/BL recovery base: <b>TOS</b> (total outstanding) · % = paid TOS ÷ total TOS · pivoted by caller &amp; FOS{d.segment ? ` · ${d.segment}` : ''}</div>}
       {!d ? <Loader /> : <>
         {/* Table index */}
         <div className="glass card" style={{ padding: 10, marginBottom: 12 }}>
@@ -2674,8 +2859,8 @@ function MISView({ user }) {
         {/* KPIs + projection */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12 }}>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total cases</div><b style={{ fontSize: 20 }}>{d.overall.count}</b></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total ENR</div><b style={{ fontSize: 20 }}>{money(d.overall.enr)}</b></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Paid ENR</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(d.overall.paid_enr)}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total {d.base_label || 'ENR'}</div><b style={{ fontSize: 20 }}>{money(d.overall.enr)}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Paid {d.base_label || 'ENR'}</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(d.overall.paid_enr)}</b></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Achieved %</div><b style={{ fontSize: 20, color: 'var(--gold)' }}>{d.overall.pct}%</b></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Collected (MTD)</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(proj.collected_mtd)}</b></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Projected month-end</div><b style={{ fontSize: 20 }}>{money(proj.projected_month_end)}</b><div className="muted" style={{ fontSize: 11 }}>{proj.projected_pct}% of target</div></div>
@@ -2706,8 +2891,19 @@ function MISView({ user }) {
         </div>
 
         {/* Leaderboard (editable target) */}
+        <div className="glass card" style={{ padding: 12, marginTop: 14, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <b>Target %</b>
+          <span className="muted" style={{ fontSize: 12.5 }}>One goal for every FOS &amp; caller on {sel.bank} · {sel.product} — set it once (e.g. 85) and it applies to all.</span>
+          <div style={{ flex: 1 }} />
+          {canTarget
+            ? <input className="input" style={{ width: 90, textAlign: 'center', fontWeight: 700 }} type="number" min="0" max="100"
+                key={d.product_target} defaultValue={d.product_target || ''} placeholder="e.g. 85"
+                onBlur={saveTarget} onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }} />
+            : <span className="badge allocated" style={{ fontSize: 14 }}>{d.product_target || 0}%</span>}
+        </div>
+
         <div id="mis-leaderboard" className="glass card" style={{ padding: 10, marginTop: 14 }}>
-          <div className="section-h"><h3 style={{ margin: 0 }}>Employee performance & leaderboard</h3>
+          <div className="section-h"><h3 style={{ margin: 0 }}>FOS performance &amp; leaderboard</h3>
             <div style={{ display: 'flex', gap: 6 }}><button className="btn sm" onClick={() => dl('leaderboard')}>⬇</button>
               <button className="btn sm" onClick={() => printTable('Leaderboard', ['#', 'Employee', 'Count', 'Unpaid', 'Paid', 'ENR', 'Target %', 'Target ENR', 'Achieved %', 'Achieved ENR', 'Gap ENR', 'To target %', 'Pending visit', 'Cash coll'], lb.map((r, i) => [i + 1, r.emp, r.count, r.unpaid, r.paid, money(r.enr), r.target_pct + '%', money(r.target_enr), r.achieved_pct + '%', money(r.achieved_enr), money(r.gap_enr), r.to_target_pct + '%', r.pending_visit, money(r.cash_coll)]))}>🖨</button></div></div>
           <div className="tablewrap"><table><thead><tr>
@@ -2717,7 +2913,7 @@ function MISView({ user }) {
               <td>{i + 1}</td><td><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: STATUS_COLOR[r.status] || '#c9ced8' }} /></td>
               <td><b>{r.emp}</b></td><td>{r.count}</td><td>{r.unpaid}</td><td style={{ color: 'var(--good)' }}>{r.paid}</td>
               <td className="mono">{money(r.enr)}</td>
-              <td>{canTarget ? <input className="input" style={{ width: 62, padding: '3px 6px' }} type="number" defaultValue={r.target_pct} onBlur={e => saveTarget(e, r.emp)} /> : (r.target_pct + '%')}</td>
+              <td>{r.target_pct}%</td>
               <td className="mono">{money(r.target_enr)}</td>
               <td><b>{r.achieved_pct}%</b></td><td className="mono" style={{ color: 'var(--good)' }}>{money(r.achieved_enr)}</td>
               <td className="mono" style={{ color: 'var(--bad)' }}>{money(r.gap_enr)}</td><td>{r.to_target_pct}%</td>
@@ -2725,8 +2921,231 @@ function MISView({ user }) {
             </tbody></table></div>
         </div>
 
+        {d.caller_leaderboard && <div className="glass card" style={{ padding: 10, marginTop: 14 }}>
+          <div className="section-h"><h3 style={{ margin: 0 }}>Caller performance &amp; leaderboard</h3></div>
+          <div className="tablewrap"><table><thead><tr>
+            <th>#</th><th></th><th>Caller</th><th>Count</th><th>Unpaid</th><th>Paid</th><th>ENR</th><th>Target %</th><th>Target ENR</th>
+            <th>Achieved %</th><th>Achieved ENR</th><th>Gap ENR</th><th>To target</th><th>Cash coll</th></tr></thead>
+            <tbody>{d.caller_leaderboard.map((r, i) => <tr key={i}>
+              <td>{i + 1}</td><td><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: STATUS_COLOR[r.status] || '#c9ced8' }} /></td>
+              <td><b>{r.emp}</b></td><td>{r.count}</td><td>{r.unpaid}</td><td style={{ color: 'var(--good)' }}>{r.paid}</td>
+              <td className="mono">{money(r.enr)}</td><td>{r.target_pct}%</td><td className="mono">{money(r.target_enr)}</td>
+              <td><b>{r.achieved_pct}%</b></td><td className="mono" style={{ color: 'var(--good)' }}>{money(r.achieved_enr)}</td>
+              <td className="mono" style={{ color: 'var(--bad)' }}>{money(r.gap_enr)}</td><td>{r.to_target_pct}%</td>
+              <td className="mono">{money(r.cash_coll)}</td></tr>)}
+            </tbody></table></div>
+        </div>}
+
         {TABLES.map(([tk, cols]) => <MisTable key={tk} tk={tk} cols={cols} />)}
       </>}
+
+      {full && d && (
+        <div className="modal-bg" onClick={() => setFull(false)}>
+          <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: '96vw', width: '96vw', maxHeight: '92vh', overflow: 'auto' }}>
+            <div className="section-h" style={{ position: 'sticky', top: 0, background: 'var(--bg)', zIndex: 3, paddingBottom: 8 }}>
+              <h3 style={{ margin: 0 }}>Full MIS sheet — {sel.bank} · {sel.product}</h3>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn sm" onClick={() => dl(Object.keys(d.table_names || {}).join(','))}>⬇ Excel</button>
+                <button className="btn sm" onClick={printAll}>🖨 Print</button>
+                <button className="btn ghost sm" onClick={() => setFull(false)}>✕</button>
+              </div>
+            </div>
+            <div style={{ fontSize: 12.5 }}>
+              {sheetTables().map(([title, cols, rows], ti) => (
+                <div key={ti} style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 700, color: 'var(--gold)', margin: '10px 0 4px' }}>{title}</div>
+                  <div className="tablewrap"><table className="mis-grid">
+                    <thead><tr>{cols.map(c => <th key={c[0]}>{c[1]}</th>)}</tr></thead>
+                    <tbody>{rows.map((r, i) => <tr key={i}>{cols.map(c => {
+                      const v = r[c[0]]; const pct = /(_pct$|^pct$)/.test(c[0]) && typeof v === 'number';
+                      return <td key={c[0]} className={typeof v === 'number' ? 'mono' : ''}
+                        style={pct ? { background: v >= 60 ? 'rgba(22,163,74,.14)' : v >= 30 ? 'rgba(217,119,6,.14)' : 'rgba(220,38,38,.12)', fontWeight: 600 } : null}>{fmtCell(c[0], v)}</td>;
+                    })}</tr>)}</tbody></table></div>
+                  {rows.length === 0 && <div className="muted" style={{ padding: 8 }}>No data.</div>}
+                </div>))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ==================== Bank feedback sheet (per product, per day) ==================== */
+function FeedbackView({ user }) {
+  const [cfg, setCfg] = useState(null);
+  const [prods, setProds] = useState(null);
+  const [sel, setSel] = useState(null);
+  const [day, setDay] = useState(new Date().toISOString().slice(0, 10));
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [filters, setFilters] = useState({});
+  const [picked, setPicked] = useState({});           // selected row ids
+  const [colMenu, setColMenu] = useState(false);
+  const [dlCols, setDlCols] = useState(null);          // set of column keys to include in download
+  const [busy, setBusy] = useState(false);
+  const [setupErr, setSetupErr] = useState('');
+
+  const loadSetup = () => {
+    setSetupErr('');
+    api('/api/feedback/config').then(c => { setCfg(c); setDlCols(new Set(c.columns.map(x => x.key))); })
+      .catch(e => setSetupErr((e && e.message) || 'Could not load the feedback format. Restart the server if you just updated.'));
+    api('/api/cases/product-summary').then(rows => {
+      const seen = {}, list = [];
+      (rows || []).forEach(r => { const k = r.bank + '||' + r.product; if (!seen[k] && r.product !== '—') { seen[k] = 1; list.push({ bank: r.bank, product: r.product }); } });
+      setProds(list); if (list[0]) setSel(list[0]);
+    }).catch(() => setProds([]));
+  };
+  useEffect(() => { loadSetup(); }, []);
+
+  const qbase = () => sel ? `bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&day=${day}` : '';
+  const load = () => { if (!sel) { setData(null); return; } api('/api/feedback?' + qbase()).then(setData).catch(e => setErr(e.message || 'Could not load')); };
+  useEffect(() => { setErr(''); setData(null); setPicked({}); load(); }, [sel, day]);
+  useDataChanged(() => load());
+
+  const setCell = (row, col, val) => {
+    setData(d => ({ ...d, rows: d.rows.map(r => r.id === row.id ? { ...r, [col.key]: val } : r) }));
+    api('/api/feedback/' + row.id, { method: 'PATCH', body: { field: col.key, value: val } }).catch(() => { setErr('Save failed — reloading'); load(); });
+  };
+  const refresh = () => { if (!sel) return; setBusy(true); api('/api/feedback/refresh?' + qbase(), { method: 'POST' }).then(() => { load(); toast('Pulled latest from call & visit logs'); }).catch(() => {}).finally(() => setBusy(false)); };
+
+  const cols = cfg ? cfg.columns : [];
+  const rows = data ? data.rows : [];
+  const shown = rows.filter(r => Object.keys(filters).every(k => { const f = (filters[k] || '').toLowerCase(); return !f || String(r[k] == null ? '' : r[k]).toLowerCase().includes(f); }));
+  const allPicked = shown.length > 0 && shown.every(r => picked[r.id]);
+  const toggleAll = () => { if (allPicked) setPicked({}); else { const m = {}; shown.forEach(r => m[r.id] = true); setPicked(m); } };
+  const pickedIds = Object.keys(picked).filter(id => picked[id]);
+
+  const doDownload = () => {
+    if (!sel) return;
+    const keys = cols.filter(c => dlCols.has(c.key)).map(c => c.key).join(',');
+    let url = '/api/feedback/download?' + qbase() + '&columns=' + encodeURIComponent(keys);
+    if (pickedIds.length) url += '&ids=' + pickedIds.join(',');
+    download(url, `feedback_${sel.bank}_${sel.product}_${day}.xlsx`);
+  };
+
+  if (setupErr) return <div className="glass card" style={{ padding: 20, color: 'var(--warn)' }}>
+    Couldn’t load Bank Feedback: {setupErr}<br /><span className="muted" style={{ fontSize: 12.5 }}>If you just updated the app, restart the server (run_local.bat) and reload.</span>
+    <div style={{ marginTop: 10 }}><button className="btn sm" onClick={loadSetup}>↻ Retry</button></div></div>;
+  if (!cfg || !prods) return <Loader />;
+  if (!prods.length) return <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No products with cases yet. Upload a product file first.</div>;
+
+  const cellInput = (row, col) => {
+    if (col.readonly) return <span>{row[col.key] || '—'}</span>;
+    const v = row[col.key] == null ? '' : row[col.key];
+    if (col.type === 'code') return (
+      <select className="input" style={{ minWidth: 120, padding: '3px 6px', fontSize: 12.5 }} value={v} onChange={e => setCell(row, col, e.target.value)}>
+        <option value=""></option>{(cfg.codes[col.code] || []).map(o => <option key={o} value={o}>{o}</option>)}
+      </select>);
+    if (col.type === 'date') return <input type="date" className="input" style={{ minWidth: 130, padding: '3px 6px', fontSize: 12.5 }}
+      value={/^\d{4}-\d{2}-\d{2}$/.test(v) ? v : ''} onChange={e => setCell(row, col, e.target.value)} title={v && !/^\d{4}-/.test(v) ? v : ''} />;
+    return <input className="input" style={{ minWidth: col.key.includes('remark') ? 200 : 120, padding: '3px 6px', fontSize: 12.5 }}
+      defaultValue={v} onBlur={e => { if (e.target.value !== String(v)) setCell(row, col, e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }} />;
+  };
+
+  return (
+    <div>
+      <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8, position: 'relative' }}>
+        <select className="input" style={{ maxWidth: 260 }} value={sel ? sel.bank + '||' + sel.product : ''}
+          onChange={e => { const [b, p] = e.target.value.split('||'); setSel({ bank: b, product: p }); }}>
+          {prods.map((p, i) => <option key={i} value={p.bank + '||' + p.product}>{p.bank} · {p.product}</option>)}
+        </select>
+        <input type="date" className="input" style={{ maxWidth: 170 }} value={day} onChange={e => setDay(e.target.value)} />
+        <button className="btn sm" disabled={busy} onClick={refresh}>{busy ? '…' : '↻ Pull from logs'}</button>
+        <div style={{ flex: 1 }} />
+        <span className="muted" style={{ fontSize: 12 }}>{shown.length} of {rows.length} rows{pickedIds.length ? ` · ${pickedIds.length} selected` : ''}</span>
+        <button className="btn sm" onClick={() => setColMenu(v => !v)}>⚙ Columns</button>
+        <button className="btn gold" onClick={doDownload}>⬇ Download {pickedIds.length ? 'selected' : 'full'}</button>
+        {colMenu && (
+          <div className="glass card" style={{ position: 'absolute', right: 0, top: 42, zIndex: 30, padding: 10, minWidth: 220, maxHeight: 320, overflow: 'auto', boxShadow: 'var(--shadow)' }}>
+            <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>Columns to download</div>
+            {cols.map(c => <label key={c.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, padding: '3px 2px', cursor: 'pointer' }}>
+              <input type="checkbox" checked={dlCols.has(c.key)} onChange={() => setDlCols(s => { const n = new Set(s); n.has(c.key) ? n.delete(c.key) : n.add(c.key); return n; })} />{c.label}</label>)}
+          </div>
+        )}
+      </div>
+      <p className="muted" style={{ fontSize: 12.5, margin: '2px 2px 10px' }}>Daily bank feedback for {sel.bank} · {sel.product}. Rows auto-fill from caller & FOS logs and stay editable — your edits are kept. Saved per day; use the date picker for 3-day / weekly hand-offs.</p>
+      {err && <div className="glass card" style={{ color: 'var(--bad)', marginBottom: 10 }}>{err}</div>}
+      {!data ? <Loader /> : shown.length === 0 ? <div className="glass card muted" style={{ padding: 20, textAlign: 'center' }}>No cases for this product / day.</div> :
+        <div className="glass card" style={{ padding: 6 }}>
+          <div className="tablewrap" style={{ maxHeight: '70vh', overflow: 'auto' }}><table>
+            <thead>
+              <tr>
+                <th style={{ width: 30 }}><input type="checkbox" checked={allPicked} onChange={toggleAll} /></th>
+                <th>Customer</th>
+                {cols.map(c => <th key={c.key}>{c.label}</th>)}
+              </tr>
+              <tr>
+                <th></th><th></th>
+                {cols.map(c => <th key={c.key}><input className="input" style={{ width: '100%', minWidth: 90, padding: '2px 5px', fontSize: 11 }} placeholder="filter" value={filters[c.key] || ''} onChange={e => setFilters(f => ({ ...f, [c.key]: e.target.value }))} /></th>)}
+              </tr>
+            </thead>
+            <tbody>{shown.map(r => <tr key={r.id}>
+              <td><input type="checkbox" checked={!!picked[r.id]} onChange={() => setPicked(p => ({ ...p, [r.id]: !p[r.id] }))} /></td>
+              <td style={{ whiteSpace: 'nowrap' }}><b style={{ fontSize: 12.5 }}>{r.customer || '—'}</b>{r.phone && <div className="muted" style={{ fontSize: 11 }}>{r.phone}</div>}</td>
+              {cols.map(c => <td key={c.key}>{cellInput(r, c)}</td>)}
+            </tr>)}</tbody>
+          </table></div>
+        </div>}
+    </div>
+  );
+}
+
+/* ==================== Escalations (pull hard cases off FOS/caller) ==================== */
+function EscalationsView({ user }) {
+  const [q, setQ] = useState(''); const [results, setResults] = useState(null);
+  const [mine, setMine] = useState([]); const [drawer, setDrawer] = useState(null); const [busy, setBusy] = useState(0);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const loadMine = () => api('/api/cases/escalated?mine=false').then(setMine).catch(() => setMine([]));
+  const search = () => {
+    const p = new URLSearchParams({ limit: '60' }); if (q) p.set('search', q);
+    api('/api/cases?' + p).then(rows => setResults((rows || []).filter(c => !c.escalated)
+      .sort((a, b) => Number(b.pending_amount || 0) - Number(a.pending_amount || 0)))).catch(() => setResults([]));
+  };
+  useEffect(() => { loadMine(); }, []);
+  useDataChanged(() => { loadMine(); if (results) search(); });
+  const escalate = (c) => { setBusy(c.id); api('/api/cases/' + c.id + '/escalate', { method: 'POST', body: {} })
+    .then(() => { toast('Escalated to you — removed from ' + (c.customer_name || 'the') + '’s handler'); loadMine(); search(); })
+    .catch(e => toast(e.message, 'err')).finally(() => setBusy(0)); };
+  const release = (c) => { setBusy(c.id); api('/api/cases/' + c.id + '/deescalate', { method: 'POST', body: {} })
+    .then(() => { toast('Released back to the pool'); loadMine(); }).catch(e => toast(e.message, 'err')).finally(() => setBusy(0)); };
+
+  return (
+    <div>
+      <p className="muted" style={{ fontSize: 13, margin: '0 2px 10px' }}>Pull a hard or high-value case off its field agent / caller and own it yourself. It leaves their queue and individual performance, but stays counted in MIS &amp; the bank feedback sheet.</p>
+      <div className="glass card" style={{ padding: 12, marginBottom: 14 }}>
+        <div className="toolbar">
+          <input className="input" placeholder="Search by name, account, phone, pincode…" value={q}
+            onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} />
+          <button className="btn gold" onClick={search}>Search</button>
+        </div>
+        {results && (results.length === 0 ? <p className="muted" style={{ margin: '8px 2px 0' }}>No matching un-escalated cases.</p> :
+          <div className="tablewrap" style={{ marginTop: 10, maxHeight: 340, overflow: 'auto' }}><table>
+            <thead><tr><th>Customer</th><th>Bank·Product</th><th>Pending</th><th>ENR</th><th>Handler</th><th>Score</th><th></th></tr></thead>
+            <tbody>{results.map(c => <tr key={c.id}>
+              <td style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}><b style={{ color: 'var(--gold)' }}>{c.customer_name || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{c.account_no}</div></td>
+              <td className="muted">{c.bank} · {c.product || '—'}</td>
+              <td className="mono" style={{ color: 'var(--warn)' }}>{money(c.pending_amount)}</td>
+              <td className="mono">{money(c.enr)}</td>
+              <td className="muted" style={{ fontSize: 12 }}>{c.fos_name || c.caller_name || '—'}</td>
+              <td><PropBadge score={c.propensity} /></td>
+              <td><button className="btn sm gold" disabled={busy === c.id} onClick={() => escalate(c)}>Escalate to me</button></td></tr>)}</tbody></table></div>)}
+      </div>
+
+      <div className="glass card" style={{ padding: 6 }}>
+        <div className="section-h" style={{ padding: '6px 8px' }}><h3 style={{ margin: 0, fontSize: 15 }}>Escalated cases ({mine.length})</h3></div>
+        {mine.length === 0 ? <div className="muted" style={{ padding: 16, textAlign: 'center' }}>Nothing escalated yet.</div> :
+          <div className="tablewrap" style={{ maxHeight: 420, overflow: 'auto' }}><table>
+            <thead><tr><th>Customer</th><th>Bank·Product</th><th>Pending</th><th>Status</th><th>Paid</th><th>Dispo</th><th></th></tr></thead>
+            <tbody>{mine.map(c => <tr key={c.id}>
+              <td style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}><b style={{ color: 'var(--gold)' }}>{c.customer_name || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{c.account_no}</div></td>
+              <td className="muted">{c.bank} · {c.product || '—'}</td>
+              <td className="mono" style={{ color: 'var(--warn)' }}>{money(c.pending_amount)}</td>
+              <td><StatusBadge s={c.status} /></td><td><PaidBadge s={c.paid_status} /></td>
+              <td className="muted">{c.disposition || '—'}</td>
+              <td><button className="btn sm" disabled={busy === c.id} onClick={() => release(c)}>Release</button></td></tr>)}</tbody></table></div>}
+      </div>
+      {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={() => { loadMine(); if (results) search(); }} />}
     </div>
   );
 }
@@ -2744,11 +3163,11 @@ const SHEET_COLS = [
   { k: 'bucket', t: 'Bucket', type: 'text' },
   { k: 'cycle', t: 'Cycle', type: 'text' },
   { k: 'month', t: 'Month', type: 'text' },
-  { k: 'total_outstanding', t: 'Outstanding', type: 'num' },
-  { k: 'principal_outstanding', t: 'Principal', type: 'num' },
+  { k: 'total_outstanding', t: 'TOS', type: 'num', edit: true },
+  { k: 'principal_outstanding', t: 'POS / PRI', type: 'num', edit: true },
   { k: 'enr', t: 'ENR', type: 'num' },
-  { k: 'norm_amount', t: 'NORM', type: 'num' },
-  { k: 'stab_amount', t: 'STAB', type: 'num' },
+  { k: 'norm_amount', t: 'OD NORM', type: 'num', edit: true },
+  { k: 'stab_amount', t: 'OD STAB', type: 'num', edit: true },
   { k: 'min_amount_due', t: 'Min due', type: 'num', edit: true },
   { k: 'received_amount', t: 'Amount', type: 'num', edit: true },
   { k: 'pending_amount', t: 'Pending', type: 'num', edit: true },
@@ -2763,11 +3182,41 @@ const SHEET_COLS = [
   { k: 'team', t: 'Area', type: 'text', edit: true },
   { k: 'team_lead', t: 'Team lead', type: 'text', edit: true },
   { k: 'cat', t: 'Cat', type: 'text', edit: true },
+  { k: 'segment', t: 'Segment', type: 'text' },
+  { k: 'final_status', t: 'Status', type: 'text' },              // BL: NORM / STAB / FLOW
+  // ---- PL/BL loan / caller working columns (stored in extra) ----
+  { k: 'x_emi', t: 'EMI', type: 'num', data: true, edit: true },
+  { k: 'x_pos_ovd', t: 'POS OVD', type: 'num', data: true, edit: true },
+  { k: 'x_interest_ovd', t: 'Int OVD', type: 'num', data: true, edit: true },
+  { k: 'x_charges_ovd', t: 'Charges OVD', type: 'num', data: true, edit: true },
+  { k: 'x_tot_od', t: 'Total OD', type: 'num', data: true, edit: true },
+  { k: 'x_disbursement', t: 'Disbursement', type: 'num', data: true },
+  { k: 'x_risk', t: 'Risk cat', type: 'text', data: true },
+  { k: 'x_city', t: 'City', type: 'text', data: true },
+  { k: 'x_od', t: 'OD', type: 'num', data: true, edit: true },
+  { k: 'x_ptp_date', t: 'PTP date', type: 'text', data: true, edit: true },
+  { k: 'x_paid_date', t: 'Paid date', type: 'text', data: true, edit: true },
+  { k: 'x_mode_of_payment', t: 'Mode', type: 'text', data: true, edit: true },
+  { k: 'x_tenure', t: 'Tenure', type: 'num', data: true },
+  { k: 'x_balance_tenure', t: 'Bal tenure', type: 'num', data: true },
+  { k: 'x_billed_emi', t: 'Billed EMI', type: 'num', data: true },
+  { k: 'x_traced_contact', t: 'Traced no', type: 'text', data: true, edit: true },
+  { k: 'x_last_payment_date', t: 'Last pay dt', type: 'text', data: true },
+  { k: 'x_last_payment_amount', t: 'Last pay amt', type: 'num', data: true },
+  { k: 'x_organisation', t: 'Organisation', type: 'text', data: true },
+  { k: 'x_designation', t: 'Designation', type: 'text', data: true },
   { k: 'address', t: 'Address', type: 'text' },
   { k: 'pincode', t: 'Pincode', type: 'text' },
   { k: 'propensity', t: 'Score', type: 'num' },
 ];
 const SHEET_DEFAULT_VISIBLE = ['customer_name', 'phone', 'bank', 'product', 'enr', 'norm_amount', 'stab_amount', 'received_amount', 'norm_stab', 'paid_status', 'status', 'disposition', 'caller_name', 'fos_name', 'remarks'];
+// Column preset matching the AXIS PL/BL callers' working sheet (TOS/PRI/EMI, OD components,
+// OD STAB & OD NORM, STATUS = NORM/STAB/FLOW).
+const SHEET_VISIBLE_PLBL = ['bucket', 'account_no', 'customer_name', 'cycle', 'phone', 'x_disbursement',
+  'total_outstanding', 'principal_outstanding', 'x_emi', 'x_pos_ovd', 'x_interest_ovd', 'x_charges_ovd',
+  'x_tot_od', 'x_mode_of_payment', 'stab_amount', 'norm_amount', 'received_amount',
+  'paid_status', 'final_status', 'norm_stab', 'caller_name', 'address', 'team', 'pincode', 'fos_name',
+  'x_last_payment_amount', 'x_risk', 'x_tenure', 'x_balance_tenure', 'remarks'];
 const SHEET_FUNCS = { ROUND: Math.round, ABS: Math.abs, MIN: Math.min, MAX: Math.max, SQRT: Math.sqrt, IF: (c, a, b) => (c ? a : b) };
 function sheetSafeCalc(expr) {
   if (!/^[-+*/%(). ,0-9<>=?:A-Za-z_]*$/.test(expr)) throw new Error('bad expression');
@@ -2838,6 +3287,14 @@ function SheetView({ user, config }) {
   const defByKey = k => allDefs().find(c => c.k === k);
   const savePrefs = (next) => { setPrefs(next); clearTimeout(saveTimer.current); saveTimer.current = setTimeout(() => api('/api/sheet/prefs', { method: 'PUT', body: next }).catch(() => {}), 600); };
   const toggleCol = (k) => { if (!prefs) return; const vis = prefs.visible.includes(k) ? prefs.visible.filter(x => x !== k) : prefs.visible.concat(k); savePrefs({ ...prefs, visible: vis }); };
+  const applyPreset = (kind) => {
+    if (!prefs) return;
+    const want = kind === 'plbl' ? SHEET_VISIBLE_PLBL : SHEET_DEFAULT_VISIBLE;
+    const known = allDefs().map(c => c.k);
+    const vis = want.filter(k => known.includes(k));
+    const order = vis.concat(prefs.order.filter(k => !vis.includes(k)));
+    savePrefs({ ...prefs, visible: vis, order });
+  };
   const addFormulaCol = () => {
     const label = window.prompt('Column name'); if (!label) return;
     const formula = window.prompt('Formula — reference columns like [pending_amount]\ne.g. =[pending_amount]*0.1 or =ROUND([received_amount]/[total_outstanding]*100)'); if (!formula) return;
@@ -2948,6 +3405,11 @@ function SheetView({ user, config }) {
         <button className="sv-btn" onClick={() => setColMenu(v => !v)}>⚙ Columns</button>
         {colMenu && (
           <div className="sv-menu">
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>Column presets</div>
+            <div className="toolbar" style={{ margin: '0 0 8px', gap: 6 }}>
+              <button className="sv-btn" onClick={() => applyPreset('cc')}>Credit Card</button>
+              <button className="sv-btn" onClick={() => applyPreset('plbl')}>PL / BL</button>
+            </div>
             <div style={{ fontWeight: 600, marginBottom: 6 }}>Show columns</div>
             {allDefs().map(c => (
               <label key={c.k}><input type="checkbox" checked={prefs.visible.includes(c.k)} onChange={() => toggleCol(c.k)} />{c.t}{c.custom ? ' (ƒ)' : ''}</label>
@@ -3023,11 +3485,12 @@ function SheetView({ user, config }) {
 }
 
 const NAV = {
-  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['mis', '📈', 'MIS'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
 };
 function NativeTrackingOnboard({ onDone }) {
   const openSettings = () => { try { const BG = window.Capacitor.registerPlugin('BackgroundGeolocation'); if (BG.openSettings) BG.openSettings(); } catch (e) {} };
@@ -3071,6 +3534,8 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
       case 'map': return <LiveMap config={config} />;
       case 'staff': return <StaffView config={config} user={user} />;
       case 'records': return <RecordsView user={user} />;
+      case 'feedback': return <FeedbackView user={user} />;
+      case 'escalations': return <EscalationsView user={user} />;
       case 'devices': return <DevicesView />;
       case 'leave': return <LeaveView user={user} />;
       case 'templates': return <TemplatesView />;

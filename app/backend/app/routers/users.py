@@ -9,6 +9,23 @@ from ..deps import get_current_user, require_roles
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 _HRMS_FIELDS = ("employment_type", "joining_date", "address", "emergency_contact", "photo_url")
+_ROLE_PREFIX = {"telecaller": "TC", "fos": "FO", "manager": "MG", "backend": "BO",
+                "admin": "AD", "headoffice": "HO"}
+
+
+def generate_emp_code(db: Session, role: str) -> str:
+    """A short, unique staff/caller ID (e.g. TC001) — printed in upload sheets so a case's
+    CALLER column maps back to the exact caller."""
+    prefix = _ROLE_PREFIX.get(role, "EMP")
+    existing = [u.emp_code for u in db.query(models.User.emp_code)
+                .filter(models.User.emp_code.like(prefix + "%")).all() if u.emp_code]
+    n = 0
+    for code in existing:
+        try:
+            n = max(n, int(code[len(prefix):]))
+        except (ValueError, TypeError):
+            continue
+    return f"{prefix}{n + 1:03d}"
 
 
 @router.get("", response_model=list[schemas.UserOut])
@@ -30,8 +47,8 @@ def _guard_manager(actor: models.User, body_role: str | None, body_branch: str |
     """Managers may manage staff — including fellow branch managers — inside their own
     branch, but never admins."""
     if actor.role == "manager":
-        if body_role == "admin":
-            raise HTTPException(status_code=403, detail="Managers cannot create or manage admins")
+        if body_role in ("admin", "headoffice"):
+            raise HTTPException(status_code=403, detail="Managers cannot create or manage admins or head-office staff")
         if body_branch and body_branch != actor.branch:
             raise HTTPException(status_code=403, detail="Managers can only manage staff in their own branch")
 
@@ -45,10 +62,12 @@ def create_user(body: schemas.UserCreate, db: Session = Depends(get_db),
     branch = actor.branch if actor.role == "manager" else body.branch
     u = models.User(
         name=body.name, email=body.email.lower(), phone=body.phone, role=body.role,
-        branch=branch, banks=body.banks, assigned_pincodes=body.assigned_pincodes,
+        branch=branch, banks=body.banks, assigned_products=body.assigned_products,
+        assigned_pincodes=body.assigned_pincodes,
         home_lat=body.home_lat, home_lng=body.home_lng,
         employment_type=body.employment_type, joining_date=body.joining_date,
         address=body.address, emergency_contact=body.emergency_contact, photo_url=body.photo_url,
+        emp_code=generate_emp_code(db, body.role),
         hashed_password=hash_password(body.password),
     )
     db.add(u)

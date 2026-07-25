@@ -26,6 +26,7 @@ import `in`.recoveriq.app.ui.common.CaseCard
 import `in`.recoveriq.app.ui.common.DateUtil
 import `in`.recoveriq.app.ui.common.EmptyState
 import `in`.recoveriq.app.ui.common.SectionTitle
+import `in`.recoveriq.app.ui.common.rememberLiveKey
 import `in`.recoveriq.app.ui.theme.Bad
 import `in`.recoveriq.app.ui.theme.Good
 import `in`.recoveriq.app.ui.theme.Muted
@@ -34,9 +35,10 @@ import `in`.recoveriq.app.ui.theme.Warn
 @Composable
 fun CallQueueScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     var seg by remember { mutableStateOf("Due now") }
+    val liveKey = rememberLiveKey()
     Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         SectionTitle("Call queue", Modifier.padding(top = 12.dp, start = 4.dp))
-        AsyncContent(block = { vm.repo.callQueue() }) { q, _ ->
+        AsyncContent(key = liveKey, block = { vm.repo.callQueue() }) { q, _ ->
             val segments = listOf(
                 "Due now" to q.due,
                 "Contacted" to q.contactedToday,

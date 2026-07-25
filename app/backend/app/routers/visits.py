@@ -27,6 +27,7 @@ async def create_visit(
     amount_collected: str = Form("0"),
     norm_stab: str | None = Form(None),
     disposition: str | None = Form(None),
+    ptp_date: str | None = Form(None),
     note: str | None = Form(None),
     photo: UploadFile | None = File(None),
     db: Session = Depends(get_db),
@@ -83,6 +84,19 @@ async def create_visit(
     if latitude and longitude and location_correct:
         case.latitude = latitude
         case.longitude = longitude
+
+    # Roll the case forward so it re-surfaces on the right day and sinks in today's view.
+    try:
+        pd = datetime.strptime(ptp_date, "%Y-%m-%d").date() if ptp_date else None
+    except ValueError:
+        pd = None
+    if case.paid_status == "PAID" and Decimal(case.pending_amount or 0) <= 0:
+        case.follow_up_date = None                              # settled → out of the queue
+    else:
+        # unpaid / partial after a visit → carry to the promised date, else next working day
+        case.follow_up_date = pd or (datetime.now(IST).date() + timedelta(days=1))
+        if pd or (disposition or "").upper() in ("PTP", "RTP"):
+            case.status = "ptp"
     db.commit()
     db.refresh(visit)
     from .realtime import notify_data_changed

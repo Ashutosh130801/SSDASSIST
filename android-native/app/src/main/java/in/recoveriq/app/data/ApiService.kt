@@ -66,6 +66,9 @@ interface ApiService {
     @GET("api/calls/queue")
     suspend fun callQueue(@Query("bank") bank: String? = null): QueueResponse
 
+    @GET("api/reminders")
+    suspend fun reminders(): RemindersResponse
+
     @GET("api/calls/ptp-tracker")
     suspend fun ptpTracker(@Query("bank") bank: String? = null): PtpResponse
 
@@ -88,6 +91,7 @@ interface ApiService {
         @Part("amount_collected") amountCollected: RequestBody,
         @Part("norm_stab") normStab: RequestBody?,
         @Part("disposition") disposition: RequestBody?,
+        @Part("ptp_date") ptpDate: RequestBody?,
         @Part("note") note: RequestBody?,
         @Part photo: MultipartBody.Part?,
     ): VisitOut

@@ -21,8 +21,11 @@ EDITABLE = {
     "status", "disposition", "remarks", "follow_up_date",
     "received_amount", "pending_amount", "phone", "alt_phone", "paid_status",
     "min_amount_due", "norm_stab", "cat", "team", "team_lead", "caller_name", "fos_name",
+    # PL/BL: TOS and the daily-updated OD STAB / OD NORM targets are caller-editable.
+    "total_outstanding", "principal_outstanding", "stab_amount", "norm_amount",
 }
-NUMERIC = {"received_amount", "pending_amount", "min_amount_due", "enr", "norm_amount", "stab_amount"}
+NUMERIC = {"received_amount", "pending_amount", "min_amount_due", "enr", "norm_amount", "stab_amount",
+           "total_outstanding", "principal_outstanding"}
 # Editing any of these counts as "contacted today" for performance stats.
 CONTACT_FIELDS = {"status", "disposition", "remarks", "received_amount", "paid_status", "norm_stab"}
 
@@ -90,6 +93,10 @@ async def update_cell(case_id: int, body: CellUpdate, db: Session = Depends(get_
         case.pending_amount = (Decimal(case.funding_amount or 0) - Decimal(case.received_amount or 0))
         if Decimal(case.received_amount or 0) >= Decimal(case.funding_amount or 0) > 0:
             case.paid_status = "PAID"
+
+    # PL/BL MIS base is TOS — keep ENR mirrored to it so the MIS updates live on a TOS edit.
+    if body.field == "total_outstanding" and (case.segment or "") == "PL/BL":
+        case.enr = case.total_outstanding
 
     if body.field in CONTACT_FIELDS:
         case.last_contacted_at = datetime.now(timezone.utc)

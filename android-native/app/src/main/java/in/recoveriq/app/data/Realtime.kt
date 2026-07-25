@@ -23,6 +23,11 @@ object Realtime {
     private val _openCase = MutableSharedFlow<Int>(extraBufferCapacity = 8)
     val openCase: SharedFlow<Int> = _openCase
 
+    // Emits a fresh timestamp whenever any data changes on the backend (a log/payment/edit
+    // from web or another device) — screens use it to live-refresh, matching the web app.
+    private val _dataChanged = MutableSharedFlow<Long>(extraBufferCapacity = 16)
+    val dataChanged: SharedFlow<Long> = _dataChanged
+
     private var socket: WebSocket? = null
     private var wantConnected = false
 
@@ -60,9 +65,12 @@ object Realtime {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 try {
                     val obj = JSONObject(text)
-                    if (obj.optString("type") == "open_case") {
-                        val id = obj.optInt("case_id", -1)
-                        if (id > 0) _openCase.tryEmit(id)
+                    when (obj.optString("type")) {
+                        "open_case" -> {
+                            val id = obj.optInt("case_id", -1)
+                            if (id > 0) _openCase.tryEmit(id)
+                        }
+                        "data_changed", "case_update" -> _dataChanged.tryEmit(System.currentTimeMillis())
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "bad message: ${e.message}")

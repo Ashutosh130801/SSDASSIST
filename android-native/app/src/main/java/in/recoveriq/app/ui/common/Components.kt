@@ -17,6 +17,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,9 +26,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import `in`.recoveriq.app.data.Realtime
 import `in`.recoveriq.app.ui.theme.CardWhite
 import `in`.recoveriq.app.ui.theme.GlassStroke
 import `in`.recoveriq.app.ui.theme.TextDark
+
+/**
+ * A key that changes whenever the backend broadcasts a data change over the WebSocket.
+ * Pass it as AsyncContent(key = rememberLiveKey()) to auto-refresh a screen live, exactly
+ * like the web app's useDataChanged hook.
+ */
+@Composable
+fun rememberLiveKey(): Long {
+    val v by Realtime.dataChanged.collectAsState(initial = 0L)
+    return v
+}
 
 sealed interface Load<out T> {
     data object Loading : Load<Nothing>

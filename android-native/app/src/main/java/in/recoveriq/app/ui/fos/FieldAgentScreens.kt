@@ -19,10 +19,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.clickable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
@@ -30,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import `in`.recoveriq.app.data.RemindersResponse
 import `in`.recoveriq.app.data.User
 import `in`.recoveriq.app.location.Tracking
 import `in`.recoveriq.app.ui.AuthViewModel
@@ -38,8 +43,11 @@ import `in`.recoveriq.app.ui.common.CaseCard
 import `in`.recoveriq.app.ui.common.EmptyState
 import `in`.recoveriq.app.ui.common.InfoCard
 import `in`.recoveriq.app.ui.common.SectionTitle
+import `in`.recoveriq.app.ui.common.rememberLiveKey
+import `in`.recoveriq.app.ui.theme.Bad
 import `in`.recoveriq.app.ui.theme.Good
 import `in`.recoveriq.app.ui.theme.Muted
+import `in`.recoveriq.app.ui.theme.Warn
 
 @Composable
 fun FieldAgentTrackingScreen(
@@ -122,20 +130,55 @@ fun FieldAgentTrackingScreen(
     }
 }
 
+private fun stateRank(s: String) = when (s) { "fresh" -> 0; "touched" -> 1; else -> 2 }
+
+@Composable
+private fun RemindersBanner(vm: AuthViewModel, liveKey: Long, onOpenCase: (Int) -> Unit) {
+    var data by remember { mutableStateOf<RemindersResponse?>(null) }
+    LaunchedEffect(liveKey) { data = runCatching { vm.repo.reminders() }.getOrNull() }
+    val d = data ?: return
+    if (d.count == 0) return
+    InfoCard(Modifier.padding(horizontal = 16.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Text("🔔 PTP reminders · ${d.count}", fontWeight = FontWeight.SemiBold)
+            Text("${d.overdue} overdue · ${d.dueToday} due today",
+                style = MaterialTheme.typography.labelSmall, color = Muted)
+            Spacer(Modifier.height(4.dp))
+            d.rows.take(6).forEach { r ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onOpenCase(r.caseId) }.padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(r.customer ?: r.account ?: "Case", style = MaterialTheme.typography.bodySmall)
+                    Text("${if (r.overdue) "⚠ " else ""}${r.ptpDate ?: ""}",
+                        style = MaterialTheme.typography.labelSmall, color = if (r.overdue) Bad else Warn)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
+    val liveKey = rememberLiveKey()
     Column(Modifier.fillMaxSize()) {
         SectionTitle("My assigned cases", Modifier.padding(start = 16.dp, top = 12.dp))
-        AsyncContent(block = { vm.repo.myCases() }) { cases, _ ->
+        RemindersBanner(vm, liveKey, onOpenCase)
+        AsyncContent(key = liveKey, block = { vm.repo.myCases() }) { cases, _ ->
             if (cases.isEmpty()) {
                 EmptyState("No cases assigned to you yet.")
             } else {
+                // Untouched & highest-priority on top; visited/contacted below; paid last.
+                val ordered = cases.sortedWith(
+                    compareBy({ stateRank(it.workState) }, { -(it.propensity ?: 0) }, { -it.pendingAmount }),
+                )
                 LazyColumn(
                     Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    items(cases.size) { i -> CaseCard(cases[i], onClick = { onOpenCase(cases[i].id) }) }
+                    items(ordered.size) { i -> CaseCard(ordered[i], onClick = { onOpenCase(ordered[i].id) }) }
                 }
             }
         }
