@@ -127,21 +127,24 @@ data class Case(
     val remarks: String? = null,
     @Json(name = "caller_name") val callerName: String? = null,
     @Json(name = "fos_name") val fosName: String? = null,
+    val team: String? = null,
+    @Json(name = "team_lead") val teamLead: String? = null,
+    val cat: String? = null,
     @Json(name = "assigned_fos_id") val assignedFosId: Int? = null,
     @Json(name = "assigned_caller_id") val assignedCallerId: Int? = null,
     @Json(name = "follow_up_date") val followUpDate: String? = null,
     @Json(name = "last_contacted_at") val lastContactedAt: String? = null,
-    val visited: Boolean = false,
-    @Json(name = "visited_today") val visitedToday: Boolean = false,
-    @Json(name = "contacted_today") val contactedToday: Boolean = false,
-    val escalated: Boolean = false,
+    val visited: Boolean? = false,
+    @Json(name = "visited_today") val visitedToday: Boolean? = false,
+    @Json(name = "contacted_today") val contactedToday: Boolean? = false,
+    val escalated: Boolean? = false,
     val propensity: Int? = null,
 ) {
     /** Working state for FOS/caller lists: fresh (untouched) → touched today → paid. */
     val workState: String
         get() = when {
             (paidStatus ?: "") == "PAID" || status == "paid" -> "paid"
-            visitedToday || contactedToday || status == "in_progress" || status == "ptp" || status == "callback" -> "touched"
+            visitedToday == true || contactedToday == true || status == "in_progress" || status == "ptp" || status == "callback" -> "touched"
             else -> "fresh"
         }
 }

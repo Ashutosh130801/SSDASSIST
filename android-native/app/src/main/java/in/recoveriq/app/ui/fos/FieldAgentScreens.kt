@@ -20,6 +20,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -34,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import `in`.recoveriq.app.data.Case
 import `in`.recoveriq.app.data.RemindersResponse
 import `in`.recoveriq.app.data.User
 import `in`.recoveriq.app.location.Tracking
@@ -159,20 +164,60 @@ private fun RemindersBanner(vm: AuthViewModel, liveKey: Long, onOpenCase: (Int) 
     }
 }
 
+private val CASE_FILTERS: List<Pair<String, (Case) -> Boolean>> = listOf(
+    "All" to { _ -> true },
+    "To do" to { c -> c.workState == "fresh" },
+    "Not visited" to { c -> !(c.visited == true || c.visitedToday == true) },
+    "Visited" to { c -> c.visited == true || c.visitedToday == true },
+    "Unpaid" to { c -> (c.paidStatus ?: "").uppercase() == "UNPAID" },
+    "Paid" to { c -> (c.paidStatus ?: "").uppercase() == "PAID" },
+    "PTP" to { c -> (c.disposition ?: "").uppercase() in listOf("PTP", "RTP") },
+)
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     val liveKey = rememberLiveKey()
+    var sel by remember { mutableStateOf("All") }
     Column(Modifier.fillMaxSize()) {
-        SectionTitle("My assigned cases", Modifier.padding(start = 16.dp, top = 12.dp))
+        SectionTitle("My accounts", Modifier.padding(start = 16.dp, top = 12.dp))
         RemindersBanner(vm, liveKey, onOpenCase)
         AsyncContent(key = liveKey, block = { vm.repo.myCases() }) { cases, _ ->
             if (cases.isEmpty()) {
                 EmptyState("No cases assigned to you yet.")
+                return@AsyncContent
+            }
+            // New-case alert: freshly allocated, not yet worked.
+            val newCount = cases.count { (it.status ?: "") == "allocated" }
+            if (newCount > 0) {
+                InfoCard(Modifier.padding(horizontal = 16.dp)) {
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Bolt, null, tint = Warn)
+                        Spacer(Modifier.size(8.dp))
+                        Text("$newCount new case${if (newCount == 1) "" else "s"} assigned to you",
+                            fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+            // Filter chips with live counts (doubles as a performance snapshot).
+            FlowRow(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                CASE_FILTERS.forEach { (label, pred) ->
+                    val n = cases.count(pred)
+                    FilterChip(selected = sel == label, onClick = { sel = label },
+                        label = { Text("$label ($n)") })
+                }
+            }
+            val pred = CASE_FILTERS.first { it.first == sel }.second
+            // Untouched & highest-priority on top; visited/contacted below; paid last.
+            val ordered = cases.filter(pred).sortedWith(
+                compareBy({ stateRank(it.workState) }, { -(it.propensity ?: 0) }, { -it.pendingAmount }),
+            )
+            if (ordered.isEmpty()) {
+                EmptyState("No cases in this filter.")
             } else {
-                // Untouched & highest-priority on top; visited/contacted below; paid last.
-                val ordered = cases.sortedWith(
-                    compareBy({ stateRank(it.workState) }, { -(it.propensity ?: 0) }, { -it.pendingAmount }),
-                )
                 LazyColumn(
                     Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(16.dp),

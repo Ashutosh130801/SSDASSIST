@@ -114,6 +114,10 @@ def trail(officer_id: int, minutes: int = 240, db: Session = Depends(get_db),
 
 # ---------------- 90-day (3-month) route history ----------------
 IST = timezone(timedelta(hours=5, minutes=30))   # India Standard Time
+
+
+def _ist_today():
+    return datetime.now(IST).date()
 RETENTION_DAYS = 90
 
 
@@ -145,6 +149,29 @@ def _haversine_km(a, b):
     return 2 * r * math.asin(math.sqrt(h))
 
 
+def clean_route(pings, max_accuracy_m=80.0, max_speed_kmh=140.0):
+    """Drop GPS junk so a stationary/slow officer doesn't draw spikes across the map:
+      * fixes with poor reported accuracy (drift, indoor, cold start), and
+      * 'teleport' outliers — a big jump in a tiny time gap (impossible speed).
+    Keeps chronological order; compares each candidate to the last KEPT good point."""
+    kept = []
+    for p in pings:
+        if p.latitude is None or p.longitude is None:
+            continue
+        if p.accuracy is not None and p.accuracy > max_accuracy_m:
+            continue                                  # low-accuracy fix
+        if kept:
+            prev = kept[-1]
+            dist_km = _haversine_km((prev.latitude, prev.longitude), (p.latitude, p.longitude))
+            dt = 0.0
+            if p.created_at and prev.created_at:
+                dt = (_as_utc(p.created_at) - _as_utc(prev.created_at)).total_seconds()
+            if dt > 0 and dist_km > 0.15 and (dist_km / (dt / 3600.0)) > max_speed_kmh:
+                continue                              # impossible jump → bad fix
+        kept.append(p)
+    return kept
+
+
 @router.get("/officer/{officer_id}/history-dates")
 def history_dates(officer_id: int, days: int = RETENTION_DAYS,
                   db: Session = Depends(get_db),
@@ -159,6 +186,7 @@ def history_dates(officer_id: int, days: int = RETENTION_DAYS,
         .order_by(models.LocationPing.created_at.asc())
         .all()
     )
+    pings = clean_route(pings)             # de-jitter so per-day distance isn't inflated
     by_day = {}
     for p in pings:
         local = _as_utc(p.created_at).astimezone(IST)
@@ -197,7 +225,7 @@ def route_for_date(officer_id: int, date: str, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
     start_utc = start_ist.astimezone(timezone.utc)
     end_utc = start_utc + timedelta(days=1)
-    return (
+    pings = (
         db.query(models.LocationPing)
         .filter(models.LocationPing.officer_id == officer_id,
                 models.LocationPing.created_at >= start_utc,
@@ -205,6 +233,7 @@ def route_for_date(officer_id: int, date: str, db: Session = Depends(get_db),
         .order_by(models.LocationPing.created_at.asc())
         .all()
     )
+    return clean_route(pings)             # strip GPS jitter so the drawn route isn't spiky
 
 
 @router.get("/distance-report")
@@ -325,6 +354,7 @@ def my_today(db: Session = Depends(get_db),
                      models.LocationPing.created_at >= start_utc,
                      models.LocationPing.created_at < end_utc)
              .order_by(models.LocationPing.created_at.asc()).all())
+    pings = clean_route(pings)                         # strip GPS jitter/outliers
     pts = [{"lat": p.latitude, "lng": p.longitude,
             "at": _as_utc(p.created_at).astimezone(IST).strftime("%H:%M")} for p in pings]
     coords = [(p.latitude, p.longitude) for p in pings]

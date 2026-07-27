@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import `in`.recoveriq.app.data.Case
+import `in`.recoveriq.app.ui.theme.Bad
 import `in`.recoveriq.app.ui.theme.BrandBlue
 import `in`.recoveriq.app.ui.theme.CardWhite
 import `in`.recoveriq.app.ui.theme.GlassStroke
@@ -50,6 +51,14 @@ fun StatusChip(status: String?) {
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
         )
     }
+}
+
+@Composable
+fun PaidTag(paidStatus: String?) {
+    val s = (paidStatus ?: "").uppercase()
+    if (s.isBlank()) return
+    val color = when { s == "PAID" -> Good; s == "PARTIAL" -> Warn; else -> Bad }
+    TouchTag(s, color)
 }
 
 @Composable
@@ -93,18 +102,28 @@ fun CaseCard(
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column(Modifier.weight(1f)) {
-                    Text(case.customerName ?: "Unnamed customer", fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface)
-                    Text(
-                        subtitle ?: listOfNotNull(case.bank, case.bucket, case.pincode).joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall, color = Muted,
-                    )
+                    Text(case.customerName ?: "Unnamed customer", fontWeight = FontWeight.Bold,
+                        color = TextDark, style = MaterialTheme.typography.titleSmall)
+                    // line 2: account · bank · product
+                    Text(listOfNotNull(case.accountNo, case.bank, case.product).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall, color = Muted)
+                    // line 3: bucket · cycle · area · pincode
+                    val meta = listOfNotNull(
+                        case.bucket?.let { "Bkt $it" }, case.cycle?.let { "cyc $it" },
+                        case.team, case.pincode,
+                    ).joinToString(" · ")
+                    if (meta.isNotBlank()) Text(meta, style = MaterialTheme.typography.labelSmall, color = Muted)
+                    // line 4: last disposition / remarks snippet
+                    (case.disposition ?: case.remarks)?.takeIf { it.isNotBlank() }?.let {
+                        Text("• ${it.take(48)}", style = MaterialTheme.typography.labelSmall, color = MutedDim)
+                    }
                 }
                 Column(horizontalAlignment = Alignment.End) {
-                    Text("₹${"%,.0f".format(case.pendingAmount)}", fontWeight = FontWeight.Bold,
-                        color = BrandBlue)
-                    Text("of ₹${"%,.0f".format(case.totalOutstanding)}",
+                    Text("₹${"%,.0f".format(case.pendingAmount)}", fontWeight = FontWeight.Bold, color = BrandBlue)
+                    Text("of ₹${"%,.0f".format(if (case.enr > 0) case.enr else case.totalOutstanding)}",
                         style = MaterialTheme.typography.labelSmall, color = MutedDim)
+                    if (case.receivedAmount > 0) Text("paid ₹${"%,.0f".format(case.receivedAmount)}",
+                        style = MaterialTheme.typography.labelSmall, color = Good)
                 }
             }
             Row(
@@ -114,9 +133,10 @@ fun CaseCard(
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     StatusChip(case.status)
+                    PaidTag(case.paidStatus)
                     if (state == "paid") TouchTag("PAID", Good)
-                    else if (state == "touched") TouchTag(if (case.visitedToday) "VISITED" else "DONE TODAY", Warn)
-                    if (case.escalated) TouchTag("ESCALATED", Warn)
+                    else if (state == "touched") TouchTag(if (case.visitedToday == true) "VISITED" else "DONE TODAY", Warn)
+                    if (case.escalated == true) TouchTag("ESCALATED", Warn)
                 }
                 if (showQuickActions && !case.phone.isNullOrBlank()) {
                     Row {

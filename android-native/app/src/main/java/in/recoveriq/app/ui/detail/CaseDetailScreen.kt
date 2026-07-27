@@ -272,6 +272,16 @@ private fun DetailFields(case: Case) {
         Field("Received", money(case.receivedAmount))
         Field("Pending", money(case.pendingAmount))
     }
+    SectionTitle("Recovery (MIS)")
+    InfoCard {
+        Field("Segment", case.segment)
+        Field("ENR", if (case.enr > 0) money(case.enr) else null)
+        Field("NORM amount", if (case.normAmount > 0) money(case.normAmount) else null)
+        Field("STAB amount", if (case.stabAmount > 0) money(case.stabAmount) else null)
+        Field("Paid at (NORM/STAB)", case.normStab)
+        Field("Caller", case.callerName)
+        Field("Field agent (FOS)", case.fosName)
+    }
     SectionTitle("Status")
     InfoCard {
         Field("Status", case.status)

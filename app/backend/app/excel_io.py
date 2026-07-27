@@ -91,7 +91,8 @@ HEADER_MAP = {
     "billingaddress": "address", "permanentaddress": "address", "currentaddress": "address",
     "curraddress": "address", "fulladdress": "address", "completeaddress": "address",
     "address1": "address", "addressline1": "address", "addressline": "address",
-    "location": "address", "custaddr": "address", "customeraddr": "address",
+    "add1": "address", "add2": "address", "add3": "address",          # ICICI FR uses ADD 1 / ADD 2
+    "custaddr": "address", "customeraddr": "address",
     # Pincode — capture a dedicated column when present (else it's parsed from the address).
     "pincode": "pincode", "pin": "pincode", "pincodeno": "pincode", "pinno": "pincode",
     "zip": "pincode", "zipcode": "pincode", "postalcode": "pincode", "postcode": "pincode",
@@ -202,6 +203,11 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
                         rec.setdefault("_extra", {})["x_" + field[2:]] = cv
                 elif field in MONEY_FIELDS:
                     rec[field] = to_decimal(val)
+                elif field == "address":                        # ADD 1 + ADD 2 (+…) → one address
+                    cv = _clean(val)
+                    if cv:
+                        cur = rec.get("address")
+                        rec["address"] = f"{cur}, {cv}" if cur and cv not in cur else cv if not cur else cur
                 else:
                     rec[field] = _clean(val)
             # must have at least a name or account no to be a real case

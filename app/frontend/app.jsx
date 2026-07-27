@@ -270,6 +270,48 @@ function loadMaps() {
    - grey dashed segments where the officer was offline (a gap between pings)
    - clickable dots + line: tapping shows the time & coordinates of that point
    Returns { layers, path, points } so the caller can clear/replay it. */
+/* Compass bearing (deg, 0=N) from point a to b — used for direction arrows / the moving icon. */
+function bearingDeg(a, b) {
+  const toR = x => x * Math.PI / 180, toD = x => x * 180 / Math.PI;
+  const dLon = toR(b.lng - a.lng);
+  const y = Math.sin(dLon) * Math.cos(toR(b.lat));
+  const x = Math.cos(toR(a.lat)) * Math.sin(toR(b.lat)) - Math.sin(toR(a.lat)) * Math.cos(toR(b.lat)) * Math.cos(dLon);
+  return (toD(Math.atan2(y, x)) + 360) % 360;
+}
+/* A Leaflet DivIcon that looks like a live rider pin (Swiggy/Zomato style). */
+function fosDivIcon(label, heading) {
+  const L = window.L; if (!L) return null;
+  if (!document.getElementById('fospulse-css')) {
+    const st = document.createElement('style'); st.id = 'fospulse-css';
+    st.textContent = '@keyframes fospulse{0%{transform:scale(.5);opacity:.7}100%{transform:scale(1.7);opacity:0}}';
+    document.head.appendChild(st);
+  }
+  const h = heading || 0;
+  return L.divIcon({
+    className: '', iconSize: [34, 34], iconAnchor: [17, 17],
+    html: '<div style="position:relative;width:34px;height:34px">'
+      + '<div style="position:absolute;inset:0;border-radius:50%;background:rgba(37,99,235,.25);animation:fospulse 1.6s ease-out infinite"></div>'
+      + '<div style="position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;background:#2563EB;border:2px solid #fff;'
+      + 'box-shadow:0 2px 6px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;font-size:13px">🏍️</div>'
+      + (label ? '<div style="position:absolute;top:-14px;left:50%;transform:translateX(-50%);white-space:nowrap;background:#111;color:#fff;font-size:10px;padding:1px 5px;border-radius:6px">' + label + '</div>' : '')
+      + '</div>',
+  });
+}
+/* Smoothly slide a Leaflet marker from its current position to [lat,lng] (~900ms). */
+function animateMarker(marker, lat, lng, ms) {
+  const L = window.L; if (!marker || !L) return;
+  const from = marker.getLatLng(); const to = L.latLng(lat, lng);
+  if (from.lat === to.lat && from.lng === to.lng) return;
+  const dur = ms || 900; const t0 = performance.now();
+  if (marker._anim) cancelAnimationFrame(marker._anim);
+  const tick = (now) => {
+    const k = Math.min(1, (now - t0) / dur);
+    const e = 1 - Math.pow(1 - k, 3);   // ease-out
+    marker.setLatLng([from.lat + (to.lat - from.lat) * e, from.lng + (to.lng - from.lng) * e]);
+    if (k < 1) marker._anim = requestAnimationFrame(tick);
+  };
+  marker._anim = requestAnimationFrame(tick);
+}
 function clearRouteLayers(r) { if (r && r.layers) r.layers.forEach(function (l) { try { l.remove(); } catch (e) {} }); }
 function drawRouteLeaflet(gmap, pts, opts) {
   opts = opts || {};
@@ -316,6 +358,20 @@ function drawRouteLeaflet(gmap, pts, opts) {
     const dot = L.circleMarker([p.lat, p.lng], { radius: 3.5, color: '#1D4ED8', fillColor: '#3B82F6', fillOpacity: .9, weight: 1 }).addTo(lm);
     dot.on('click', () => L.popup().setLatLng([p.lat, p.lng]).setContent(popupHtml(p)).openOn(lm));
     out.layers.push(dot);
+  }
+  // Direction arrows along the path — show which way the officer was moving.
+  if (opts.arrows !== false && P.length >= 2) {
+    const astep = Math.max(1, Math.floor(P.length / 14));
+    for (let i = astep; i < P.length; i += astep) {
+      const a = P[i - 1], b = P[i];
+      if (a.lat === b.lat && a.lng === b.lng) continue;
+      const brg = bearingDeg(a, b);
+      const arrow = L.marker([b.lat, b.lng], { interactive: false, zIndexOffset: 300, icon: L.divIcon({
+        className: '', iconSize: [16, 16], iconAnchor: [8, 8],
+        html: '<div style="transform:rotate(' + (brg - 90) + 'deg);color:#1D4ED8;font-size:15px;line-height:16px;text-align:center">➤</div>',
+      }) }).addTo(lm);
+      out.layers.push(arrow);
+    }
   }
   const badge = (p, txt, color) => L.marker([p.lat, p.lng], { zIndexOffset: 500, icon: L.divIcon({
     className: '', iconSize: [22, 22], iconAnchor: [11, 11],
@@ -861,6 +917,7 @@ function CasesView({ user }) {
 /* ============================== Live Map (admin) ============================== */
 function LiveMap({ config }) {
   const mapEl = useRef(null); const map = useRef(null); const markers = useRef({});
+  const liveTrails = useRef({}); const lastPos = useRef({}); const didFit = useRef(false);
   const routeLine = useRef(null); const routeMarks = useRef([]); const routeActive = useRef(false); const routeObj = useRef(null);
   const [status, setStatus] = useState('loading'); const [officers, setOfficers] = useState([]);
   const [histOfficer, setHistOfficer] = useState(null); const [dates, setDates] = useState(null);
@@ -876,20 +933,48 @@ function LiveMap({ config }) {
       const list = await api('/api/tracking/live?minutes=1440');
       list.sort((a, b) => (isOnline(b.last_seen) - isOnline(a.last_seen)) || String(a.name || '').localeCompare(b.name || ''));
       setOfficers(list);
-      if (map.current && window.google) {
-        const g = window.google; const bounds = new g.maps.LatLngBounds();
-        Object.values(markers.current).forEach(m => m.setMap(null)); markers.current = {};
-        list.filter(o => !branchRef.current || o.branch === branchRef.current).forEach(o => {
+      if (map.current && window.google && window.L) {
+        const g = window.google; const L = window.L; const rawMap = map.current._map;
+        const bounds = new g.maps.LatLngBounds();
+        const shown = list.filter(o => !branchRef.current || o.branch === branchRef.current);
+        const seen = {};
+        shown.forEach(o => {
+          seen[o.officer_id] = true;
           const pos = { lat: o.latitude, lng: o.longitude };
           const on = isOnline(o.last_seen);
-          markers.current[o.officer_id] = new g.maps.Marker({
-            position: pos, map: map.current, title: o.name + (on ? ' · live' : ' · offline ' + agoLabel(o.last_seen)),
-            label: { text: initials(o.name), color: '#fff', fontWeight: '700' },
-            icon: { path: g.maps.SymbolPath.CIRCLE, scale: 15, fillColor: on ? '#16A34A' : '#8494A8', fillOpacity: 1, strokeColor: on ? '#0f6e2f' : '#5b6b7f', strokeWeight: 2 },
-          });
+          const prev = lastPos.current[o.officer_id];
+          const heading = (prev && (prev.lat !== pos.lat || prev.lng !== pos.lng)) ? bearingDeg(prev, pos) : (prev ? prev.hd : 0);
+          const title = o.name + (on ? ' · live' : ' · offline ' + agoLabel(o.last_seen));
+          let gm = markers.current[o.officer_id];
+          if (!gm) {
+            // first sighting — drop the pin where they are
+            gm = markers.current[o.officer_id] = new g.maps.Marker({ position: pos, map: map.current, title });
+            gm._m.setIcon(fosDivIcon(initials(o.name), heading));
+            gm._m.setLatLng([pos.lat, pos.lng]);
+          } else {
+            gm._m.options.title = title; try { gm._m.setIcon(fosDivIcon(initials(o.name), heading)); } catch (e) {}
+            if (on) animateMarker(gm._m, pos.lat, pos.lng, 900);   // glide to the new fix, Swiggy-style
+            else gm._m.setLatLng([pos.lat, pos.lng]);
+          }
+          gm._m.setZIndexOffset(on ? 500 : 100);
+          // extend a live trail only while online and actually moving
+          if (on && prev && (prev.lat !== pos.lat || prev.lng !== pos.lng)) {
+            let tr = liveTrails.current[o.officer_id];
+            if (!tr) { tr = liveTrails.current[o.officer_id] = L.polyline([[prev.lat, prev.lng]], { color: '#2563EB', weight: 3, opacity: .55, dashArray: '1 6', lineCap: 'round' }).addTo(rawMap); }
+            tr.addLatLng([pos.lat, pos.lng]);
+          }
+          lastPos.current[o.officer_id] = { lat: pos.lat, lng: pos.lng, hd: heading };
           bounds.extend(pos);
         });
-        if (list.length && !routeActive.current) map.current.fitBounds(bounds, 80);
+        // drop markers/trails for officers no longer in the feed
+        Object.keys(markers.current).forEach(id => {
+          if (!seen[id]) {
+            try { markers.current[id].setMap(null); } catch (e) {}
+            delete markers.current[id];
+            if (liveTrails.current[id]) { try { liveTrails.current[id].remove(); } catch (e) {} delete liveTrails.current[id]; }
+          }
+        });
+        if (shown.length && !routeActive.current && !didFit.current) { map.current.fitBounds(bounds, 80); didFit.current = true; }
       }
     } catch (e) { /* ignore transient */ }
   }, []);
@@ -909,7 +994,7 @@ function LiveMap({ config }) {
   // re-render every second so the ● Live/Offline dots, the "X live · Y offline" count and the
   // "seen … ago" text stay accurate on their own, without waiting for the next fetch or a manual refresh
   useEffect(() => { const t = setInterval(() => setTick(x => (x + 1) % 100000), 1000); return () => clearInterval(t); }, []);
-  useEffect(() => { branchRef.current = branch; refresh(); }, [branch]);
+  useEffect(() => { branchRef.current = branch; didFit.current = false; refresh(); }, [branch]);
 
   const navigateTo = (o) => window.open(`https://www.google.com/maps/dir/?api=1&destination=${o.latitude},${o.longitude}`, '_blank');
 
@@ -1723,14 +1808,14 @@ function groupCases(cases) {
       pending: buckets.reduce((s, bk) => s + bk.pending, 0) };
   });
 }
-function CaseCard({ c, onVisit, onNav }) {
+function CaseCard({ c, onVisit, onNav, onDetails }) {
   const p = casePriority(c);
   const st = caseState(c);
   const tag = st === 'paid' ? { t: 'PAID', c: 'paid' } : st === 'touched' ? { t: c.visited_today ? 'VISITED TODAY' : 'DONE TODAY', c: 'partial' } : null;
   return (
     <div className="glass card" style={STATE_STYLE[st]}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
-        <b>{c.customer_name}</b>
+        <b style={onDetails ? { cursor: 'pointer', color: 'var(--gold)' } : null} title={onDetails ? 'View case details' : ''} onClick={onDetails}>{c.customer_name}</b>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {tag && <span className={cx('badge', tag.c)}>{tag.t}</span>}
           <span className={cx('badge', p.cls)}>{p.label}</span><PropBadge score={c.propensity} /></div></div>
@@ -1739,6 +1824,7 @@ function CaseCard({ c, onVisit, onNav }) {
       <div className="stat-row"><span className="k">Pending</span><b className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</b></div>
       <div className="toolbar" style={{ margin: '10px 0 0' }}>
         <button className="btn sm gold" style={{ flex: 1 }} onClick={onVisit}>Log visit</button>
+        {onDetails && <button className="btn sm" onClick={onDetails}>Details</button>}
         <button className="btn sm" onClick={onNav}>🧭 Navigate</button>
         <ContactBtns phone={c.phone} />
       </div>
@@ -1749,6 +1835,7 @@ function CaseCard({ c, onVisit, onNav }) {
 function FOLiveMap({ config }) {
   const mapEl = useRef(null); const map = useRef(null); const me = useRef(null); const acc = useRef(null);
   const route = useRef(null); const caseMarks = useRef([]); const watch = useRef(null);
+  const myTrail = useRef(null); const lastMe = useRef(null);
   const [nokey, setNokey] = useState(false); const [stats, setStats] = useState(null); const [count, setCount] = useState(0);
   const loadRoute = () => api('/api/tracking/me/today').then(d => {
     setStats(d);
@@ -1782,10 +1869,22 @@ function FOLiveMap({ config }) {
       if (navigator.geolocation) {
         watch.current = navigator.geolocation.watchPosition(pos => {
           const p = { lat: pos.coords.latitude, lng: pos.coords.longitude }; const r = pos.coords.accuracy || 30;
-          if (me.current) me.current.setPosition(p);
-          else { me.current = new g.maps.Marker({ position: p, map: map.current, zIndex: 999, title: 'You',
-            icon: { path: g.maps.SymbolPath.CIRCLE, scale: 8, fillColor: '#6BB6F0', fillOpacity: 1, strokeColor: '#ffffff', strokeWeight: 2 } });
-            map.current.setCenter(p); map.current.setZoom(15); }
+          const prev = lastMe.current; const moved = prev && (prev.lat !== p.lat || prev.lng !== p.lng);
+          const heading = moved ? bearingDeg(prev, p) : (prev ? prev.hd : 0);
+          if (me.current) {
+            try { me.current._m.setIcon(fosDivIcon('You', heading)); } catch (e) {}
+            if (moved) animateMarker(me.current._m, p.lat, p.lng, 900); else me.current._m.setLatLng([p.lat, p.lng]);
+          } else {
+            me.current = new g.maps.Marker({ position: p, map: map.current, zIndex: 999, title: 'You' });
+            try { me.current._m.setIcon(fosDivIcon('You', heading)); me.current._m.setZIndexOffset(900); } catch (e) {}
+            map.current.setCenter(p); map.current.setZoom(15);
+          }
+          // grow a live breadcrumb trail as I move
+          if (window.L && map.current._map) {
+            if (!myTrail.current) myTrail.current = window.L.polyline([[p.lat, p.lng]], { color: '#6BB6F0', weight: 4, opacity: .85, lineCap: 'round' }).addTo(map.current._map);
+            else if (moved) myTrail.current.addLatLng([p.lat, p.lng]);
+          }
+          lastMe.current = { lat: p.lat, lng: p.lng, hd: heading };
           if (acc.current) { acc.current.setCenter(p); acc.current.setRadius(r); }
           else acc.current = new g.maps.Circle({ center: p, radius: r, map: map.current, fillColor: '#6BB6F0', fillOpacity: .12, strokeColor: '#6BB6F0', strokeOpacity: .4, strokeWeight: 1 });
         }, () => {}, { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 });
@@ -1793,7 +1892,7 @@ function FOLiveMap({ config }) {
     }).catch(() => setNokey(true));
     return () => { if (routeTimer) clearInterval(routeTimer); if (watch.current != null && navigator.geolocation) navigator.geolocation.clearWatch(watch.current); };
   }, []);
-  const recenter = () => { if (me.current && map.current) { map.current.panTo(me.current.getPosition()); map.current.setZoom(15); } };
+  const recenter = () => { if (me.current && map.current) { const ll = me.current._m.getLatLng(); map.current.panTo({ lat: ll.lat, lng: ll.lng }); map.current.setZoom(15); } };
   return (
     <div>
       <div className="toolbar">
@@ -1811,7 +1910,7 @@ function FOLiveMap({ config }) {
 }
 
 function FOCases({ config }) {
-  const [cases, setCases] = useState(null); const [view, setView] = useState('list'); const [active, setActive] = useState(null);
+  const [cases, setCases] = useState(null); const [view, setView] = useState('list'); const [active, setActive] = useState(null); const [detail, setDetail] = useState(null);
   const [collapsed, setCollapsed] = useState({}); const [bucketFilter, setBucketFilter] = useState('');
   const mapEl = useRef(null); const map = useRef(null);
   const load = () => api('/api/cases').then(setCases);
@@ -1874,12 +1973,13 @@ function FOCases({ config }) {
                   <span className="muted" style={{ fontSize: 12.5 }}>{bk.cases.length} cases · {INR(bk.pending)} pending</span>
                 </div>
                 <div className="grid3">
-                  {bk.cases.map(c => <CaseCard key={c.id} c={c} onVisit={() => setActive(c)} onNav={() => openNav(c)} />)}
+                  {bk.cases.map(c => <CaseCard key={c.id} c={c} onVisit={() => setActive(c)} onNav={() => openNav(c)} onDetails={() => setDetail(c)} />)}
                 </div>
               </div>)}
             </div>)}
           </div>}
       {active && <VisitModal c={active} onClose={() => setActive(null)} onDone={() => { setActive(null); load(); }} />}
+      {detail && <CaseDrawer c={detail} onClose={() => setDetail(null)} onChanged={load} />}
     </div>
   );
 }
@@ -2072,10 +2172,20 @@ function CaseDrawer({ c, onClose, onChanged }) {
         <div className="dl">
           {row('Phone', cur.phone)}{row('Alt phone', cur.alt_phone)}
           {row('Address', cur.address)}{row('Pincode', cur.pincode)}
-          {row('Bank / Product', (cur.bank || '') + (cur.product ? ' · ' + cur.product : ''))}
+          {row('Bank / Product', (cur.bank || '') + (cur.product ? ' · ' + cur.product : '') + (cur.segment ? ' · ' + cur.segment : ''))}
           {row('Card no', cur.card_no)}
           {row('Bucket / Cycle', (cur.bucket || '—') + ' · cyc ' + (cur.cycle || '—'))}
           {row('Month', cur.month)}
+          {row('Branch / Area', (cur.branch || '—') + (cur.team ? ' · ' + cur.team : ''))}
+          {row('Team lead', cur.team_lead)}{row('Category', cur.cat)}
+          {row('Caller', cur.caller_name)}{row('Field agent (FOS)', cur.fos_name)}
+          {/* recovery figures */}
+          {row('ENR', Number(cur.enr) ? INR(cur.enr) : null)}
+          {row('Outstanding (TOS)', Number(cur.total_outstanding) ? INR(cur.total_outstanding) : null)}
+          {row('Principal (POS)', Number(cur.principal_outstanding) ? INR(cur.principal_outstanding) : null)}
+          {(Number(cur.norm_amount) || Number(cur.stab_amount) || cur.norm_stab) && row('NORM / STAB',
+            `${Number(cur.norm_amount) ? 'NORM ' + INR(cur.norm_amount) : ''}${Number(cur.stab_amount) ? '  ·  STAB ' + INR(cur.stab_amount) : ''}${cur.norm_stab ? '  ·  paid: ' + cur.norm_stab : ''}`.trim() || '—')}
+          {row('Cash collected', Number(cur.received_amount) ? INR(cur.received_amount) : null)}
           {row('Last disposition', cur.disposition)}
           {row('Last contacted', cur.last_contacted_at ? new Date(cur.last_contacted_at).toLocaleString() : null)}
           {row('Next follow-up', cur.follow_up_date)}

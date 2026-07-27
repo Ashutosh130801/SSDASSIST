@@ -11,10 +11,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import `in`.recoveriq.app.data.Case
+import `in`.recoveriq.app.data.OfficerLocation
 import `in`.recoveriq.app.data.User
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.common.AsyncContent
@@ -84,12 +92,19 @@ private fun CaseLine(c: Case) {
 
 @Composable
 fun LiveMapScreen(vm: AuthViewModel) {
+    val scope = rememberCoroutineScope()
+    var officers by remember { mutableStateOf<List<OfficerLocation>>(emptyList()) }
+    // Live refresh every few seconds so agent pins move on their own.
+    LaunchedEffect(Unit) {
+        while (true) {
+            officers = runCatching { vm.repo.liveOfficers() }.getOrNull() ?: officers
+            delay(4000)
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         SectionTitle("Field agents — live", Modifier.padding(start = 16.dp, top = 12.dp))
-        AsyncContent(block = { vm.repo.liveOfficers() }) { officers, reload ->
-            Box(Modifier.fillMaxSize()) {
-                OsmLiveMap(officers = officers, modifier = Modifier.fillMaxSize())
-            }
+        Box(Modifier.fillMaxSize()) {
+            OsmLiveMap(officers = officers, scope = scope, modifier = Modifier.fillMaxSize())
         }
     }
 }

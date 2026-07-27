@@ -25,14 +25,16 @@ REM --- local SQLite DB + dev secret (no Postgres needed) ---
 set DATABASE_URL=sqlite:///./ssd_local.db
 set SECRET_KEY=local-dev-secret-change-me
 
-echo [3/4] Seeding demo staff (admin / field officers / telecallers)...
-python -m app.seed
+echo [3/4] (Skipping demo seed - run seed_test.bat once to load the ICICI FR test data)
+REM  Demo auto-seed disabled so it doesn't clobber your test data. To load test
+REM  data (5 branches, FOS/callers, 993 cases) run seed_test.bat once, then this.
 
 echo [4/4] Starting server...
 echo.
 echo   =====================================================
 echo     Open in your browser:   http://localhost:8000
-echo     Login: admin@ssdrecovery.in  /  admin123
+echo     Login (after seed_test.bat): admin@ssd.local  /  Test@1234
+echo     Full staff list: TEST_LOGINS.md
 echo     (Press CTRL+C here to stop the server)
 echo   =====================================================
 echo.

@@ -7,7 +7,7 @@ manager. Also serves per-staff performance windows (daily / weekly / monthly / o
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -44,11 +44,22 @@ def branches(db: Session = Depends(get_db), user: models.User = Depends(require_
             d[u.role] += 1
             d["staff"] += 1
 
+    paid_enr_col = func.coalesce(func.sum(case((models.Case.paid_status == "PAID", models.Case.enr), else_=0)), 0)
     rows = (db.query(models.Case.branch, func.count(models.Case.id),
-                     func.coalesce(func.sum(models.Case.received_amount), 0),
+                     func.coalesce(func.sum(models.Case.enr), 0),          # total ENR (CC/PL-BL base)
+                     paid_enr_col,                                          # recovered ENR
+                     func.coalesce(func.sum(models.Case.received_amount), 0),   # cash collected
+                     func.coalesce(func.sum(models.Case.funding_amount), 0),
                      func.coalesce(func.sum(models.Case.pending_amount), 0))
             .group_by(models.Case.branch).all())
-    cstat = {(b or "Unassigned"): (c, _d(r), _d(p)) for b, c, r, p in rows}
+    cstat = {}
+    for b, cnt, tenr, penr, cash, fund, pend in rows:
+        tenr, penr = _d(tenr), _d(penr)
+        if tenr > 0:                       # ENR-based (matches MIS/dashboard) — pending never goes negative
+            recovered, pending = penr, round(tenr - penr, 2)
+        else:                               # funding-based fallback for older loads
+            recovered, pending = _d(cash), _d(pend)
+        cstat[b or "Unassigned"] = (cnt, recovered, pending)
 
     out = []
     for b, d in cards.items():

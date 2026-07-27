@@ -274,6 +274,7 @@ def get_case(case_id: int, db: Session = Depends(get_db), user: models.User = De
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     case.propensity = propensity(case)
+    _mark_today(db, [case])            # set visited_today / contacted_today (never null)
     return case
 
 
