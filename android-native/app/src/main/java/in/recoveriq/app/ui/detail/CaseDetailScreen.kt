@@ -95,6 +95,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                 CaseHeader(case)
                 ActionBar(
                     case = case,
+                    meId = user.id,
                     canPay = true,
                     canLogCall = user.isTelecaller || user.isAdmin || user.isManager,
                     canLogVisit = user.isFieldAgent,
@@ -212,7 +213,7 @@ private fun Amount(label: String, value: Double, color: androidx.compose.ui.grap
 
 @Composable
 private fun ActionBar(
-    case: Case, canPay: Boolean, canLogCall: Boolean, canLogVisit: Boolean,
+    case: Case, meId: Int, canPay: Boolean, canLogCall: Boolean, canLogVisit: Boolean,
     onPay: () -> Unit, onLogCall: () -> Unit, onLogVisit: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -221,6 +222,16 @@ private fun ActionBar(
         ActionBtn("WhatsApp", Icons.Filled.Chat, Modifier.weight(1f)) { Actions.whatsapp(context, case.phone) }
         ActionBtn("Navigate", Icons.Filled.Navigation, Modifier.weight(1f)) {
             Actions.navigate(context, case.latitude, case.longitude, case.customerName)
+        }
+    }
+    // Contact the case's assigned field agent / caller (team lead & callers use this).
+    val showFos = !case.assignedFosPhone.isNullOrBlank() && case.assignedFosId != meId
+    val showCaller = !case.assignedCallerPhone.isNullOrBlank() && case.assignedCallerId != meId
+    if (showFos || showCaller) {
+        Spacer(Modifier.height(4.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (showFos) ActionBtn("Call FOS", Icons.Filled.Call, Modifier.weight(1f)) { Actions.dial(context, case.assignedFosPhone) }
+            if (showCaller) ActionBtn("Call caller", Icons.Filled.Call, Modifier.weight(1f)) { Actions.dial(context, case.assignedCallerPhone) }
         }
     }
     Spacer(Modifier.height(4.dp))

@@ -41,15 +41,54 @@ data class User(
     val isTelecaller get() = role == "telecaller"
     val isManager get() = role == "manager"
     val isAdmin get() = role == "admin"
+    val isTeamLead get() = role == "teamlead"
     val roleLabel: String
         get() = when (role) {
             "admin" -> "Administrator"
             "manager" -> "Collections Manager"
+            "teamlead" -> "Team Lead"
             "fos" -> "Field Agent"
             "telecaller" -> "Tele-calling Agent"
             else -> role.replaceFirstChar { it.uppercase() }
         }
 }
+
+// ---- Team-lead dashboard ----
+@JsonClass(generateAdapter = true)
+data class TeamLeadInfo(val id: Int = 0, val name: String = "", val branch: String? = null)
+
+@JsonClass(generateAdapter = true)
+data class TeamKpis(
+    val members: Int = 0, val fos: Int = 0, val callers: Int = 0,
+    val cases: Int = 0, val resolved: Int = 0,
+    @Json(name = "total_enr") val totalEnr: Double = 0.0,
+    val recovered: Double = 0.0, val pending: Double = 0.0,
+    @Json(name = "recovery_pct") val recoveryPct: Double = 0.0,
+)
+
+@JsonClass(generateAdapter = true)
+data class MemberToday(
+    val label: String? = null, val count: Int = 0, val ptp: Int? = null, val collected: Double = 0.0,
+)
+
+@JsonClass(generateAdapter = true)
+data class TeamMemberCard(
+    val id: Int = 0, val name: String = "", val role: String = "",
+    @Json(name = "emp_code") val empCode: String? = null,
+    val phone: String? = null, val email: String? = null,
+    val assigned: Int = 0, val resolved: Int = 0,
+    val recovered: Double = 0.0, val pending: Double = 0.0,
+    @Json(name = "recovery_pct") val recoveryPct: Double = 0.0,
+    val today: MemberToday? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class TeamOverview(
+    val lead: TeamLeadInfo? = null,
+    val members: List<TeamMemberCard> = emptyList(),
+    val kpis: TeamKpis = TeamKpis(),
+    val leaderboard: List<TeamMemberCard> = emptyList(),
+)
 
 @JsonClass(generateAdapter = true)
 data class PingCreate(
@@ -132,6 +171,10 @@ data class Case(
     val cat: String? = null,
     @Json(name = "assigned_fos_id") val assignedFosId: Int? = null,
     @Json(name = "assigned_caller_id") val assignedCallerId: Int? = null,
+    @Json(name = "assigned_fos_name") val assignedFosName: String? = null,
+    @Json(name = "assigned_fos_phone") val assignedFosPhone: String? = null,
+    @Json(name = "assigned_caller_name") val assignedCallerName: String? = null,
+    @Json(name = "assigned_caller_phone") val assignedCallerPhone: String? = null,
     @Json(name = "follow_up_date") val followUpDate: String? = null,
     @Json(name = "last_contacted_at") val lastContactedAt: String? = null,
     val visited: Boolean? = false,

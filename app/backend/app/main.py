@@ -57,6 +57,7 @@ def _ensure_columns():
             "sheet_prefs": "JSON",
             "assigned_products": "JSON",
             "emp_code": "VARCHAR(20)",
+            "team_lead_id": "INTEGER",
         },
         "visits": {
             "distance_from_case_m": "FLOAT",

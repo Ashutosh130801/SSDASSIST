@@ -12,6 +12,7 @@ class UserBase(BaseModel):
     phone: Optional[str] = None
     role: str = "telecaller"
     branch: Optional[str] = None
+    team_lead_id: Optional[int] = None    # the team lead this FOS/caller reports to
     # Tolerate NULL from older rows (columns added via ALTER TABLE default to NULL, not []).
     banks: Optional[List[str]] = []
     assigned_products: Optional[List[str]] = []
@@ -34,6 +35,7 @@ class UserUpdate(BaseModel):
     phone: Optional[str] = None
     role: Optional[str] = None
     branch: Optional[str] = None
+    team_lead_id: Optional[int] = None
     banks: Optional[List[str]] = None
     assigned_products: Optional[List[str]] = None
     assigned_pincodes: Optional[List[str]] = None
@@ -52,6 +54,7 @@ class UserOut(UserBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
     emp_code: Optional[str] = None
+    team_lead_name: Optional[str] = None    # resolved name of the team lead (display only)
     is_active: bool
     created_at: datetime
 
@@ -248,6 +251,11 @@ class CaseOut(CaseBase):
     final_status: Optional[str]
     assigned_fos_id: Optional[int]
     assigned_caller_id: Optional[int]
+    # resolved assignee contact (for Call FOS / Call Caller buttons)
+    assigned_fos_name: Optional[str] = None
+    assigned_fos_phone: Optional[str] = None
+    assigned_caller_name: Optional[str] = None
+    assigned_caller_phone: Optional[str] = None
     allocation_reason: Optional[str]
     last_contacted_at: Optional[datetime] = None
     follow_up_date: Optional[date] = None

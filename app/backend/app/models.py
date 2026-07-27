@@ -26,6 +26,7 @@ class User(Base):
     role = Column(String(20), nullable=False, default="telecaller")
     emp_code = Column(String(20), unique=True, index=True, nullable=True)  # e.g. TC001 — caller ID used in upload sheets
     branch = Column(String(80))                 # e.g. Vizag, Hyderabad
+    team_lead_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)  # FOS/caller → their team lead
     banks = Column(JSON, default=list)          # ["ICICI","RBL","AXIS"]
     assigned_products = Column(JSON, default=list)  # ["PL X BKT","BL X BKT","DR"] — FOS product coverage
     assigned_pincodes = Column(JSON, default=list)  # ["530001","530016"]

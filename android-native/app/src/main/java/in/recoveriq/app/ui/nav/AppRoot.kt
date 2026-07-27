@@ -81,6 +81,7 @@ import `in`.recoveriq.app.ui.screens.LeaveScreen
 import `in`.recoveriq.app.ui.screens.LitigationScreen
 import `in`.recoveriq.app.ui.screens.SecurityScreen
 import `in`.recoveriq.app.ui.screens.TeamScreen
+import `in`.recoveriq.app.ui.teamlead.TeamLeadDashboardScreen
 import kotlinx.coroutines.launch
 
 data class NavEntry(val key: String, val label: String, val icon: ImageVector, val screen: @Composable () -> Unit)
@@ -272,6 +273,12 @@ private fun navEntriesFor(
         "telecaller" -> listOf(
             dashboard,
             NavEntry("queue", "Calling", Icons.Filled.Phone) { CallQueueScreen(vm, onOpenCase) },
+            NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
+            leave, security,
+        )
+        "teamlead" -> listOf(
+            NavEntry("tldash", "My Team", Icons.Filled.Groups) { TeamLeadDashboardScreen(vm, onOpenCase) },
+            NavEntry("cases", "Team Accounts", Icons.Filled.Receipt) { CasesScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
             leave, security,
         )

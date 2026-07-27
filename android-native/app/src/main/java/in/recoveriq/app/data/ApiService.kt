@@ -129,9 +129,16 @@ interface ApiService {
     @GET("api/legal/insights")
     suspend fun legalInsights(): LegalInsights
 
+    // --- Team lead ---
+    @GET("api/team/overview")
+    suspend fun teamOverview(): TeamOverview
+
+    @GET("api/team/my-team")
+    suspend fun myTeam(): List<TeamMemberCard>
+
     // --- Team / users ---
     @GET("api/users")
-    suspend fun users(): List<User>
+    suspend fun users(@Query("role") role: String? = null): List<User>
 
     @POST("api/users")
     suspend fun createUser(@Body body: UserCreate): User

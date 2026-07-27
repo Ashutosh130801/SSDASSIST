@@ -78,13 +78,32 @@ def _branch_user_ids(user: models.User):
     return select(models.User.id).where(models.User.branch == user.branch)
 
 
+def _team_member_ids(user: models.User):
+    """User ids of every FOS/caller reporting to this team lead."""
+    return select(models.User.id).where(models.User.team_lead_id == user.id)
+
+
+def _scope_user_ids(db, user: models.User):
+    """Concrete list of staff ids a manager/team-lead may act on."""
+    if user.role == "teamlead":
+        return [uid for (uid,) in db.query(models.User.id).filter(models.User.team_lead_id == user.id).all()]
+    if user.role == "manager":
+        return [uid for (uid,) in db.query(models.User.id).filter(models.User.branch == user.branch).all()]
+    return []
+
+
 def _scope(q, user: models.User):
     """Restrict rows by role — FO sees own field cases, telecaller sees own queue,
-    branch manager sees cases handled by staff in their branch."""
+    branch manager sees cases handled by staff in their branch, team lead sees cases
+    handled by the FOS/callers who report to them."""
     if user.role == "fos":
         return q.filter(models.Case.assigned_fos_id == user.id)
     if user.role == "telecaller":
         return q.filter(models.Case.assigned_caller_id == user.id)
+    if user.role == "teamlead":
+        mids = _team_member_ids(user)
+        return q.filter(or_(models.Case.assigned_fos_id.in_(mids),
+                            models.Case.assigned_caller_id.in_(mids)))
     if user.role == "manager":
         ids = _branch_user_ids(user)
         # A case belongs to a branch if it's tagged with that branch OR handled by its staff.
@@ -141,6 +160,27 @@ def _mark_today(db, cases):
         if lc and lc.tzinfo is None:
             lc = lc.replace(tzinfo=timezone.utc)
         c.contacted_today = bool(lc and lc.astimezone(_IST).date() == today)
+    _attach_assignees(db, cases)
+    return cases
+
+
+def _attach_assignees(db, cases):
+    """Resolve the assigned FOS/caller's name + phone onto each case so the UI can
+    show 'Call FOS' / 'Call Caller' buttons."""
+    ids = {c.assigned_fos_id for c in cases if c.assigned_fos_id} \
+        | {c.assigned_caller_id for c in cases if c.assigned_caller_id}
+    umap = {}
+    if ids:
+        for uid, name, phone in db.query(
+                models.User.id, models.User.name, models.User.phone).filter(models.User.id.in_(ids)).all():
+            umap[uid] = (name, phone)
+    for c in cases:
+        f = umap.get(c.assigned_fos_id)
+        cc = umap.get(c.assigned_caller_id)
+        c.assigned_fos_name = f[0] if f else None
+        c.assigned_fos_phone = f[1] if f else None
+        c.assigned_caller_name = cc[0] if cc else None
+        c.assigned_caller_phone = cc[1] if cc else None
     return cases
 
 
@@ -187,23 +227,28 @@ class EscalateIn(BaseModel):
 def _manager_owns(db, actor, case):
     if actor.role == "manager" and case.branch != actor.branch:
         raise HTTPException(status_code=403, detail="Not in your branch")
+    if actor.role == "teamlead":
+        mids = set(_scope_user_ids(db, actor))
+        if case.assigned_fos_id not in mids and case.assigned_caller_id not in mids \
+                and case.escalated_to != actor.id:
+            raise HTTPException(status_code=403, detail="Not one of your team's cases")
 
 
 @router.get("/escalated", response_model=list[schemas.CaseOut])
 def escalated_cases(mine: bool = False, db: Session = Depends(get_db),
-                    actor: models.User = Depends(require_roles("admin", "manager", "backend", "headoffice"))):
+                    actor: models.User = Depends(require_roles("admin", "manager", "backend", "headoffice", "teamlead"))):
     """Cases pulled off the field/calling staff. `mine=true` limits to ones escalated to me."""
     q = db.query(models.Case).filter(models.Case.escalated.is_(True))
     if actor.role == "manager":
         q = q.filter(models.Case.branch == actor.branch)
-    if mine:
+    if actor.role == "teamlead" or mine:
         q = q.filter(models.Case.escalated_to == actor.id)
     return _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).all()))
 
 
 @router.post("/{case_id}/escalate")
 def escalate_case(case_id: int, body: EscalateIn = EscalateIn(), db: Session = Depends(get_db),
-                  actor: models.User = Depends(require_roles("admin", "manager", "backend"))):
+                  actor: models.User = Depends(require_roles("admin", "manager", "backend", "teamlead"))):
     """Take a hard/high-value case away from its FOS & caller and own it personally.
     It leaves their queues and individual performance, but stays in MIS & feedback
     (which key off the case's own fos_name/caller/product, not the live assignment)."""
@@ -213,8 +258,8 @@ def escalate_case(case_id: int, body: EscalateIn = EscalateIn(), db: Session = D
     _manager_owns(db, actor, case)
     owner_id = body.to_user_id or actor.id
     owner = db.query(models.User).filter(models.User.id == owner_id).first()
-    if not owner or owner.role not in ("admin", "manager", "backend", "headoffice"):
-        raise HTTPException(status_code=400, detail="Escalation owner must be admin, manager, back-office or head office")
+    if not owner or owner.role not in ("admin", "manager", "backend", "headoffice", "teamlead"):
+        raise HTTPException(status_code=400, detail="Escalation owner must be admin, manager, back-office, head office or team lead")
     case.escalated = True
     case.escalated_to = owner_id
     case.escalated_by = actor.id
@@ -231,7 +276,7 @@ def escalate_case(case_id: int, body: EscalateIn = EscalateIn(), db: Session = D
 
 @router.post("/{case_id}/deescalate")
 def deescalate_case(case_id: int, db: Session = Depends(get_db),
-                    actor: models.User = Depends(require_roles("admin", "manager", "backend", "headoffice"))):
+                    actor: models.User = Depends(require_roles("admin", "manager", "backend", "headoffice", "teamlead"))):
     """Release an escalated case back to the pool (admin can re-run allocation to reassign)."""
     case = db.query(models.Case).filter(models.Case.id == case_id).first()
     if not case:
@@ -295,8 +340,14 @@ def update_case(case_id: int, body: schemas.CaseUpdate, db: Session = Depends(ge
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     data = body.model_dump(exclude_unset=True)
-    # only admin may reassign
-    if user.role != "admin":
+    # admin reassigns freely; manager/team-lead may reassign only within their own people.
+    if user.role in ("admin", "manager", "teamlead"):
+        if user.role in ("manager", "teamlead"):
+            allowed = set(_scope_user_ids(db, user))
+            for key in ("assigned_fos_id", "assigned_caller_id"):
+                if key in data and data[key] is not None and data[key] not in allowed:
+                    raise HTTPException(status_code=403, detail="Can only reassign to your own team")
+    else:
         data.pop("assigned_fos_id", None)
         data.pop("assigned_caller_id", None)
     for k, v in data.items():

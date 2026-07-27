@@ -7,7 +7,7 @@ manager. Also serves per-staff performance windows (daily / weekly / monthly / o
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from sqlalchemy import func, case
+from sqlalchemy import func, case, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -23,6 +23,25 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 def _d(x) -> float:
     return float(x or 0)
+
+
+def _guard_view(actor: models.User, u: models.User):
+    """Who may open a staff member's profile/performance: the person themselves,
+    admin & head office (everyone), a branch manager (their branch), and a team lead
+    (only their own members)."""
+    if actor.id == u.id:
+        return
+    if actor.role in ("admin", "headoffice"):
+        return
+    if actor.role == "manager":
+        if u.branch != actor.branch:
+            raise HTTPException(status_code=403, detail="Not in your branch")
+        return
+    if actor.role == "teamlead":
+        if u.team_lead_id != actor.id:
+            raise HTTPException(status_code=403, detail="Not one of your team members")
+        return
+    raise HTTPException(status_code=403, detail="Not allowed")
 
 
 @router.get("/branches")
@@ -157,10 +176,7 @@ def performance(uid: int, db: Session = Depends(get_db),
     u = db.query(models.User).filter(models.User.id == uid).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
-    if actor.role == "manager" and u.branch != actor.branch:
-        raise HTTPException(status_code=403, detail="Not in your branch")
-    if actor.role in ("fos", "telecaller", "backend") and actor.id != u.id:
-        raise HTTPException(status_code=403, detail="Not allowed")
+    _guard_view(actor, u)
 
     now = datetime.now(timezone.utc)
     today = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
@@ -181,10 +197,7 @@ def employee_dashboard(uid: int, db: Session = Depends(get_db),
     u = db.query(models.User).filter(models.User.id == uid).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
-    if actor.role == "manager" and u.branch != actor.branch:
-        raise HTTPException(status_code=403, detail="Not in your branch")
-    if actor.role in ("fos", "telecaller", "backend") and actor.id != u.id:
-        raise HTTPException(status_code=403, detail="Not allowed")
+    _guard_view(actor, u)
 
     from sqlalchemy import select
     esc = select(models.Case.id).where(models.Case.escalated.is_(True))    # escalated → not their perf
@@ -276,11 +289,94 @@ def employee_cases(uid: int, db: Session = Depends(get_db),
     u = db.query(models.User).filter(models.User.id == uid).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
-    if actor.role == "manager" and u.branch != actor.branch:
-        raise HTTPException(status_code=403, detail="Not in your branch")
-    if actor.role in ("fos", "telecaller", "backend") and actor.id != u.id:
-        raise HTTPException(status_code=403, detail="Not allowed")
+    _guard_view(actor, u)
     q = db.query(models.Case)
     q = q.filter(models.Case.assigned_caller_id == uid) if u.role == "telecaller" \
         else q.filter(models.Case.assigned_fos_id == uid)
     return _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).all()))
+
+
+@router.get("/my-team")
+def my_team(db: Session = Depends(get_db),
+            lead: models.User = Depends(require_roles("teamlead"))):
+    """Roster of the FOS/callers reporting to the current team lead, with quick per-member
+    stats and phone — powers the member cards (with call button) on the TL dashboard."""
+    members = db.query(models.User).filter(models.User.team_lead_id == lead.id,
+                                           models.User.is_active == True).all()  # noqa: E712
+    out = [{"id": m.id, "name": m.name, "role": m.role, "emp_code": m.emp_code,
+            "phone": m.phone, "email": m.email, "branch": m.branch} for m in members]
+    out.sort(key=lambda x: (x["role"], x["name"]))
+    return out
+
+
+@router.get("/overview")
+def team_overview(db: Session = Depends(get_db),
+                  lead: models.User = Depends(require_roles("teamlead"))):
+    """Team-lead dashboard: overall team KPIs, per-member performance cards (with phone
+    for calling), a 30-day team collection trend and a member leaderboard."""
+    members = db.query(models.User).filter(models.User.team_lead_id == lead.id,
+                                           models.User.is_active == True).all()  # noqa: E712
+    member_ids = [m.id for m in members]
+
+    cases = []
+    if member_ids:
+        cases = db.query(models.Case).filter(
+            models.Case.escalated.isnot(True),
+            or_(models.Case.assigned_fos_id.in_(member_ids),
+                models.Case.assigned_caller_id.in_(member_ids))).all()
+
+    def paid(c):
+        return (c.paid_status or "").upper() == "PAID"
+
+    def pct(a, b):
+        return round(a / b * 100.0, 2) if b else 0.0
+
+    def d_ist(dt):
+        if not dt:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(IST).date()
+
+    today_start = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    cards = []
+    for m in members:
+        is_caller = m.role == "telecaller"
+        mine = [c for c in cases if (c.assigned_caller_id == m.id if is_caller else c.assigned_fos_id == m.id)]
+        tenr = sum(_d(c.enr) for c in mine)
+        rec = sum(_d(c.received_amount) for c in mine)
+        cards.append({
+            "id": m.id, "name": m.name, "role": m.role, "emp_code": m.emp_code,
+            "phone": m.phone, "email": m.email,
+            "assigned": len(mine), "resolved": sum(1 for c in mine if paid(c)),
+            "recovered": round(rec, 2), "pending": round(sum(_d(c.pending_amount) for c in mine), 2),
+            "recovery_pct": pct(rec, tenr), "today": _window(db, m, today_start),
+        })
+
+    total_enr = sum(_d(c.enr) for c in cases)
+    recovered = sum(_d(c.received_amount) for c in cases)
+    kpis = {
+        "members": len(members),
+        "fos": sum(1 for m in members if m.role == "fos"),
+        "callers": sum(1 for m in members if m.role == "telecaller"),
+        "cases": len(cases), "resolved": sum(1 for c in cases if paid(c)),
+        "total_enr": round(total_enr, 2), "recovered": round(recovered, 2),
+        "pending": round(total_enr - recovered, 2) if total_enr else round(sum(_d(c.pending_amount) for c in cases), 2),
+        "recovery_pct": pct(recovered, total_enr),
+    }
+
+    esc = select(models.Case.id).where(models.Case.escalated.is_(True))
+    calls = db.query(models.CallLog).filter(models.CallLog.caller_id.in_(member_ids),
+                                            ~models.CallLog.case_id.in_(esc)).all() if member_ids else []
+    visits = db.query(models.Visit).filter(models.Visit.officer_id.in_(member_ids),
+                                           ~models.Visit.case_id.in_(esc)).all() if member_ids else []
+    pay = [(d_ist(cl.created_at), _d(cl.ptp_amount)) for cl in calls if (cl.disposition or "") == "PAYMENT"]
+    pay += [(d_ist(v.created_at), _d(v.amount_collected)) for v in visits if _d(v.amount_collected) > 0]
+    today_d = datetime.now(IST).date()
+    trend = [{"date": (today_d - timedelta(days=i)).isoformat(),
+              "collected": round(sum(a for d, a in pay if d == today_d - timedelta(days=i)), 2)}
+             for i in range(29, -1, -1)]
+
+    return {"lead": {"id": lead.id, "name": lead.name, "branch": lead.branch},
+            "members": cards, "kpis": kpis, "trend": trend,
+            "leaderboard": sorted(cards, key=lambda x: x["recovered"], reverse=True)}

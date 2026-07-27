@@ -97,6 +97,9 @@ class Repository(context: Context) {
 
     // --- Team ---
     suspend fun users(): List<User> = Api.service.users()
+    suspend fun usersByRole(role: String): List<User> = Api.service.users(role)
+    suspend fun teamOverview(): TeamOverview = Api.service.teamOverview()
+    suspend fun myTeam(): List<TeamMemberCard> = Api.service.myTeam()
     suspend fun createUser(body: UserCreate): User = Api.service.createUser(body)
     suspend fun updateUser(id: Int, body: UserUpdate): User = Api.service.updateUser(id, body)
     suspend fun deleteUser(id: Int) = Api.service.deleteUser(id)

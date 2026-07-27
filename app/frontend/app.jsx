@@ -460,7 +460,7 @@ const GOLD = '#2563EB', GOLD2 = '#1D4ED8';
 const PALETTE = ['#2563EB', '#0EA5E9', '#16A34A', '#F97316', '#8B5CF6', '#14B8A6', '#EAB308'];
 
 /* Role display labels (internal keys stay admin/manager/fos/telecaller for RBAC) */
-const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office' };
+const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', teamlead: 'Team Lead', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office' };
 const roleName = (r) => ROLE_LABEL[r] || r;
 
 /* ============================== Login ============================== */
@@ -1157,12 +1157,16 @@ const DARK_MAP_STYLE = [
 /* ============================== Staff (admin) ============================== */
 function StaffModal({ editing, onClose, onDone, presetBranch, me }) {
   const isMgr = me && me.role === 'manager';
+  const isTL = me && me.role === 'teamlead';
   const [f, setF] = useState(editing || { name: '', email: '', role: 'fos',
-    branch: isMgr ? (me.branch || '') : (presetBranch || ''), password: '',
+    branch: isMgr || isTL ? (me.branch || '') : (presetBranch || ''), password: '',
     banks: [], assigned_products: [], assigned_pincodes: [], home_lat: '', home_lng: '' });
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
-  const [cat, setCat] = useState(null);
+  const [cat, setCat] = useState(null); const [leads, setLeads] = useState([]);
   useEffect(() => { api('/api/config').then(c => setCat(c.bank_products)).catch(() => {}); }, []);
+  // team leads available to assign a FOS/caller under (admin/manager only)
+  useEffect(() => { if (!isTL) api('/api/users?role=teamlead').then(setLeads).catch(() => setLeads([])); }, []);
+  const branchLeads = leads.filter(l => !f.branch || (l.branch || '') === f.branch);
   const upd = (k, v) => setF(s => ({ ...s, [k]: v }));
   const toggleIn = (k, v) => setF(s => { const arr = s[k] || []; return { ...s, [k]: arr.includes(v) ? arr.filter(x => x !== v) : [...arr, v] }; });
   const toggleBank = (b) => toggleIn('banks', b);
@@ -1197,10 +1201,19 @@ function StaffModal({ editing, onClose, onDone, presetBranch, me }) {
           <div className="field"><label>Name</label><input className="input" value={f.name} onChange={e => upd('name', e.target.value)} /></div>
           <div className="field"><label>Email</label><input className="input" value={f.email} disabled={!!editing} onChange={e => upd('email', e.target.value)} /></div>
           <div className="field"><label>Role</label><select className="input" value={f.role} onChange={e => upd('role', e.target.value)}>
-            <option value="fos">Field Agent</option><option value="telecaller">Tele-calling Agent</option><option value="backend">Back-office Official</option><option value="manager">Collections Manager</option>
-            {!isMgr && <option value="headoffice">Head Office (all portfolios)</option>}
-            {!isMgr && <option value="admin">Administrator</option>}</select></div>
-          <div className="field"><label>Branch</label><input className="input" value={f.branch || ''} disabled={isMgr} title={isMgr ? 'Locked to your branch' : ''} onChange={e => upd('branch', e.target.value)} /></div>
+            <option value="fos">Field Agent</option><option value="telecaller">Tele-calling Agent</option>
+            {!isTL && <option value="teamlead">Team Lead</option>}
+            {!isTL && <option value="backend">Back-office Official</option>}
+            {!isTL && <option value="manager">Collections Manager</option>}
+            {!isMgr && !isTL && <option value="headoffice">Head Office (all portfolios)</option>}
+            {!isMgr && !isTL && <option value="admin">Administrator</option>}</select></div>
+          <div className="field"><label>Branch</label><input className="input" value={f.branch || ''} disabled={isMgr || isTL} title={isMgr || isTL ? 'Locked to your branch' : ''} onChange={e => upd('branch', e.target.value)} /></div>
+          {!isTL && (f.role === 'fos' || f.role === 'telecaller') && <div className="field"><label>Team lead <span className="muted" style={{ fontWeight: 400 }}>(who they report to)</span></label>
+            <select className="input" value={f.team_lead_id || ''} onChange={e => upd('team_lead_id', e.target.value ? Number(e.target.value) : null)}>
+              <option value="">— none —</option>
+              {branchLeads.map(l => <option key={l.id} value={l.id}>{l.name}{l.emp_code ? ' · ' + l.emp_code : ''}</option>)}
+            </select>
+            {branchLeads.length === 0 && <div className="muted" style={{ fontSize: 11.5 }}>No team leads in this branch yet — create one first (Role → Team Lead).</div>}</div>}
           <div className="field"><label>Phone</label><input className="input" value={f.phone || ''} onChange={e => upd('phone', e.target.value)} /></div>
           <div className="field"><label>{editing ? 'New password (blank = keep)' : 'Password'}</label>
             <input className="input" type="password" value={f.password || ''} onChange={e => upd('password', e.target.value)} /></div>
@@ -1389,6 +1402,87 @@ function ReportModal({ officers, onClose }) {
           </select></div>
         <button className="btn gold block" onClick={dl}>⬇ Download Excel report</button>
       </div>
+    </div>
+  );
+}
+
+function TeamLeadView({ config, user }) {
+  const [ov, setOv] = useState(null); const [err, setErr] = useState('');
+  const [modal, setModal] = useState(false); const [editing, setEditing] = useState(null);
+  const [perfUser, setPerfUser] = useState(null); const [dashUser, setDashUser] = useState(null);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const load = () => api('/api/team/overview').then(setOv).catch(e => setErr(e.message || 'Could not load'));
+  useEffect(() => { load(); }, []);
+  const removeMember = (m) => {
+    if (!window.confirm(`Remove ${m.name} from your team? They'll be marked inactive.`)) return;
+    api('/api/users/' + m.id, { method: 'DELETE' }).then(() => { toast(m.name + ' removed'); load(); }).catch(e => toast(e.message, 'err'));
+  };
+  if (err) return <div className="glass card" style={{ color: 'var(--bad)', padding: 18 }}>{err}</div>;
+  if (!ov) return <Loader />;
+  const k = ov.kpis;
+  const trend = { labels: (ov.trend || []).map(t => t.date.slice(5)), datasets: [{ label: 'Collected ₹', data: (ov.trend || []).map(t => t.collected), borderColor: '#2563EB', backgroundColor: 'rgba(37,99,235,.15)', fill: true, tension: .35 }] };
+  const memberCard = (m) => (
+    <div key={m.id} className="glass card" style={{ padding: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+        <div>
+          <b style={{ color: 'var(--gold)', cursor: 'pointer' }} title="Open full dashboard" onClick={() => setDashUser(m)}>{m.name}</b>
+          {m.emp_code && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10.5 }}>{m.emp_code}</span>}
+          <div className="muted" style={{ fontSize: 12 }}>{roleName(m.role)}{m.phone ? ' · ' + m.phone : ''}</div>
+        </div>
+        <span className="badge allocated">{Number(m.recovery_pct || 0).toFixed(0)}%</span>
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginTop: 10, fontSize: 12 }} className="muted">
+        <span>Cases <b style={{ color: 'var(--ink)' }}>{m.assigned}</b></span>
+        <span>Resolved <b style={{ color: 'var(--good)' }}>{m.resolved}</b></span>
+        <span>Recovered <b style={{ color: 'var(--good)' }}>{money(m.recovered)}</b></span>
+      </div>
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>
+        Today: {m.today ? (m.today.label === 'visits' ? `${m.today.count} visits` : `${m.today.count} calls · ${m.today.ptp || 0} PTP`) : '—'}
+      </div>
+      <div className="toolbar" style={{ margin: '10px 0 0', flexWrap: 'wrap' }}>
+        {m.phone && <a className="btn sm gold" href={'tel:' + m.phone}>📞 Call</a>}
+        <button className="btn sm" onClick={() => setDashUser(m)}>Profile</button>
+        <button className="btn sm" onClick={() => setPerfUser(m)}>📈 Performance</button>
+        <button className="btn sm" onClick={() => { setEditing(m); setModal(true); }}>Edit</button>
+        <button className="btn sm" style={{ color: 'var(--bad)' }} onClick={() => removeMember(m)}>Remove</button>
+      </div>
+    </div>
+  );
+  return (
+    <div>
+      <div className="toolbar"><h3 style={{ margin: 0 }}>My team{user.branch ? ' · ' + user.branch : ''}</h3><div style={{ flex: 1 }} />
+        <button className="btn gold" onClick={() => { setEditing(null); setModal(true); }}>+ Add member</button></div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12, marginBottom: 14 }}>
+        <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Team members</div><b>{k.members}</b><div className="muted" style={{ fontSize: 11 }}>{k.fos} FOS · {k.callers} callers</div></div>
+        <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Cases</div><b>{k.cases}</b><div className="muted" style={{ fontSize: 11 }}>{k.resolved} resolved</div></div>
+        <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{money(k.recovered)}</b></div>
+        <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Pending</div><b style={{ color: 'var(--gold)' }}>{money(k.pending)}</b></div>
+        <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Recovery %</div><b>{Number(k.recovery_pct || 0).toFixed(1)}%</b></div>
+      </div>
+
+      {window.Chart && <div className="glass card" style={{ padding: 14, marginBottom: 14 }}>
+        <div className="section-h"><h3 style={{ fontSize: 14 }}>Team collections — last 30 days</h3></div>
+        <ChartBox type="line" data={trend} height={200} />
+      </div>}
+
+      <div className="section-h"><h3 style={{ fontSize: 15 }}>Members</h3></div>
+      {ov.members.length === 0 ? <div className="glass card muted" style={{ padding: 20, textAlign: 'center' }}>No team members yet. Add FOS or callers to your team.</div> :
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 12 }}>{ov.members.map(memberCard)}</div>}
+
+      {ov.leaderboard && ov.leaderboard.length > 0 && <div className="glass card" style={{ padding: 6, marginTop: 16 }}>
+        <div className="section-h" style={{ padding: '8px 10px 0' }}><h3 style={{ fontSize: 14 }}>Leaderboard</h3></div>
+        <div className="tablewrap"><table>
+          <thead><tr><th>#</th><th>Member</th><th>Role</th><th>Cases</th><th>Recovered</th><th>Recovery %</th></tr></thead>
+          <tbody>{ov.leaderboard.map((m, i) => <tr key={m.id}>
+            <td>{i + 1}</td><td><b>{m.name}</b></td><td>{roleName(m.role)}</td><td>{m.assigned}</td>
+            <td style={{ color: 'var(--good)' }}>{money(m.recovered)}</td><td>{Number(m.recovery_pct || 0).toFixed(1)}%</td></tr>)}
+          </tbody></table></div>
+      </div>}
+
+      {modal && <StaffModal me={user} editing={editing} onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
+      {perfUser && <PerformanceModal u={perfUser} onClose={() => setPerfUser(null)} />}
+      {dashUser && <EmployeeDashboard u={dashUser} config={config} onClose={() => setDashUser(null)} />}
     </div>
   );
 }
@@ -2136,7 +2230,10 @@ function CaseDrawer({ c, onClose, onChanged }) {
       setCur(updated); setPayAmt(''); setPayNote(''); toast('Payment recorded.'); await refresh(); onChanged && onChanged();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
-  const canEscalate = ['admin', 'manager', 'backend'].includes((store.u || {}).role);
+  const meRole = (store.u || {}).role; const meId = (store.u || {}).id;
+  const canEscalate = ['admin', 'manager', 'backend', 'teamlead'].includes(meRole);
+  const showCallFos = cur.assigned_fos_phone && cur.assigned_fos_id !== meId;
+  const showCallCaller = cur.assigned_caller_phone && cur.assigned_caller_id !== meId;
   const escalate = async () => {
     setBusy(true);
     try {
@@ -2156,8 +2253,10 @@ function CaseDrawer({ c, onClose, onChanged }) {
           <button className="btn ghost sm" onClick={onClose}>✕</button>
         </div>
         <div className="toolbar" style={{ margin: '12px 0' }}>
-          {cur.phone && <a className="btn sm gold" href={'tel:' + cur.phone}>📞 Call</a>}
+          {cur.phone && <a className="btn sm gold" href={'tel:' + cur.phone}>📞 Call customer</a>}
           {cur.phone && <a className="btn sm" href={'https://wa.me/' + String(cur.phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a>}
+          {showCallFos && <a className="btn sm" href={'tel:' + cur.assigned_fos_phone} title={'Call the assigned field agent: ' + (cur.assigned_fos_name || '')}>🧑‍🔧 Call FOS</a>}
+          {showCallCaller && <a className="btn sm" href={'tel:' + cur.assigned_caller_phone} title={'Call the assigned caller: ' + (cur.assigned_caller_name || '')}>☎️ Call caller</a>}
           {canEscalate && <button className="btn sm" disabled={busy} onClick={escalate} title={cur.escalated ? 'Return to the FOS/caller pool' : 'Pull off the FOS/caller and own it (stays in MIS & feedback)'}>{cur.escalated ? '↩ Release' : '🚩 Escalate to me'}</button>}
           <StatusBadge s={cur.status} /><PaidBadge s={cur.paid_status} /><PropBadge score={cur.propensity} />
           {cur.escalated && <span className="badge" style={{ background: 'rgba(220,38,38,.15)', color: 'var(--bad)' }}>Escalated</span>}
@@ -3599,6 +3698,7 @@ const NAV = {
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
 };
@@ -3643,6 +3743,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
       case 'cases': return <CasesView user={user} />;
       case 'map': return <LiveMap config={config} />;
       case 'staff': return <StaffView config={config} user={user} />;
+      case 'tldash': return <TeamLeadView config={config} user={user} />;
       case 'records': return <RecordsView user={user} />;
       case 'feedback': return <FeedbackView user={user} />;
       case 'escalations': return <EscalationsView user={user} />;
