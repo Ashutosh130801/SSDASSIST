@@ -26,10 +26,25 @@ android {
         buildConfigField("String", "CERT_PIN", "\"$certPin\"")
     }
 
+    signingConfigs {
+        // A committed, fixed debug key so every build (CI or local) is signed identically.
+        // This lets new APKs install *over* older ones without "uninstall first" / the
+        // silent "Preparing app…" failure caused by a changing debug signature.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
