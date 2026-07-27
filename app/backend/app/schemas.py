@@ -257,6 +257,8 @@ class CaseOut(CaseBase):
     assigned_caller_name: Optional[str] = None
     assigned_caller_phone: Optional[str] = None
     allocation_reason: Optional[str]
+    removed: Optional[bool] = None
+    removed_at: Optional[datetime] = None
     last_contacted_at: Optional[datetime] = None
     follow_up_date: Optional[date] = None
     propensity: Optional[int] = None

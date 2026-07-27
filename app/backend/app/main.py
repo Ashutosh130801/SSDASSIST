@@ -42,6 +42,9 @@ def _ensure_columns():
             "escalated_to": "INTEGER",
             "escalated_by": "INTEGER",
             "escalated_at": "TIMESTAMP",
+            "removed": "BOOLEAN",
+            "removed_at": "TIMESTAMP",
+            "removed_by": "INTEGER",
         },
         "users": {
             "employment_type": "VARCHAR(30)",

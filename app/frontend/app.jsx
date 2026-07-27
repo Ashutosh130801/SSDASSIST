@@ -788,6 +788,10 @@ function UploadModal({ onClose, onDone }) {
 function CasesView({ user }) {
   const canUpload = user.role === 'admin' || user.role === 'backend';
   const isAdmin = user.role === 'admin';
+  const isHO = user.role === 'headoffice';          // only head office may remove/restore cases
+  const [picked, setPicked] = useState({});          // selected case ids (head office delete)
+  const [delOpen, setDelOpen] = useState(false); const [delReason, setDelReason] = useState('');
+  const [removedRows, setRemovedRows] = useState(null); const [pickedRm, setPickedRm] = useState({});
   const [mode, setMode] = useState('products');
   const [summary, setSummary] = useState(null); const [staff, setStaff] = useState({});
   const [cases, setCases] = useState(null); const [bank, setBank] = useState('');
@@ -832,12 +836,38 @@ function CasesView({ user }) {
       load(); setUpload(true);
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
+  const pickedIds = Object.keys(picked).filter(k => picked[k]).map(Number);
+  const togglePick = (id) => setPicked(p => ({ ...p, [id]: !p[id] }));
+  const clearPicks = () => setPicked({});
+  const doRemove = async () => {
+    setBusy(true);
+    try {
+      const r = await api('/api/cases/remove', { method: 'POST', body: { ids: pickedIds, reason: delReason || null } });
+      toast(`Removed ${r.removed} case${r.removed === 1 ? '' : 's'} → Removed cases.`);
+      setDelOpen(false); setDelReason(''); clearPicks(); load(); loadSummary();
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  const loadRemoved = () => api('/api/cases/removed').then(setRemovedRows).catch(() => setRemovedRows([]));
+  const pickedRmIds = Object.keys(pickedRm).filter(k => pickedRm[k]).map(Number);
+  const doRestore = async (ids) => {
+    try { const r = await api('/api/cases/restore', { method: 'POST', body: { ids } });
+      toast(`Restored ${r.restored} case${r.restored === 1 ? '' : 's'}.`); setPickedRm({}); loadRemoved(); loadSummary();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  const doPurge = async (ids) => {
+    if (!window.confirm(`Permanently delete ${ids.length} case(s)? This cannot be undone.`)) return;
+    try { const r = await api('/api/cases/removed/purge', { method: 'POST', body: { ids } });
+      toast(`Purged ${r.purged} case(s).`); setPickedRm({}); loadRemoved();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  useEffect(() => { if (mode === 'removed') loadRemoved(); }, [mode]);
 
   return (
     <div>
       <div className="toolbar">
         <div className={cx('chip', mode === 'products' && 'on')} onClick={() => setMode('products')}>🧩 Products</div>
         <div className={cx('chip', mode === 'list' && 'on')} onClick={() => setMode('list')}>📋 All cases (Excel)</div>
+        {isHO && <div className={cx('chip', mode === 'removed' && 'on')} onClick={() => setMode('removed')}>🗑 Removed cases</div>}
         <div style={{ flex: 1 }} />
         {canUpload && <button className="btn gold" onClick={() => setUpload(true)}>⬆ Upload</button>}
         {isAdmin && <>
@@ -850,7 +880,39 @@ function CasesView({ user }) {
         </>}
       </div>
 
-      {mode === 'products' ? (
+      {mode === 'removed' ? (
+        !removedRows ? <Loader /> : (
+          <div>
+            <div className="toolbar">
+              <span className="muted" style={{ fontSize: 13 }}>{removedRows.length} removed case{removedRows.length === 1 ? '' : 's'}. Restore to return them to active work, or purge to delete permanently.</span>
+              <div style={{ flex: 1 }} />
+              {pickedRmIds.length > 0 && <>
+                <button className="btn" onClick={() => doRestore(pickedRmIds)}>↩ Restore {pickedRmIds.length}</button>
+                <button className="btn" style={{ borderColor: 'var(--bad)', color: 'var(--bad)' }} onClick={() => doPurge(pickedRmIds)}>🗑 Purge {pickedRmIds.length}</button>
+              </>}
+            </div>
+            {removedRows.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No removed cases.</div> :
+              <div className="glass card" style={{ padding: 6 }}>
+                <div className="tablewrap"><table>
+                  <thead><tr>
+                    <th style={{ width: 30 }}><input type="checkbox"
+                      checked={removedRows.length > 0 && pickedRmIds.length === removedRows.length}
+                      onChange={e => setPickedRm(e.target.checked ? Object.fromEntries(removedRows.map(c => [c.id, true])) : {})} /></th>
+                    <th>Customer</th><th>Bank</th><th>Product</th><th>Account / Card</th><th>Pending</th><th>Removed on</th><th></th></tr></thead>
+                  <tbody>{removedRows.map(c => <tr key={c.id}>
+                    <td><input type="checkbox" checked={!!pickedRm[c.id]} onChange={() => setPickedRm(p => ({ ...p, [c.id]: !p[c.id] }))} /></td>
+                    <td><b>{c.customer_name || '—'}</b></td><td>{c.bank}</td><td>{c.product || '—'}</td>
+                    <td className="mono">{c.account_no || c.card_no || '—'}</td>
+                    <td className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</td>
+                    <td className="muted" style={{ fontSize: 12 }}>{c.removed_at ? new Date(c.removed_at).toLocaleString() : '—'}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn sm" onClick={() => doRestore([c.id])}>Restore</button>{' '}
+                      <button className="btn sm" style={{ color: 'var(--bad)' }} onClick={() => doPurge([c.id])}>Purge</button></td></tr>)}
+                  </tbody></table></div>
+              </div>}
+          </div>
+        )
+      ) : mode === 'products' ? (
         !summary ? <Loader /> : summary.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No cases uploaded yet.{canUpload && ' Use ⬆ Upload to add a product file.'}</div> :
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: 14 }}>
             {summary.map((c, i) => (
@@ -871,13 +933,20 @@ function CasesView({ user }) {
             value={q} onChange={e => setQ(e.target.value)} />
           {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>
             <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(s)}>{s || 'All'}</div>)}
+          {isHO && <><div style={{ flex: 1 }} />
+            {pickedIds.length > 0 && <button className="btn" style={{ background: 'var(--bad)', color: '#fff', border: 'none' }}
+              onClick={() => setDelOpen(true)}>🗑 Delete {pickedIds.length} selected</button>}</>}
         </div>
         {!cases ? <Loader /> : (
           <div className="glass card" style={{ padding: 6 }}>
             <div className="tablewrap"><table>
-              <thead><tr><th>Customer</th><th>Bank</th><th>Product</th><th>Caller</th><th>FOS</th><th>Account</th><th>Target</th><th>Received</th>
+              <thead><tr>{isHO && <th style={{ width: 28 }}><input type="checkbox"
+                  checked={cases.length > 0 && pickedIds.length === cases.length}
+                  onChange={e => setPicked(e.target.checked ? Object.fromEntries(cases.map(c => [c.id, true])) : {})} /></th>}
+                <th>Customer</th><th>Bank</th><th>Product</th><th>Caller</th><th>FOS</th><th>Account</th><th>Target</th><th>Received</th>
                 <th>Pending</th><th>Status</th><th>Paid</th><th>Pincode</th><th>Dispo</th></tr></thead>
               <tbody>{cases.map(c => <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
+                {isHO && <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={!!picked[c.id]} onChange={() => togglePick(c.id)} /></td>}
                 <td><b>{c.customer_name || '—'}</b><div className="muted" style={{ fontSize: 12 }}>{c.phone}</div></td>
                 <td>{c.bank}</td><td>{c.product || '—'}</td>
                 <td className="muted">{staff[c.assigned_caller_id] || '—'}</td>
@@ -895,6 +964,14 @@ function CasesView({ user }) {
       </>)}
       {upload && <UploadModal onClose={() => setUpload(false)} onDone={() => { setUpload(false); load(); }} />}
       {campaign && <CampaignModal cases={cases || []} onClose={() => setCampaign(false)} />}
+      {delOpen && <div className="modal-bg" onClick={() => setDelOpen(false)}>
+        <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
+          <div className="section-h"><h3>Remove {pickedIds.length} case{pickedIds.length === 1 ? '' : 's'}?</h3><button className="btn ghost sm" onClick={() => setDelOpen(false)}>✕</button></div>
+          <p style={{ fontSize: 14, lineHeight: 1.6 }}>The selected case{pickedIds.length === 1 ? '' : 's'} will move to <b>Removed cases</b> and drop out of every list, MIS, dashboard and performance calc. You can restore {pickedIds.length === 1 ? 'it' : 'them'} anytime.</p>
+          <div className="field"><label>Reason (optional)</label><input className="input" value={delReason} onChange={e => setDelReason(e.target.value)} placeholder="e.g. duplicate / wrong upload" /></div>
+          <div className="toolbar"><button className="btn" onClick={() => setDelOpen(false)}>Cancel</button><div style={{ flex: 1 }} />
+            <button className="btn" style={{ background: 'var(--bad)', color: '#fff', border: 'none' }} disabled={busy} onClick={doRemove}>{busy ? 'Removing…' : '🗑 Remove selected'}</button></div>
+        </div></div>}
       {resetOpen && <div className="modal-bg" onClick={() => setResetOpen(false)}>
         <div className="modal glass" onClick={e => e.stopPropagation()}>
           <div className="section-h"><h3>Reset all cases</h3><button className="btn ghost sm" onClick={() => setResetOpen(false)}>✕</button></div>
@@ -3456,7 +3533,13 @@ function SheetView({ user, config }) {
   const [calc, setCalc] = React.useState('=SUM([pending_amount])');
   const [calcRes, setCalcRes] = React.useState('');
   const [live, setLive] = React.useState(false);
+  const [search, setSearch] = React.useState('');
+  const [bankF, setBankF] = React.useState(''); const [prodF, setProdF] = React.useState('');
+  const [payModal, setPayModal] = React.useState(null);   // {row, mode:'paid'|'unpaid'}
   const saveTimer = React.useRef(null);
+  // head office / admin / manager / back-office / callers may flip paid/unpaid with the
+  // accounting popups (callers only on their own cases — enforced by the backend scope).
+  const canPayEdit = ['admin', 'headoffice', 'manager', 'backend', 'telecaller', 'teamlead'].includes(user.role);
 
   const load = () => api('/api/cases?limit=2000').then(d => setRows(Array.isArray(d) ? d : [])).catch(e => setErr(e.message || 'Could not load'));
 
@@ -3525,16 +3608,39 @@ function SheetView({ user, config }) {
 
   const viewRows = () => {
     let out = rows.slice();
+    if (bankF) out = out.filter(r => (r.bank || '') === bankF);
+    if (prodF) out = out.filter(r => (r.product || '') === prodF);
+    if (search) { const q = search.toLowerCase(); out = out.filter(r =>
+      String(r.customer_name || '').toLowerCase().includes(q) ||
+      String(r.card_no || '').toLowerCase().includes(q) ||
+      String(r.account_no || '').toLowerCase().includes(q) ||
+      String(r.phone || '').toLowerCase().includes(q)); }
     Object.keys(filters).forEach(k => { const f = (filters[k] || '').toLowerCase(); if (f) out = out.filter(r => String(r[k] == null ? '' : r[k]).toLowerCase().includes(f)); });
     if (sort) { const d = defByKey(sort.k); out.sort((a, b) => { let x = d && d.custom ? rowFormula(d.formula, a) : a[sort.k], y = d && d.custom ? rowFormula(d.formula, b) : b[sort.k]; if (d && (d.type === 'num')) { x = Number(x) || 0; y = Number(y) || 0; } else { x = String(x == null ? '' : x); y = String(y == null ? '' : y); } return (x < y ? -1 : x > y ? 1 : 0) * (sort.dir === 'desc' ? -1 : 1); }); }
     return out;
   };
 
   const editCell = (row, col, value) => {
+    // "Paid" and "Status" are linked: flipping either toward/away from paid runs the same
+    // accounting popup (record a payment or revert one) so paid_status + status move together
+    // and FOS/caller performance, MIS and feedback all stay in sync.
+    if (canPayEdit && col.k === 'paid_status' && (value === 'PAID' || value === 'UNPAID') && (row.paid_status || '') !== value) {
+      setPayModal({ row, mode: value === 'PAID' ? 'paid' : 'unpaid' });
+      return;
+    }
+    if (canPayEdit && col.k === 'status') {
+      const cur = row.status || '';
+      if (value === 'paid' && cur !== 'paid') { setPayModal({ row, mode: 'paid' }); return; }
+      if (cur === 'paid' && value !== 'paid') { setPayModal({ row, mode: 'unpaid' }); return; }
+    }
     setRows(rs => rs.map(r => r.id === row.id
       ? (col.data ? { ...r, extra: { ...(r.extra || {}), [col.k]: value } } : { ...r, [col.k]: value })
       : r));
     api('/api/sheet/cell/' + row.id, { method: 'PATCH', body: { field: col.k, value } }).catch(() => { setErr('Save failed — reloading'); load(); });
+  };
+  const applyPayResult = (updated) => {
+    setRows(rs => rs.map(r => r.id === updated.id ? { ...r, ...updated } : r));
+    setPayModal(null);
   };
   const openCase = (row) => { setDrawer(row); api('/api/sheet/open/' + row.id, { method: 'POST' }).catch(() => {}); };
 
@@ -3604,6 +3710,16 @@ function SheetView({ user, config }) {
       <div className="sv-bar" style={{ position: 'relative' }}>
         <span><i className="sv-dot" style={{ background: live ? 'var(--good)' : '#c9ced8' }} />{live ? 'Live' : 'Reconnecting…'}</span>
         <span style={{ color: 'var(--ink-dim)', fontSize: 12 }}>{viewRows().length} rows</span>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search card no / name / account…"
+          style={{ width: 250, border: '1px solid var(--stroke-soft)', borderRadius: 10, padding: '7px 10px', fontSize: 13 }} />
+        <select className="sv-btn" value={bankF} onChange={e => { setBankF(e.target.value); setProdF(''); }}>
+          <option value="">All banks</option>
+          {[...new Set(rows.map(r => r.bank).filter(Boolean))].sort().map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <select className="sv-btn" value={prodF} onChange={e => setProdF(e.target.value)}>
+          <option value="">All products</option>
+          {[...new Set(rows.filter(r => !bankF || r.bank === bankF).map(r => r.product).filter(Boolean))].sort().map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
         <div style={{ flex: 1 }} />
         <input value={calc} onChange={e => setCalc(e.target.value)} placeholder="=SUM([pending_amount])"
           style={{ width: 220, border: '1px solid var(--stroke-soft)', borderRadius: 10, padding: '7px 10px', fontSize: 13 }} />
@@ -3689,18 +3805,85 @@ function SheetView({ user, config }) {
       </div>
 
       {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
+      {payModal && <PaymentEditModal row={payModal.row} mode={payModal.mode} onClose={() => setPayModal(null)} onDone={applyPayResult} />}
+    </div>
+  );
+}
+
+function PaymentEditModal({ row, mode, onClose, onDone }) {
+  const [state, setState] = React.useState(null); const [err, setErr] = React.useState('');
+  const [amount, setAmount] = React.useState(''); const [ns, setNs] = React.useState('STAB');
+  const [busy, setBusy] = React.useState(false);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const isCC = (row.segment || '') === 'Credit Card';
+  React.useEffect(() => {
+    api('/api/cases/' + row.id + '/pay-state').then(s => {
+      setState(s);
+      const due = Number(s.pending_amount) > 0 ? Number(s.pending_amount)
+        : Math.max(0, (Number(s.funding_amount) || Number(s.enr) || 0) - Number(s.received_amount || 0));
+      setAmount(due ? String(Math.round(due)) : '');
+      if (s.norm_stab) setNs(s.norm_stab);
+    }).catch(e => setErr(e.message || 'Could not load'));
+  }, []);
+  const confirmPaid = async () => {
+    setBusy(true); setErr('');
+    try {
+      const updated = await api('/api/cases/' + row.id + '/mark-paid', { method: 'POST',
+        body: { amount: amount || null, norm_stab: isCC ? ns : null, mode: 'Manual' } });
+      toast('Marked paid — reflected in performance & MIS.'); onDone(updated);
+    } catch (e) { setErr(e.message); setBusy(false); }
+  };
+  const confirmUnpaid = async () => {
+    setBusy(true); setErr('');
+    try {
+      const updated = await api('/api/cases/' + row.id + '/mark-unpaid', { method: 'POST', body: {} });
+      toast('Reverted to unpaid — payment undone everywhere.'); onDone(updated);
+    } catch (e) { setErr(e.message); setBusy(false); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
+        <div className="section-h"><h3>{mode === 'paid' ? '💰 Mark as PAID' : '↩ Revert to UNPAID'}</h3>
+          <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <div className="muted" style={{ fontSize: 13, marginTop: -4 }}>{row.customer_name || '—'} · {row.card_no || row.account_no || ''}</div>
+        {!state ? <Loader /> : mode === 'paid' ? (
+          <>
+            <p style={{ fontSize: 13.5, lineHeight: 1.6 }}>Record a payment the customer made directly (e.g. from the bank DPR). This credits the assigned caller/FOS and updates MIS.</p>
+            <div className="stat-row"><span className="k">Already received</span><b>{money(state.received_amount)}</b></div>
+            <div className="stat-row"><span className="k">Outstanding</span><b style={{ color: 'var(--warn)' }}>{money(state.pending_amount)}</b></div>
+            <div className="field"><label>Amount paid (₹)</label><input className="input" type="number" value={amount} onChange={e => setAmount(e.target.value)} /></div>
+            {isCC && <div className="field"><label>Paid at (credit card)</label>
+              <select className="input" value={ns} onChange={e => setNs(e.target.value)}><option>STAB</option><option>NORM</option></select></div>}
+            {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
+            <button className="btn gold block" disabled={busy} onClick={confirmPaid} style={{ marginTop: 6 }}>{busy ? 'Saving…' : 'OK — mark paid'}</button>
+          </>
+        ) : (
+          <>
+            <p style={{ fontSize: 13.5, lineHeight: 1.6, color: 'var(--bad)' }}>This will revert the recorded payment and return the case to the working pool (status → allocated, paid → UNPAID). The reversal flows through the caller/FOS performance and MIS.</p>
+            <div className="glass card" style={{ background: 'rgba(0,0,0,.05)', padding: 12 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Will be reverted:</div>
+              <div className="stat-row"><span className="k">Received so far</span><b>{money(state.received_amount)}</b></div>
+              {state.last_payment && <div className="stat-row"><span className="k">Last payment</span><b>{money(state.last_payment.amount)}</b></div>}
+              {state.last_payment && state.last_payment.note && <div className="muted" style={{ fontSize: 12 }}>{state.last_payment.note}</div>}
+              {state.norm_stab && <div className="stat-row"><span className="k">NORM/STAB</span><b>{state.norm_stab}</b></div>}
+            </div>
+            {err && <div style={{ color: 'var(--bad)', fontSize: 13, marginTop: 8 }}>{err}</div>}
+            <button className="btn block" disabled={busy} onClick={confirmUnpaid} style={{ marginTop: 8, background: 'var(--bad)', color: '#fff' }}>{busy ? 'Reverting…' : 'OK — revert payment'}</button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
 const NAV = {
-  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
 };
 function NativeTrackingOnboard({ onDone }) {
   const openSettings = () => { try { const BG = window.Capacitor.registerPlugin('BackgroundGeolocation'); if (BG.openSettings) BG.openSettings(); } catch (e) {} };

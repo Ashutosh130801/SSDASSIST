@@ -92,10 +92,13 @@ def _scope_user_ids(db, user: models.User):
     return []
 
 
-def _scope(q, user: models.User):
+def _scope(q, user: models.User, include_removed: bool = False):
     """Restrict rows by role — FO sees own field cases, telecaller sees own queue,
     branch manager sees cases handled by staff in their branch, team lead sees cases
-    handled by the FOS/callers who report to them."""
+    handled by the FOS/callers who report to them. Removed (soft-deleted) cases are
+    hidden everywhere unless explicitly requested."""
+    if not include_removed:
+        q = q.filter(models.Case.removed.isnot(True))
     if user.role == "fos":
         return q.filter(models.Case.assigned_fos_id == user.id)
     if user.role == "telecaller":
@@ -238,7 +241,7 @@ def _manager_owns(db, actor, case):
 def escalated_cases(mine: bool = False, db: Session = Depends(get_db),
                     actor: models.User = Depends(require_roles("admin", "manager", "backend", "headoffice", "teamlead"))):
     """Cases pulled off the field/calling staff. `mine=true` limits to ones escalated to me."""
-    q = db.query(models.Case).filter(models.Case.escalated.is_(True))
+    q = db.query(models.Case).filter(models.Case.escalated.is_(True), models.Case.removed.isnot(True))
     if actor.role == "manager":
         q = q.filter(models.Case.branch == actor.branch)
     if actor.role == "teamlead" or mine:
@@ -311,6 +314,20 @@ def product_summary(db: Session = Depends(get_db), user: models.User = Depends(g
     ]
     out.sort(key=lambda x: (x["bank"], x["product"]))
     return out
+
+
+@router.get("/removed", response_model=list[schemas.CaseOut])
+def removed_cases(bank: str | None = None, product: str | None = None,
+                  db: Session = Depends(get_db),
+                  actor: models.User = Depends(require_roles("headoffice"))):
+    """The Removed-cases bin — soft-deleted cases head office can review and restore.
+    Declared before /{case_id} so the literal path isn't captured as an id."""
+    q = db.query(models.Case).filter(models.Case.removed.is_(True))
+    if bank:
+        q = q.filter(models.Case.bank == bank)
+    if product:
+        q = q.filter(models.Case.product == product)
+    return _mark_today(db, _with_score(q.order_by(models.Case.removed_at.desc()).all()))
 
 
 @router.get("/{case_id}", response_model=schemas.CaseOut)
@@ -408,6 +425,187 @@ def record_payment(case_id: int, body: PaymentIn, db: Session = Depends(get_db),
     from .realtime import notify_data_changed
     notify_data_changed(case.bank, case.product)
     return case
+
+
+# Callers may flip their own cases too (scoped by _scope); head office/back-office/managers
+# and admins may flip any case they can see.
+PAY_EDIT_ROLES = ("admin", "headoffice", "manager", "backend", "telecaller", "teamlead")
+
+
+class MarkPaidIn(BaseModel):
+    amount: Decimal | None = None            # blank => clear the full pending
+    norm_stab: str | None = None             # NORM / STAB (credit-card cases)
+    mode: str | None = "DPR"
+    note: str | None = None
+
+
+def _pay_base_total(case) -> Decimal:
+    """The full amount the case is worth (funding for CC loads, else ENR/TOS)."""
+    f = Decimal(case.funding_amount or 0)
+    return f if f > 0 else Decimal(case.enr or 0)
+
+
+@router.get("/{case_id}/pay-state")
+def pay_state(case_id: int, db: Session = Depends(get_db),
+              actor: models.User = Depends(require_roles(*PAY_EDIT_ROLES))):
+    """Snapshot used by the head-office live-sheet popups before flipping paid/unpaid —
+    current figures plus the last logged payment (so a revert can show what will be undone)."""
+    case = _scope(db.query(models.Case), actor).filter(models.Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    last = (db.query(models.CallLog)
+            .filter(models.CallLog.case_id == case_id,
+                    models.CallLog.disposition.in_(("PAID", "PAYMENT")),
+                    models.CallLog.ptp_amount > 0)
+            .order_by(models.CallLog.created_at.desc()).first())
+    return {
+        "id": case.id, "customer_name": case.customer_name, "card_no": case.card_no,
+        "account_no": case.account_no, "segment": case.segment,
+        "received_amount": float(case.received_amount or 0), "pending_amount": float(case.pending_amount or 0),
+        "paid_status": case.paid_status, "status": case.status, "norm_stab": case.norm_stab,
+        "funding_amount": float(case.funding_amount or 0), "enr": float(case.enr or 0),
+        "last_payment": ({"amount": float(last.ptp_amount or 0), "at": last.created_at, "note": last.note}
+                         if last else None),
+    }
+
+
+@router.post("/{case_id}/mark-paid", response_model=schemas.CaseOut)
+def mark_paid(case_id: int, body: MarkPaidIn = MarkPaidIn(), db: Session = Depends(get_db),
+              actor: models.User = Depends(require_roles(*PAY_EDIT_ROLES))):
+    """Head office marks a case PAID (e.g. the customer paid the bank directly, per the DPR).
+    Records the amount + NORM/STAB, credits the assigned caller's activity, and reflects
+    everywhere (recovered/resolved KPIs, MIS, feedback) since those key off the case fields."""
+    case = _scope(db.query(models.Case), actor).filter(models.Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    amt = Decimal(str(body.amount)) if body.amount is not None else Decimal(0)
+    if amt <= 0:                                    # default to whatever is still outstanding
+        amt = _pay_base_total(case) - Decimal(case.received_amount or 0)
+    if amt <= 0:
+        raise HTTPException(status_code=400, detail="Nothing outstanding to mark paid — enter an amount")
+    case.received_amount = Decimal(case.received_amount or 0) + amt
+    pend = _pay_base_total(case) - Decimal(case.received_amount or 0)
+    case.pending_amount = pend if pend > 0 else Decimal(0)
+    case.paid_status = "PAID"
+    case.status = "paid"
+    case.follow_up_date = None
+    if body.norm_stab:
+        ns = body.norm_stab.upper()
+        case.norm_stab = "STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab)
+    credit_id = case.assigned_caller_id or case.assigned_fos_id or actor.id
+    tag = f" ({case.norm_stab})" if case.norm_stab else ""
+    db.add(models.CallLog(case_id=case.id, caller_id=credit_id, disposition="PAID", ptp_amount=amt,
+                          note=f"{body.mode or 'DPR'}: customer paid ₹{amt}{tag}" + (f" — {body.note}" if body.note else "")))
+    case.last_contacted_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(case)
+    from .realtime import notify_data_changed
+    notify_data_changed(case.bank, case.product)
+    case.propensity = propensity(case)
+    _mark_today(db, [case])
+    return case
+
+
+@router.post("/{case_id}/mark-unpaid", response_model=schemas.CaseOut)
+def mark_unpaid(case_id: int, db: Session = Depends(get_db),
+                actor: models.User = Depends(require_roles(*PAY_EDIT_ROLES))):
+    """Revert a case to UNPAID (e.g. an online payment failed / bounced, per the DPR).
+    Undoes the logged collection, returns the case to the working pool, and the reversal
+    flows through the assigned caller/FOS performance and MIS via the case fields."""
+    case = _scope(db.query(models.Case), actor).filter(models.Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    prev = Decimal(case.received_amount or 0)
+    case.received_amount = Decimal(0)
+    case.pending_amount = _pay_base_total(case)
+    case.paid_status = "UNPAID"
+    case.status = "allocated"
+    case.norm_stab = None
+    case.follow_up_date = None
+    if prev > 0:                                    # negative entry nets the caller's collected back down
+        credit_id = case.assigned_caller_id or case.assigned_fos_id or actor.id
+        db.add(models.CallLog(case_id=case.id, caller_id=credit_id, disposition="PAID", ptp_amount=(-prev),
+                              note=f"Reversal: payment of ₹{prev} reverted (marked unpaid)"))
+    case.last_contacted_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(case)
+    from .realtime import notify_data_changed
+    notify_data_changed(case.bank, case.product)
+    case.propensity = propensity(case)
+    _mark_today(db, [case])
+    return case
+
+
+class IdsIn(BaseModel):
+    ids: list[int] = []
+    reason: str | None = None
+
+
+@router.post("/remove")
+def remove_cases(body: IdsIn, db: Session = Depends(get_db),
+                 actor: models.User = Depends(require_roles("headoffice"))):
+    """Soft-delete the selected cases (head office only). They move to the Removed bin and
+    drop out of every list, MIS, dashboard and performance calc until restored."""
+    if not body.ids:
+        raise HTTPException(status_code=400, detail="No cases selected")
+    rows = db.query(models.Case).filter(models.Case.id.in_(body.ids)).all()
+    now = datetime.now(timezone.utc)
+    banks = set()
+    for c in rows:
+        c.removed = True
+        c.removed_at = now
+        c.removed_by = actor.id
+        if body.reason:
+            c.allocation_reason = f"Removed: {body.reason}"
+        banks.add((c.bank, c.product))
+    db.commit()
+    from .realtime import notify_data_changed
+    for bank, product in banks:
+        notify_data_changed(bank, product)
+    return {"removed": len(rows)}
+
+
+@router.post("/restore")
+def restore_cases(body: IdsIn, db: Session = Depends(get_db),
+                  actor: models.User = Depends(require_roles("headoffice"))):
+    """Restore soft-deleted cases back into active work."""
+    if not body.ids:
+        raise HTTPException(status_code=400, detail="No cases selected")
+    rows = db.query(models.Case).filter(models.Case.id.in_(body.ids),
+                                        models.Case.removed.is_(True)).all()
+    banks = set()
+    for c in rows:
+        c.removed = False
+        c.removed_at = None
+        c.removed_by = None
+        banks.add((c.bank, c.product))
+    db.commit()
+    from .realtime import notify_data_changed
+    for bank, product in banks:
+        notify_data_changed(bank, product)
+    return {"restored": len(rows)}
+
+
+@router.post("/removed/purge")
+def purge_removed(body: IdsIn, db: Session = Depends(get_db),
+                  actor: models.User = Depends(require_roles("headoffice"))):
+    """Permanently delete cases from the Removed bin (irreversible). If ids is empty,
+    purges the entire bin."""
+    q = db.query(models.Case).filter(models.Case.removed.is_(True))
+    if body.ids:
+        q = q.filter(models.Case.id.in_(body.ids))
+    ids = [c.id for c in q.all()]
+    if not ids:
+        return {"purged": 0}
+    db.query(models.LocationPing).filter(models.LocationPing.active_case_id.in_(ids)).update(
+        {models.LocationPing.active_case_id: None}, synchronize_session=False)
+    db.query(models.LegalCase).filter(models.LegalCase.case_id.in_(ids)).update(
+        {models.LegalCase.case_id: None}, synchronize_session=False)
+    db.query(models.Visit).filter(models.Visit.case_id.in_(ids)).delete(synchronize_session=False)
+    db.query(models.CallLog).filter(models.CallLog.case_id.in_(ids)).delete(synchronize_session=False)
+    n = db.query(models.Case).filter(models.Case.id.in_(ids)).delete(synchronize_session=False)
+    db.commit()
+    return {"purged": n}
 
 
 @router.get("/{case_id}/timeline")

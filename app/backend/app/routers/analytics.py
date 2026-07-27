@@ -19,6 +19,7 @@ def _d(v) -> float:
 
 
 def _scope(q, user, branch=None):
+    q = q.filter(models.Case.removed.isnot(True))     # soft-deleted cases never count
     if user.role == "fos":
         q = q.filter(models.Case.assigned_fos_id == user.id)
     elif user.role == "telecaller":
@@ -146,7 +147,7 @@ def db_summary(db: Session = Depends(get_db), admin: models.User = Depends(requi
     return {
         "users_total": db.query(models.User).count(),
         "users_by_role": {r: c for r, c in role_rows},
-        "cases": db.query(models.Case).count(),
+        "cases": db.query(models.Case).filter(models.Case.removed.isnot(True)).count(),
         "visits": db.query(models.Visit).count(),
         "calls": db.query(models.CallLog).count(),
         "payments": db.query(models.CallLog).filter(models.CallLog.disposition == "PAYMENT").count(),
@@ -186,6 +187,7 @@ def activity(kind: str = "all", limit: int = 150,
     mbranch = viewer.branch if viewer.role == "manager" else None
 
     def apply_case_filters(q):
+        q = q.filter(models.Case.removed.isnot(True))
         if bank:
             q = q.filter(models.Case.bank == bank)
         if product:

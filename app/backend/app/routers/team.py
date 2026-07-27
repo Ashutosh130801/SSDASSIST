@@ -70,6 +70,7 @@ def branches(db: Session = Depends(get_db), user: models.User = Depends(require_
                      func.coalesce(func.sum(models.Case.received_amount), 0),   # cash collected
                      func.coalesce(func.sum(models.Case.funding_amount), 0),
                      func.coalesce(func.sum(models.Case.pending_amount), 0))
+            .filter(models.Case.removed.isnot(True))
             .group_by(models.Case.branch).all())
     cstat = {}
     for b, cnt, tenr, penr, cash, fund, pend in rows:
@@ -202,7 +203,7 @@ def employee_dashboard(uid: int, db: Session = Depends(get_db),
     from sqlalchemy import select
     esc = select(models.Case.id).where(models.Case.escalated.is_(True))    # escalated → not their perf
     is_caller = u.role == "telecaller"
-    cq = db.query(models.Case).filter(models.Case.escalated.isnot(True))
+    cq = db.query(models.Case).filter(models.Case.escalated.isnot(True), models.Case.removed.isnot(True))
     cq = cq.filter(models.Case.assigned_caller_id == uid) if is_caller else cq.filter(models.Case.assigned_fos_id == uid)
     cases = cq.all()
     calls = db.query(models.CallLog).filter(models.CallLog.caller_id == uid, ~models.CallLog.case_id.in_(esc)).all()
@@ -290,7 +291,7 @@ def employee_cases(uid: int, db: Session = Depends(get_db),
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
     _guard_view(actor, u)
-    q = db.query(models.Case)
+    q = db.query(models.Case).filter(models.Case.removed.isnot(True))
     q = q.filter(models.Case.assigned_caller_id == uid) if u.role == "telecaller" \
         else q.filter(models.Case.assigned_fos_id == uid)
     return _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).all()))
@@ -321,7 +322,7 @@ def team_overview(db: Session = Depends(get_db),
     cases = []
     if member_ids:
         cases = db.query(models.Case).filter(
-            models.Case.escalated.isnot(True),
+            models.Case.escalated.isnot(True), models.Case.removed.isnot(True),
             or_(models.Case.assigned_fos_id.in_(member_ids),
                 models.Case.assigned_caller_id.in_(member_ids))).all()
 

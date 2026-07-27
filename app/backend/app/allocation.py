@@ -111,7 +111,7 @@ def run_allocation(db: Session, only_unallocated: bool = True, bank: Optional[st
     fos_users = db.query(models.User).filter(models.User.role == "fos", models.User.is_active == True).all()
     callers = db.query(models.User).filter(models.User.role == "telecaller", models.User.is_active == True).all()
 
-    q = db.query(models.Case)
+    q = db.query(models.Case).filter(models.Case.removed.isnot(True))
     if bank:
         q = q.filter(models.Case.bank == bank)
     if only_unallocated:

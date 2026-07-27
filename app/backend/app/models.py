@@ -123,6 +123,12 @@ class Case(Base):
     escalated_by = Column(Integer, nullable=True)
     escalated_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Soft delete — head office can remove cases (bad/duplicate loads); they move to the
+    # "Removed cases" bin, drop out of every list/MIS/dashboard, and can be restored.
+    removed = Column(Boolean, default=False, index=True)
+    removed_at = Column(DateTime(timezone=True), nullable=True)
+    removed_by = Column(Integer, nullable=True)
+
     import_batch_id = Column(Integer, ForeignKey("import_batches.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

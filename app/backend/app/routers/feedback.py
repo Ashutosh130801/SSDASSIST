@@ -85,7 +85,8 @@ def _fmt_date(dt):
 
 
 def _scope_feedback(db: Session, user, bank, product, branch=None):
-    q = db.query(models.Case).filter(models.Case.bank == bank, models.Case.product == product)
+    q = db.query(models.Case).filter(models.Case.bank == bank, models.Case.product == product,
+                                     models.Case.removed.isnot(True))
     if user.role == "manager":
         q = q.filter(models.Case.branch == user.branch)
     elif branch:

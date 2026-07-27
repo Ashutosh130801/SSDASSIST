@@ -78,7 +78,7 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
     """Telecaller work queue split into three clear sections so nothing is called
     twice or missed: due now, already contacted today, and scheduled for later."""
     today = _ist_today()
-    q = db.query(models.Case)
+    q = db.query(models.Case).filter(models.Case.removed.isnot(True))
     if user.role == "telecaller":
         q = q.filter(models.Case.assigned_caller_id == user.id)
     q = q.filter(models.Case.status.notin_(["paid", "closed"]))
@@ -102,7 +102,7 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
     contacted.sort(key=lambda c: c.last_contacted_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
     # Paid-today cases (kept out of the working queue) — shown green so wins are visible.
-    pq = db.query(models.Case).filter(models.Case.paid_status == "PAID")
+    pq = db.query(models.Case).filter(models.Case.paid_status == "PAID", models.Case.removed.isnot(True))
     if user.role == "telecaller":
         pq = pq.filter(models.Case.assigned_caller_id == user.id)
     if bank:
@@ -129,6 +129,7 @@ def ptp_tracker(bank: str | None = None, db: Session = Depends(get_db),
     q = db.query(models.Case).filter(
         models.Case.disposition.in_(["PTP", "RTP"]),
         models.Case.status.notin_(["paid", "closed"]),
+        models.Case.removed.isnot(True),
     )
     if user.role == "telecaller":
         q = q.filter(models.Case.assigned_caller_id == user.id)

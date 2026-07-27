@@ -23,6 +23,7 @@ def my_reminders(db: Session = Depends(get_db), user: models.User = Depends(get_
         models.Case.status.notin_(["paid", "closed"]),
         models.Case.follow_up_date.isnot(None),
         models.Case.follow_up_date <= today,
+        models.Case.removed.isnot(True),
     )
     if user.role == "fos":
         q = q.filter(models.Case.assigned_fos_id == user.id)
