@@ -209,6 +209,7 @@ class CaseBase(BaseModel):
     phone: Optional[str] = None
     alt_phone: Optional[str] = None
     address: Optional[str] = None
+    address2: Optional[str] = None
     pincode: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None

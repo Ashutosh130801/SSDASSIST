@@ -1,146 +1,28 @@
-name: Build Android APK
+name: Build Android APK (RETIRED)
 
-# Builds the RecoverIQ Android wrapper (with a native background-location service) in the cloud.
-# Run it from the Actions tab (Run workflow), or it runs on any push touching app/mobile/**.
-# The finished .apk is attached to the run and published to Releases (tag: android-latest).
+# ─────────────────────────────────────────────────────────────────────────────
+# RETIRED: the Capacitor/WebView build (app/mobile) has been discontinued.
+# We now ship ONLY the native Kotlin app — see android-native-build.yml, which
+# publishes RecoverIQ-native.apk to the "android-native-latest" release.
 #
-# Set your live app URL once: pass it in the "Run workflow" box, or add a repo secret APP_URL.
+# Why this was removed:
+#   - It shared the package id `in.recoveriq.app` with the native app but was
+#     signed with a DIFFERENT (random, per-build) debug key, so phones that had
+#     one variant could not install the other — Android aborted at "Preparing…".
+#
+# This file is intentionally a no-op so it can never auto-run on a push nor
+# publish a conflicting APK. Delete the old "android-latest" GitHub Release/tag
+# so nobody downloads the stale, broken APK.
+# ─────────────────────────────────────────────────────────────────────────────
 
 on:
-  workflow_dispatch:
-    inputs:
-      app_url:
-        description: "Live app URL the phone should load (e.g. https://recoveriq-xxxx.run.app)"
-        required: false
-        default: ""
-  push:
-    paths:
-      - "app/mobile/**"
-      - ".github/workflows/android-build.yml"
+  workflow_dispatch:   # manual only — never triggers on push
 
 jobs:
-  build:
+  retired:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Point the app at your live URL
-        working-directory: app/mobile
+      - name: Notice
         run: |
-          URL="${{ github.event.inputs.app_url }}"
-          if [ -z "$URL" ]; then URL="${{ secrets.APP_URL }}"; fi
-          if [ -n "$URL" ]; then
-            echo "Using app URL: $URL"
-            sed -i "s#https://REPLACE-WITH-YOUR-APP-URL#${URL}#" capacitor.config.json
-          else
-            echo "::warning::No APP_URL provided — the app will show the placeholder page. Set APP_URL secret or pass app_url when running."
-          fi
-
-      - name: Install dependencies
-        working-directory: app/mobile
-        run: npm install
-
-      - name: Add Android platform
-        working-directory: app/mobile
-        run: npx cap add android
-
-      - name: Pin targetSdk to 33 (keeps the location foreground service alive on Android 14)
-        working-directory: app/mobile
-        run: |
-          F=android/variables.gradle
-          if [ -f "$F" ]; then
-            sed -i 's/targetSdkVersion = 34/targetSdkVersion = 33/' "$F"
-            echo "----- variables.gradle -----"; cat "$F"
-          fi
-
-      - name: Generate app icon & splash (if provided)
-        working-directory: app/mobile
-        run: |
-          if [ -f resources/icon.png ]; then
-            echo "Generating launcher icons from resources/icon.png"
-            npm install -D @capacitor/assets
-            npx capacitor-assets generate --android || echo "::warning::Icon generation failed; default icon will be used."
-          else
-            echo "No resources/icon.png found — using the default Capacitor icon."
-          fi
-
-      - name: Inject permissions + the location service into AndroidManifest
-        run: |
-          python3 - <<'PY'
-          p = "app/mobile/android/app/src/main/AndroidManifest.xml"
-          s = open(p, encoding="utf-8").read()
-          perms = (
-              '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n'
-              '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n'
-              '    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />\n'
-              '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n'
-              '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />\n'
-              '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
-              '    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />\n'
-          )
-          if "ACCESS_BACKGROUND_LOCATION" not in s:
-              s = s.replace("<application", perms + "\n    <application", 1)
-          if "LocationService" not in s:
-              s = s.replace("</application>", '    <service android:name=".LocationService" android:foregroundServiceType="location" android:exported="false" android:enabled="true" />\n</application>')
-          open(p, "w", encoding="utf-8").write(s)
-          print("Manifest patched (permissions + service).")
-          PY
-
-      - name: Install native tracking service (Java) + play-services-location
-        working-directory: app/mobile
-        run: |
-          DEST=android/app/src/main/java/in/recoveriq/app
-          mkdir -p "$DEST"
-          cp native/LocationService.java native/TrackerPlugin.java native/MainActivity.java "$DEST/"
-          echo "Installed native files:"; ls -1 "$DEST"
-          cat >> android/app/build.gradle <<'EOF'
-
-          dependencies {
-              implementation "com.google.android.gms:play-services-location:21.0.1"
-          }
-          EOF
-          echo "----- tail app/build.gradle -----"; tail -6 android/app/build.gradle
-
-      - name: Sync Capacitor
-        working-directory: app/mobile
-        run: npx cap sync android
-
-      - name: Build debug APK
-        working-directory: app/mobile/android
-        run: |
-          chmod +x ./gradlew
-          ./gradlew assembleDebug --no-daemon
-
-      - name: Rename APK for a clean download
-        run: cp app/mobile/android/app/build/outputs/apk/debug/app-debug.apk RecoverIQ.apk
-
-      - name: Upload APK (artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: recoveriq-android-apk
-          path: RecoverIQ.apk
-          if-no-files-found: error
-
-      - name: Publish APK to Releases (direct .apk download — no zip)
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: android-latest
-          name: RecoverIQ Android (latest build)
-          body: "Latest debug APK. Open this page ON the phone and tap RecoverIQ.apk to install."
-          files: RecoverIQ.apk
+          echo "This workflow is retired. Use 'Build Native Android App' instead,"
+          echo "which publishes RecoverIQ-native.apk to the android-native-latest release."

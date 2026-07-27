@@ -2347,7 +2347,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
         <div className="section-h"><h3 style={{ fontSize: 14 }}>Account details</h3></div>
         <div className="dl">
           {row('Phone', cur.phone)}{row('Alt phone', cur.alt_phone)}
-          {row('Address', cur.address)}{row('Pincode', cur.pincode)}
+          {row('Address 1', cur.address)}{cur.address2 ? row('Address 2', cur.address2) : null}{row('Pincode', cur.pincode)}
           {row('Bank / Product', (cur.bank || '') + (cur.product ? ' · ' + cur.product : '') + (cur.segment ? ' · ' + cur.segment : ''))}
           {row('Card no', cur.card_no)}
           {row('Bucket / Cycle', (cur.bucket || '—') + ' · cyc ' + (cur.cycle || '—'))}
@@ -3491,7 +3491,8 @@ const SHEET_COLS = [
   { k: 'x_last_payment_amount', t: 'Last pay amt', type: 'num', data: true },
   { k: 'x_organisation', t: 'Organisation', type: 'text', data: true },
   { k: 'x_designation', t: 'Designation', type: 'text', data: true },
-  { k: 'address', t: 'Address', type: 'text' },
+  { k: 'address', t: 'Address 1', type: 'text' },
+  { k: 'address2', t: 'Address 2', type: 'text' },
   { k: 'pincode', t: 'Pincode', type: 'text' },
   { k: 'propensity', t: 'Score', type: 'num' },
 ];

@@ -91,7 +91,9 @@ HEADER_MAP = {
     "billingaddress": "address", "permanentaddress": "address", "currentaddress": "address",
     "curraddress": "address", "fulladdress": "address", "completeaddress": "address",
     "address1": "address", "addressline1": "address", "addressline": "address",
-    "add1": "address", "add2": "address", "add3": "address",          # ICICI FR uses ADD 1 / ADD 2
+    "add1": "address",                                                 # ADD 1 → primary line
+    "add2": "address2", "add3": "address2",                            # ADD 2 / ADD 3 → second line
+    "address2": "address2", "addressline2": "address2",
     "custaddr": "address", "customeraddr": "address",
     # Pincode — capture a dedicated column when present (else it's parsed from the address).
     "pincode": "pincode", "pin": "pincode", "pincodeno": "pincode", "pinno": "pincode",
@@ -203,11 +205,11 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
                         rec.setdefault("_extra", {})["x_" + field[2:]] = cv
                 elif field in MONEY_FIELDS:
                     rec[field] = to_decimal(val)
-                elif field == "address":                        # ADD 1 + ADD 2 (+…) → one address
+                elif field in ("address", "address2"):          # keep ADD 1 and ADD 2 (+ADD 3) separate
                     cv = _clean(val)
                     if cv:
-                        cur = rec.get("address")
-                        rec["address"] = f"{cur}, {cv}" if cur and cv not in cur else cv if not cur else cur
+                        cur = rec.get(field)
+                        rec[field] = f"{cur}, {cv}" if cur and cv not in cur else cv if not cur else cur
                 else:
                     rec[field] = _clean(val)
             # must have at least a name or account no to be a real case
@@ -221,8 +223,13 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
                     pc = pc[:-2]
                 m = PIN_RE.search(pc)
                 rec["pincode"] = m.group(1) if m else (pc or None)
-            if rec.get("address") and not rec.get("pincode"):
-                rec["pincode"] = extract_pincode(rec["address"])
+            if not rec.get("pincode"):
+                for _af in ("address", "address2"):
+                    if rec.get(_af):
+                        pc = extract_pincode(rec[_af])
+                        if pc:
+                            rec["pincode"] = pc
+                            break
             # derive pending if missing
             all_records.append(rec)
         # process every sheet that looks like case data (e.g. addresses may live
@@ -234,7 +241,7 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
 def record_to_case_kwargs(rec: dict) -> dict:
     fields = {
         "bank", "branch", "product", "account_no", "card_no", "customer_name",
-        "phone", "alt_phone", "address", "pincode", "bucket", "cycle", "month",
+        "phone", "alt_phone", "address", "address2", "pincode", "bucket", "cycle", "month",
         "total_outstanding", "principal_outstanding", "min_amount_due",
         "funding_amount", "received_amount", "pending_amount",
         "disposition", "remarks", "final_status",

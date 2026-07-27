@@ -24,6 +24,7 @@ def _ensure_columns():
     created, so existing SQLite/Postgres databases keep working without a reset."""
     wanted = {
         "cases": {
+            "address2": "TEXT",
             "last_contacted_at": "TIMESTAMP",
             "follow_up_date": "DATE",
             "segment": "VARCHAR(30)",

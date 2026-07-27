@@ -69,7 +69,8 @@ class Case(Base):
     customer_name = Column(String(160))
     phone = Column(String(20))
     alt_phone = Column(String(20))
-    address = Column(Text)
+    address = Column(Text)                        # ADD 1 (primary address line)
+    address2 = Column(Text)                        # ADD 2 (+ ADD 3) — kept separate
     pincode = Column(String(10), index=True)
     latitude = Column(Float)
     longitude = Column(Float)
