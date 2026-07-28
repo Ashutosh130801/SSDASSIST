@@ -10,6 +10,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user, require_roles
 from ..storage import save_photo, resolve as resolve_photo
+from .. import audit
 
 router = APIRouter(prefix="/api/visits", tags=["visits"])
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -38,6 +39,8 @@ async def create_visit(
         raise HTTPException(status_code=404, detail="Case not found")
     if user.role == "fos" and case.assigned_fos_id != user.id:
         raise HTTPException(status_code=403, detail="This case is not assigned to you")
+    from .cases import _ensure_open
+    _ensure_open(case, user)
 
     photo_path = None
     if photo is not None:
@@ -97,6 +100,11 @@ async def create_visit(
         case.follow_up_date = pd or (datetime.now(IST).date() + timedelta(days=1))
         if pd or (disposition or "").upper() in ("PTP", "RTP"):
             case.status = "ptp"
+    audit.record(db, user, "visit", case, new=disposition,
+                 detail=f"Field visit — {disposition or 'logged'}"
+                        + (f", paid ₹{amt}" if (paid and amt > 0) else "")
+                        + (f", {int(dist_m)}m from case" if dist_m else ""))
+    audit.stamp_case(case, user)
     db.commit()
     db.refresh(visit)
     from .realtime import notify_data_changed

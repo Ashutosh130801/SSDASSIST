@@ -15,6 +15,7 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_roles
 from ..security import hash_password
+from .. import audit
 
 router = APIRouter(prefix="/api/team", tags=["team"])
 
@@ -25,10 +26,27 @@ def _d(x) -> float:
     return float(x or 0)
 
 
-def _guard_view(actor: models.User, u: models.User):
+def _teamlead_member_ids(db: Session, lead: models.User) -> list[int]:
+    """FOS/caller ids a team lead oversees — derived per-case from the upload sheet:
+    the distinct staff assigned to cases whose team_lead field names this lead. A FOS
+    or caller only counts here for the cases that carry the lead's name, so the same
+    person can report to different leads on different cases."""
+    from .cases import teamlead_case_filter
+    rows = db.query(models.Case.assigned_fos_id, models.Case.assigned_caller_id).filter(
+        teamlead_case_filter(lead)).all()
+    ids = set()
+    for fos_id, caller_id in rows:
+        if fos_id:
+            ids.add(fos_id)
+        if caller_id:
+            ids.add(caller_id)
+    return list(ids)
+
+
+def _guard_view(actor: models.User, u: models.User, db: Session = None):
     """Who may open a staff member's profile/performance: the person themselves,
     admin & head office (everyone), a branch manager (their branch), and a team lead
-    (only their own members)."""
+    (only staff who handle a case carrying the lead's name)."""
     if actor.id == u.id:
         return
     if actor.role in ("admin", "headoffice"):
@@ -38,7 +56,7 @@ def _guard_view(actor: models.User, u: models.User):
             raise HTTPException(status_code=403, detail="Not in your branch")
         return
     if actor.role == "teamlead":
-        if u.team_lead_id != actor.id:
+        if db is None or u.id not in _teamlead_member_ids(db, actor):
             raise HTTPException(status_code=403, detail="Not one of your team members")
         return
     raise HTTPException(status_code=403, detail="Not allowed")
@@ -177,7 +195,7 @@ def performance(uid: int, db: Session = Depends(get_db),
     u = db.query(models.User).filter(models.User.id == uid).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
-    _guard_view(actor, u)
+    _guard_view(actor, u, db)
 
     now = datetime.now(timezone.utc)
     today = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
@@ -198,7 +216,7 @@ def employee_dashboard(uid: int, db: Session = Depends(get_db),
     u = db.query(models.User).filter(models.User.id == uid).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
-    _guard_view(actor, u)
+    _guard_view(actor, u, db)
 
     from sqlalchemy import select
     esc = select(models.Case.id).where(models.Case.escalated.is_(True))    # escalated → not their perf
@@ -290,20 +308,88 @@ def employee_cases(uid: int, db: Session = Depends(get_db),
     u = db.query(models.User).filter(models.User.id == uid).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
-    _guard_view(actor, u)
+    _guard_view(actor, u, db)
     q = db.query(models.Case).filter(models.Case.removed.isnot(True))
     q = q.filter(models.Case.assigned_caller_id == uid) if u.role == "telecaller" \
         else q.filter(models.Case.assigned_fos_id == uid)
     return _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).all()))
 
 
+@router.post("/transfer-cases")
+def transfer_cases(body: dict = Body(...), db: Session = Depends(get_db),
+                   actor: models.User = Depends(require_roles("admin", "manager"))):
+    """Move ALL of one staff member's assigned cases to another staff member — and, with
+    swap=true, exchange both caseloads. Works for FOS (assigned_fos_id), telecaller
+    (assigned_caller_id) and team lead (team_lead name). Both must be the same role.
+    Managers are limited to their own branch (both staff + the cases)."""
+    from_id = body.get("from_user_id")
+    to_id = body.get("to_user_id")
+    swap = bool(body.get("swap"))
+    if not from_id or not to_id or from_id == to_id:
+        raise HTTPException(status_code=400, detail="Pick two different staff members")
+    a = db.query(models.User).filter(models.User.id == from_id).first()
+    b = db.query(models.User).filter(models.User.id == to_id).first()
+    if not a or not b:
+        raise HTTPException(status_code=404, detail="Staff not found")
+    if a.role != b.role:
+        raise HTTPException(status_code=400, detail="Both staff must have the same role")
+    if actor.role == "manager":
+        if a.branch != actor.branch or b.branch != actor.branch:
+            raise HTTPException(status_code=403, detail="Both staff must be in your branch")
+
+    role = a.role
+    branch_scope = (actor.role == "manager")
+
+    def _cases_for(col, val):
+        q = db.query(models.Case).filter(models.Case.removed.isnot(True), col == val)
+        if branch_scope:
+            q = q.filter(models.Case.branch == actor.branch)
+        return q.all()
+
+    moved = 0
+    if role == "fos":
+        col = models.Case.assigned_fos_id
+        attr = "assigned_fos_id"
+    elif role == "telecaller":
+        col = models.Case.assigned_caller_id
+        attr = "assigned_caller_id"
+    elif role == "teamlead":
+        col = models.Case.team_lead
+        attr = "team_lead"
+    else:
+        raise HTTPException(status_code=400, detail="Only FOS, telecaller or team lead can be transferred")
+
+    a_val, b_val = (a.name, b.name) if role == "teamlead" else (a.id, b.id)
+    a_cases = _cases_for(col, a_val)
+    b_cases = _cases_for(col, b_val) if swap else []
+
+    for c in a_cases:
+        setattr(c, attr, b_val)
+        audit.record(db, actor, "transfer", c, field=attr, old=a.name, new=b.name,
+                     detail=f"{role} caseload: {a.name} → {b.name}", target_user_id=b.id if role != "teamlead" else None)
+        audit.stamp_case(c, actor)
+        moved += 1
+    for c in b_cases:
+        setattr(c, attr, a_val)
+        audit.record(db, actor, "transfer", c, field=attr, old=b.name, new=a.name,
+                     detail=f"{role} caseload (swap): {b.name} → {a.name}", target_user_id=a.id if role != "teamlead" else None)
+        audit.stamp_case(c, actor)
+        moved += 1
+    db.commit()
+    return {"moved": moved, "from": a.name, "to": b.name, "swap": swap, "role": role}
+
+
 @router.get("/my-team")
 def my_team(db: Session = Depends(get_db),
             lead: models.User = Depends(require_roles("teamlead"))):
     """Roster of the FOS/callers reporting to the current team lead, with quick per-member
-    stats and phone — powers the member cards (with call button) on the TL dashboard."""
-    members = db.query(models.User).filter(models.User.team_lead_id == lead.id,
-                                           models.User.is_active == True).all()  # noqa: E712
+    stats and phone — powers the member cards (with call button) on the TL dashboard.
+    Derived per-case: the staff assigned to cases whose team_lead names this lead."""
+    member_ids = _teamlead_member_ids(db, lead)
+    members = []
+    if member_ids:
+        members = db.query(models.User).filter(models.User.id.in_(member_ids),
+                                               models.User.is_active == True).all()  # noqa: E712
     out = [{"id": m.id, "name": m.name, "role": m.role, "emp_code": m.emp_code,
             "phone": m.phone, "email": m.email, "branch": m.branch} for m in members]
     out.sort(key=lambda x: (x["role"], x["name"]))
@@ -315,16 +401,18 @@ def team_overview(db: Session = Depends(get_db),
                   lead: models.User = Depends(require_roles("teamlead"))):
     """Team-lead dashboard: overall team KPIs, per-member performance cards (with phone
     for calling), a 30-day team collection trend and a member leaderboard."""
-    members = db.query(models.User).filter(models.User.team_lead_id == lead.id,
-                                           models.User.is_active == True).all()  # noqa: E712
-    member_ids = [m.id for m in members]
-
-    cases = []
+    from .cases import teamlead_case_filter
+    member_ids = _teamlead_member_ids(db, lead)
+    members = []
     if member_ids:
-        cases = db.query(models.Case).filter(
-            models.Case.escalated.isnot(True), models.Case.removed.isnot(True),
-            or_(models.Case.assigned_fos_id.in_(member_ids),
-                models.Case.assigned_caller_id.in_(member_ids))).all()
+        members = db.query(models.User).filter(models.User.id.in_(member_ids),
+                                               models.User.is_active == True).all()  # noqa: E712
+
+    # The lead's cases are those the upload tagged with their name (not every case the
+    # assigned FOS/caller happens to hold), minus escalated/removed.
+    cases = db.query(models.Case).filter(
+        models.Case.escalated.isnot(True), models.Case.removed.isnot(True),
+        teamlead_case_filter(lead)).all()
 
     def paid(c):
         return (c.paid_status or "").upper() == "PAID"

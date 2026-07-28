@@ -13,6 +13,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from .cases import _scope
 from .realtime import manager
+from .. import audit
 
 router = APIRouter(prefix="/api/sheet", tags=["sheet"])
 
@@ -78,16 +79,27 @@ async def update_cell(case_id: int, body: CellUpdate, db: Session = Depends(get_
     # A telecaller may only edit cases in their own queue.
     if user.role == "telecaller" and case.assigned_caller_id != user.id:
         raise HTTPException(status_code=403, detail="This case is not in your queue")
+    from .cases import _ensure_open
+    _ensure_open(case, user)
 
     if is_extra:
         extra = dict(case.extra or {})
+        old_val = extra.get(body.field)
         if body.value in (None, ""):
             extra.pop(body.field, None)
         else:
             extra[body.field] = body.value
         case.extra = extra
+        new_val = body.value
     else:
+        old_val = getattr(case, body.field, None)
         setattr(case, body.field, _coerce(body.field, body.value))
+        new_val = getattr(case, body.field, None)
+
+    if str(old_val) != str(new_val):
+        audit.record(db, user, "cell_edit", case, field=body.field, old=old_val, new=new_val,
+                     detail=f"{body.field} edited in live sheet")
+        audit.stamp_case(case, user)
 
     if body.field == "received_amount":
         case.pending_amount = (Decimal(case.funding_amount or 0) - Decimal(case.received_amount or 0))

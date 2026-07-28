@@ -43,6 +43,8 @@ class ConnectionManager:
     def __init__(self) -> None:
         # user_id -> set of live sockets (a user may have web + phone open at once)
         self._by_user: dict[int, set[WebSocket]] = {}
+        # case_id -> { user_id: {"name","role","field"} } — who is editing a row right now
+        self._editing: dict[int, dict[int, dict]] = {}
 
     async def connect(self, ws: WebSocket, user_id: int) -> None:
         await ws.accept()
@@ -54,6 +56,28 @@ class ConnectionManager:
             conns.discard(ws)
             if not conns:
                 self._by_user.pop(user_id, None)
+                # user fully gone → drop them from every row they were editing
+                for cid in [c for c, e in self._editing.items() if user_id in e]:
+                    self._editing[cid].pop(user_id, None)
+                    if not self._editing[cid]:
+                        self._editing.pop(cid, None)
+
+    def _editors(self, case_id: int) -> list[dict]:
+        return [{"id": uid, **info} for uid, info in self._editing.get(case_id, {}).items()]
+
+    async def set_editing(self, case_id: int, user_id: int, name: str, role: str,
+                          field: str | None, editing: bool) -> None:
+        """Record/clear that a user is editing a case row, then broadcast the row's
+        current editor list so everyone sees the live 'X is editing' badge."""
+        slot = self._editing.setdefault(case_id, {})
+        if editing:
+            slot[user_id] = {"name": name, "role": role, "field": field}
+        else:
+            slot.pop(user_id, None)
+            if not slot:
+                self._editing.pop(case_id, None)
+        await self.broadcast({"type": "presence", "case_id": case_id,
+                              "editors": self._editors(case_id)})
 
     async def send_to_user(self, user_id: int, data: dict) -> None:
         for ws in list(self._by_user.get(user_id, set())):
@@ -87,6 +111,8 @@ async def ws_endpoint(ws: WebSocket):
     try:
         payload = decode_token(token)
         user_id = int(payload.get("sub"))
+        uname = payload.get("name") or "Someone"
+        urole = payload.get("role") or ""
     except (JWTError, TypeError, ValueError):
         await ws.close(code=1008)
         return
@@ -94,9 +120,20 @@ async def ws_endpoint(ws: WebSocket):
     await manager.connect(ws, user_id)
     try:
         while True:
-            # We don't require client messages; receiving keeps the socket alive
-            # and lets the client send lightweight "ping" frames.
-            await ws.receive_text()
+            # Clients may send presence frames as they focus/blur a row or cell:
+            #   {"type":"editing","case_id":N,"field":"remarks"}
+            #   {"type":"editing_stop","case_id":N}
+            import json
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            t = msg.get("type")
+            cid = msg.get("case_id")
+            if t in ("editing", "editing_stop") and cid:
+                await manager.set_editing(int(cid), user_id, uname, urole,
+                                          msg.get("field"), editing=(t == "editing"))
     except WebSocketDisconnect:
         manager.disconnect(ws, user_id)
     except Exception:

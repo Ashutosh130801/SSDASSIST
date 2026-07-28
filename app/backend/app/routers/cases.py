@@ -13,6 +13,7 @@ from ..deps import get_current_user, require_roles
 from ..allocation import run_allocation
 from ..config import get_settings
 from ..storage import resolve as resolve_photo
+from .. import audit
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 
@@ -83,13 +84,60 @@ def _team_member_ids(user: models.User):
     return select(models.User.id).where(models.User.team_lead_id == user.id)
 
 
+def teamlead_case_filter(user: models.User):
+    """A team lead owns a case when the case's own team-lead field (set from the
+    upload sheet) names them — NOT because the handling FOS/caller reports to them.
+    So the same FOS/caller can sit under different team leads on different cases,
+    and a team lead sees only the cases that carry their name. Matched on the
+    team lead's name (case/space-insensitive), with emp_code as a fallback."""
+    name = (user.name or "").strip().lower()
+    conds = []
+    if name:
+        conds.append(func.lower(func.trim(models.Case.team_lead)) == name)
+    if user.emp_code:
+        conds.append(func.lower(func.trim(models.Case.team_lead)) == user.emp_code.strip().lower())
+    return or_(*conds) if conds else func.lower(models.Case.team_lead) == "\x00"  # match nothing
+
+
 def _scope_user_ids(db, user: models.User):
-    """Concrete list of staff ids a manager/team-lead may act on."""
+    """Concrete list of staff ids a manager/team-lead may act on. For a team lead this
+    is derived per-case: the FOS/callers assigned to cases carrying the lead's name."""
     if user.role == "teamlead":
-        return [uid for (uid,) in db.query(models.User.id).filter(models.User.team_lead_id == user.id).all()]
+        rows = db.query(models.Case.assigned_fos_id, models.Case.assigned_caller_id).filter(
+            teamlead_case_filter(user)).all()
+        ids = set()
+        for fos_id, caller_id in rows:
+            if fos_id:
+                ids.add(fos_id)
+            if caller_id:
+                ids.add(caller_id)
+        return list(ids)
     if user.role == "manager":
         return [uid for (uid,) in db.query(models.User.id).filter(models.User.branch == user.branch).all()]
     return []
+
+
+_IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+
+def _current_period() -> str:
+    """The month everyone is currently working in, as 'YYYY-MM' (IST)."""
+    return datetime.now(_IST_TZ).strftime("%Y-%m")
+
+
+def _case_closed(case: models.Case) -> bool:
+    if not case.close_date:
+        return False
+    return case.close_date < datetime.now(_IST_TZ).date()
+
+
+def _ensure_open(case: models.Case, user: models.User):
+    """Block field/calling operations on a case that has already closed for the month.
+    Applies to FOS & telecallers; admin / manager / head office keep the ability to make
+    corrections and post DPR payments."""
+    if user.role in ("fos", "telecaller") and _case_closed(case):
+        raise HTTPException(status_code=403,
+                            detail="This case has closed for the month and is locked. Ask an admin if a change is needed.")
 
 
 def _scope(q, user: models.User, include_removed: bool = False):
@@ -99,14 +147,20 @@ def _scope(q, user: models.User, include_removed: bool = False):
     hidden everywhere unless explicitly requested."""
     if not include_removed:
         q = q.filter(models.Case.removed.isnot(True))
+    # Monthly lifecycle: everyone works within the CURRENT month. This month's cases stay
+    # visible to field/calling staff even after they close (cycle date / month-end) — but
+    # closed ones are locked (no operations). Once the month rolls over, the whole month
+    # becomes admin-only history (Monthly Archive). Cases with no period (legacy) stay on.
+    if user.role != "admin":
+        cp = _current_period()
+        q = q.filter(or_(models.Case.period.is_(None), models.Case.period == cp))
     if user.role == "fos":
         return q.filter(models.Case.assigned_fos_id == user.id)
     if user.role == "telecaller":
         return q.filter(models.Case.assigned_caller_id == user.id)
     if user.role == "teamlead":
-        mids = _team_member_ids(user)
-        return q.filter(or_(models.Case.assigned_fos_id.in_(mids),
-                            models.Case.assigned_caller_id.in_(mids)))
+        # Case-level ownership: the case's team_lead (from the upload) names this lead.
+        return q.filter(teamlead_case_filter(user))
     if user.role == "manager":
         ids = _branch_user_ids(user)
         # A case belongs to a branch if it's tagged with that branch OR handled by its staff.
@@ -197,10 +251,24 @@ def list_cases(
     status: str | None = None,
     paid_status: str | None = None,
     search: str | None = None,
+    period: str | None = None,          # "YYYY-MM" — admin can view a past month's cases
+    closed: bool | None = None,         # True = only closed(locked), False = only open
+    closing_type: str | None = None,    # cyc / month_end / due_date
+    cyc: int | None = None,             # cycle day-of-month it closes on
     limit: int = Query(500, le=5000),
     offset: int = 0,
 ):
     q = _scope(db.query(models.Case), user)
+    if period:
+        q = q.filter(models.Case.period == period)
+    if closing_type:
+        q = q.filter(models.Case.closing_type == closing_type)
+    if closed is not None:
+        today = datetime.now(_IST_TZ).date()
+        if closed:
+            q = q.filter(models.Case.close_date.isnot(None), models.Case.close_date < today)
+        else:
+            q = q.filter(or_(models.Case.close_date.is_(None), models.Case.close_date >= today))
     if bank:
         q = q.filter(models.Case.bank == bank)
     if product:
@@ -231,9 +299,10 @@ def _manager_owns(db, actor, case):
     if actor.role == "manager" and case.branch != actor.branch:
         raise HTTPException(status_code=403, detail="Not in your branch")
     if actor.role == "teamlead":
-        mids = set(_scope_user_ids(db, actor))
-        if case.assigned_fos_id not in mids and case.assigned_caller_id not in mids \
-                and case.escalated_to != actor.id:
+        tl = (case.team_lead or "").strip().lower()
+        owns = bool(tl) and (tl == (actor.name or "").strip().lower()
+                             or (actor.emp_code and tl == actor.emp_code.strip().lower()))
+        if not owns and case.escalated_to != actor.id:
             raise HTTPException(status_code=403, detail="Not one of your team's cases")
 
 
@@ -271,6 +340,10 @@ def escalate_case(case_id: int, body: EscalateIn = EscalateIn(), db: Session = D
     case.assigned_caller_id = None         # drop from the caller queue / performance
     if body.note:
         case.allocation_reason = f"Escalated: {body.note}"
+    audit.record(db, actor, "escalate", case, new=owner.name,
+                 detail=f"Escalated to {owner.name}" + (f": {body.note}" if body.note else ""),
+                 target_user_id=owner_id)
+    audit.stamp_case(case, actor)
     db.commit()
     from .realtime import notify_data_changed
     notify_data_changed(case.bank, case.product)
@@ -287,6 +360,8 @@ def deescalate_case(case_id: int, db: Session = Depends(get_db),
     _manager_owns(db, actor, case)
     case.escalated = False
     case.escalated_to = None
+    audit.record(db, actor, "deescalate", case, detail="Released escalation back to pool")
+    audit.stamp_case(case, actor)
     db.commit()
     from .realtime import notify_data_changed
     notify_data_changed(case.bank, case.product)
@@ -367,8 +442,20 @@ def update_case(case_id: int, body: schemas.CaseUpdate, db: Session = Depends(ge
     else:
         data.pop("assigned_fos_id", None)
         data.pop("assigned_caller_id", None)
+    # Audit every field that actually changes; assignment changes get a clearer action.
     for k, v in data.items():
+        old = getattr(case, k, None)
+        if str(old) == str(v):
+            continue
         setattr(case, k, v)
+        if k in ("assigned_fos_id", "assigned_caller_id"):
+            who = db.query(models.User.name).filter(models.User.id == v).scalar() if v else None
+            audit.record(db, user, "deallocate" if v is None else "reassign", case,
+                         field=k, old=old, new=v,
+                         detail=f"{k.replace('_id','')} → {who or 'unassigned'}", target_user_id=v)
+        else:
+            audit.record(db, user, "edit", case, field=k, old=old, new=v)
+    audit.stamp_case(case, user)
     # keep pending consistent when received changes
     if "received_amount" in data:
         case.pending_amount = (Decimal(case.funding_amount or 0) - Decimal(case.received_amount or 0))
@@ -386,6 +473,72 @@ def allocate(body: schemas.AllocateRequest, db: Session = Depends(get_db),
     return run_allocation(db, only_unallocated=body.only_unallocated, bank=body.bank)
 
 
+class BulkReassign(BaseModel):
+    case_ids: list[int]
+    # Any field left as the sentinel "keep" is untouched. Use null to DE-ALLOCATE
+    # (clear the FOS/caller) or "" to clear the team-lead tag.
+    assigned_fos_id: int | None | str = "keep"
+    assigned_caller_id: int | None | str = "keep"
+    team_lead: str | None = "keep"
+
+
+@router.post("/bulk-reassign")
+def bulk_reassign(body: BulkReassign, db: Session = Depends(get_db),
+                  user: models.User = Depends(require_roles("admin", "headoffice", "manager", "teamlead"))):
+    """De-allocate and/or re-allocate one or many cases in a single action.
+    - assigned_fos_id / assigned_caller_id: an id to assign, null to de-allocate, "keep" to leave.
+    - team_lead: a name to set, "" to clear, "keep" to leave.
+    Manager/team-lead may only assign to staff within their own scope."""
+    if not body.case_ids:
+        raise HTTPException(status_code=400, detail="No cases selected")
+    cases = _scope(db.query(models.Case), user).filter(models.Case.id.in_(body.case_ids)).all()
+    if not cases:
+        raise HTTPException(status_code=404, detail="No matching cases in your scope")
+
+    def _uname(uid):
+        return db.query(models.User.name).filter(models.User.id == uid).scalar() if uid else None
+
+    # Managers/team-leads can only hand cases to staff they oversee.
+    if user.role in ("manager", "teamlead"):
+        allowed = set(_scope_user_ids(db, user))
+        for key in ("assigned_fos_id", "assigned_caller_id"):
+            val = getattr(body, key)
+            if val not in ("keep", None) and val not in allowed:
+                raise HTTPException(status_code=403, detail="Can only assign to your own team")
+
+    changed = 0
+    for case in cases:
+        touched = False
+        for key in ("assigned_fos_id", "assigned_caller_id"):
+            val = getattr(body, key)
+            if val == "keep":
+                continue
+            old = getattr(case, key)
+            new = None if val is None else int(val)
+            if old == new:
+                continue
+            setattr(case, key, new)
+            audit.record(db, user, "deallocate" if new is None else "reassign", case,
+                         field=key, old=_uname(old) or old, new=_uname(new) or new,
+                         detail=f"{key.replace('_id','')} → {_uname(new) or 'unassigned'}",
+                         target_user_id=new)
+            touched = True
+        if body.team_lead != "keep":
+            old_tl = case.team_lead
+            new_tl = (body.team_lead or None)
+            if (old_tl or None) != new_tl:
+                case.team_lead = new_tl
+                audit.record(db, user, "reassign" if new_tl else "deallocate", case,
+                             field="team_lead", old=old_tl, new=new_tl,
+                             detail=f"team lead → {new_tl or 'cleared'}")
+                touched = True
+        if touched:
+            audit.stamp_case(case, user)
+            changed += 1
+    db.commit()
+    return {"updated": changed, "requested": len(body.case_ids)}
+
+
 class PaymentIn(BaseModel):
     amount: Decimal
     mode: str = "UPI"
@@ -401,6 +554,7 @@ def record_payment(case_id: int, body: PaymentIn, db: Session = Depends(get_db),
     case = _scope(db.query(models.Case), user).filter(models.Case.id == case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    _ensure_open(case, user)
     amt = Decimal(str(body.amount or 0))
     if amt <= 0:
         raise HTTPException(status_code=400, detail="Amount must be greater than zero")
@@ -420,6 +574,9 @@ def record_payment(case_id: int, body: PaymentIn, db: Session = Depends(get_db),
     note = f"₹{amt} via {body.mode}" + (f" — {body.note}" if body.note else "")
     db.add(models.CallLog(case_id=case.id, caller_id=user.id,
                           disposition="PAYMENT", ptp_amount=amt, note=note))
+    audit.record(db, user, "payment", case, new=str(amt),
+                 detail=f"Collected ₹{amt} via {body.mode}" + (f" ({body.note})" if body.note else ""))
+    audit.stamp_case(case, user)
     db.commit()
     db.refresh(case)
     from .realtime import notify_data_changed
@@ -497,6 +654,8 @@ def mark_paid(case_id: int, body: MarkPaidIn = MarkPaidIn(), db: Session = Depen
     db.add(models.CallLog(case_id=case.id, caller_id=credit_id, disposition="PAID", ptp_amount=amt,
                           note=f"{body.mode or 'DPR'}: customer paid ₹{amt}{tag}" + (f" — {body.note}" if body.note else "")))
     case.last_contacted_at = datetime.now(timezone.utc)
+    audit.record(db, actor, "paid", case, old="UNPAID", new="PAID", detail=f"Marked PAID ₹{amt}{tag}")
+    audit.stamp_case(case, actor)
     db.commit()
     db.refresh(case)
     from .realtime import notify_data_changed
@@ -527,6 +686,9 @@ def mark_unpaid(case_id: int, db: Session = Depends(get_db),
         db.add(models.CallLog(case_id=case.id, caller_id=credit_id, disposition="PAID", ptp_amount=(-prev),
                               note=f"Reversal: payment of ₹{prev} reverted (marked unpaid)"))
     case.last_contacted_at = datetime.now(timezone.utc)
+    audit.record(db, actor, "unpaid", case, old="PAID", new="UNPAID",
+                 detail=f"Marked UNPAID (reversed ₹{prev})" if prev > 0 else "Marked UNPAID")
+    audit.stamp_case(case, actor)
     db.commit()
     db.refresh(case)
     from .realtime import notify_data_changed
@@ -557,6 +719,8 @@ def remove_cases(body: IdsIn, db: Session = Depends(get_db),
         c.removed_by = actor.id
         if body.reason:
             c.allocation_reason = f"Removed: {body.reason}"
+        audit.record(db, actor, "delete", c, detail="Removed" + (f": {body.reason}" if body.reason else ""))
+        audit.stamp_case(c, actor)
         banks.add((c.bank, c.product))
     db.commit()
     from .realtime import notify_data_changed
@@ -578,6 +742,8 @@ def restore_cases(body: IdsIn, db: Session = Depends(get_db),
         c.removed = False
         c.removed_at = None
         c.removed_by = None
+        audit.record(db, actor, "restore", c, detail="Restored from Removed bin")
+        audit.stamp_case(c, actor)
         banks.add((c.bank, c.product))
     db.commit()
     from .realtime import notify_data_changed

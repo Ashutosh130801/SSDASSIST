@@ -1,0 +1,28 @@
+name: Deploy to self-hosted server
+
+# Runs on YOUR server (via a self-hosted GitHub Actions runner). Every push to `main`
+# that touches the app rebuilds and restarts the Docker stack automatically.
+# Secrets live in ~/recoveriq.env ON THE SERVER — never in the repo.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - ".github/workflows/deploy-selfhosted.yml"
+  workflow_dispatch: {}   # lets you trigger a deploy manually from the Actions tab
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Get the latest code
+        uses: actions/checkout@v4
+
+      - name: Build & (re)start the stack
+        run: |
+          cd app
+          docker compose -p recoveriq --env-file "$HOME/recoveriq.env" up -d --build
+
+      - name: Free up old Docker images
+        run: docker image prune -f

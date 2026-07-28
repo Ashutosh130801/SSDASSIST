@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user, require_roles
+from .. import audit
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
 
@@ -34,6 +35,8 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="Case not found")
     if user.role == "telecaller" and case.assigned_caller_id != user.id:
         raise HTTPException(status_code=403, detail="This case is not in your queue")
+    from .cases import _ensure_open
+    _ensure_open(case, user)
 
     ptp_dt = datetime.combine(body.ptp_date, time.min).replace(tzinfo=timezone.utc) if body.ptp_date else None
     call = models.CallLog(
@@ -65,6 +68,10 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
         case.status = "callback"
         case.follow_up_date = body.follow_up_date          # None => due again next day
 
+    audit.record(db, user, "call", case, new=body.disposition,
+                 detail=f"Call logged — {body.disposition or 'no disposition'}"
+                        + (f", PTP ₹{body.ptp_amount}" if (disp in ('PTP', 'RTP') and body.ptp_amount) else ""))
+    audit.stamp_case(case, user)
     db.commit()
     db.refresh(call)
     from .realtime import notify_data_changed
@@ -78,18 +85,25 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
     """Telecaller work queue split into three clear sections so nothing is called
     twice or missed: due now, already contacted today, and scheduled for later."""
     today = _ist_today()
+    from sqlalchemy import or_ as _or
+    from .cases import _current_period
     q = db.query(models.Case).filter(models.Case.removed.isnot(True))
     if user.role == "telecaller":
         q = q.filter(models.Case.assigned_caller_id == user.id)
+        # Only the current month's book (past months are admin-only history).
+        cp = _current_period()
+        q = q.filter(_or(models.Case.period.is_(None), models.Case.period == cp))
     q = q.filter(models.Case.status.notin_(["paid", "closed"]))
     if bank:
         q = q.filter(models.Case.bank == bank)
     cases = q.all()
 
     from .cases import propensity
-    due, contacted, upcoming = [], [], []
+    due, contacted, upcoming, closed_list = [], [], [], []
     for c in cases:
-        if _contacted_today(c):
+        if c.closed:                      # cycle/month closed → visible but locked
+            closed_list.append(c)
+        elif _contacted_today(c):
             contacted.append(c)
         elif c.follow_up_date and c.follow_up_date > today:
             upcoming.append(c)
@@ -113,10 +127,13 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
     def ser(lst):
         return [schemas.CaseOut.model_validate(x) for x in lst]
 
+    closed_list.sort(key=lambda c: (c.close_date or today), reverse=True)
+
     return {
-        "due": ser(due), "contacted_today": ser(contacted), "upcoming": ser(upcoming), "paid_today": ser(paid_today),
+        "due": ser(due), "contacted_today": ser(contacted), "upcoming": ser(upcoming),
+        "paid_today": ser(paid_today), "closed": ser(closed_list),
         "counts": {"due": len(due), "contacted_today": len(contacted),
-                   "upcoming": len(upcoming), "paid_today": len(paid_today)},
+                   "upcoming": len(upcoming), "paid_today": len(paid_today), "closed": len(closed_list)},
     }
 
 

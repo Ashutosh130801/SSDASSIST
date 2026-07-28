@@ -78,7 +78,13 @@ class Case(Base):
     # bucket / cycle
     bucket = Column(String(30))                  # 3RD BKT / X-BKT
     cycle = Column(String(10))
-    month = Column(String(20))
+    month = Column(String(20))                   # free-text month from the sheet (legacy)
+
+    # Monthly lifecycle: the period a case belongs to (chosen at upload) and the date it
+    # closes out of the live views into admin-only history (per product closing rule).
+    period = Column(String(7), index=True)       # "YYYY-MM"
+    close_date = Column(Date, index=True)        # last day it shows to FOS/caller/etc.
+    closing_type = Column(String(12))            # cyc / month_end / due_date
 
     # amounts (Decimal, 2dp)
     total_outstanding = Column(Numeric(14, 2), default=0)
@@ -130,6 +136,10 @@ class Case(Base):
     removed_at = Column(DateTime(timezone=True), nullable=True)
     removed_by = Column(Integer, nullable=True)
 
+    # who last changed this case (any field / cell / reassignment) and when
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_by_name = Column(String(120))
+
     import_batch_id = Column(Integer, ForeignKey("import_batches.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -138,6 +148,17 @@ class Case(Base):
     caller = relationship("User", foreign_keys=[assigned_caller_id])
     visits = relationship("Visit", back_populates="case", cascade="all, delete-orphan")
     calls = relationship("CallLog", back_populates="case", cascade="all, delete-orphan")
+
+    @property
+    def closed(self) -> bool:
+        """True once the case has passed its close date (cycle day / month-end / due date).
+        A closed case stays visible for the rest of its month but is LOCKED — field/calling
+        staff can no longer act on it. Admin can still edit for corrections."""
+        if not self.close_date:
+            return False
+        from datetime import timedelta
+        today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+        return self.close_date < today
 
 
 class Visit(Base):
@@ -341,3 +362,53 @@ class FeedbackEntry(Base):
 
     case = relationship("Case")
     __table_args__ = (UniqueConstraint("case_id", "day", name="uq_feedback_case_day"),)
+
+
+class CatalogProduct(Base):
+    """Admin-added banks / products, merged on top of the built-in catalog. Lets the
+    agency onboard a new bank or product (with its closing rule) without a code change.
+    A row with product=NULL just registers a new bank name in the dropdown."""
+    __tablename__ = "catalog_products"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bank = Column(String(60), index=True, nullable=False)
+    product = Column(String(80))                       # NULL = bank-only entry
+    segment = Column(String(30))                       # suggested segment (Credit Card / PL/BL)
+    closing_type = Column(String(12))                  # cyc / month_end / due_date
+    is_active = Column(Boolean, default=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class AuditLog(Base):
+    """Immutable record of every mutating action in the system — who did what, when,
+    to which case, and the before/after value. Powers the admin/manager Activity Log
+    with branch / role / employee filters. Never edited after write."""
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    at = Column(DateTime(timezone=True), default=utcnow, index=True)
+
+    # who
+    actor_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    actor_name = Column(String(120))
+    actor_role = Column(String(20), index=True)
+
+    # what
+    action = Column(String(40), index=True)        # reassign / deallocate / transfer / edit /
+                                                   # cell_edit / paid / unpaid / payment / visit /
+                                                   # call / delete / restore / escalate / import / login
+    entity_type = Column(String(20), default="case", index=True)   # case / staff / import ...
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=True, index=True)
+    target_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)   # e.g. reassigned-to
+
+    # denormalised context so the log filters/reads without extra joins
+    branch = Column(String(80), index=True)
+    bank = Column(String(40), index=True)
+    product = Column(String(80), index=True)
+
+    field = Column(String(60))                     # which field/cell changed (for edits)
+    old_value = Column(Text)
+    new_value = Column(Text)
+    detail = Column(Text)                          # human summary
+    meta = Column(JSON, default=dict)              # anything extra (case_ids, counts...)

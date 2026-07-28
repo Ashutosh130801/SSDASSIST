@@ -1,18 +1,19 @@
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
+from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from sqlalchemy import inspect, text, func
 
-from .database import Base, engine
+from .database import Base, engine, get_db
 from .config import get_settings
 from . import models  # noqa: F401  (register models)
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
-                      team, mis, feedback, reminders)
+                      team, mis, feedback, reminders, audit_log, archive, catalog)
 
 settings = get_settings()
 
@@ -25,6 +26,11 @@ def _ensure_columns():
     wanted = {
         "cases": {
             "address2": "TEXT",
+            "period": "VARCHAR(7)",
+            "close_date": "DATE",
+            "closing_type": "VARCHAR(12)",
+            "updated_by": "INTEGER",
+            "updated_by_name": "VARCHAR(120)",
             "last_contacted_at": "TIMESTAMP",
             "follow_up_date": "DATE",
             "segment": "VARCHAR(30)",
@@ -170,7 +176,8 @@ async def _security_headers(request, call_next):
 
 
 for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, devices,
-          leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis, feedback, reminders):
+          leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis, feedback,
+          reminders, audit_log, archive, catalog):
     app.include_router(r.router)
 
 
@@ -182,10 +189,10 @@ async def _capture_loop():
 
 
 @app.get("/api/config")
-def config():
+def config(db: Session = Depends(get_db)):
     from .products import catalog
     return {
-        "bank_products": catalog(),
+        "bank_products": catalog(db),
         "google_maps_api_key": settings.google_maps_api_key,
         "google_client_id": settings.google_client_id,
         "location_ping_seconds": settings.location_ping_seconds,

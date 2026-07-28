@@ -716,17 +716,73 @@ function Dashboard({ user, branch }) {
 }
 
 /* ============================== Cases (admin) ============================== */
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/* Admin: onboard a NEW bank and/or product with its closing rule. */
+function AddProductModal({ presetBank, onClose, onAdded }) {
+  const [bank, setBank] = useState(presetBank || '');
+  const [product, setProduct] = useState('');
+  const [segment, setSegment] = useState('Credit Card');
+  const [closing, setClosing] = useState('month_end');
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const save = async () => {
+    if (!bank.trim()) { setErr('Bank name is required'); return; }
+    setBusy(true); setErr('');
+    try {
+      const r = await api('/api/catalog/product', { method: 'POST',
+        body: { bank: bank.trim(), product: product.trim(), segment, closing_type: closing } });
+      toast(`Added ${r.bank}${r.product ? ' · ' + r.product : ' (bank)'}.`);
+      onAdded(r.bank, r.product || '');
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+        <div className="section-h"><h3>Add bank / product</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 13 }}>Type a new bank and/or product. Leave product blank to just add a bank. The closing rule decides when its cases leave the live views.</p>
+        <div className="field"><label>Bank</label>
+          <input className="input" value={bank} onChange={e => setBank(e.target.value)} placeholder="e.g. KOTAK" /></div>
+        <div className="field"><label>Product <span className="muted" style={{ fontWeight: 400 }}>(optional)</span></label>
+          <input className="input" value={product} onChange={e => setProduct(e.target.value)} placeholder="e.g. 2 BKT" /></div>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="field"><label>Segment</label>
+            <select className="input" value={segment} onChange={e => setSegment(e.target.value)}>
+              <option>Credit Card</option><option>PL/BL</option></select></div>
+          <div className="field"><label>Closing rule</label>
+            <select className="input" value={closing} onChange={e => setClosing(e.target.value)}>
+              <option value="month_end">Month-end</option>
+              <option value="cyc">Cycle-wise (CYC date)</option>
+              <option value="due_date">Due-date</option></select></div>
+        </div>
+        {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
+        <div className="toolbar"><button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
+          <button className="btn gold" disabled={busy} onClick={save}>{busy ? 'Adding…' : 'Add'}</button></div>
+      </div>
+    </div>
+  );
+}
+
 function UploadModal({ onClose, onDone }) {
   const [cat, setCat] = useState(null);
+  const now = new Date();
   const [file, setFile] = useState(null); const [bank, setBank] = useState(''); const [product, setProduct] = useState('');
   const [segment, setSegment] = useState(''); const [branch, setBranch] = useState(''); const [prev, setPrev] = useState(null);
+  const [year, setYear] = useState(now.getFullYear()); const [month, setMonth] = useState(now.getMonth() + 1);
+  const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
-  useEffect(() => { api('/api/config').then(c => setCat(c.bank_products)).catch(() => {}); }, []);
+  const loadCat = () => api('/api/config').then(c => setCat(c.bank_products)).catch(() => {});
+  useEffect(() => { loadCat(); }, []);
+  const onCatalogAdded = async (nb, np) => {
+    setAddOpen(false);
+    await loadCat();
+    if (nb) { setBank(nb); if (np) setProduct(np); }
+  };
   const products = (cat && bank && cat.products[bank]) || [];
-  const ready = file && bank && product && segment;
+  const ready = file && bank && product && segment && year && month;
   const buildForm = () => {
     const f = new FormData(); f.append('file', file);
     f.append('default_bank', bank); f.append('product', product); f.append('segment', segment);
+    f.append('year', String(year)); f.append('month', String(month));
     if (branch) f.append('branch', branch); return f;
   };
   const doPreview = async () => {
@@ -746,9 +802,17 @@ function UploadModal({ onClose, onDone }) {
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()}>
         <div className="section-h"><h3>Upload accounts — one product per file</h3>
-          <button className="btn ghost sm" onClick={onClose}>✕</button></div>
-        <p className="muted" style={{ fontSize: 13 }}>Choose the bank, product and segment this file belongs to; every row will be tagged accordingly, then auto-allocated by pincode &amp; nearest FO.</p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn sm" onClick={() => setAddOpen(true)} title="Onboard a new bank or product">➕ New bank/product</button>
+            <button className="btn ghost sm" onClick={onClose}>✕</button></div></div>
+        <p className="muted" style={{ fontSize: 13 }}>Choose the bank, product, segment and the <b>month/year</b> this file belongs to; every row is tagged to that period, then auto-allocated by pincode &amp; nearest FO. Cases close automatically per the product's rule (cycle date / month-end / due date) and then move to the admin Monthly Archive.</p>
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
+          <div className="field"><label>Data month</label>
+            <select className="input" value={month} onChange={e => setMonth(Number(e.target.value))}>
+              {MONTHS.map((mn, i) => <option key={mn} value={i + 1}>{mn}</option>)}</select></div>
+          <div className="field"><label>Year</label>
+            <select className="input" value={year} onChange={e => setYear(Number(e.target.value))}>
+              {[now.getFullYear() + 1, now.getFullYear(), now.getFullYear() - 1, now.getFullYear() - 2].map(y => <option key={y} value={y}>{y}</option>)}</select></div>
           <div className="field"><label>Bank</label>
             <select className="input" value={bank} onChange={e => { setBank(e.target.value); setProduct(''); }}>
               <option value="">— select bank —</option>
@@ -780,6 +844,57 @@ function UploadModal({ onClose, onDone }) {
               <td>{s.customer_name}</td><td>{s.bank}</td><td className="mono">{s.account_no}</td>
               <td className="mono">{s.funding_amount}</td><td>{s.pincode || '—'}</td></tr>)}</tbody></table></div>
         </div>}
+        {addOpen && <AddProductModal presetBank={bank} onClose={() => setAddOpen(false)} onAdded={onCatalogAdded} />}
+      </div>
+    </div>
+  );
+}
+
+/* Bulk de-allocate / re-allocate selected cases to a different FOS, caller or team lead. */
+function ReassignModal({ ids, onClose, onDone }) {
+  const [users, setUsers] = useState(null);
+  const [fos, setFos] = useState('keep');       // 'keep' | 'null' | id
+  const [caller, setCaller] = useState('keep');
+  const [tl, setTl] = useState('keep');         // 'keep' | '' (clear) | name
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api('/api/users').then(setUsers).catch(() => setUsers([])); }, []);
+  const foses = (users || []).filter(u => u.role === 'fos' && u.is_active !== false);
+  const callers = (users || []).filter(u => u.role === 'telecaller' && u.is_active !== false);
+  const leads = [...new Set((users || []).filter(u => u.role === 'teamlead').map(u => u.name))];
+  const val = (s) => s === 'keep' ? 'keep' : (s === 'null' ? null : Number(s));
+  const save = async () => {
+    setBusy(true);
+    try {
+      const body = { case_ids: ids, assigned_fos_id: val(fos), assigned_caller_id: val(caller),
+                     team_lead: tl };
+      const r = await api('/api/cases/bulk-reassign', { method: 'POST', body });
+      toast(`Updated ${r.updated} of ${r.requested} case${r.requested === 1 ? '' : 's'}.`);
+      onDone();
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+        <div className="section-h"><h3>Re-allocate {ids.length} case{ids.length === 1 ? '' : 's'}</h3>
+          <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 13 }}>Leave a field on “Keep as-is” to not touch it. Pick “De-allocate” to unassign.</p>
+        <div className="field"><label>Field officer (FOS)</label>
+          <select className="input" value={fos} onChange={e => setFos(e.target.value)}>
+            <option value="keep">Keep as-is</option><option value="null">— De-allocate —</option>
+            {foses.map(u => <option key={u.id} value={u.id}>{u.name}{u.branch ? ` · ${u.branch}` : ''}</option>)}
+          </select></div>
+        <div className="field"><label>Telecaller</label>
+          <select className="input" value={caller} onChange={e => setCaller(e.target.value)}>
+            <option value="keep">Keep as-is</option><option value="null">— De-allocate —</option>
+            {callers.map(u => <option key={u.id} value={u.id}>{u.name}{u.branch ? ` · ${u.branch}` : ''}</option>)}
+          </select></div>
+        <div className="field"><label>Team lead</label>
+          <select className="input" value={tl} onChange={e => setTl(e.target.value)}>
+            <option value="keep">Keep as-is</option><option value="">— Clear —</option>
+            {leads.map(n => <option key={n} value={n}>{n}</option>)}
+          </select></div>
+        <div className="toolbar"><button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
+          <button className="btn gold" disabled={busy || !ids.length} onClick={save}>{busy ? 'Saving…' : 'Apply'}</button></div>
       </div>
     </div>
   );
@@ -787,6 +902,8 @@ function UploadModal({ onClose, onDone }) {
 
 function CasesView({ user }) {
   const canUpload = user.role === 'admin' || user.role === 'backend';
+  const canReassign = ['admin', 'manager', 'teamlead', 'headoffice'].includes(user.role);
+  const [reassignOpen, setReassignOpen] = useState(false);
   const isAdmin = user.role === 'admin';
   const isHO = user.role === 'headoffice';          // only head office may remove/restore cases
   const [picked, setPicked] = useState({});          // selected case ids (head office delete)
@@ -797,6 +914,7 @@ function CasesView({ user }) {
   const [cases, setCases] = useState(null); const [bank, setBank] = useState('');
   const [product, setProduct] = useState(''); const [segment, setSegment] = useState('');
   const [paid, setPaid] = useState(''); const [q, setQ] = useState('');
+  const [openState, setOpenState] = useState(''); const [cyc, setCyc] = useState('');   // ''|'open'|'closed', cycle day
   const [upload, setUpload] = useState(false); const [busy, setBusy] = useState(false); const [drawer, setDrawer] = useState(null); const [campaign, setCampaign] = useState(false);
   const [resetOpen, setResetOpen] = useState(false); const [resetTxt, setResetTxt] = useState('');
   const loadSummary = () => api('/api/cases/product-summary').then(setSummary).catch(() => setSummary([]));
@@ -804,8 +922,10 @@ function CasesView({ user }) {
     const p = new URLSearchParams();
     if (bank) p.set('bank', bank); if (product) p.set('product', product); if (segment) p.set('segment', segment);
     if (paid) p.set('paid_status', paid); if (q) p.set('search', q);
+    if (openState) p.set('closed', openState === 'closed' ? 'true' : 'false');
+    if (cyc) p.set('cyc', cyc);
     api('/api/cases?' + p).then(setCases);
-  }, [bank, product, segment, paid, q]);
+  }, [bank, product, segment, paid, q, openState, cyc]);
   useEffect(() => { loadSummary(); api('/api/users').then(us => { const m = {}; (us || []).forEach(u => { m[u.id] = u.name; }); setStaff(m); }).catch(() => {}); }, []);
   useEffect(() => { if (mode !== 'list') return; const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load, mode]);
   useDataChanged(() => { loadSummary(); if (mode === 'list') load(); });   // live product cards / list
@@ -933,21 +1053,28 @@ function CasesView({ user }) {
             value={q} onChange={e => setQ(e.target.value)} />
           {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>
             <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(s)}>{s || 'All'}</div>)}
-          {isHO && <><div style={{ flex: 1 }} />
-            {pickedIds.length > 0 && <button className="btn" style={{ background: 'var(--bad)', color: '#fff', border: 'none' }}
+          <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
+          {[['', 'All'], ['open', '🟢 Open'], ['closed', '🔒 Closed']].map(([v, lbl]) =>
+            <div key={v} className={cx('chip', openState === v && 'on')} onClick={() => setOpenState(v)}>{lbl}</div>)}
+          {openState === 'closed' && <input className="input" style={{ maxWidth: 96 }} type="number" min="1" max="31"
+            placeholder="Cycle day" value={cyc} onChange={e => setCyc(e.target.value)} />}
+          {(isHO || canReassign) && <><div style={{ flex: 1 }} />
+            {pickedIds.length > 0 && canReassign && <button className="btn gold"
+              onClick={() => setReassignOpen(true)}>🔀 Re-allocate {pickedIds.length}</button>}
+            {pickedIds.length > 0 && isHO && <button className="btn" style={{ background: 'var(--bad)', color: '#fff', border: 'none' }}
               onClick={() => setDelOpen(true)}>🗑 Delete {pickedIds.length} selected</button>}</>}
         </div>
         {!cases ? <Loader /> : (
           <div className="glass card" style={{ padding: 6 }}>
             <div className="tablewrap"><table>
-              <thead><tr>{isHO && <th style={{ width: 28 }}><input type="checkbox"
+              <thead><tr>{(isHO || canReassign) && <th style={{ width: 28 }}><input type="checkbox"
                   checked={cases.length > 0 && pickedIds.length === cases.length}
                   onChange={e => setPicked(e.target.checked ? Object.fromEntries(cases.map(c => [c.id, true])) : {})} /></th>}
                 <th>Customer</th><th>Bank</th><th>Product</th><th>Caller</th><th>FOS</th><th>Account</th><th>Target</th><th>Received</th>
                 <th>Pending</th><th>Status</th><th>Paid</th><th>Pincode</th><th>Dispo</th></tr></thead>
               <tbody>{cases.map(c => <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
-                {isHO && <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={!!picked[c.id]} onChange={() => togglePick(c.id)} /></td>}
-                <td><b>{c.customer_name || '—'}</b><div className="muted" style={{ fontSize: 12 }}>{c.phone}</div></td>
+                {(isHO || canReassign) && <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={!!picked[c.id]} onChange={() => togglePick(c.id)} /></td>}
+                <td><b>{c.customer_name || '—'}</b>{c.closed && <span className="badge" title={`Closed ${c.close_date || ''} · locked`} style={{ background: '#e5e7eb', color: '#374151', marginLeft: 6, fontSize: 10 }}>🔒 closed</span>}<div className="muted" style={{ fontSize: 12 }}>{c.phone}</div></td>
                 <td>{c.bank}</td><td>{c.product || '—'}</td>
                 <td className="muted">{staff[c.assigned_caller_id] || '—'}</td>
                 <td className="muted">{staff[c.assigned_fos_id] || '—'}</td>
@@ -986,6 +1113,8 @@ function CasesView({ user }) {
           </div>
         </div>
       </div>}
+      {reassignOpen && <ReassignModal ids={pickedIds} onClose={() => setReassignOpen(false)}
+        onDone={() => { setReassignOpen(false); clearPicks(); load(); loadSummary(); }} />}
       {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
     </div>
   );
@@ -1564,8 +1693,52 @@ function TeamLeadView({ config, user }) {
   );
 }
 
+/* Move (or swap) a staff member's entire caseload to another same-role staff member. */
+function TransferModal({ staff, onClose, onDone }) {
+  const [role, setRole] = useState('fos');
+  const [from, setFrom] = useState(''); const [to, setTo] = useState('');
+  const [swap, setSwap] = useState(false); const [busy, setBusy] = useState(false);
+  const roleLabel = { fos: 'Field officers', telecaller: 'Telecallers', teamlead: 'Team leads' };
+  const pool = (staff || []).filter(u => u.role === role && u.is_active !== false);
+  const save = async () => {
+    if (!from || !to || from === to) { toast('Pick two different people', 'err'); return; }
+    setBusy(true);
+    try {
+      const r = await api('/api/team/transfer-cases', { method: 'POST',
+        body: { from_user_id: Number(from), to_user_id: Number(to), swap } });
+      toast(`Moved ${r.moved} case${r.moved === 1 ? '' : 's'} ${swap ? 'between' : 'to'} ${r.to}.`);
+      onDone();
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+        <div className="section-h"><h3>Transfer caseload</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 13 }}>Move every case assigned to one person over to another of the same role. Enable swap to exchange both caseloads.</p>
+        <div className="field"><label>Role</label>
+          <select className="input" value={role} onChange={e => { setRole(e.target.value); setFrom(''); setTo(''); }}>
+            {Object.entries(roleLabel).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="field"><label>From</label>
+            <select className="input" value={from} onChange={e => setFrom(e.target.value)}>
+              <option value="">—</option>{pool.map(u => <option key={u.id} value={u.id}>{u.name}{u.branch ? ` · ${u.branch}` : ''}</option>)}</select></div>
+          <div className="field"><label>To</label>
+            <select className="input" value={to} onChange={e => setTo(e.target.value)}>
+              <option value="">—</option>{pool.filter(u => String(u.id) !== from).map(u => <option key={u.id} value={u.id}>{u.name}{u.branch ? ` · ${u.branch}` : ''}</option>)}</select></div>
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, margin: '4px 0 10px' }}>
+          <input type="checkbox" checked={swap} onChange={e => setSwap(e.target.checked)} /> Swap — exchange both caseloads</label>
+        <div className="toolbar"><button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
+          <button className="btn gold" disabled={busy} onClick={save}>{busy ? 'Moving…' : (swap ? '🔁 Swap caseloads' : '🔁 Transfer')}</button></div>
+      </div>
+    </div>
+  );
+}
+
 function StaffView({ config, user }) {
   const isAdmin = user.role === 'admin';
+  const canTransfer = user.role === 'admin' || user.role === 'manager';
+  const [transferOpen, setTransferOpen] = useState(false);
   const seesAll = user.role === 'admin' || user.role === 'headoffice';   // cross-branch grid
   const [users, setUsers] = useState(null);
   const [branches, setBranches] = useState(null);
@@ -1639,6 +1812,7 @@ function StaffView({ config, user }) {
         <button className="btn" onClick={() => setShowReport(true)}>📅 Attendance</button>
         {isAdmin && branchName !== 'Unassigned' && <button className="btn" onClick={renameBranch} title="Rename this branch">✏ Rename</button>}
         {isAdmin && branchName !== 'Unassigned' && <button className="btn" onClick={deleteBranch} title="Delete this branch">🗑 Delete</button>}
+        {canTransfer && <button className="btn" onClick={() => setTransferOpen(true)} title="Move all of a staff member's cases to another">🔁 Transfer cases</button>}
         <button className="btn gold" onClick={() => { setEditing(null); setPresetBranch(branchName); setModal(true); }}>+ Add staff</button></div>
 
       {showChart && <div style={{ marginBottom: 16 }}><Dashboard user={user} branch={branchName} /></div>}
@@ -1672,6 +1846,7 @@ function StaffView({ config, user }) {
         {staff.length === 0 && <div className="muted" style={{ padding: 18, textAlign: 'center' }}>No staff in this branch yet.</div>}</div>}
 
       {modal && <StaffModal me={user} editing={editing} presetBranch={presetBranch} onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
+      {transferOpen && <TransferModal staff={user.role === 'manager' ? staff : users} onClose={() => setTransferOpen(false)} onDone={() => { setTransferOpen(false); load(); }} />}
       {perfUser && <PerformanceModal u={perfUser} onClose={() => setPerfUser(null)} />}
       {dashUser && <EmployeeDashboard u={dashUser} config={config} onClose={() => setDashUser(null)} />}
       {routeOfficer && <RouteHistoryModal officer={routeOfficer} config={config} onClose={() => setRouteOfficer(null)} />}
@@ -2368,6 +2543,8 @@ function CaseDrawer({ c, onClose, onChanged }) {
           {row('Remarks', cur.remarks)}
         </div>
         <div className="divider"></div>
+        {cur.closed && <div className="glass card" style={{ background: '#f3f4f6', color: '#374151', fontSize: 13, padding: '8px 12px', marginBottom: 8 }}>
+          🔒 This case has <b>closed for the month</b>{cur.close_date ? ` (on ${cur.close_date})` : ''} and is locked. It stays visible for reference; an admin can still make changes.</div>}
         <div className="toolbar">
           <div className={cx('chip', tab === 'call' && 'on')} onClick={() => setTab('call')}>📞 Log call</div>
           <div className={cx('chip', tab === 'pay' && 'on')} onClick={() => setTab('pay')}>💰 Record payment</div>
@@ -2385,7 +2562,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
             {isCC && <div className="field"><label>Paid at (credit card)</label><select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option></select></div>}</div>}
           {!isPTP && !isPaid && <div className="field"><label>Schedule next call (optional)</label><input className="input" type="date" value={followDate} onChange={e => setFollowDate(e.target.value)} /></div>}
           <div className="field"><label>Note</label><textarea className="input" value={callNote} onChange={e => setCallNote(e.target.value)} /></div>
-          <button className="btn gold block" onClick={logCall} disabled={busy}>Save call</button>
+          <button className="btn gold block" onClick={logCall} disabled={busy || cur.closed}>Save call</button>
         </div>}
         {tab === 'pay' && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
           <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
@@ -2395,7 +2572,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
           {isCC && <div className="field"><label>Paid at (credit card)</label>
             <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option></select></div>}
           <div className="field"><label>Note (optional)</label><input className="input" value={payNote} onChange={e => setPayNote(e.target.value)} /></div>
-          <button className="btn gold block" onClick={recordPay} disabled={busy || !payAmt}>Save payment</button>
+          <button className="btn gold block" onClick={recordPay} disabled={busy || !payAmt || cur.closed}>Save payment</button>
           {(() => {
             const cfg = window.__ssdCfg || {};
             const link = upiLink(cfg, cur, payAmt);
@@ -2451,11 +2628,11 @@ function CaseDrawer({ c, onClose, onChanged }) {
   );
 }
 
-const QUEUE_SEG = [['due', '⏰ Due now', 'due'], ['today', '✓ Contacted today', 'contacted_today'], ['upcoming', '📅 Upcoming', 'upcoming'], ['paid', '💰 Paid today', 'paid_today']];
+const QUEUE_SEG = [['due', '⏰ Due now', 'due'], ['today', '✓ Contacted today', 'contacted_today'], ['upcoming', '📅 Upcoming', 'upcoming'], ['paid', '💰 Paid today', 'paid_today'], ['closed', '🔒 Closed', 'closed']];
 function CallQueue() {
   const [data, setData] = useState(null); const [active, setActive] = useState(null); const [err, setErr] = useState('');
   const [seg, setSeg] = useState('due'); const [bank, setBank] = useState(''); const [bucket, setBucket] = useState(''); const [q, setQ] = useState('');
-  const EMPTY = { due: [], contacted_today: [], upcoming: [], paid_today: [], counts: { due: 0, contacted_today: 0, upcoming: 0, paid_today: 0 } };
+  const EMPTY = { due: [], contacted_today: [], upcoming: [], paid_today: [], closed: [], counts: { due: 0, contacted_today: 0, upcoming: 0, paid_today: 0, closed: 0 } };
   const load = () => {
     const p = new URLSearchParams(); if (bank) p.set('bank', bank);
     api('/api/calls/queue' + (p.toString() ? '?' + p : ''))
@@ -2661,6 +2838,194 @@ function RecordsView({ user }) {
             </tr>)}</tbody></table></div>
         </div>}
       {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
+    </div>
+  );
+}
+
+/* ============================== Audit Log (admin / manager / head office) ============================== */
+const AUDIT_ICON = {
+  reassign: '🔀', deallocate: '➖', transfer: '🔁', edit: '✏️', cell_edit: '⌨️',
+  paid: '✅', unpaid: '↩️', payment: '💰', visit: '📍', call: '📞',
+  delete: '🗑️', restore: '♻️', escalate: '🚩', deescalate: '🏳️', import: '📥', login: '🔑',
+};
+function AuditLogView({ user }) {
+  const [opts, setOpts] = useState({ branches: [], banks: [], products: [], actions: [], roles: [], employees: [] });
+  const [data, setData] = useState(null);
+  const [f, setF] = useState({ role: '', emp: '', action: '', branch: '', bank: '', product: '', days: '', q: '' });
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api('/api/audit/filters').then(setOpts).catch(() => {}); }, []);
+  const load = useCallback(() => {
+    setBusy(true);
+    const qs = new URLSearchParams({ limit: '300' });
+    Object.entries(f).forEach(([k, v]) => { if (v) qs.set(k, v); });
+    api('/api/audit?' + qs.toString()).then(setData).catch(() => setData({ items: [], total: 0 })).finally(() => setBusy(false));
+  }, [f]);
+  useEffect(() => { const t = setTimeout(load, 200); return () => clearTimeout(t); }, [load]);
+  useDataChanged(load);
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const reset = () => setF({ role: '', emp: '', action: '', branch: '', bank: '', product: '', days: '', q: '' });
+  const active = Object.values(f).filter(Boolean).length;
+  const sel = { minWidth: 120, maxWidth: 190, height: 34, padding: '0 8px', fontSize: 13 };
+  const when = (t) => { const d = new Date(t); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
+  const items = (data && data.items) || [];
+  return (
+    <div>
+      <div className="section-h"><h2 style={{ margin: 0 }}>Audit Log</h2>
+        <span className="muted" style={{ fontSize: 13 }}>{data ? `${data.total} tracked action${data.total === 1 ? '' : 's'}` : '…'}</span></div>
+      <p className="muted" style={{ fontSize: 13, marginTop: -4 }}>Every change, re-allocation, payment, visit, call and edit — with who did it. {user.role === 'manager' ? 'Scoped to your branch.' : ''}</p>
+      <div className="glass card" style={{ padding: 10, marginBottom: 12 }}>
+        <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <input className="input" style={{ maxWidth: 220 }} placeholder="Search text / person / value" value={f.q} onChange={e => set('q', e.target.value)} />
+          <select className="input" style={sel} value={f.role} onChange={e => set('role', e.target.value)}>
+            <option value="">All roles</option>{opts.roles.map(r => <option key={r} value={r}>{r}</option>)}</select>
+          <select className="input" style={sel} value={f.emp} onChange={e => set('emp', e.target.value)}>
+            <option value="">All employees</option>{opts.employees.map(e => <option key={e.id} value={e.id}>{e.name} ({e.role})</option>)}</select>
+          <select className="input" style={sel} value={f.action} onChange={e => set('action', e.target.value)}>
+            <option value="">All actions</option>{opts.actions.map(a => <option key={a} value={a}>{a}</option>)}</select>
+          {user.role !== 'manager' && <select className="input" style={sel} value={f.branch} onChange={e => set('branch', e.target.value)}>
+            <option value="">All branches</option>{opts.branches.map(b => <option key={b} value={b}>{b}</option>)}</select>}
+          <select className="input" style={sel} value={f.bank} onChange={e => set('bank', e.target.value)}>
+            <option value="">All banks</option>{opts.banks.map(b => <option key={b} value={b}>{b}</option>)}</select>
+          <select className="input" style={sel} value={f.product} onChange={e => set('product', e.target.value)}>
+            <option value="">All products</option>{opts.products.map(p => <option key={p} value={p}>{p}</option>)}</select>
+          <select className="input" style={sel} value={f.days} onChange={e => set('days', e.target.value)}>
+            <option value="">Any time</option><option value="1">Today</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option></select>
+          {active > 0 && <button className="btn ghost" onClick={reset}>Clear ({active})</button>}
+        </div>
+      </div>
+      {!data ? <Loader /> : items.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No matching activity.</div> : (
+        <div className="glass card" style={{ padding: 6 }}>
+          <div className="tablewrap"><table>
+            <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Case</th><th>Field</th><th>Change</th><th>Detail</th><th>Branch</th></tr></thead>
+            <tbody>{items.map(r => <tr key={r.id}>
+              <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{when(r.at)}</td>
+              <td><b>{r.actor || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{r.role}</div></td>
+              <td style={{ whiteSpace: 'nowrap' }}>{AUDIT_ICON[r.action] || '•'} {r.action}</td>
+              <td>{r.customer ? <span>{r.customer}<div className="muted" style={{ fontSize: 11 }}>#{r.case_id}</div></span> : (r.case_id ? '#' + r.case_id : '—')}</td>
+              <td className="muted" style={{ fontSize: 12 }}>{r.field || '—'}</td>
+              <td style={{ fontSize: 12 }}>{(r.old || r.new) ? <span><span className="muted">{r.old ?? '∅'}</span> → <b>{r.new ?? '∅'}</b></span> : '—'}</td>
+              <td style={{ fontSize: 12 }}>{r.detail || '—'}</td>
+              <td className="muted" style={{ fontSize: 12 }}>{r.branch || '—'}</td></tr>)}
+            </tbody></table></div>
+          {data.total > items.length && <p className="muted" style={{ padding: '8px 12px', fontSize: 12 }}>Showing latest {items.length} of {data.total}. Narrow with filters to see older entries.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================== Monthly Archive (admin only) ============================== */
+function ArchiveView({ user }) {
+  const [periods, setPeriods] = useState(null);
+  const [period, setPeriod] = useState('');
+  const [data, setData] = useState(null);
+  const [cycle, setCycle] = useState(null);
+  const [f, setF] = useState({ closing_type: '', product: '', cyc: '' });
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  useEffect(() => { api('/api/archive/periods').then(ps => { setPeriods(ps); if (ps.length && !period) setPeriod(ps[0].period); }).catch(() => setPeriods([])); }, []);
+  useEffect(() => { if (!period) return; setCycle(null); api('/api/archive/cycle-report?period=' + period).then(setCycle).catch(() => setCycle(null)); }, [period]);
+  useEffect(() => {
+    if (!period) return;
+    const qs = new URLSearchParams({ period });
+    if (f.closing_type) qs.set('closing_type', f.closing_type);
+    if (f.product) qs.set('product', f.product);
+    if (f.cyc) qs.set('cyc', f.cyc);
+    setData(null);
+    api('/api/archive/summary?' + qs.toString()).then(setData).catch(() => setData(null));
+  }, [period, f]);
+  const pretty = p => { if (!p) return ''; const [y, m] = p.split('-'); return MONTHS[Number(m) - 1] + ' ' + y; };
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const t = data && data.totals;
+  const sel = { minWidth: 130, height: 34, padding: '0 8px', fontSize: 13 };
+  return (
+    <div>
+      <div className="section-h"><h2 style={{ margin: 0 }}>Monthly Archive</h2>
+        <span className="muted" style={{ fontSize: 13 }}>Admin-only history. Closed cases live here by month.</span></div>
+      <p className="muted" style={{ fontSize: 13, marginTop: -4 }}>Pick a month to see everything that ran — product-wise numbers, how it closed (cycle / month-end / due date), and per-staff performance. Closed cases have already left the field/caller views.</p>
+
+      {!periods ? <Loader /> : periods.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No months uploaded yet.</div> : (<>
+        <div className="glass card" style={{ padding: 10, marginBottom: 12 }}>
+          <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <select className="input" style={sel} value={period} onChange={e => setPeriod(e.target.value)}>
+              {periods.map(p => <option key={p.period} value={p.period}>{pretty(p.period)} — {p.total} cases ({p.closed} closed)</option>)}</select>
+            <select className="input" style={sel} value={f.closing_type} onChange={e => set('closing_type', e.target.value)}>
+              <option value="">All closing types</option><option value="cyc">Cycle-wise</option><option value="month_end">Month-end</option><option value="due_date">Due-date</option></select>
+            {data && <select className="input" style={sel} value={f.product} onChange={e => set('product', e.target.value)}>
+              <option value="">All products</option>{[...new Set(data.products.map(p => p.product))].map(p => <option key={p} value={p}>{p}</option>)}</select>}
+            <input className="input" style={{ ...sel, minWidth: 90 }} type="number" min="1" max="31" placeholder="Cycle day" value={f.cyc} onChange={e => set('cyc', e.target.value)} />
+            {(f.closing_type || f.product || f.cyc) && <button className="btn ghost" onClick={() => setF({ closing_type: '', product: '', cyc: '' })}>Clear</button>}
+          </div>
+        </div>
+
+        {!data ? <Loader /> : (<>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12, marginBottom: 14 }}>
+            <StatCard label="Cases" value={t.cases} />
+            <StatCard label="Closed / Open" value={`${t.closed} / ${t.open}`} />
+            <StatCard label="Paid" value={t.paid} valueColor="var(--good)" />
+            <StatCard label="Recovered" value={money(t.received)} valueColor="var(--good)" />
+            <StatCard label="Pending" value={money(t.pending)} valueColor="var(--warn)" />
+          </div>
+
+          <div className="section-h"><h3 style={{ fontSize: 14, margin: '4px 0' }}>Product-wise</h3></div>
+          <div className="glass card" style={{ padding: 6, marginBottom: 14 }}>
+            <div className="tablewrap"><table>
+              <thead><tr><th>Bank</th><th>Product</th><th>Closing</th><th>Closes on</th><th>Cases</th><th>Paid</th><th>Recovered</th><th>Pending</th></tr></thead>
+              <tbody>{data.products.map((p, i) => <tr key={i}>
+                <td>{p.bank}</td><td><b>{p.product}</b></td>
+                <td><span className="badge allocated">{p.closing_type || '—'}</span></td>
+                <td className="muted" style={{ fontSize: 12 }}>{(p.close_days || []).join(', ') || '—'}</td>
+                <td>{p.cases}</td><td>{p.paid}</td>
+                <td className="mono" style={{ color: 'var(--good)' }}>{money(p.received)}</td>
+                <td className="mono" style={{ color: 'var(--warn)' }}>{money(p.pending)}</td></tr>)}
+              </tbody></table></div>
+          </div>
+
+          <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 14, alignItems: 'start' }}>
+            <div>
+              <div className="section-h"><h3 style={{ fontSize: 14, margin: '4px 0' }}>Closing breakdown</h3></div>
+              <div className="glass card" style={{ padding: 6 }}>
+                <div className="tablewrap"><table><thead><tr><th>Closes on</th><th>Cases</th><th>Recovered</th></tr></thead>
+                  <tbody>{data.by_close.map((b, i) => <tr key={i}><td className="muted" style={{ fontSize: 12 }}>{b.closes}</td><td>{b.cases}</td>
+                    <td className="mono" style={{ color: 'var(--good)' }}>{money(b.received)}</td></tr>)}</tbody></table></div>
+              </div>
+            </div>
+            <div>
+              <div className="section-h"><h3 style={{ fontSize: 14, margin: '4px 0' }}>Performance</h3></div>
+              <div className="glass card" style={{ padding: 6 }}>
+                <div className="tablewrap"><table><thead><tr><th>Staff</th><th>Role</th><th>Cases</th><th>Paid</th><th>Recovered</th></tr></thead>
+                  <tbody>
+                    {data.performance.callers.map(s => <tr key={'c' + s.id}><td><b>{s.name}</b></td><td className="muted">Caller</td><td>{s.cases}</td><td>{s.paid}</td><td className="mono" style={{ color: 'var(--good)' }}>{money(s.received)}</td></tr>)}
+                    {data.performance.fos.map(s => <tr key={'f' + s.id}><td><b>{s.name}</b></td><td className="muted">FOS</td><td>{s.cases}</td><td>{s.paid}</td><td className="mono" style={{ color: 'var(--good)' }}>{money(s.received)}</td></tr>)}
+                  </tbody></table></div>
+              </div>
+            </div>
+          </div>
+
+          {cycle && (cycle.cycle_days.length > 0 || cycle.by_type.length > 0) && <div style={{ marginTop: 16 }}>
+            <div className="section-h"><h3 style={{ fontSize: 14, margin: '4px 0' }}>Cycle-wise closing analysis</h3></div>
+            <div className="grid2" style={{ gridTemplateColumns: '1.4fr 1fr', gap: 14, alignItems: 'start' }}>
+              <div className="glass card" style={{ padding: 6 }}>
+                <div className="muted" style={{ fontSize: 12, padding: '4px 8px' }}>Cases closing on each cycle date</div>
+                <div className="tablewrap"><table><thead><tr><th>Cycle day</th><th>Closes on</th><th>Cases</th><th>Closed</th><th>Open</th><th>Recovered</th><th>Products</th></tr></thead>
+                  <tbody>{cycle.cycle_days.map(d => <tr key={d.day}>
+                    <td><b>CYC {d.day}</b></td><td className="muted" style={{ fontSize: 12 }}>{d.close_date}</td>
+                    <td>{d.cases}</td><td>{d.closed}</td><td>{d.open}</td>
+                    <td className="mono" style={{ color: 'var(--good)' }}>{money(d.received)}</td>
+                    <td className="muted" style={{ fontSize: 11 }}>{(d.products || []).join(', ')}</td></tr>)}
+                    {cycle.cycle_days.length === 0 && <tr><td colSpan="7" className="muted" style={{ padding: 12 }}>No cycle-wise products this month.</td></tr>}
+                  </tbody></table></div>
+              </div>
+              <div className="glass card" style={{ padding: 6 }}>
+                <div className="muted" style={{ fontSize: 12, padding: '4px 8px' }}>By closing type</div>
+                <div className="tablewrap"><table><thead><tr><th>Closing</th><th>Cases</th><th>Closed</th><th>Recovered</th></tr></thead>
+                  <tbody>{cycle.by_type.map(b => <tr key={b.closing_type}>
+                    <td><span className="badge allocated">{b.closing_type}</span></td><td>{b.cases}</td><td>{b.closed}</td>
+                    <td className="mono" style={{ color: 'var(--good)' }}>{money(b.received)}</td></tr>)}</tbody></table></div>
+              </div>
+            </div>
+          </div>}
+        </>)}
+      </>)}
     </div>
   );
 }
@@ -3495,6 +3860,7 @@ const SHEET_COLS = [
   { k: 'address2', t: 'Address 2', type: 'text' },
   { k: 'pincode', t: 'Pincode', type: 'text' },
   { k: 'propensity', t: 'Score', type: 'num' },
+  { k: 'updated_by_name', t: 'Last changed by', type: 'text' },
 ];
 const SHEET_DEFAULT_VISIBLE = ['customer_name', 'phone', 'bank', 'product', 'enr', 'norm_amount', 'stab_amount', 'received_amount', 'norm_stab', 'paid_status', 'status', 'disposition', 'caller_name', 'fos_name', 'remarks'];
 // Column preset matching the AXIS PL/BL callers' working sheet (TOS/PRI/EMI, OD components,
@@ -3537,6 +3903,8 @@ function SheetView({ user, config }) {
   const [search, setSearch] = React.useState('');
   const [bankF, setBankF] = React.useState(''); const [prodF, setProdF] = React.useState('');
   const [payModal, setPayModal] = React.useState(null);   // {row, mode:'paid'|'unpaid'}
+  const [presence, setPresence] = React.useState({});      // case_id -> [{id,name,role,field}]
+  const wsRef = React.useRef(null);
   const saveTimer = React.useRef(null);
   // head office / admin / manager / back-office / callers may flip paid/unpaid with the
   // accounting popups (callers only on their own cases — enforced by the backend scope).
@@ -3560,13 +3928,16 @@ function SheetView({ user, config }) {
     const connect = () => {
       try {
         ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
+        wsRef.current = ws;
         ws.onopen = () => { if (!stop) setLive(true); };
-        ws.onclose = () => { setLive(false); if (!stop) setTimeout(connect, 3000); };
+        ws.onclose = () => { setLive(false); wsRef.current = null; if (!stop) setTimeout(connect, 3000); };
         ws.onmessage = (e) => {
           try {
             const m = JSON.parse(e.data);
             if (m.type === 'case_update' && m.case) {
               setRows(rs => { const i = rs.findIndex(r => r.id === m.case.id); if (i < 0) return rs; const cp = rs.slice(); cp[i] = { ...cp[i], ...m.case }; return cp; });
+            } else if (m.type === 'presence') {
+              setPresence(p => { const cp = { ...p }; if (m.editors && m.editors.length) cp[m.case_id] = m.editors; else delete cp[m.case_id]; return cp; });
             }
           } catch (_) {}
         };
@@ -3575,6 +3946,16 @@ function SheetView({ user, config }) {
     connect();
     return () => { stop = true; try { ws && ws.close(); } catch (_) {} };
   }, []);
+
+  // Tell everyone which row/cell I'm editing (live presence badges).
+  const sendPresence = (caseId, field, editing) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === 1) {
+      try { ws.send(JSON.stringify({ type: editing ? 'editing' : 'editing_stop', case_id: caseId, field })); } catch (_) {}
+    }
+  };
+  // Other people (not me) currently editing a given row.
+  const othersEditing = (caseId) => (presence[caseId] || []).filter(e => e.id !== user.id);
 
   const allDefs = () => SHEET_COLS.concat((prefs ? prefs.custom : []).map(c => ({ ...c, custom: true })));
   const defByKey = k => allDefs().find(c => c.k === k);
@@ -3771,11 +4152,18 @@ function SheetView({ user, config }) {
                   {row.phone && <a className="sv-ico" href={'tel:' + row.phone} title="Call">📞</a>}
                   {row.phone && <button className="sv-ico" title="WhatsApp" onClick={() => window.open('https://wa.me/' + sheetWaNumber(row.phone), '_blank')}>💬</button>}
                   <button className="sv-ico" title="Open on my phone" onClick={() => openCase(row)}>📲</button>
+                  {row.closed && <span className="badge" title={`Closed ${row.close_date || ''} — locked`} style={{ background: '#e5e7eb', color: '#374151', marginLeft: 4, fontSize: 10 }}>🔒</span>}
+                  {othersEditing(row.id).length > 0 && <span className="badge" style={{ background: '#fde68a', color: '#92400e', marginLeft: 4, fontSize: 10.5 }}
+                    title={othersEditing(row.id).map(e => e.name + (e.field ? ` (${e.field})` : '')).join(', ') + ' editing now'}>
+                    ✏ {othersEditing(row.id)[0].name.split(' ')[0]}{othersEditing(row.id).length > 1 ? ` +${othersEditing(row.id).length - 1}` : ''}</span>}
                 </td>
                 {cols.map(c => (
                   <td key={c.k}>
-                    {c.data ? <input key={row.id + '-' + c.k} defaultValue={(row.extra || {})[c.k] || ''}
-                        onBlur={e => { if (String(e.target.value) !== String((row.extra || {})[c.k] || '')) editCell(row, c, e.target.value); }}
+                    {row.closed && (c.edit || c.data) ? (
+                        <span className="muted" title="Closed for the month — locked">{c.data ? ((row.extra || {})[c.k] || '—') : cellText(row, c)}</span>
+                      ) : c.data ? <input key={row.id + '-' + c.k} defaultValue={(row.extra || {})[c.k] || ''}
+                        onFocus={() => sendPresence(row.id, c.t, true)}
+                        onBlur={e => { sendPresence(row.id, c.t, false); if (String(e.target.value) !== String((row.extra || {})[c.k] || '')) editCell(row, c, e.target.value); }}
                         onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }} />
                       : c.custom ? sheetFmt(rowFormula(c.formula, row))
                       : c.k === 'customer_name' ? <span className="sv-name" onClick={() => openCase(row)}>{row.customer_name || '—'}</span>
@@ -3788,7 +4176,8 @@ function SheetView({ user, config }) {
                         <input type="date" value={(row[c.k] || '').slice(0, 10)} onChange={e => editCell(row, c, e.target.value)} />
                       ) : (
                         <input key={row.id + '-' + c.k} type={c.type === 'num' ? 'number' : 'text'} defaultValue={row[c.k] == null ? '' : row[c.k]}
-                          onBlur={e => { if (String(e.target.value) !== String(row[c.k] == null ? '' : row[c.k])) editCell(row, c, e.target.value); }}
+                          onFocus={() => sendPresence(row.id, c.t, true)}
+                          onBlur={e => { sendPresence(row.id, c.t, false); if (String(e.target.value) !== String(row[c.k] == null ? '' : row[c.k])) editCell(row, c, e.target.value); }}
                           onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }} />
                       )}
                   </td>
@@ -3878,13 +4267,13 @@ function PaymentEditModal({ row, mode, onClose, onDone }) {
 }
 
 const NAV = {
-  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
 };
 function NativeTrackingOnboard({ onDone }) {
   const openSettings = () => { try { const BG = window.Capacitor.registerPlugin('BackgroundGeolocation'); if (BG.openSettings) BG.openSettings(); } catch (e) {} };
@@ -3929,6 +4318,8 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
       case 'staff': return <StaffView config={config} user={user} />;
       case 'tldash': return <TeamLeadView config={config} user={user} />;
       case 'records': return <RecordsView user={user} />;
+      case 'audit': return <AuditLogView user={user} />;
+      case 'archive': return <ArchiveView user={user} />;
       case 'feedback': return <FeedbackView user={user} />;
       case 'escalations': return <EscalationsView user={user} />;
       case 'devices': return <DevicesView />;

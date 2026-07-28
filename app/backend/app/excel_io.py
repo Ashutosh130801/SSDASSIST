@@ -113,7 +113,9 @@ HEADER_MAP = {
     "caller": "_caller", "tcname": "_caller",
     "fos": "_fos", "fosname": "_fos",
     "area": "_area", "aera": "_area",                       # AERA = common misspelling of AREA
-    "team": "team_lead",
+    "team": "team_lead", "teamlead": "team_lead", "teamleadname": "team_lead",
+    "teamleader": "team_lead", "tl": "team_lead", "tlname": "team_lead",
+    "leadname": "team_lead", "reportingtl": "team_lead", "reportingmanager": "team_lead",
     "catallo": "cat", "cat": "cat", "category": "cat",
     "visits": "_visits", "visit": "_visits", "fosdispo": "_fosdispo",
     "paidunpaid": "paid_status",
@@ -138,6 +140,9 @@ HEADER_MAP = {
     # loan / caller working fields → free-form extra (x_ so they're inline-editable)
     "totod": "x:tot_od", "totalod": "x:tot_od", "od": "x:od",
     "ptpdate": "x:ptp_date", "paiddate": "x:paid_date",
+    # Due date — used to close BRBL cases on their due date.
+    "duedate": "x:due_date", "duedt": "x:due_date", "emiduedate": "x:due_date",
+    "nextduedate": "x:due_date", "paymentduedate": "x:due_date", "due": "x:due_date",
     "modeofpayment": "x:mode_of_payment", "mode": "x:mode_of_payment",
     "tracedcontactno": "x:traced_contact", "tracedcontact": "x:traced_contact",
     "tracedaddress": "x:traced_address",
