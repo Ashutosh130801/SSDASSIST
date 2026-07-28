@@ -53,6 +53,11 @@ def _agg(rows: list) -> dict:
     # so norm% + stab% = total paid %.
     norm_paid_enr = sum(_f(c.enr) for c in paid_rows if (c.norm_stab or "").upper() == "NORM")
     stab_paid_enr = sum(_f(c.enr) for c in paid_rows if (c.norm_stab or "").upper() == "STAB")
+    # ROLLBACK is a third paid category for 2/3/4 BKT products (mirrors NORM/STAB).
+    rb_paid = [c for c in paid_rows if (c.norm_stab or "").upper() == "ROLLBACK"]
+    rollback_paid_enr = sum(_f(c.enr) for c in rb_paid)
+    rollback_collected = sum(_f(c.received_amount) for c in rb_paid)
+    rollback_target = sum(_f(getattr(c, "rollback_amount", 0)) for c in rows)
     return {
         "count": len(rows),
         "paid": len(paid_rows),
@@ -65,6 +70,12 @@ def _agg(rows: list) -> dict:
         "stab_pct": _pct(stab_paid_enr, total_enr),       # ENR paid via STAB / total ENR
         "norm_paid_enr": round(norm_paid_enr, 2),
         "stab_paid_enr": round(stab_paid_enr, 2),
+        # Rollback analytics (mirror of NORM/STAB)
+        "rollback_pct": _pct(rollback_paid_enr, total_enr),   # ENR paid via ROLLBACK / total ENR
+        "rollback_paid_enr": round(rollback_paid_enr, 2),
+        "rollback_collected": round(rollback_collected, 2),   # actual cash collected as rollback
+        "rollback_target": round(rollback_target, 2),         # sum of rollback amounts on file
+        "rollback_count": len(rb_paid),
         "amount": round(sum(_f(c.received_amount) for c in rows), 2),   # CASH COLL
         "visited": sum(1 for c in rows if c.visited),
         "not_visited": sum(1 for c in rows if not c.visited),
@@ -237,6 +248,12 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str) -> dict
     stab_enr = sum(_f(c.enr) for c in stab_paid)
     norm_enr = sum(_f(c.enr) for c in norm_paid)
     collected_all = sum(_f(c.received_amount) for c in cases)
+    # Rollback (2/3/4 BKT): target on file, cash actually collected, and % over total ENR.
+    rb_target_total = sum(_f(getattr(c, "rollback_amount", 0)) for c in cases)
+    rb_paid = [c for c in paid_cases if (c.norm_stab or "").upper() == "ROLLBACK"]
+    rb_collected = sum(_f(c.received_amount) for c in rb_paid)
+    rb_enr = sum(_f(c.enr) for c in rb_paid)
+    total_enr_all = sum(_f(c.enr) for c in cases)
     settlement = {
         "collected": round(collected_all, 2),
         "norm_target": round(norm_target_total, 2),
@@ -245,6 +262,13 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str) -> dict
         "stab_share_pct": _pct(stab_enr, stab_enr + norm_enr),
         "norm_share_pct": _pct(norm_enr, stab_enr + norm_enr),
         "leakage": round(sum(max(_f(c.norm_amount) - _f(c.received_amount), 0) for c in stab_paid), 2),
+        # Rollback block
+        "rollback_target": round(rb_target_total, 2),
+        "rollback_collected": round(rb_collected, 2),
+        "rollback_count": len(rb_paid),
+        "rollback_enr": round(rb_enr, 2),
+        "rollback_pct": _pct(rb_enr, total_enr_all),               # rollback ENR / total ENR
+        "rollback_realization_pct": _pct(rb_collected, rb_target_total),  # collected / rollback target
     }
 
     is_plbl = any((c.segment or "") == "PL/BL" for c in cases)
@@ -314,7 +338,8 @@ def set_target(body: dict = Body(...), db: Session = Depends(get_db),
 # ---- Download selected MIS tables as an Excel workbook ----
 _GROUP = [("label", "NAME"), ("count", "COUNT"), ("paid", "PAID"), ("unpaid", "UNPAID"),
           ("enr", "ENR"), ("paid_enr", "PAID ENR"), ("pct", "PAID %"),
-          ("norm_pct", "NORM %"), ("stab_pct", "STAB %"),
+          ("norm_pct", "NORM %"), ("stab_pct", "STAB %"), ("rollback_pct", "ROLLBACK %"),
+          ("rollback_collected", "ROLLBACK COLL"),
           ("amount", "CASH COLL"), ("visited", "VISITED"), ("not_visited", "NOT VISITED")]
 _CASELIST = [("customer", "Customer"), ("account", "Account"), ("pending", "Pending"),
              ("enr", "ENR"), ("propensity", "Score"), ("fos", "FOS"), ("caller", "Caller"), ("contacted", "Contacted")]

@@ -130,7 +130,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             # update amounts / status, don't duplicate
             for k in ("funding_amount", "received_amount", "pending_amount", "paid_status",
                       "disposition", "remarks", "address", "pincode", "phone",
-                      "enr", "norm_amount", "stab_amount", "norm_stab",
+                      "enr", "norm_amount", "stab_amount", "rollback_amount", "norm_stab",
                       "total_outstanding", "principal_outstanding",
                       "caller_name", "fos_name", "team", "bucket", "cycle", "final_status"):
                 if kwargs.get(k) is not None:

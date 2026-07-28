@@ -127,6 +127,9 @@ HEADER_MAP = {
     # BL carries TWO daily-updated targets: OD STAB and OD NORM (paid one is marked in STATUS).
     "odstab": "stab_amount", "stabemi": "stab_amount", "emistab": "stab_amount",
     "odnorm": "norm_amount",
+    # ROLLBACK target (2 BKT / 3 BKT / 4 BKT credit-card products)
+    "rollback": "rollback_amount", "rollbackamount": "rollback_amount",
+    "rollbackamt": "rollback_amount", "rbamount": "rollback_amount", "rb": "rollback_amount",
     "dpd": "bucket",                                           # R30 / X-BKT bucket
     "account2": "account_no", "acc2": "account_no",
     "curadrs": "address",                                      # CUR_ADRS master column
@@ -163,7 +166,7 @@ HEADER_MAP = {
 MONEY_FIELDS = {
     "funding_amount", "received_amount", "pending_amount",
     "total_outstanding", "principal_outstanding", "min_amount_due",
-    "enr", "norm_amount", "stab_amount", "_emi_os",
+    "enr", "norm_amount", "stab_amount", "rollback_amount", "_emi_os",
 }
 
 
@@ -251,7 +254,7 @@ def record_to_case_kwargs(rec: dict) -> dict:
         "funding_amount", "received_amount", "pending_amount",
         "disposition", "remarks", "final_status",
         # MIS
-        "enr", "norm_amount", "stab_amount", "norm_stab", "cat", "team_lead",
+        "enr", "norm_amount", "stab_amount", "rollback_amount", "norm_stab", "cat", "team_lead",
     }
     kwargs = {k: v for k, v in rec.items() if k in fields and v is not None}
 

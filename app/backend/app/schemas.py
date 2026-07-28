@@ -267,6 +267,7 @@ class CaseOut(CaseBase):
     close_date: Optional[date] = None
     closing_type: Optional[str] = None
     closed: Optional[bool] = None
+    rollback_amount: Optional[Decimal] = None
     updated_by: Optional[int] = None
     updated_by_name: Optional[str] = None
     created_at: datetime

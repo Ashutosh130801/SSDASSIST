@@ -60,7 +60,7 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
         # Credit-card cases record whether the customer paid at NORM or STAB level.
         if body.norm_stab:
             ns = body.norm_stab.upper()
-            case.norm_stab = "STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab)
+            case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
     elif disp in ("PTP", "RTP"):
         case.status = "ptp"
         case.follow_up_date = body.ptp_date or body.follow_up_date   # re-queues on the promised date
@@ -86,22 +86,24 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
     twice or missed: due now, already contacted today, and scheduled for later."""
     today = _ist_today()
     from sqlalchemy import or_ as _or
-    from .cases import _current_period
+    from .cases import _current_period, _next_period
+    cp, np = _current_period(), _next_period()
     q = db.query(models.Case).filter(models.Case.removed.isnot(True))
     if user.role == "telecaller":
         q = q.filter(models.Case.assigned_caller_id == user.id)
-        # Only the current month's book (past months are admin-only history).
-        cp = _current_period()
-        q = q.filter(_or(models.Case.period.is_(None), models.Case.period == cp))
+        # Current month's book + next-month data uploaded early (own 'Next month' tab).
+        q = q.filter(_or(models.Case.period.is_(None), models.Case.period.in_([cp, np])))
     q = q.filter(models.Case.status.notin_(["paid", "closed"]))
     if bank:
         q = q.filter(models.Case.bank == bank)
     cases = q.all()
 
     from .cases import propensity
-    due, contacted, upcoming, closed_list = [], [], [], []
+    due, contacted, upcoming, closed_list, next_list = [], [], [], [], []
     for c in cases:
-        if c.closed:                      # cycle/month closed → visible but locked
+        if c.period == np:                # next-month data — its own tab, not mixed in
+            next_list.append(c)
+        elif c.closed:                    # cycle/month closed → visible but locked
             closed_list.append(c)
         elif _contacted_today(c):
             contacted.append(c)
@@ -128,12 +130,14 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
         return [schemas.CaseOut.model_validate(x) for x in lst]
 
     closed_list.sort(key=lambda c: (c.close_date or today), reverse=True)
+    next_list.sort(key=lambda c: (propensity(c), float(c.pending_amount or 0)), reverse=True)
 
     return {
         "due": ser(due), "contacted_today": ser(contacted), "upcoming": ser(upcoming),
-        "paid_today": ser(paid_today), "closed": ser(closed_list),
+        "paid_today": ser(paid_today), "closed": ser(closed_list), "next": ser(next_list),
         "counts": {"due": len(due), "contacted_today": len(contacted),
-                   "upcoming": len(upcoming), "paid_today": len(paid_today), "closed": len(closed_list)},
+                   "upcoming": len(upcoming), "paid_today": len(paid_today),
+                   "closed": len(closed_list), "next": len(next_list)},
     }
 
 

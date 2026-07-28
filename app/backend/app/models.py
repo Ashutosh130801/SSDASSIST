@@ -98,7 +98,8 @@ class Case(Base):
     enr = Column(Numeric(14, 2), default=0)               # End Net Receivables = EMI 0/S + CURR_BAL
     norm_amount = Column(Numeric(14, 2), default=0)       # NORM target amount
     stab_amount = Column(Numeric(14, 2), default=0)       # STAB (settlement) target amount
-    norm_stab = Column(String(10))                        # "NORM" / "STAB" — given in the file
+    rollback_amount = Column(Numeric(14, 2), default=0)   # ROLLBACK target (2/3/4 BKT products)
+    norm_stab = Column(String(10))                        # "NORM" / "STAB" / "ROLLBACK" — paid category
     caller_name = Column(String(80), index=True)          # CALLER (as named in the sheet)
     fos_name = Column(String(120), index=True)            # FOS NAME (name/area,phone text)
     team = Column(String(40), index=True)                 # AREA / region code (GTR, KDP, TS...)

@@ -37,6 +37,7 @@ def _ensure_columns():
             "enr": "NUMERIC(14,2)",
             "norm_amount": "NUMERIC(14,2)",
             "stab_amount": "NUMERIC(14,2)",
+            "rollback_amount": "NUMERIC(14,2)",
             "norm_stab": "VARCHAR(10)",
             "caller_name": "VARCHAR(80)",
             "fos_name": "VARCHAR(120)",
@@ -191,8 +192,11 @@ async def _capture_loop():
 @app.get("/api/config")
 def config(db: Session = Depends(get_db)):
     from .products import catalog
+    from .routers.cases import _current_period, _next_period
     return {
         "bank_products": catalog(db),
+        "current_period": _current_period(),
+        "next_period": _next_period(),
         "google_maps_api_key": settings.google_maps_api_key,
         "google_client_id": settings.google_client_id,
         "location_ping_seconds": settings.location_ping_seconds,

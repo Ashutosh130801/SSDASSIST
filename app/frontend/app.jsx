@@ -915,6 +915,8 @@ function CasesView({ user }) {
   const [product, setProduct] = useState(''); const [segment, setSegment] = useState('');
   const [paid, setPaid] = useState(''); const [q, setQ] = useState('');
   const [openState, setOpenState] = useState(''); const [cyc, setCyc] = useState('');   // ''|'open'|'closed', cycle day
+  const [monthB, setMonthB] = useState('');   // '' | 'current' | 'next'
+  const nextPeriod = (window.__ssdCfg || {}).next_period;
   const [upload, setUpload] = useState(false); const [busy, setBusy] = useState(false); const [drawer, setDrawer] = useState(null); const [campaign, setCampaign] = useState(false);
   const [resetOpen, setResetOpen] = useState(false); const [resetTxt, setResetTxt] = useState('');
   const loadSummary = () => api('/api/cases/product-summary').then(setSummary).catch(() => setSummary([]));
@@ -924,8 +926,9 @@ function CasesView({ user }) {
     if (paid) p.set('paid_status', paid); if (q) p.set('search', q);
     if (openState) p.set('closed', openState === 'closed' ? 'true' : 'false');
     if (cyc) p.set('cyc', cyc);
+    if (monthB) p.set('month_bucket', monthB);
     api('/api/cases?' + p).then(setCases);
-  }, [bank, product, segment, paid, q, openState, cyc]);
+  }, [bank, product, segment, paid, q, openState, cyc, monthB]);
   useEffect(() => { loadSummary(); api('/api/users').then(us => { const m = {}; (us || []).forEach(u => { m[u.id] = u.name; }); setStaff(m); }).catch(() => {}); }, []);
   useEffect(() => { if (mode !== 'list') return; const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load, mode]);
   useDataChanged(() => { loadSummary(); if (mode === 'list') load(); });   // live product cards / list
@@ -1054,6 +1057,9 @@ function CasesView({ user }) {
           {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>
             <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(s)}>{s || 'All'}</div>)}
           <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
+          {[['', 'All months'], ['current', '📅 This month'], ['next', '🔜 Next month']].map(([v, lbl]) =>
+            <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
+          <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
           {[['', 'All'], ['open', '🟢 Open'], ['closed', '🔒 Closed']].map(([v, lbl]) =>
             <div key={v} className={cx('chip', openState === v && 'on')} onClick={() => setOpenState(v)}>{lbl}</div>)}
           {openState === 'closed' && <input className="input" style={{ maxWidth: 96 }} type="number" min="1" max="31"
@@ -1074,7 +1080,7 @@ function CasesView({ user }) {
                 <th>Pending</th><th>Status</th><th>Paid</th><th>Pincode</th><th>Dispo</th></tr></thead>
               <tbody>{cases.map(c => <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
                 {(isHO || canReassign) && <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={!!picked[c.id]} onChange={() => togglePick(c.id)} /></td>}
-                <td><b>{c.customer_name || '—'}</b>{c.closed && <span className="badge" title={`Closed ${c.close_date || ''} · locked`} style={{ background: '#e5e7eb', color: '#374151', marginLeft: 6, fontSize: 10 }}>🔒 closed</span>}<div className="muted" style={{ fontSize: 12 }}>{c.phone}</div></td>
+                <td><b>{c.customer_name || '—'}</b>{c.closed && <span className="badge" title={`Closed ${c.close_date || ''} · locked`} style={{ background: '#e5e7eb', color: '#374151', marginLeft: 6, fontSize: 10 }}>🔒 closed</span>}{nextPeriod && c.period === nextPeriod && <span className="badge" title="Next month's data" style={{ background: '#dbeafe', color: '#1e40af', marginLeft: 6, fontSize: 10 }}>🔜 next</span>}<div className="muted" style={{ fontSize: 12 }}>{c.phone}</div></td>
                 <td>{c.bank}</td><td>{c.product || '—'}</td>
                 <td className="muted">{staff[c.assigned_caller_id] || '—'}</td>
                 <td className="muted">{staff[c.assigned_fos_id] || '—'}</td>
@@ -2163,13 +2169,15 @@ function CaseCard({ c, onVisit, onNav, onDetails }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
         <b style={onDetails ? { cursor: 'pointer', color: 'var(--gold)' } : null} title={onDetails ? 'View case details' : ''} onClick={onDetails}>{c.customer_name}</b>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {c.closed && <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>🔒 CLOSED</span>}
+          {(window.__ssdCfg || {}).next_period && c.period === (window.__ssdCfg || {}).next_period && <span className="badge" style={{ background: '#dbeafe', color: '#1e40af' }}>🔜 NEXT MONTH</span>}
           {tag && <span className={cx('badge', tag.c)}>{tag.t}</span>}
           <span className={cx('badge', p.cls)}>{p.label}</span><PropBadge score={c.propensity} /></div></div>
       <div className="muted" style={{ fontSize: 13, margin: '4px 0 8px' }}>{c.bank} · {c.bucket || '—'} · cyc {c.cycle || '—'}</div>
       <div style={{ fontSize: 13, color: 'var(--ink-soft)', minHeight: 34 }}>{c.address || 'No address'} {c.pincode ? `(${c.pincode})` : ''}</div>
       <div className="stat-row"><span className="k">Pending</span><b className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</b></div>
       <div className="toolbar" style={{ margin: '10px 0 0' }}>
-        <button className="btn sm gold" style={{ flex: 1 }} onClick={onVisit}>Log visit</button>
+        <button className="btn sm gold" style={{ flex: 1 }} onClick={onVisit} disabled={c.closed} title={c.closed ? 'Closed for the month — locked' : ''}>Log visit</button>
         {onDetails && <button className="btn sm" onClick={onDetails}>Details</button>}
         <button className="btn sm" onClick={onNav}>🧭 Navigate</button>
         <ContactBtns phone={c.phone} />
@@ -2424,7 +2432,7 @@ function CallModal({ c, onClose, onDone }) {
           <div className="field"><label>Amount collected (₹)</label>
             <input className="input" type="number" value={paidAmt} onChange={e => setPaidAmt(e.target.value)} placeholder="0.00" /></div>
           {isCC && <div className="field"><label>Paid at (credit card)</label>
-            <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option></select></div>}
+            <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option><option>ROLLBACK</option></select></div>}
         </div>}
         {!isPTP && !isPaid && <div className="field"><label>Schedule next call (optional)</label>
           <input className="input" type="date" value={followDate} onChange={e => setFollowDate(e.target.value)} /></div>}
@@ -2559,7 +2567,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
             <div className="field"><label>PTP date</label><input className="input" type="date" value={ptpDate} onChange={e => setPtpDate(e.target.value)} /></div></div>}
           {isPaid && <div className="grid2" style={{ gridTemplateColumns: isCC ? '1fr 1fr' : '1fr' }}>
             <div className="field"><label>Amount collected (₹)</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} /></div>
-            {isCC && <div className="field"><label>Paid at (credit card)</label><select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option></select></div>}</div>}
+            {isCC && <div className="field"><label>Paid at (credit card)</label><select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option><option>ROLLBACK</option></select></div>}</div>}
           {!isPTP && !isPaid && <div className="field"><label>Schedule next call (optional)</label><input className="input" type="date" value={followDate} onChange={e => setFollowDate(e.target.value)} /></div>}
           <div className="field"><label>Note</label><textarea className="input" value={callNote} onChange={e => setCallNote(e.target.value)} /></div>
           <button className="btn gold block" onClick={logCall} disabled={busy || cur.closed}>Save call</button>
@@ -2570,7 +2578,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
             <div className="field"><label>Mode</label><select className="input" value={payMode} onChange={e => setPayMode(e.target.value)}>
               <option>UPI</option><option>Cash</option><option>Bank Transfer</option><option>Cheque</option><option>BBPS</option></select></div></div>
           {isCC && <div className="field"><label>Paid at (credit card)</label>
-            <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option></select></div>}
+            <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option><option>ROLLBACK</option></select></div>}
           <div className="field"><label>Note (optional)</label><input className="input" value={payNote} onChange={e => setPayNote(e.target.value)} /></div>
           <button className="btn gold block" onClick={recordPay} disabled={busy || !payAmt || cur.closed}>Save payment</button>
           {(() => {
@@ -2628,11 +2636,11 @@ function CaseDrawer({ c, onClose, onChanged }) {
   );
 }
 
-const QUEUE_SEG = [['due', '⏰ Due now', 'due'], ['today', '✓ Contacted today', 'contacted_today'], ['upcoming', '📅 Upcoming', 'upcoming'], ['paid', '💰 Paid today', 'paid_today'], ['closed', '🔒 Closed', 'closed']];
+const QUEUE_SEG = [['due', '⏰ Due now', 'due'], ['today', '✓ Contacted today', 'contacted_today'], ['upcoming', '📅 Upcoming', 'upcoming'], ['paid', '💰 Paid today', 'paid_today'], ['closed', '🔒 Closed', 'closed'], ['next', '🔜 Next month', 'next']];
 function CallQueue() {
   const [data, setData] = useState(null); const [active, setActive] = useState(null); const [err, setErr] = useState('');
   const [seg, setSeg] = useState('due'); const [bank, setBank] = useState(''); const [bucket, setBucket] = useState(''); const [q, setQ] = useState('');
-  const EMPTY = { due: [], contacted_today: [], upcoming: [], paid_today: [], closed: [], counts: { due: 0, contacted_today: 0, upcoming: 0, paid_today: 0, closed: 0 } };
+  const EMPTY = { due: [], contacted_today: [], upcoming: [], paid_today: [], closed: [], next: [], counts: { due: 0, contacted_today: 0, upcoming: 0, paid_today: 0, closed: 0, next: 0 } };
   const load = () => {
     const p = new URLSearchParams(); if (bank) p.set('bank', bank);
     api('/api/calls/queue' + (p.toString() ? '?' + p : ''))
@@ -3431,7 +3439,7 @@ function MISView({ user }) {
   };
   const goto = tk => { const el = document.getElementById('mis-' + tk); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
 
-  const GROUP = [['label', 'Name'], ['count', 'Count'], ['paid', 'Paid'], ['unpaid', 'Unpaid'], ['enr', 'ENR'], ['paid_enr', 'Paid ENR'], ['pct', 'Paid %'], ['norm_pct', 'NORM %'], ['stab_pct', 'STAB %'], ['amount', 'Cash'], ['visited', 'Vis'], ['not_visited', 'Not vis']];
+  const GROUP = [['label', 'Name'], ['count', 'Count'], ['paid', 'Paid'], ['unpaid', 'Unpaid'], ['enr', 'ENR'], ['paid_enr', 'Paid ENR'], ['pct', 'Paid %'], ['norm_pct', 'NORM %'], ['stab_pct', 'STAB %'], ['rollback_pct', 'RB %'], ['rollback_collected', 'RB ₹'], ['amount', 'Cash'], ['visited', 'Vis'], ['not_visited', 'Not vis']];
   const CASES = [['customer', 'Customer'], ['account', 'Account'], ['pending', 'Pending'], ['enr', 'ENR'], ['propensity', 'Score'], ['fos', 'FOS'], ['caller', 'Caller']];
   const TABLES = [
     ['by_fos', GROUP], ['by_caller', GROUP], ['by_area', GROUP], ['by_team_lead', GROUP], ['by_cat', GROUP], ['by_dpd', GROUP],
@@ -3519,6 +3527,7 @@ function MISView({ user }) {
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Untouched</div><b style={{ fontSize: 20, color: 'var(--bad)' }}>{fn.untouched}</b><div className="muted" style={{ fontSize: 11 }}>{money(fn.untouched_pending)} pending</div></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Realization</div><b style={{ fontSize: 20 }}>{st.realization_pct}%</b><div className="muted" style={{ fontSize: 11 }}>leak {money(st.leakage)}</div></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Conversion</div><b style={{ fontSize: 20 }}>{fn.conversion_pct}%</b><div className="muted" style={{ fontSize: 11 }}>{fn.paid_of_contacted}/{fn.contacted} contacted</div></div>
+          {st.rollback_target > 0 && <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Rollback collected</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(st.rollback_collected)}</b><div className="muted" style={{ fontSize: 11 }}>{st.rollback_pct}% of ENR · {st.rollback_realization_pct}% of {money(st.rollback_target)} · {st.rollback_count} cases</div></div>}
         </div>
 
         {/* Charts */}
@@ -3819,10 +3828,11 @@ const SHEET_COLS = [
   { k: 'enr', t: 'ENR', type: 'num' },
   { k: 'norm_amount', t: 'OD NORM', type: 'num', edit: true },
   { k: 'stab_amount', t: 'OD STAB', type: 'num', edit: true },
+  { k: 'rollback_amount', t: 'ROLLBACK', type: 'num', edit: true },
   { k: 'min_amount_due', t: 'Min due', type: 'num', edit: true },
   { k: 'received_amount', t: 'Amount', type: 'num', edit: true },
   { k: 'pending_amount', t: 'Pending', type: 'num', edit: true },
-  { k: 'norm_stab', t: 'N/S paid', type: 'sel', edit: true, opts: ['', 'NORM', 'STAB'] },
+  { k: 'norm_stab', t: 'N/S paid', type: 'sel', edit: true, opts: ['', 'NORM', 'STAB', 'ROLLBACK'] },
   { k: 'status', t: 'Status', type: 'sel', edit: true, opts: ['', 'new', 'ptp', 'callback', 'paid', 'closed'] },
   { k: 'paid_status', t: 'Paid', type: 'sel', edit: true, opts: ['', 'PAID', 'PARTIAL', 'UNPAID'] },
   { k: 'disposition', t: 'Disposition', type: 'sel', edit: true, opts: ['', 'PTP', 'RTP', 'PAID', 'CALLBACK', 'NO_CONTACT', 'WRONG_NUMBER', 'REFUSED'] },
@@ -4243,7 +4253,7 @@ function PaymentEditModal({ row, mode, onClose, onDone }) {
             <div className="stat-row"><span className="k">Outstanding</span><b style={{ color: 'var(--warn)' }}>{money(state.pending_amount)}</b></div>
             <div className="field"><label>Amount paid (₹)</label><input className="input" type="number" value={amount} onChange={e => setAmount(e.target.value)} /></div>
             {isCC && <div className="field"><label>Paid at (credit card)</label>
-              <select className="input" value={ns} onChange={e => setNs(e.target.value)}><option>STAB</option><option>NORM</option></select></div>}
+              <select className="input" value={ns} onChange={e => setNs(e.target.value)}><option>STAB</option><option>NORM</option><option>ROLLBACK</option></select></div>}
             {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
             <button className="btn gold block" disabled={busy} onClick={confirmPaid} style={{ marginTop: 6 }}>{busy ? 'Saving…' : 'OK — mark paid'}</button>
           </>

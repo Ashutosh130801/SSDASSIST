@@ -83,7 +83,7 @@ async def create_visit(
             case.paid_status = "PARTIAL"
         if norm_stab:                         # credit-card: NORM or STAB paid
             ns = norm_stab.upper()
-            case.norm_stab = "STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab)
+            case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
     if latitude and longitude and location_correct:
         case.latitude = latitude
         case.longitude = longitude

@@ -125,6 +125,12 @@ def _current_period() -> str:
     return datetime.now(_IST_TZ).strftime("%Y-%m")
 
 
+def _next_period() -> str:
+    """Next month as 'YYYY-MM' (IST). Uploaded-early next-month data is workable now."""
+    d = datetime.now(_IST_TZ)
+    return f"{d.year + 1:04d}-01" if d.month == 12 else f"{d.year:04d}-{d.month + 1:02d}"
+
+
 def _case_closed(case: models.Case) -> bool:
     if not case.close_date:
         return False
@@ -147,13 +153,13 @@ def _scope(q, user: models.User, include_removed: bool = False):
     hidden everywhere unless explicitly requested."""
     if not include_removed:
         q = q.filter(models.Case.removed.isnot(True))
-    # Monthly lifecycle: everyone works within the CURRENT month. This month's cases stay
-    # visible to field/calling staff even after they close (cycle date / month-end) — but
-    # closed ones are locked (no operations). Once the month rolls over, the whole month
-    # becomes admin-only history (Monthly Archive). Cases with no period (legacy) stay on.
+    # Monthly lifecycle: field/calling staff work the CURRENT month plus any NEXT-month
+    # data uploaded early (so it can be allocated & started ahead of time). This month's
+    # cases stay visible even after they close (cycle date / month-end) but closed ones are
+    # locked. Past months become admin-only history. Cases with no period (legacy) stay on.
     if user.role != "admin":
-        cp = _current_period()
-        q = q.filter(or_(models.Case.period.is_(None), models.Case.period == cp))
+        q = q.filter(or_(models.Case.period.is_(None),
+                         models.Case.period.in_([_current_period(), _next_period()])))
     if user.role == "fos":
         return q.filter(models.Case.assigned_fos_id == user.id)
     if user.role == "telecaller":
@@ -252,6 +258,7 @@ def list_cases(
     paid_status: str | None = None,
     search: str | None = None,
     period: str | None = None,          # "YYYY-MM" — admin can view a past month's cases
+    month_bucket: str | None = None,    # 'current' | 'next' — this month vs next month
     closed: bool | None = None,         # True = only closed(locked), False = only open
     closing_type: str | None = None,    # cyc / month_end / due_date
     cyc: int | None = None,             # cycle day-of-month it closes on
@@ -261,6 +268,10 @@ def list_cases(
     q = _scope(db.query(models.Case), user)
     if period:
         q = q.filter(models.Case.period == period)
+    if month_bucket == "current":
+        q = q.filter(models.Case.period == _current_period())
+    elif month_bucket == "next":
+        q = q.filter(models.Case.period == _next_period())
     if closing_type:
         q = q.filter(models.Case.closing_type == closing_type)
     if closed is not None:
@@ -569,7 +580,7 @@ def record_payment(case_id: int, body: PaymentIn, db: Session = Depends(get_db),
         case.paid_status = "PARTIAL"
     if body.norm_stab:
         ns = body.norm_stab.upper()
-        case.norm_stab = "STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab)
+        case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
 
     note = f"₹{amt} via {body.mode}" + (f" — {body.note}" if body.note else "")
     db.add(models.CallLog(case_id=case.id, caller_id=user.id,
@@ -648,7 +659,7 @@ def mark_paid(case_id: int, body: MarkPaidIn = MarkPaidIn(), db: Session = Depen
     case.follow_up_date = None
     if body.norm_stab:
         ns = body.norm_stab.upper()
-        case.norm_stab = "STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab)
+        case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
     credit_id = case.assigned_caller_id or case.assigned_fos_id or actor.id
     tag = f" ({case.norm_stab})" if case.norm_stab else ""
     db.add(models.CallLog(case_id=case.id, caller_id=credit_id, disposition="PAID", ptp_amount=amt,
