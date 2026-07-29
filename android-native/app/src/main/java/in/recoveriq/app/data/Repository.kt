@@ -156,4 +156,28 @@ class Repository(context: Context) {
             photo = photoPart,
         )
     }
+
+    // --- My E-ID / profile ---
+    suspend fun myProfile(): EmployeeProfile = Api.service.myProfile()
+
+    suspend fun updateMyProfile(patch: Map<String, String?>) {
+        Api.service.updateMyProfile(patch)
+    }
+
+    /** Set a new password; refreshes the stored token + user so the app continues signed in. */
+    suspend fun changePassword(current: String, new: String): Token {
+        val t = Api.service.changePassword(ChangePasswordRequest(current, new))
+        Api.token = t.accessToken
+        session.save(t)
+        return t
+    }
+
+    // --- Notifications ---
+    suspend fun notifications(limit: Int = 30): NotificationList = Api.service.notifications(limit)
+    suspend fun markNotificationRead(id: Int) = Api.service.markNotificationRead(id)
+    suspend fun markAllNotificationsRead() = Api.service.markAllNotificationsRead()
+
+    /** Caller / head office records the customer's latest address / phone (notifies the FOS). */
+    suspend fun contactUpdate(caseId: Int, newAddress: String?, newPhone: String?): Case =
+        Api.service.contactUpdate(caseId, mapOf("new_address" to newAddress, "new_phone" to newPhone))
 }

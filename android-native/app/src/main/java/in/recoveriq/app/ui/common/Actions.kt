@@ -56,6 +56,45 @@ object Actions {
         }
     }
 
+    /**
+     * Opens WhatsApp's own contact/group picker with the visit summary + geotagged photo
+     * attached, so the field agent can forward it to ANYONE (a colleague, the office, or
+     * themselves). No recipient is pre-selected. Falls back to the system share sheet if
+     * WhatsApp isn't installed.
+     */
+    fun shareVisit(context: Context, message: String, photoJpeg: ByteArray?) {
+        try {
+            val intent = Intent(Intent.ACTION_SEND)
+            if (photoJpeg != null) {
+                val dir = File(context.cacheDir, "shared").apply { mkdirs() }
+                val file = File(dir, "visit_${System.currentTimeMillis()}.jpg")
+                file.writeBytes(photoJpeg)
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                intent.type = "image/jpeg"
+                intent.putExtra(Intent.EXTRA_STREAM, uri)
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } else {
+                intent.type = "text/plain"
+            }
+            intent.putExtra(Intent.EXTRA_TEXT, message)   // caption for the photo
+            // Prefer WhatsApp (personal, then Business); if neither, use the share sheet.
+            val pm = context.packageManager
+            val wa = when {
+                runCatching { pm.getPackageInfo("com.whatsapp", 0) }.isSuccess -> "com.whatsapp"
+                runCatching { pm.getPackageInfo("com.whatsapp.w4b", 0) }.isSuccess -> "com.whatsapp.w4b"
+                else -> null
+            }
+            if (wa != null) {
+                intent.setPackage(wa)
+                context.startActivity(intent)
+            } else {
+                context.startActivity(Intent.createChooser(Intent(intent).apply { setPackage(null) }, "Share visit"))
+            }
+        } catch (e: Exception) {
+            toast(context, "Couldn't open WhatsApp to share the visit")
+        }
+    }
+
     fun dial(context: Context, phone: String?) {
         val p = phone?.let { cleanPhone(it) }.orEmpty()
         if (p.isBlank()) { toast(context, "No phone number on file"); return }
@@ -92,6 +131,14 @@ object Actions {
         }
         val geo = Uri.parse("geo:$lat,$lng?q=$lat,$lng(${Uri.encode(label ?: "Destination")})")
         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, geo)) }
+            .onFailure { toast(context, "No maps app available") }
+    }
+
+    /** Open a maps search for a free-text address (used for the customer's new address). */
+    fun mapsSearch(context: Context, query: String?) {
+        if (query.isNullOrBlank()) { toast(context, "No address"); return }
+        val uri = Uri.parse("geo:0,0?q=${Uri.encode(query)}")
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
             .onFailure { toast(context, "No maps app available") }
     }
 

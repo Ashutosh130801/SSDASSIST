@@ -1,0 +1,103 @@
+==============================================================================
+ SSDASSIST — What to install on the Ubuntu PC (the always-on server)
+==============================================================================
+
+The whole app (Python, FastAPI, Postgres, all Python libraries) runs INSIDE
+Docker containers. Those Python packages install themselves automatically when
+Docker builds the image, so you do NOT install them on the PC by hand.
+
+The Ubuntu PC itself only needs the few HOST tools listed below.
+
+Base OS : Ubuntu 22.04 LTS or 24.04 LTS (64-bit)
+
+------------------------------------------------------------------------------
+ HOST TOOLS TO INSTALL  (what + why + command)
+------------------------------------------------------------------------------
+
+1) System basics: git, curl, ca-certificates, nano
+   Why : pull the code, download installers, edit the secrets file.
+   Cmd :
+        sudo apt update
+        sudo apt -y install git curl ca-certificates nano
+
+   (python3 is already on Ubuntu — used once to generate a secret key. Confirm
+    with:  python3 --version )
+
+2) Docker Engine + Docker Compose plugin
+   Why : runs the entire stack (the API + web app + Postgres database).
+   Cmd :
+        curl -fsSL https://get.docker.com | sh
+        sudo usermod -aG docker $USER
+   Then log out and back in (or reboot) so Docker works without sudo.
+   Verify:
+        docker --version
+        docker compose version
+
+3) cloudflared  (Cloudflare Tunnel agent)
+   Why : publishes the PC at your domain over HTTPS so field phones can reach
+         it from anywhere — no static IP, no router port-forwarding.
+   Cmd :
+        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+        sudo dpkg -i cloudflared.deb
+   Verify:
+        cloudflared --version
+   (Skip this ONLY if you will use the app office-LAN-only at http://PC-IP:8000)
+
+4) GitHub Actions self-hosted runner
+   Why : makes the PC rebuild itself automatically on every "git push".
+   Note: this is NOT an apt package — you download it from your repo's
+         Settings > Actions > Runners > New self-hosted runner (Linux x64),
+         which gives you a one-time token. See Part E of SELF_HOSTING_GUIDE.md.
+   Its only dependency is a working Docker (installed in step 2).
+
+------------------------------------------------------------------------------
+ ONE-SHOT INSTALL  (copy–paste this whole block on the Ubuntu PC)
+------------------------------------------------------------------------------
+
+    sudo apt update && sudo apt -y upgrade
+    sudo apt -y install git curl ca-certificates nano
+    curl -fsSL https://get.docker.com | sh
+    sudo usermod -aG docker $USER
+    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+    sudo dpkg -i cloudflared.deb
+    # keep the PC always-on (never sleep/suspend):
+    sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+    echo ">> Now LOG OUT and back in (or reboot) so Docker works without sudo."
+
+After logging back in, verify everything:
+
+    docker --version
+    docker compose version
+    cloudflared --version
+    git --version
+
+Then continue with SELF_HOSTING_GUIDE.md from Part C (clone the repo, create
+~/recoveriq.env, build & start the stack).
+
+------------------------------------------------------------------------------
+ FOR REFERENCE ONLY — Python packages that install INSIDE Docker automatically
+ (from app/backend/requirements.txt; you do NOT install these on the PC)
+------------------------------------------------------------------------------
+    fastapi==0.111.0
+    uvicorn[standard]==0.30.1
+    SQLAlchemy==2.0.30
+    psycopg2-binary==2.9.9
+    alembic==1.13.2
+    pydantic==2.7.4
+    pydantic-settings==2.3.4
+    python-jose[cryptography]==3.3.0
+    passlib[bcrypt]==1.7.4
+    bcrypt==4.0.1
+    python-multipart==0.0.9
+    openpyxl==3.1.5
+    pandas==2.2.2
+    httpx==0.27.0
+    google-auth==2.32.0
+    email-validator==2.2.0
+    google-cloud-storage==2.18.2
+    pyotp==2.9.0
+    webauthn==2.2.0
+
+Postgres itself also runs as a Docker container (image: postgres:16-alpine) —
+nothing to install for it on the PC.
+==============================================================================

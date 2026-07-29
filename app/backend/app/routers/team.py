@@ -43,18 +43,39 @@ def _teamlead_member_ids(db: Session, lead: models.User) -> list[int]:
     return list(ids)
 
 
+def _branch_fos_ids(db: Session, branch: str) -> set[int]:
+    """FOS (and callers) assigned to this branch's cases — used so a branch manager can
+    monitor field officers who work their branch's cases even though the FOS may be based
+    in another location / not tied to any branch."""
+    if not branch:
+        return set()
+    rows = db.query(models.Case.assigned_fos_id, models.Case.assigned_caller_id).filter(
+        models.Case.branch == branch, models.Case.removed.isnot(True)).all()
+    ids = set()
+    for fos_id, caller_id in rows:
+        if fos_id:
+            ids.add(fos_id)
+        if caller_id:
+            ids.add(caller_id)
+    return ids
+
+
 def _guard_view(actor: models.User, u: models.User, db: Session = None):
     """Who may open a staff member's profile/performance: the person themselves,
-    admin & head office (everyone), a branch manager (their branch), and a team lead
-    (only staff who handle a case carrying the lead's name)."""
+    admin & head office (everyone), a branch manager (their own branch's staff OR any
+    field officer working their branch's cases), and a team lead (staff on a case
+    carrying the lead's name)."""
     if actor.id == u.id:
         return
     if actor.role in ("admin", "headoffice"):
         return
     if actor.role == "manager":
-        if u.branch != actor.branch:
-            raise HTTPException(status_code=403, detail="Not in your branch")
-        return
+        if u.branch == actor.branch:
+            return
+        # FOS are location-independent: allow if they handle any of this branch's cases.
+        if db is not None and u.id in _branch_fos_ids(db, actor.branch):
+            return
+        raise HTTPException(status_code=403, detail="Not in your branch")
     if actor.role == "teamlead":
         if db is None or u.id not in _teamlead_member_ids(db, actor):
             raise HTTPException(status_code=403, detail="Not one of your team members")
@@ -105,6 +126,47 @@ def branches(db: Session = Depends(get_db), user: models.User = Depends(require_
         d.update(cases=c, received=r, pending=p)
         out.append(d)
     out.sort(key=lambda x: x["branch"])
+    return out
+
+
+@router.get("/branch-associates")
+def branch_associates(branch: str, db: Session = Depends(get_db),
+                      user: models.User = Depends(require_roles("admin", "manager", "headoffice"))):
+    """Field officers (and any cross-branch caller) who work THIS branch's cases but are
+    based elsewhere / not tied to the branch. Managers can monitor their performance on
+    the branch's cases here. Returns per-person stats scoped to this branch only."""
+    if user.role == "manager" and branch != (user.branch or "Unassigned"):
+        raise HTTPException(status_code=403, detail="Not your branch")
+
+    cases = db.query(models.Case).filter(models.Case.branch == branch,
+                                         models.Case.removed.isnot(True)).all()
+    # Staff already listed as branch members are excluded (they show in the normal roster).
+    branch_member_ids = {r[0] for r in db.query(models.User.id).filter(models.User.branch == branch).all()}
+
+    stats: dict[int, dict] = {}
+    for c in cases:
+        for uid, role in ((c.assigned_fos_id, "fos"), (c.assigned_caller_id, "telecaller")):
+            if not uid or uid in branch_member_ids:
+                continue
+            s = stats.setdefault(uid, {"id": uid, "role": role, "cases": 0, "paid": 0,
+                                       "received": 0.0, "pending": 0.0})
+            s["cases"] += 1
+            s["paid"] += int((c.paid_status or "").upper() == "PAID")
+            s["received"] += _d(c.received_amount)
+            s["pending"] += _d(c.pending_amount)
+
+    if not stats:
+        return []
+    umap = {u.id: u for u in db.query(models.User).filter(models.User.id.in_(list(stats.keys()))).all()}
+    out = []
+    for uid, s in stats.items():
+        u = umap.get(uid)
+        if not u:
+            continue
+        out.append({**s, "name": u.name, "emp_code": u.emp_code, "phone": u.phone,
+                    "home_branch": u.branch or "—", "received": round(s["received"], 2),
+                    "pending": round(s["pending"], 2)})
+    out.sort(key=lambda x: x["received"], reverse=True)
     return out
 
 
@@ -223,9 +285,18 @@ def employee_dashboard(uid: int, db: Session = Depends(get_db),
     is_caller = u.role == "telecaller"
     cq = db.query(models.Case).filter(models.Case.escalated.isnot(True), models.Case.removed.isnot(True))
     cq = cq.filter(models.Case.assigned_caller_id == uid) if is_caller else cq.filter(models.Case.assigned_fos_id == uid)
+    # A branch manager sees this person's performance ON THEIR BRANCH'S CASES only — so a
+    # location-independent FOS shows the manager just their contribution to that branch.
+    branch_scoped = actor.role == "manager" and u.branch != actor.branch
+    if branch_scoped:
+        cq = cq.filter(models.Case.branch == actor.branch)
     cases = cq.all()
+    case_ids = {c.id for c in cases}
     calls = db.query(models.CallLog).filter(models.CallLog.caller_id == uid, ~models.CallLog.case_id.in_(esc)).all()
     visits = db.query(models.Visit).filter(models.Visit.officer_id == uid, ~models.Visit.case_id.in_(esc)).all()
+    if branch_scoped:
+        calls = [cl for cl in calls if cl.case_id in case_ids]
+        visits = [v for v in visits if v.case_id in case_ids]
 
     def paid(c):
         return (c.paid_status or "").upper() == "PAID"

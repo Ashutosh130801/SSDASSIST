@@ -24,6 +24,8 @@ EDITABLE = {
     "min_amount_due", "norm_stab", "cat", "team", "team_lead", "caller_name", "fos_name",
     # PL/BL: TOS and the daily-updated OD STAB / OD NORM targets are caller-editable.
     "total_outstanding", "principal_outstanding", "stab_amount", "norm_amount",
+    # Customer's latest address / phone found mid-cycle — surfaced to the assigned FOS.
+    "new_address", "new_phone",
 }
 NUMERIC = {"received_amount", "pending_amount", "min_amount_due", "enr", "norm_amount", "stab_amount",
            "total_outstanding", "principal_outstanding"}
@@ -112,6 +114,20 @@ async def update_cell(case_id: int, body: CellUpdate, db: Session = Depends(get_
 
     if body.field in CONTACT_FIELDS:
         case.last_contacted_at = datetime.now(timezone.utc)
+
+    # New address / phone: stamp who+when and alert the assigned field officer.
+    if body.field in ("new_address", "new_phone") and str(old_val) != str(new_val):
+        case.new_contact_by = user.name
+        case.new_contact_at = datetime.now(timezone.utc)
+        if case.assigned_fos_id:
+            label = "phone" if body.field == "new_phone" else "address"
+            icon = "📞" if body.field == "new_phone" else "📍"
+            who = case.customer_name or case.account_no or f"case #{case.id}"
+            from .notifications import push
+            push(db, case.assigned_fos_id,
+                 title=f"Updated contact — {who}",
+                 body=f"{icon} New {label}: {new_val}   (by {user.name})",
+                 case_id=case.id, ntype="contact_update", by_name=user.name)
 
     db.commit()
     db.refresh(case)

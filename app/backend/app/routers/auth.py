@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -115,6 +115,26 @@ def login_json(body: schemas.LoginRequest, db: Session = Depends(get_db)):
     _check_2fa(user, body.otp)                         # 401 "2FA_REQUIRED" / "Invalid 2FA code"
     _register_success(db, user)                        # reset counters
     _device_gate(db, user, body.device_id, body.device_label)
+    return _token_for(user)
+
+
+@router.post("/change-password", response_model=schemas.Token)
+def change_password(body: dict = Body(...), db: Session = Depends(get_db),
+                    user: models.User = Depends(get_current_user)):
+    """Set a new password. Verifies the current one, then clears the first-login flag.
+    Returns a fresh token + updated user so the app can continue seamlessly."""
+    current = (body.get("current_password") or "").strip()
+    new = (body.get("new_password") or "").strip()
+    if not user.hashed_password or not verify_password(current, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Your current password is incorrect")
+    if len(new) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+    if new == current:
+        raise HTTPException(status_code=400, detail="New password must be different from the current one")
+    user.hashed_password = hash_password(new)
+    user.must_change_password = False
+    db.commit()
+    db.refresh(user)
     return _token_for(user)
 
 

@@ -106,18 +106,72 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     # another branch; both come from the file, not from any branch rule.
     _fos_by_code = {u.emp_code.strip().upper(): u for u in _users if u.emp_code and u.role == "fos"}
     _fos_by_name = {u.name.strip().upper(): u for u in _users if u.name and u.role == "fos"}
+    _caller_cands = [(u.name.strip().upper(), u) for u in _users
+                     if u.name and u.role in ("telecaller", "teamlead")]
+    _fos_cands = [(u.name.strip().upper(), u) for u in _users if u.name and u.role == "fos"]
+
+    def _match(val, by_code, by_name, candidates):
+        """Resolve one CALLER/FOS cell to a person and say WHY if it can't.
+        Returns (user_or_None, reason) where reason is:
+          '' matched · 'blank' no value in the cell · 'unknown' name/ID not in the system
+          · 'ambiguous' the partial name fits more than one person (left unassigned on purpose).
+        First-upload safety net: the sheet may hold just part of a name ('Krishna' for
+        'Krishna Sai Durga') — matched only when it points to exactly ONE person."""
+        if val is None or not str(val).strip():
+            return None, "blank"
+        key = str(val).strip().upper()
+        exact = by_code.get(key) or by_name.get(key)
+        if exact:
+            return exact, ""
+        if len(key) < 3:
+            return None, "unknown"
+        hits = {}
+        for nm, u in candidates:
+            words = nm.split()
+            if key == nm or key in words or nm.startswith(key) or (words and words[0].startswith(key)):
+                hits[u.id] = u
+        if len(hits) == 1:
+            return next(iter(hits.values())), ""
+        return None, ("ambiguous" if len(hits) > 1 else "unknown")
+
+    def _match_caller(val):
+        return _match(val, _by_code, _by_name, _caller_cands)
+
+    def _match_fos(val):
+        return _match(val, _fos_by_code, _fos_by_name, _fos_cands)
 
     def _resolve_caller(val):
-        if not val:
-            return None
-        key = str(val).strip().upper()
-        return _by_code.get(key) or _by_name.get(key)
+        return _match_caller(val)[0]
 
     def _resolve_fos(val):
-        if not val:
-            return None
-        key = str(val).strip().upper()
-        return _fos_by_code.get(key) or _fos_by_name.get(key)
+        return _match_fos(val)[0]
+
+    # Per-row diagnostics: rows whose CALLER/FOS was named on the sheet but didn't map to
+    # anyone (typo, person not created yet, or an ambiguous partial name). Blanks are counted
+    # but not listed — not every case carries both a caller and a field officer.
+    _REASON_TEXT = {"unknown": "no matching employee (check spelling / create them first)",
+                    "ambiguous": "name matches more than one person — use their ID (e.g. TC001)"}
+    unresolved_rows: list = []
+    blank_caller = blank_fos = 0
+    _UNRESOLVED_CAP = 300
+
+    def _flag(rec_kwargs, field, raw, reason):
+        nonlocal blank_caller, blank_fos
+        if reason == "blank":
+            if field == "caller":
+                blank_caller += 1
+            else:
+                blank_fos += 1
+            return
+        if len(unresolved_rows) < _UNRESOLVED_CAP:
+            unresolved_rows.append({
+                "account_no": rec_kwargs.get("account_no"),
+                "customer": rec_kwargs.get("customer_name") or rec_kwargs.get("name"),
+                "field": field,
+                "value_in_sheet": (str(raw).strip() if raw is not None else None),
+                "reason": reason,
+                "detail": _REASON_TEXT.get(reason, reason),
+            })
 
     imported, skipped = 0, 0
     for rec in records:
@@ -137,16 +191,22 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                     setattr(existing, k, kwargs[k])
             if kwargs.get("extra"):                 # merge new loan/caller columns
                 existing.extra = {**(existing.extra or {}), **kwargs["extra"]}
-            cu = _resolve_caller(kwargs.get("caller_name"))
+            _rawc = kwargs.get("caller_name")
+            cu, _cr = _match_caller(_rawc)
             if cu:
                 existing.assigned_caller_id = cu.id
                 existing.caller_name = cu.name
-            fu = _resolve_fos(kwargs.get("fos_name"))
+            elif not existing.assigned_caller_id:      # still nobody on this case → report why
+                _flag(kwargs, "caller", _rawc, _cr)
+            _rawf = kwargs.get("fos_name")
+            fu, _fr = _match_fos(_rawf)
             if fu:
                 existing.assigned_fos_id = fu.id
                 existing.fos_name = fu.name
                 if fu.branch and not branch:            # case's branch = its field owner (FOS) branch
                     existing.branch = fu.branch
+            elif not existing.assigned_fos_id:
+                _flag(kwargs, "fos", _rawf, _fr)
             if default_bank:
                 existing.bank = default_bank
             if product:
@@ -167,16 +227,22 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             kwargs["segment"] = segment
         if branch:
             kwargs["branch"] = branch
-        cu = _resolve_caller(kwargs.get("caller_name"))
+        _rawc = kwargs.get("caller_name")
+        cu, _cr = _match_caller(_rawc)
         if cu:
             kwargs["assigned_caller_id"] = cu.id
             kwargs["caller_name"] = cu.name
-        fu = _resolve_fos(kwargs.get("fos_name"))
+        else:
+            _flag(kwargs, "caller", _rawc, _cr)
+        _rawf = kwargs.get("fos_name")
+        fu, _fr = _match_fos(_rawf)
         if fu:
             kwargs["assigned_fos_id"] = fu.id
             kwargs["fos_name"] = fu.name
             if fu.branch and not kwargs.get("branch"):   # case's branch = its field owner (FOS) branch
                 kwargs["branch"] = fu.branch
+        else:
+            _flag(kwargs, "fos", _rawf, _fr)
         kwargs["import_batch_id"] = batch.id
         new_case = models.Case(**kwargs)
         _apply_period(new_case, rec)
@@ -205,11 +271,24 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     assigned_fos = q.filter(models.Case.assigned_fos_id.isnot(None)).count()
     assigned_caller = q.filter(models.Case.assigned_caller_id.isnot(None)).count()
 
+    # Post-commit assignment report: which named rows couldn't be mapped, and why.
+    unresolved_caller = sum(1 for r in unresolved_rows if r["field"] == "caller")
+    unresolved_fos = sum(1 for r in unresolved_rows if r["field"] == "fos")
+    assignment_report = {
+        "unresolved_caller": unresolved_caller,
+        "unresolved_fos": unresolved_fos,
+        "blank_caller": blank_caller,
+        "blank_fos": blank_fos,
+        "capped": len(unresolved_rows) >= _UNRESOLVED_CAP,
+        "rows": unresolved_rows,
+    }
+
     return {"sheet": sheet, "imported": imported, "updated": skipped,
             "total": len(records), "allocation": alloc,
             "total_cases": total_cases,
             "assigned_fos_total": assigned_fos,
             "assigned_caller_total": assigned_caller,
+            "assignment_report": assignment_report,
             "batch_id": batch.id}
 
 

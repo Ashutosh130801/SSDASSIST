@@ -36,6 +36,10 @@ data class User(
     @Json(name = "assigned_pincodes") val assignedPincodes: List<String> = emptyList(),
     @Json(name = "photo_url") val photoUrl: String? = null,
     @Json(name = "is_active") val isActive: Boolean = true,
+    @Json(name = "must_change_password") val mustChangePassword: Boolean = false,
+    @Json(name = "profile_completed") val profileCompleted: Boolean = false,
+    val designation: String? = null,
+    val location: String? = null,
 ) {
     val isFieldAgent get() = role == "fos"
     val isTelecaller get() = role == "telecaller"
@@ -49,6 +53,11 @@ data class User(
             "teamlead" -> "Team Lead"
             "fos" -> "Field Agent"
             "telecaller" -> "Tele-calling Agent"
+            "headoffice" -> "Head Office"
+            "backend" -> "Back-office Official"
+            "hr" -> "HR"
+            "it" -> "IT"
+            "staff" -> "Staff"
             else -> role.replaceFirstChar { it.uppercase() }
         }
 }
@@ -144,6 +153,10 @@ data class Case(
     val phone: String? = null,
     @Json(name = "alt_phone") val altPhone: String? = null,
     val address: String? = null,
+    @Json(name = "new_address") val newAddress: String? = null,
+    @Json(name = "new_phone") val newPhone: String? = null,
+    @Json(name = "new_contact_by") val newContactBy: String? = null,
+    @Json(name = "new_contact_at") val newContactAt: String? = null,
     val pincode: String? = null,
     val latitude: Double? = null,
     val longitude: Double? = null,
@@ -527,4 +540,60 @@ data class UserUpdate(
     val branch: String? = null,
     @Json(name = "is_active") val isActive: Boolean? = null,
     val password: String? = null,
+)
+
+// ---- Employee E-ID / profile (GET/PATCH /api/manpower/me) ----
+@JsonClass(generateAdapter = true)
+data class EmployeeProfile(
+    val id: Int = 0,
+    @Json(name = "emp_code") val empCode: String? = null,
+    @Json(name = "hr_ref") val hrRef: String? = null,
+    val name: String = "",
+    val email: String? = null,
+    val phone: String? = null,
+    val role: String = "",
+    val designation: String? = null,
+    val location: String? = null,
+    val branch: String? = null,
+    val gender: String? = null,
+    val dob: String? = null,
+    @Json(name = "joining_date") val joiningDate: String? = null,
+    @Json(name = "blood_group") val bloodGroup: String? = null,
+    @Json(name = "marital_status") val maritalStatus: String? = null,
+    @Json(name = "emergency_contact") val emergencyContact: String? = null,
+    @Json(name = "emergency_name") val emergencyName: String? = null,
+    @Json(name = "emergency_relation") val emergencyRelation: String? = null,
+    @Json(name = "aadhar_number") val aadharNumber: String? = null,
+    @Json(name = "pan_number") val panNumber: String? = null,
+    @Json(name = "bank_holder") val bankHolder: String? = null,
+    @Json(name = "bank_account") val bankAccount: String? = null,
+    @Json(name = "ifsc_code") val ifscCode: String? = null,
+    @Json(name = "bank_name") val bankName: String? = null,
+    @Json(name = "current_address") val currentAddress: String? = null,
+    @Json(name = "photo_url") val photoUrl: String? = null,
+    @Json(name = "profile_completed") val profileCompleted: Boolean = false,
+)
+
+@JsonClass(generateAdapter = true)
+data class ChangePasswordRequest(
+    @Json(name = "current_password") val currentPassword: String,
+    @Json(name = "new_password") val newPassword: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class NotificationItem(
+    val id: Int = 0,
+    @Json(name = "case_id") val caseId: Int? = null,
+    val type: String? = null,
+    val title: String? = null,
+    val body: String? = null,
+    val read: Boolean = false,
+    @Json(name = "created_by") val createdBy: String? = null,
+    @Json(name = "created_at") val createdAt: String? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class NotificationList(
+    val unread: Int = 0,
+    val items: List<NotificationItem> = emptyList(),
 )

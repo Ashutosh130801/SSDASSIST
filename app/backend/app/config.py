@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     cors_origins: str = ""
     environment: str = "development"   # set ENVIRONMENT=production in the cloud
 
-    admin_email: str = "admin@ssdrecovery.in"
-    admin_password: str = "admin123"
+    admin_email: str = "admin@ssdenterprises.in"
+    admin_password: str = "Admin@2006"
 
     # Set to true (env SEED_ON_START=1) for the first cloud deploy to create the
     # demo staff/admin, then redeploy with it off.

@@ -56,6 +56,11 @@ class UserOut(UserBase):
     emp_code: Optional[str] = None
     team_lead_name: Optional[str] = None    # resolved name of the team lead (display only)
     is_active: bool
+    must_change_password: Optional[bool] = None
+    profile_completed: Optional[bool] = None
+    designation: Optional[str] = None
+    location: Optional[str] = None
+    photo_url: Optional[str] = None
     created_at: datetime
 
 
@@ -210,6 +215,8 @@ class CaseBase(BaseModel):
     alt_phone: Optional[str] = None
     address: Optional[str] = None
     address2: Optional[str] = None
+    new_address: Optional[str] = None
+    new_phone: Optional[str] = None
     pincode: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -258,6 +265,8 @@ class CaseOut(CaseBase):
     assigned_caller_name: Optional[str] = None
     assigned_caller_phone: Optional[str] = None
     allocation_reason: Optional[str]
+    new_contact_by: Optional[str] = None
+    new_contact_at: Optional[datetime] = None
     removed: Optional[bool] = None
     removed_at: Optional[datetime] = None
     last_contacted_at: Optional[datetime] = None

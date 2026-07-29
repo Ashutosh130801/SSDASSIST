@@ -39,6 +39,21 @@ def notify_data_changed(bank: str | None = None, product: str | None = None) -> 
         pass
 
 
+def notify_user(user_id: int, payload: dict) -> None:
+    """Sync-safe targeted push to one user's live sockets (web + phone). Used to alert an
+    assigned FOS the instant a caller/head-office updates a customer's new address/phone."""
+    if not user_id:
+        return
+    loop = _loop
+    try:
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(manager.send_to_user(user_id, payload), loop)
+        else:
+            asyncio.run(manager.send_to_user(user_id, payload))
+    except Exception:
+        pass
+
+
 class ConnectionManager:
     def __init__(self) -> None:
         # user_id -> set of live sockets (a user may have web + phone open at once)

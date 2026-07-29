@@ -9,6 +9,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.BeachAccess
 import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Groups
@@ -79,6 +80,8 @@ import `in`.recoveriq.app.ui.screens.CommunicationScreen
 import `in`.recoveriq.app.ui.screens.DevicesScreen
 import `in`.recoveriq.app.ui.screens.LeaveScreen
 import `in`.recoveriq.app.ui.screens.LitigationScreen
+import `in`.recoveriq.app.ui.screens.ForcePasswordChangeScreen
+import `in`.recoveriq.app.ui.screens.ProfileScreen
 import `in`.recoveriq.app.ui.screens.SecurityScreen
 import `in`.recoveriq.app.ui.screens.TeamScreen
 import `in`.recoveriq.app.ui.teamlead.TeamLeadDashboardScreen
@@ -117,6 +120,17 @@ private fun MainNav(
     LaunchedEffect(Unit) {
         Realtime.openCase.collect { id -> nav.navigate("case/$id") }
     }
+    // Targeted alerts (e.g. caller/head-office updated a customer's new address/phone) →
+    // post a phone notification so the field officer sees it even outside the app.
+    val appCtx = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    LaunchedEffect(Unit) {
+        Realtime.notification.collect { n ->
+            `in`.recoveriq.app.Notifier.show(
+                appCtx, n.id.takeIf { it > 0 } ?: System.currentTimeMillis().toInt(),
+                n.title ?: "Update", n.body ?: "",
+            )
+        }
+    }
 
     // Field officers are signed out at 7pm each day (checked while the app is open).
     if (user.isFieldAgent) {
@@ -127,6 +141,13 @@ private fun MainNav(
                 kotlinx.coroutines.delay(60_000)
             }
         }
+    }
+
+    // First login with the shared starter password: force a change before anything else.
+    var mustChange by remember { mutableStateOf(user.mustChangePassword) }
+    if (mustChange) {
+        ForcePasswordChangeScreen(vm, onChanged = { mustChange = false })
+        return
     }
 
     NavHost(navController = nav, startDestination = "home") {
@@ -179,7 +200,10 @@ private fun HomeScaffold(
                     selectedContainerColor = BrandBlue.copy(alpha = 0.12f),
                     selectedIconColor = BrandBlue,
                     selectedTextColor = BrandBlue,
-                    unselectedIconColor = Muted,
+                    // Transparent pill on the white sheet + strong dark text/icons so every
+                    // item is clearly legible (was rendering dark-on-dark).
+                    unselectedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                    unselectedIconColor = TextDark,
                     unselectedTextColor = TextDark,
                 )
                 Column(Modifier.padding(16.dp)) {
@@ -257,6 +281,7 @@ private fun navEntriesFor(
 ): List<NavEntry> {
     val dashboard = NavEntry("dashboard", if (user.isFieldAgent || user.isTelecaller) "My Stats" else "Dashboard",
         Icons.Filled.SpaceDashboard) { DashboardScreen(vm, user) }
+    val profile = NavEntry("profile", "My E-ID", Icons.Filled.Badge) { ProfileScreen(vm, user) }
     val leave = NavEntry("leave", "Leave", Icons.Filled.BeachAccess) { LeaveScreen(vm, user) }
     val security = NavEntry("security", "Security", Icons.Filled.Lock) { SecurityScreen(vm, user) }
 
@@ -268,19 +293,19 @@ private fun navEntriesFor(
             },
             NavEntry("fcases", "My Accounts", Icons.Filled.Receipt) { MyCasesScreen(vm, onOpenCase) },
             NavEntry("fmap", "Field Tracking", Icons.Filled.Map) { FieldTrackingScreen(vm) },
-            leave, security,
+            profile, leave, security,
         )
         "telecaller" -> listOf(
             dashboard,
             NavEntry("queue", "Calling", Icons.Filled.Phone) { CallQueueScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
-            leave, security,
+            profile, leave, security,
         )
         "teamlead" -> listOf(
             NavEntry("tldash", "My Team", Icons.Filled.Groups) { TeamLeadDashboardScreen(vm, onOpenCase) },
             NavEntry("cases", "Team Accounts", Icons.Filled.Receipt) { CasesScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
-            leave, security,
+            profile, leave, security,
         )
         "manager" -> listOf(
             dashboard,
@@ -289,12 +314,14 @@ private fun navEntriesFor(
             NavEntry("legal", "Litigation", Icons.Filled.Gavel) { LitigationScreen(vm) },
             NavEntry("map", "Field Tracking", Icons.Filled.Map) { LiveMapScreen(vm) },
             NavEntry("staff", "Team", Icons.Filled.Groups) { TeamScreen(vm) },
-            leave,
+            profile, leave,
             NavEntry("templates", "Communication", Icons.Filled.Phone) { CommunicationScreen(vm) },
             NavEntry("devices", "Devices", Icons.Filled.PhoneAndroid) { DevicesScreen(vm) },
             security,
         )
-        else -> listOf( // admin
+        // HR / IT / office staff: identity card + leave + security (no case portfolios).
+        "hr", "it", "staff" -> listOf(profile, leave, security)
+        else -> listOf( // admin + head office
             dashboard,
             NavEntry("cases", "Accounts", Icons.Filled.Receipt) { CasesScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
@@ -302,7 +329,7 @@ private fun navEntriesFor(
             NavEntry("map", "Field Tracking", Icons.Filled.Map) { LiveMapScreen(vm) },
             NavEntry("records", "Activity", Icons.Filled.History) { ActivityScreen(vm) },
             NavEntry("staff", "Team", Icons.Filled.Groups) { TeamScreen(vm) },
-            leave,
+            profile, leave,
             NavEntry("templates", "Communication", Icons.Filled.Phone) { CommunicationScreen(vm) },
             NavEntry("devices", "Devices", Icons.Filled.PhoneAndroid) { DevicesScreen(vm) },
             security,

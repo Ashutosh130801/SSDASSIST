@@ -160,8 +160,9 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                             }.isSuccess
                             showVisit = false; refresh++
                             if (ok) {
-                                // Send the agent a copy of the visit (photo + details) on their own WhatsApp.
-                                Actions.shareVisitToSelf(context, user.phone, buildVisitMessage(case, user, v), v.photoJpeg)
+                                // Open WhatsApp's contact picker so the agent can forward the
+                                // visit summary + geotagged photo to anyone (office/colleague/self).
+                                Actions.shareVisit(context, buildVisitMessage(case, user, v), v.photoJpeg)
                             }
                         }
                     },
@@ -258,6 +259,27 @@ private fun ActionBtn(label: String, icon: androidx.compose.ui.graphics.vector.I
 
 @Composable
 private fun DetailFields(case: Case) {
+    val ctx = LocalContext.current
+    // Latest address / phone a caller or head-office found mid-cycle — highlighted for the FOS.
+    if (!case.newPhone.isNullOrBlank() || !case.newAddress.isNullOrBlank()) {
+        SectionTitle("🆕 Latest customer contact")
+        InfoCard {
+            if (!case.newContactBy.isNullOrBlank())
+                Text("Updated by ${case.newContactBy}", style = MaterialTheme.typography.labelSmall, color = MutedDim)
+            if (!case.newPhone.isNullOrBlank()) {
+                Text("📞 ${case.newPhone}", fontWeight = FontWeight.SemiBold, color = BrandBlue)
+                Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { Actions.dial(ctx, case.newPhone) }) { Text("Call") }
+                    OutlinedButton(onClick = { Actions.whatsapp(ctx, case.newPhone) }) { Text("WhatsApp") }
+                }
+            }
+            if (!case.newAddress.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text("📍 ${case.newAddress}")
+                OutlinedButton(onClick = { Actions.mapsSearch(ctx, case.newAddress) }, modifier = Modifier.padding(top = 4.dp)) { Text("Navigate") }
+            }
+        }
+    }
     SectionTitle("Customer")
     InfoCard {
         Field("Name", case.customerName)
@@ -307,7 +329,7 @@ private fun DetailFields(case: Case) {
 
 private fun money(v: Double): String? = if (v > 0.0) "₹${"%,.0f".format(v)}" else null
 
-/** WhatsApp copy of a just-logged visit, sent to the agent's own number. */
+/** WhatsApp caption for a just-logged visit — shared (with the geotagged photo) to anyone the agent picks. */
 private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = buildString {
     appendLine("🧾 RecoverIQ — Field visit logged")
     appendLine("Customer: ${case.customerName ?: "—"}")

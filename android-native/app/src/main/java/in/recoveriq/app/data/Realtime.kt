@@ -28,6 +28,11 @@ object Realtime {
     private val _dataChanged = MutableSharedFlow<Long>(extraBufferCapacity = 16)
     val dataChanged: SharedFlow<Long> = _dataChanged
 
+    // Targeted messages for this user (e.g. a caller/head-office updated a customer's new
+    // address/phone on one of the FOS's cases). UI shows a banner + posts a phone notification.
+    private val _notification = MutableSharedFlow<NotificationItem>(extraBufferCapacity = 16)
+    val notification: SharedFlow<NotificationItem> = _notification
+
     private var socket: WebSocket? = null
     private var wantConnected = false
 
@@ -71,6 +76,20 @@ object Realtime {
                             if (id > 0) _openCase.tryEmit(id)
                         }
                         "data_changed", "case_update" -> _dataChanged.tryEmit(System.currentTimeMillis())
+                        "notification" -> {
+                            val n = obj.optJSONObject("notification")
+                            if (n != null) _notification.tryEmit(
+                                NotificationItem(
+                                    id = n.optInt("id", 0),
+                                    caseId = n.optInt("case_id", 0).takeIf { it > 0 },
+                                    type = n.optString("type", null),
+                                    title = n.optString("title", null),
+                                    body = n.optString("body", null),
+                                    createdBy = n.optString("created_by", null),
+                                    createdAt = n.optString("created_at", null),
+                                )
+                            )
+                        }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "bad message: ${e.message}")

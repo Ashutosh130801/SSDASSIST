@@ -460,7 +460,7 @@ const GOLD = '#2563EB', GOLD2 = '#1D4ED8';
 const PALETTE = ['#2563EB', '#0EA5E9', '#16A34A', '#F97316', '#8B5CF6', '#14B8A6', '#EAB308'];
 
 /* Role display labels (internal keys stay admin/manager/fos/telecaller for RBAC) */
-const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', teamlead: 'Team Lead', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office' };
+const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', teamlead: 'Team Lead', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office', hr: 'HR', it: 'IT', staff: 'Staff' };
 const roleName = (r) => ROLE_LABEL[r] || r;
 
 /* ============================== Login ============================== */
@@ -767,6 +767,7 @@ function UploadModal({ onClose, onDone }) {
   const now = new Date();
   const [file, setFile] = useState(null); const [bank, setBank] = useState(''); const [product, setProduct] = useState('');
   const [segment, setSegment] = useState(''); const [branch, setBranch] = useState(''); const [prev, setPrev] = useState(null);
+  const [res, setRes] = useState(null);
   const [year, setYear] = useState(now.getFullYear()); const [month, setMonth] = useState(now.getMonth() + 1);
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
@@ -794,9 +795,24 @@ function UploadModal({ onClose, onDone }) {
     if (!ready) return; setErr(''); setBusy(true);
     try { const f = buildForm(); f.append('auto_allocate', 'true');
       const r = await api('/api/import/commit', { method: 'POST', form: f });
-      toast(`Imported ${r.imported} ${bank} ${product} cases, updated ${r.updated}. ${r.assigned_fos_total}/${r.total_cases} assigned to field agents.`);
-      onDone();
+      setRes(r);
+      const rep = r.assignment_report || { rows: [] };
+      const bad = (rep.unresolved_caller || 0) + (rep.unresolved_fos || 0);
+      toast(`Imported ${r.imported} ${bank} ${product} cases, updated ${r.updated}. ${r.assigned_fos_total}/${r.total_cases} assigned to field agents.`
+        + (bad ? ` ⚠ ${bad} row(s) couldn't be matched — see below.` : ''), bad ? 'err' : 'ok');
+      // Refresh the underlying data now; keep the modal open only when there's a report to read.
+      onDone(!(rep.rows && rep.rows.length));
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const downloadUnresolved = () => {
+    const rows = (res && res.assignment_report && res.assignment_report.rows) || [];
+    const head = ['Account', 'Customer', 'Field', 'Value in sheet', 'Reason', 'Detail'];
+    const esc = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    const csv = [head.join(',')].concat(rows.map(r =>
+      [r.account_no, r.customer, r.field, r.value_in_sheet, r.reason, r.detail].map(esc).join(','))).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `unassigned_${bank}_${product}.csv`; a.click();
   };
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -844,6 +860,31 @@ function UploadModal({ onClose, onDone }) {
               <td>{s.customer_name}</td><td>{s.bank}</td><td className="mono">{s.account_no}</td>
               <td className="mono">{s.funding_amount}</td><td>{s.pincode || '—'}</td></tr>)}</tbody></table></div>
         </div>}
+        {res && res.assignment_report && (res.assignment_report.rows || []).length > 0 && (() => {
+          const rep = res.assignment_report;
+          return <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid var(--bad)' }}>
+            <div className="section-h" style={{ marginBottom: 4 }}>
+              <b>⚠ {rep.unresolved_caller + rep.unresolved_fos} row(s) not assigned</b>
+              <button className="btn ghost sm" onClick={downloadUnresolved}>⬇ CSV</button>
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+              These rows imported fine and MIS counts them — only the caller/FO link is missing.
+              Fix the name/ID in the sheet (or create the person) and re-upload, or assign them by hand.
+              {rep.blank_caller || rep.blank_fos ? ` (${rep.blank_caller} row(s) had no caller, ${rep.blank_fos} had no FO — left blank.)` : ''}
+            </p>
+            <div className="tablewrap" style={{ maxHeight: 220, overflow: 'auto' }}>
+              <table><thead><tr>
+                <th>Account</th><th>Customer</th><th>Field</th><th>In sheet</th><th>Why</th></tr></thead>
+                <tbody>{rep.rows.map((r, i) => <tr key={i}>
+                  <td className="mono">{r.account_no || '—'}</td><td>{r.customer || '—'}</td>
+                  <td>{r.field === 'fos' ? 'Field officer' : 'Caller'}</td>
+                  <td>{r.value_in_sheet || '—'}</td><td className="muted" style={{ fontSize: 12 }}>{r.detail}</td>
+                </tr>)}</tbody></table></div>
+            {rep.capped && <p className="muted" style={{ fontSize: 11 }}>Showing the first 300 — download the CSV for the full list.</p>}
+            <div className="toolbar" style={{ marginTop: 8 }}>
+              <button className="btn" onClick={onClose}>Done</button></div>
+          </div>;
+        })()}
         {addOpen && <AddProductModal presetBank={bank} onClose={() => setAddOpen(false)} onAdded={onCatalogAdded} />}
       </div>
     </div>
@@ -1095,7 +1136,7 @@ function CasesView({ user }) {
           </div>
         )}
       </>)}
-      {upload && <UploadModal onClose={() => setUpload(false)} onDone={() => { setUpload(false); load(); }} />}
+      {upload && <UploadModal onClose={() => setUpload(false)} onDone={(shouldClose = true) => { load(); if (shouldClose) setUpload(false); }} />}
       {campaign && <CampaignModal cases={cases || []} onClose={() => setCampaign(false)} />}
       {delOpen && <div className="modal-bg" onClick={() => setDelOpen(false)}>
         <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
@@ -1755,6 +1796,22 @@ function StaffView({ config, user }) {
   const [liveOfficer, setLiveOfficer] = useState(null); const [perfUser, setPerfUser] = useState(null); const [showChart, setShowChart] = useState(false); const [dashUser, setDashUser] = useState(null);
   const load = () => { api('/api/users').then(setUsers); api('/api/team/branches').then(setBranches).catch(() => setBranches([])); };
   useEffect(() => { load(); }, []);
+  const [associates, setAssociates] = useState([]);   // FOS from other locations working this branch's cases
+  useEffect(() => {
+    if (!openBranch) { setAssociates([]); return; }
+    api('/api/team/branch-associates?branch=' + encodeURIComponent(openBranch)).then(setAssociates).catch(() => setAssociates([]));
+  }, [openBranch]);
+  // Admin/HO: all field officers, filterable by location (they aren't bound to a branch).
+  const [fosMode, setFosMode] = useState(false);
+  const [fosLoc, setFosLoc] = useState('');
+  const [fosList, setFosList] = useState(null);
+  const [fosLocs, setFosLocs] = useState([]);
+  useEffect(() => { if (seesAll) api('/api/manpower/filters').then(d => setFosLocs(d.locations || [])).catch(() => {}); }, [seesAll]);
+  useEffect(() => {
+    if (!fosMode) return;
+    const p = new URLSearchParams({ role: 'fos' }); if (fosLoc) p.set('location', fosLoc);
+    api('/api/manpower?' + p).then(setFosList).catch(() => setFosList([]));
+  }, [fosMode, fosLoc]);
 
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
 
@@ -1762,10 +1819,28 @@ function StaffView({ config, user }) {
   if (seesAll && !openBranch) {
     return (
       <div>
-        <div className="toolbar"><div style={{ flex: 1 }} />
+        <div className="toolbar">
+          <div className={cx('chip', !fosMode && 'on')} onClick={() => setFosMode(false)}>🏢 Branches</div>
+          <div className={cx('chip', fosMode && 'on')} onClick={() => setFosMode(true)}>🧭 Field Officers</div>
+          <div style={{ flex: 1 }} />
+          {fosMode && <select className="input" style={{ maxWidth: 180, height: 34 }} value={fosLoc} onChange={e => setFosLoc(e.target.value)}>
+            <option value="">All locations</option>{fosLocs.map(l => <option key={l} value={l}>{l}</option>)}</select>}
           <button className="btn" onClick={() => setShowReport(true)}>📅 Attendance</button>
           <button className="btn gold" onClick={() => setAddBranch(true)}>+ Add branch</button></div>
-        {!branches ? <Loader /> : branches.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No branches yet. Add one to assign a manager.</div> :
+        {fosMode ? (
+          !fosList ? <Loader /> : <div className="glass card" style={{ padding: 6 }}>
+            <div className="muted" style={{ fontSize: 12, padding: '4px 8px' }}>{fosList.length} field officers{fosLoc ? ' in ' + fosLoc : ' (all locations)'} — they're location-based, not tied to a branch.</div>
+            <div className="tablewrap"><table>
+              <thead><tr><th>Code</th><th>Name</th><th>Location</th><th>Branch</th><th>Phone</th><th></th></tr></thead>
+              <tbody>{fosList.map(u => <tr key={u.id}>
+                <td className="mono">{u.emp_code}</td>
+                <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDashUser({ id: u.id, name: u.name, role: 'fos', branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>{u.name}</b></td>
+                <td>{u.location || '—'}</td><td className="muted">{u.branch || '—'}</td><td>{u.phone || '—'}</td>
+                <td style={{ whiteSpace: 'nowrap' }}><button className="btn sm" onClick={() => setDashUser({ id: u.id, name: u.name, role: 'fos', branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>Performance</button> <ContactBtns phone={u.phone} /></td></tr>)}
+                {fosList.length === 0 && <tr><td colSpan="6" className="muted" style={{ padding: 12 }}>No field officers here.</td></tr>}
+              </tbody></table></div>
+          </div>
+        ) : !branches ? <Loader /> : branches.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No branches yet. Add one to assign a manager.</div> :
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 14 }}>
             {branches.map(b => (
               <div key={b.branch} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => setOpenBranch(b.branch)}>
@@ -1781,6 +1856,7 @@ function StaffView({ config, user }) {
           </div>}
         {addBranch && <AddBranchModal onClose={() => setAddBranch(false)} onDone={() => { setAddBranch(false); load(); }} />}
         {showReport && users && <ReportModal officers={users} onClose={() => setShowReport(false)} />}
+        {dashUser && <EmployeeDashboard u={dashUser} config={config} onClose={() => setDashUser(null)} />}
       </div>);
   }
 
@@ -1850,6 +1926,26 @@ function StaffView({ config, user }) {
               {' '}{u.id !== user.id && <button className="btn sm" style={u.is_active === false ? { color: 'var(--good)' } : { color: 'var(--bad)' }} onClick={() => removeStaff(u)}>{u.is_active === false ? 'Restore' : 'Remove'}</button>}</td></tr>)}
           </tbody></table></div>
         {staff.length === 0 && <div className="muted" style={{ padding: 18, textAlign: 'center' }}>No staff in this branch yet.</div>}</div>}
+
+      {associates.length > 0 && <div style={{ marginTop: 16 }}>
+        <div className="section-h"><h3 style={{ fontSize: 14, margin: 0 }}>Field officers working this branch <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>(based elsewhere · assigned to this branch's cases)</span></h3></div>
+        <div className="glass card" style={{ padding: 6 }}>
+          <div className="tablewrap"><table>
+            <thead><tr><th>Name</th><th>Role</th><th>Home branch</th><th>Cases here</th><th>Paid</th><th>Recovered</th><th>Pending</th><th></th></tr></thead>
+            <tbody>{associates.map(a => <tr key={a.id}>
+              <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDashUser({ id: a.id, name: a.name, role: a.role, branch: a.home_branch, phone: a.phone, emp_code: a.emp_code })}>{a.name}</b>
+                {a.emp_code && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10.5 }}>{a.emp_code}</span>}</td>
+              <td><span className="badge allocated">{roleName(a.role)}</span></td>
+              <td className="muted">{a.home_branch}</td>
+              <td>{a.cases}</td><td>{a.paid}</td>
+              <td className="mono" style={{ color: 'var(--good)' }}>{money(a.received)}</td>
+              <td className="mono" style={{ color: 'var(--warn)' }}>{money(a.pending)}</td>
+              <td style={{ whiteSpace: 'nowrap' }}>
+                <button className="btn sm" onClick={() => setDashUser({ id: a.id, name: a.name, role: a.role, branch: a.home_branch, phone: a.phone, emp_code: a.emp_code })}>Performance</button>
+                {' '}<ContactBtns phone={a.phone} /></td></tr>)}
+            </tbody></table></div>
+        </div>
+      </div>}
 
       {modal && <StaffModal me={user} editing={editing} presetBranch={presetBranch} onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
       {transferOpen && <TransferModal staff={user.role === 'manager' ? staff : users} onClose={() => setTransferOpen(false)} onDone={() => { setTransferOpen(false); load(); }} />}
@@ -2461,7 +2557,16 @@ function CaseDrawer({ c, onClose, onChanged }) {
   const [dispo, setDispo] = useState('PTP'); const [amt, setAmt] = useState(''); const [ptpDate, setPtpDate] = useState('');
   const [followDate, setFollowDate] = useState(''); const [callNote, setCallNote] = useState('');
   const [payAmt, setPayAmt] = useState(''); const [payMode, setPayMode] = useState('UPI'); const [payNote, setPayNote] = useState(''); const [normStab, setNormStab] = useState('STAB');
+  const [ncAddr, setNcAddr] = useState(''); const [ncPhone, setNcPhone] = useState(''); const [ncEdit, setNcEdit] = useState(false);
   const [busy, setBusy] = useState(false);
+  const saveContact = async () => {
+    if (!ncAddr.trim() && !ncPhone.trim()) { toast('Enter a new address and/or phone', 'err'); return; }
+    setBusy(true);
+    try {
+      const updated = await api(`/api/cases/${c.id}/contact-update`, { method: 'POST', body: { new_address: ncAddr, new_phone: ncPhone } });
+      setCur(updated); setNcEdit(false); toast('Saved — assigned field officer notified.'); await refresh(); onChanged && onChanged();
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
   const isPTP = dispo === 'PTP' || dispo === 'RTP'; const isPaid = dispo === 'PAID'; const isCC = cur.segment === 'Credit Card';
   const refresh = () => Promise.all([
     api(`/api/cases/${c.id}`).then(setCur).catch(() => {}),
@@ -2494,6 +2599,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
   const canEscalate = ['admin', 'manager', 'backend', 'teamlead'].includes(meRole);
   const showCallFos = cur.assigned_fos_phone && cur.assigned_fos_id !== meId;
   const showCallCaller = cur.assigned_caller_phone && cur.assigned_caller_id !== meId;
+  const canEditContact = ['admin', 'headoffice', 'manager', 'backend', 'telecaller', 'teamlead'].includes(meRole);
   const escalate = async () => {
     setBusy(true);
     try {
@@ -2550,6 +2656,26 @@ function CaseDrawer({ c, onClose, onChanged }) {
           {row('Next follow-up', cur.follow_up_date)}
           {row('Remarks', cur.remarks)}
         </div>
+        {(cur.new_phone || cur.new_address) && <div className="glass card" style={{ borderLeft: '3px solid var(--gold)', margin: '10px 0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <b>🆕 Latest customer contact</b>
+            <span className="muted" style={{ fontSize: 11 }}>{cur.new_contact_by ? 'by ' + cur.new_contact_by : ''}{cur.new_contact_at ? ' · ' + new Date(cur.new_contact_at).toLocaleString() : ''}</span>
+          </div>
+          {cur.new_phone && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span>📞 <b>{cur.new_phone}</b></span>
+            <a className="btn sm gold" href={'tel:' + cur.new_phone}>Call</a>
+            <a className="btn sm" href={'https://wa.me/' + String(cur.new_phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a></div>}
+          {cur.new_address && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span>📍 {cur.new_address}</span>
+            <a className="btn sm" href={'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(cur.new_address)} target="_blank" rel="noreferrer">Navigate</a></div>}
+        </div>}
+        {canEditContact && (ncEdit ? <div className="glass card" style={{ margin: '10px 0' }}>
+          <div className="section-h"><h3 style={{ fontSize: 14 }}>Update customer contact</h3></div>
+          <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>Saving alerts the assigned field officer instantly.</p>
+          <div className="field"><label>New phone</label><input className="input" value={ncPhone} onChange={e => setNcPhone(e.target.value)} placeholder="10-digit mobile" /></div>
+          <div className="field"><label>New address</label><textarea className="input" value={ncAddr} onChange={e => setNcAddr(e.target.value)} placeholder="latest address found" /></div>
+          <div className="toolbar"><button className="btn" onClick={() => setNcEdit(false)}>Cancel</button><div style={{ flex: 1 }} /><button className="btn gold" disabled={busy} onClick={saveContact}>Save &amp; notify FOS</button></div>
+        </div> : <button className="btn sm" style={{ margin: '4px 0 10px' }} onClick={() => { setNcPhone(cur.new_phone || ''); setNcAddr(cur.new_address || ''); setNcEdit(true); }}>✏ {(cur.new_phone || cur.new_address) ? 'Update' : 'Add'} new address / phone</button>)}
         <div className="divider"></div>
         {cur.closed && <div className="glass card" style={{ background: '#f3f4f6', color: '#374151', fontSize: 13, padding: '8px 12px', marginBottom: 8 }}>
           🔒 This case has <b>closed for the month</b>{cur.close_date ? ` (on ${cur.close_date})` : ''} and is locked. It stays visible for reference; an admin can still make changes.</div>}
@@ -3386,7 +3512,9 @@ function useDataChanged(cb) {
     const connect = () => {
       try {
         ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
-        ws.onmessage = e => { try { const m = JSON.parse(e.data); if (m.type === 'data_changed' || m.type === 'case_update') { clearTimeout(timer); timer = setTimeout(() => ref.current(m), 700); } } catch (_) {} };
+        ws.onmessage = e => { try { const m = JSON.parse(e.data);
+          if (m.type === 'notification') { try { window.dispatchEvent(new CustomEvent('ssd-notif', { detail: m.notification })); } catch (_) {} return; }
+          if (m.type === 'data_changed' || m.type === 'case_update') { clearTimeout(timer); timer = setTimeout(() => ref.current(m), 700); } } catch (_) {} };
         ws.onclose = () => { if (!stop) setTimeout(connect, 3000); };
       } catch (_) { if (!stop) setTimeout(connect, 3000); }
     };
@@ -3815,6 +3943,8 @@ const SHEET_COLS = [
   { k: 'customer_name', t: 'Customer', type: 'text' },
   { k: 'phone', t: 'Phone', type: 'text', edit: true },
   { k: 'alt_phone', t: 'Alt phone', type: 'text', edit: true },
+  { k: 'new_phone', t: 'New phone', type: 'text', edit: true },
+  { k: 'new_address', t: 'New address', type: 'text', edit: true },
   { k: 'card_no', t: 'Card no', type: 'text' },
   { k: 'account_no', t: 'A/C no', type: 'text' },
   { k: 'bank', t: 'Bank', type: 'text' },
@@ -3872,7 +4002,7 @@ const SHEET_COLS = [
   { k: 'propensity', t: 'Score', type: 'num' },
   { k: 'updated_by_name', t: 'Last changed by', type: 'text' },
 ];
-const SHEET_DEFAULT_VISIBLE = ['customer_name', 'phone', 'bank', 'product', 'enr', 'norm_amount', 'stab_amount', 'received_amount', 'norm_stab', 'paid_status', 'status', 'disposition', 'caller_name', 'fos_name', 'remarks'];
+const SHEET_DEFAULT_VISIBLE = ['customer_name', 'phone', 'new_phone', 'new_address', 'bank', 'product', 'enr', 'norm_amount', 'stab_amount', 'received_amount', 'norm_stab', 'paid_status', 'status', 'disposition', 'caller_name', 'fos_name', 'remarks'];
 // Column preset matching the AXIS PL/BL callers' working sheet (TOS/PRI/EMI, OD components,
 // OD STAB & OD NORM, STATUS = NORM/STAB/FLOW).
 const SHEET_VISIBLE_PLBL = ['bucket', 'account_no', 'customer_name', 'cycle', 'phone', 'x_disbursement',
@@ -4276,14 +4406,176 @@ function PaymentEditModal({ row, mode, onClose, onDone }) {
   );
 }
 
+/* ============================== Manpower directory (HR / admin) ============================== */
+function ManpowerView({ user }) {
+  const [opts, setOpts] = useState({ roles: [], locations: [] });
+  const [rows, setRows] = useState(null);
+  const [f, setF] = useState({ role: '', location: '', q: '' });
+  const [sel, setSel] = useState(null);
+  useEffect(() => { api('/api/manpower/filters').then(setOpts).catch(() => {}); }, []);
+  const load = useCallback(() => {
+    const p = new URLSearchParams(); if (f.role) p.set('role', f.role); if (f.location) p.set('location', f.location); if (f.q) p.set('q', f.q);
+    api('/api/manpower?' + p).then(setRows).catch(() => setRows([]));
+  }, [f]);
+  useEffect(() => { const t = setTimeout(load, 200); return () => clearTimeout(t); }, [load]);
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const dl = () => { const p = new URLSearchParams(); if (f.role) p.set('role', f.role); if (f.location) p.set('location', f.location); download('/api/manpower/download?' + p, 'SSDE_manpower.xlsx'); };
+  const selStyle = { minWidth: 150, height: 34, padding: '0 8px', fontSize: 13 };
+  return (
+    <div>
+      <div className="section-h"><h2 style={{ margin: 0 }}>Manpower</h2>
+        <span className="muted" style={{ fontSize: 13 }}>{rows ? `${rows.length} employees` : '…'}</span></div>
+      <div className="glass card" style={{ padding: 10, marginBottom: 12 }}>
+        <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <input className="input" style={{ maxWidth: 220 }} placeholder="Search name / code / phone" value={f.q} onChange={e => set('q', e.target.value)} />
+          <select className="input" style={selStyle} value={f.role} onChange={e => set('role', e.target.value)}>
+            <option value="">All roles</option>{opts.roles.map(r => <option key={r} value={r}>{roleName(r)}</option>)}</select>
+          <select className="input" style={selStyle} value={f.location} onChange={e => set('location', e.target.value)}>
+            <option value="">All locations</option>{opts.locations.map(l => <option key={l} value={l}>{l}</option>)}</select>
+          <div style={{ flex: 1 }} />
+          <button className="btn gold" onClick={dl}>⬇ Download Excel</button>
+        </div>
+      </div>
+      {!rows ? <Loader /> : rows.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No employees match.</div> : (
+        <div className="glass card" style={{ padding: 6 }}>
+          <div className="tablewrap"><table>
+            <thead><tr><th>Code</th><th>Name</th><th>Role</th><th>Designation</th><th>Location</th><th>Branch</th><th>Phone</th><th>DOJ</th><th></th></tr></thead>
+            <tbody>{rows.map(e => <tr key={e.id} style={{ cursor: 'pointer' }} onClick={() => setSel(e)}>
+              <td className="mono">{e.emp_code || '—'}</td><td><b>{e.name}</b></td>
+              <td><span className="badge allocated">{roleName(e.role)}</span></td>
+              <td className="muted" style={{ fontSize: 12 }}>{e.designation || '—'}</td>
+              <td>{e.location || '—'}</td><td className="muted">{e.branch || '—'}</td>
+              <td>{e.phone || '—'}</td><td className="muted" style={{ fontSize: 12 }}>{e.joining_date || '—'}</td>
+              <td><ContactBtns phone={e.phone} /></td></tr>)}
+            </tbody></table></div>
+        </div>
+      )}
+      {sel && <div className="modal-bg" onClick={() => setSel(null)}>
+        <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+          <div className="section-h"><h3>{sel.name}</h3><button className="btn ghost sm" onClick={() => setSel(null)}>✕</button></div>
+          <EIDCard e={sel} />
+          <div className="dl" style={{ marginTop: 10 }}>
+            {[['Emp code', sel.emp_code], ['HR ref', sel.hr_ref], ['Role', roleName(sel.role)], ['Designation', sel.designation],
+              ['Location', sel.location], ['Branch', sel.branch], ['Email', sel.email], ['Phone', sel.phone],
+              ['Gender', sel.gender], ['DOB', sel.dob], ['Blood group', sel.blood_group], ['Marital', sel.marital_status],
+              ['Emergency', (sel.emergency_name || '') + (sel.emergency_contact ? ' · ' + sel.emergency_contact : '')],
+              ['Aadhaar', sel.aadhar_number], ['PAN', sel.pan_number], ['Bank', sel.bank_name],
+              ['Account', sel.bank_account], ['IFSC', sel.ifsc_code], ['Current address', sel.current_address]].map(([k, v]) =>
+              <React.Fragment key={k}><div className="dt">{k}</div><div className="dd">{v || '—'}</div></React.Fragment>)}
+          </div>
+        </div></div>}
+    </div>
+  );
+}
+
+/* A shareable employee ID card (E-ID). */
+function EIDCard({ e }) {
+  const brand = (window.__ssdCfg || {}).brand_name || 'SSD Enterprises';
+  return (
+    <div style={{ borderRadius: 14, overflow: 'hidden', border: '1px solid var(--line)', maxWidth: 380 }}>
+      <div style={{ background: 'linear-gradient(120deg,#1e3a8a,#2563eb)', color: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <b style={{ fontSize: 15 }}>{brand}</b><span style={{ fontSize: 11, opacity: .85 }}>EMPLOYEE ID</span></div>
+      <div style={{ display: 'flex', gap: 14, padding: 16, alignItems: 'center' }}>
+        <div style={{ width: 84, height: 84, borderRadius: 10, background: '#e5e7eb', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {e.photo_url ? <img src={e.photo_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 26, color: '#94a3b8' }}>{initials(e.name)}</span>}
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{e.name}</div>
+          <div className="muted" style={{ fontSize: 13 }}>{e.designation || roleName(e.role)}</div>
+          <div style={{ marginTop: 6, fontSize: 13 }}><b className="mono">{e.emp_code}</b> · {roleName(e.role)}</div>
+          <div className="muted" style={{ fontSize: 12 }}>{[e.location, e.branch].filter(Boolean).join(' · ')}</div>
+          <div className="muted" style={{ fontSize: 12 }}>{e.phone}{e.blood_group ? ' · 🩸 ' + e.blood_group : ''}</div>
+        </div>
+        <div style={{ flexShrink: 0 }}><QR text={e.emp_code || e.email || e.name} size={72} /></div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== My profile / E-ID (all staff) ============================== */
+const PROFILE_FIELDS = [
+  ['phone', 'Phone', 'text'], ['gender', 'Gender', 'text'], ['dob', 'Date of birth', 'date'],
+  ['blood_group', 'Blood group', 'text'], ['marital_status', 'Marital status', 'text'],
+  ['emergency_contact', 'Emergency contact no.', 'text'], ['emergency_name', 'Emergency contact name', 'text'],
+  ['emergency_relation', 'Relation', 'text'], ['current_address', 'Current address', 'text'],
+  ['aadhar_number', 'Aadhaar number', 'text'], ['pan_number', 'PAN', 'text'],
+  ['bank_holder', 'Bank a/c holder', 'text'], ['bank_account', 'Bank account no.', 'text'],
+  ['ifsc_code', 'IFSC', 'text'], ['bank_name', 'Bank name', 'text'], ['photo_url', 'Profile photo URL', 'text'],
+];
+function ProfileView({ user }) {
+  const [me, setMe] = useState(null);
+  const [f, setF] = useState({});
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const load = () => api('/api/manpower/me').then(m => { setMe(m); setF(m); }).catch(() => setMe({}));
+  useEffect(() => { load(); }, []);
+  const isHR = ['admin', 'headoffice', 'hr'].includes(user.role);
+  const canEdit = me && (!me.profile_completed || isHR);
+  const upd = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const save = async () => {
+    setBusy(true);
+    try {
+      const body = {}; PROFILE_FIELDS.forEach(([k]) => { if (f[k] !== undefined && f[k] !== null) body[k] = f[k]; });
+      await api('/api/manpower/me', { method: 'PATCH', body });
+      toast(isHR ? 'Profile saved.' : 'Profile completed — thank you! Contact HR for further changes.');
+      setEditing(false); load();
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  if (!me) return <Loader />;
+  // Admin / system logins aren't part of the HR manpower sheet, so their own card has no
+  // personal fields. Show a clear note (not a wall of dashes) pointing to where staff
+  // details actually live, rather than looking broken.
+  const noHr = !(me.phone || me.designation || me.location || me.dob || me.blood_group || me.aadhar_number);
+  return (
+    <div>
+      <div className="section-h"><h2 style={{ margin: 0 }}>My E-ID</h2></div>
+      {noHr && isHR && <div className="glass card" style={{ margin: '4px 0 14px', borderLeft: '3px solid var(--gold)' }}>
+        <b>This is a system/admin login — it has no personal HR record.</b>
+        <p className="muted" style={{ fontSize: 13, margin: '4px 0 0' }}>
+          Every employee's phone number and full details are on the <b>🧑‍💼 Manpower</b> page
+          (in the left menu). Open it to search staff, view each person's E-ID, call them, or
+          download the directory. Only real employees imported from the HR sheet carry these fields.
+        </p></div>}
+      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 18, alignItems: 'start', flexWrap: 'wrap' }}>
+        <EIDCard e={{ ...me, ...f }} />
+        <div style={{ minWidth: 280, flex: 1 }}>
+          {!editing ? (<>
+            <div className="dl">
+              {[['Employee code', me.emp_code], ['Role', roleName(me.role)], ['Designation', me.designation],
+                ['Location', me.location], ['Branch', me.branch], ['Email', me.email], ['Phone', me.phone],
+                ['DOB', me.dob], ['Blood group', me.blood_group], ['Joined', me.joining_date]].map(([k, v]) =>
+                <React.Fragment key={k}><div className="dt">{k}</div><div className="dd">{v || '—'}</div></React.Fragment>)}
+            </div>
+            {canEdit && <button className="btn gold" style={{ marginTop: 12 }} onClick={() => setEditing(true)}>
+              {me.profile_completed ? '✏ Edit profile' : '✏ Complete my profile (one-time)'}</button>}
+            {!me.profile_completed && !isHR && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>You can complete your profile once. After saving, ask HR for any further change.</p>}
+            {me.profile_completed && !isHR && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>🔒 Your profile is completed and locked. Contact HR/admin for changes.</p>}
+          </>) : (<>
+            <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              {PROFILE_FIELDS.map(([k, label, type]) => <div className="field" key={k}>
+                <label>{label}</label>
+                <input className="input" type={type} value={(f[k] || (type === 'date' ? '' : '')) && type === 'date' ? String(f[k]).slice(0, 10) : (f[k] || '')} onChange={e => upd(k, e.target.value)} /></div>)}
+            </div>
+            <div className="toolbar" style={{ marginTop: 8 }}><button className="btn" onClick={() => { setEditing(false); setF(me); }}>Cancel</button><div style={{ flex: 1 }} />
+              <button className="btn gold" disabled={busy} onClick={save}>{busy ? 'Saving…' : (me.profile_completed ? 'Save' : 'Save & complete')}</button></div>
+          </>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const NAV = {
-  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  hr: [['manpower', '🧑‍💼', 'Manpower'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
+  it: [['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
+  staff: [['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
 };
 function NativeTrackingOnboard({ onDone }) {
   const openSettings = () => { try { const BG = window.Capacitor.registerPlugin('BackgroundGeolocation'); if (BG.openSettings) BG.openSettings(); } catch (e) {} };
@@ -4307,10 +4599,53 @@ function NativeTrackingOnboard({ onDone }) {
   );
 }
 
+function NotificationBell({ onOpenCase, style }) {
+  const [items, setItems] = useState([]); const [unread, setUnread] = useState(0); const [open, setOpen] = useState(false);
+  const seen = React.useRef(new Set());
+  const load = () => api('/api/notifications?limit=30').then(d => { setItems(d.items || []); setUnread(d.unread || 0); }).catch(() => {});
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 60000);
+    const onNotif = (e) => {
+      const n = e.detail || {};
+      if (n.id && seen.current.has(n.id)) return;
+      if (n.id) seen.current.add(n.id);
+      toast('🔔 ' + (n.title || 'New notification'));
+      load();
+    };
+    window.addEventListener('ssd-notif', onNotif);
+    return () => { clearInterval(t); window.removeEventListener('ssd-notif', onNotif); };
+  }, []);
+  const click = (n) => {
+    if (!n.read) api(`/api/notifications/${n.id}/read`, { method: 'POST' }).then(load).catch(() => {});
+    setOpen(false);
+    if (n.case_id && onOpenCase) onOpenCase(n.case_id);
+  };
+  const markAll = () => api('/api/notifications/read-all', { method: 'POST' }).then(load).catch(() => {});
+  return (
+    <div style={{ position: 'relative', ...style }}>
+      <button className="btn ghost sm" onClick={() => { setOpen(o => !o); if (!open) load(); }} title="Notifications" style={{ fontSize: 18, lineHeight: 1, position: 'relative' }}>
+        🔔{unread > 0 && <span style={{ position: 'absolute', top: -5, right: -5, background: 'var(--bad)', color: '#fff', borderRadius: 10, fontSize: 10, minWidth: 16, height: 16, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px' }}>{unread > 99 ? '99+' : unread}</span>}
+      </button>
+      {open && <div className="glass card" style={{ position: 'absolute', right: 0, top: '115%', width: 320, maxHeight: 420, overflow: 'auto', zIndex: 60, padding: 8 }}>
+        <div className="section-h" style={{ marginBottom: 6 }}><b>Notifications</b>{unread > 0 && <button className="btn ghost sm" onClick={markAll}>Mark all read</button>}</div>
+        {items.length === 0 ? <p className="muted" style={{ fontSize: 13, padding: '8px 4px' }}>No notifications yet.</p> :
+          items.map(n => <div key={n.id} onClick={() => click(n)} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: n.read ? 'transparent' : 'rgba(37,99,235,.08)', borderBottom: '1px solid var(--line)' }}>
+            <div style={{ fontWeight: n.read ? 500 : 700, fontSize: 13 }}>{n.title}</div>
+            <div className="muted" style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{n.body}</div>
+            <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>{n.created_at ? new Date(n.created_at).toLocaleString() : ''}</div>
+          </div>)}
+      </div>}
+    </div>
+  );
+}
 function Shell({ user, config, onLogout, installEvt, onInstall }) {
-  const nav = NAV[user.role] || NAV.telecaller;
+  const baseNav = NAV[user.role] || NAV.telecaller;
+  // Everyone gets a personal E-ID / profile entry.
+  const nav = baseNav.some(n => n[0] === 'profile') ? baseNav : [...baseNav, ['profile', '🪪', 'My E-ID']];
   const [view, setView] = useState(nav[0][0]);
   const [trackOnboard, setTrackOnboard] = useState(false);
+  const [notifCase, setNotifCase] = useState(null);
   useLocationPing(user, config);
   useEffect(() => {
     try {
@@ -4330,6 +4665,8 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
       case 'records': return <RecordsView user={user} />;
       case 'audit': return <AuditLogView user={user} />;
       case 'archive': return <ArchiveView user={user} />;
+      case 'manpower': return <ManpowerView user={user} />;
+      case 'profile': return <ProfileView user={user} config={config} />;
       case 'feedback': return <FeedbackView user={user} />;
       case 'escalations': return <EscalationsView user={user} />;
       case 'devices': return <DevicesView />;
@@ -4362,11 +4699,13 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
         <div className="topbar">
           <h1>{title}</h1>
           {installEvt && <button className="btn sm gold" style={{ marginLeft: 'auto', marginRight: 10 }} onClick={onInstall}>⬇ Install app</button>}
+          <NotificationBell onOpenCase={setNotifCase} style={{ marginLeft: installEvt ? 0 : 'auto', marginRight: 10 }} />
           <div className="usertag"><div className="avatar">{initials(user.name)}</div>
             <div><div style={{ fontWeight: 600, fontSize: 14 }}>{user.name}</div>
               <div className="muted" style={{ fontSize: 12 }}>{user.branch || user.email}</div></div></div>
         </div>
         {render()}
+        {notifCase && <CaseDrawer c={{ id: notifCase }} onClose={() => setNotifCase(null)} onChanged={() => {}} />}
         {trackOnboard && <NativeTrackingOnboard onDone={() => { try { localStorage.setItem('ssd_trackonboard', '1'); } catch (e) {} setTrackOnboard(false); }} />}
       </main>
       <nav className="mobnav">
@@ -4374,6 +4713,42 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
           <span className="ic">{ic}</span>{label}</div>)}
         <div className="navitem" onClick={onLogout}><span className="ic">⎋</span>Sign out</div>
       </nav>
+    </div>
+  );
+}
+
+/* First-login gate: force a new password before the app opens. */
+function ForcePasswordChange({ user, onDone, onLogout }) {
+  const [cur, setCur] = useState('');
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const submit = async () => {
+    if (pw.length < 6) { setErr('New password must be at least 6 characters.'); return; }
+    if (pw !== pw2) { setErr('The two new passwords do not match.'); return; }
+    setBusy(true); setErr('');
+    try {
+      const r = await api('/api/auth/change-password', { method: 'POST', body: { current_password: cur, new_password: pw } });
+      store.t = r.access_token; store.u = r.user;
+      toast('Password updated — welcome!');
+      onDone(r.user);
+    } catch (e) { setErr(e.message); setBusy(false); }
+  };
+  return (
+    <div style={{ display: 'flex', minHeight: '100vh', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div className="glass card" style={{ maxWidth: 420, width: '100%', padding: 24 }}>
+        <div className="brandfont" style={{ fontSize: 20, fontWeight: 700, color: 'var(--brand)' }}>Set a new password</div>
+        <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>Hi {user.name?.split(' ')[0] || 'there'} — for your security, please replace the temporary password before continuing.</p>
+        <div className="field"><label>Current (temporary) password</label>
+          <input className="input" type="password" value={cur} onChange={e => setCur(e.target.value)} placeholder="Ssd@2026" autoFocus /></div>
+        <div className="field"><label>New password</label>
+          <input className="input" type="password" value={pw} onChange={e => setPw(e.target.value)} /></div>
+        <div className="field"><label>Confirm new password</label>
+          <input className="input" type="password" value={pw2} onChange={e => setPw2(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submit(); }} /></div>
+        {err && <div style={{ color: 'var(--bad)', fontSize: 13, marginBottom: 8 }}>{err}</div>}
+        <button className="btn gold block" disabled={busy} onClick={submit}>{busy ? 'Saving…' : 'Save & continue'}</button>
+        <button className="btn ghost block" style={{ marginTop: 8 }} onClick={onLogout}>Sign out</button>
+      </div>
     </div>
   );
 }
@@ -4394,7 +4769,10 @@ function App() {
   if (!ready || !config) return <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center' }}><Loader /></div>;
   return (<>
     <Toaster />
-    {user ? <Shell user={user} config={config} onLogout={logout} installEvt={installEvt} onInstall={install} /> : <Login onLogin={setUser} config={config} />}
+    {user ? (user.must_change_password
+        ? <ForcePasswordChange user={user} onDone={setUser} onLogout={logout} />
+        : <Shell user={user} config={config} onLogout={logout} installEvt={installEvt} onInstall={install} />)
+      : <Login onLogin={setUser} config={config} />}
   </>);
 }
 

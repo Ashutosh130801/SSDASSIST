@@ -7,12 +7,34 @@ Usage:
 import os
 import sys
 
+from sqlalchemy import inspect, text
+
 from .database import Base, engine, SessionLocal
 from . import models
 from .config import get_settings
 from .security import hash_password
 from .excel_io import import_workbook, record_to_case_kwargs
 from .allocation import run_allocation
+
+
+def _sync_columns():
+    """Add any column that exists on the models but is missing from an older database,
+    so seeding never crashes on a schema that predates the newest fields. Generic: works
+    for every table/column without a hand-maintained list."""
+    insp = inspect(engine)
+    for table in Base.metadata.sorted_tables:
+        if not insp.has_table(table.name):
+            continue
+        existing = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in existing:
+                continue
+            try:
+                ddl = col.type.compile(dialect=engine.dialect)
+                with engine.begin() as conn:
+                    conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN {col.name} {ddl}'))
+            except Exception:
+                pass
 
 settings = get_settings()
 
@@ -90,6 +112,7 @@ def seed_cases(db, path, bank=None):
 
 def main():
     Base.metadata.create_all(bind=engine)
+    _sync_columns()                 # bring an older DB up to the current schema first
     db = SessionLocal()
     try:
         seed_users(db)

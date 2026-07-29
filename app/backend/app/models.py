@@ -39,6 +39,31 @@ class User(Base):
     emergency_contact = Column(String(60))
     photo_url = Column(String(255))
     is_active = Column(Boolean, default=True)
+    # Full manpower / HR record (from the SSDE manpower sheet)
+    designation = Column(String(80))            # real job title (Field Executive, HR Manager...)
+    location = Column(String(80))               # duty location / region
+    hr_ref = Column(String(30))                 # official employee id (SSD0001)
+    gender = Column(String(10))
+    dob = Column(Date, nullable=True)
+    blood_group = Column(String(8))
+    marital_status = Column(String(20))
+    ctc = Column(String(30))
+    emergency_name = Column(String(80))
+    emergency_relation = Column(String(30))
+    dra_status = Column(String(20))
+    pvc_status = Column(String(20))
+    aadhar_number = Column(String(20))
+    pan_number = Column(String(20))
+    bank_holder = Column(String(120))
+    bank_account = Column(String(40))
+    ifsc_code = Column(String(20))
+    bank_name = Column(String(80))
+    aadhar_address = Column(Text)
+    current_address = Column(Text)
+    rent_own = Column(String(10))
+    # E-ID / profile lifecycle: staff may edit their own profile ONCE after first login.
+    profile_completed = Column(Boolean, default=False)   # they finished their one-time edit
+    must_change_password = Column(Boolean, default=False)
     # Brute-force protection
     failed_login_count = Column(Integer, default=0)
     lockout_until = Column(DateTime(timezone=True), nullable=True)
@@ -72,6 +97,12 @@ class Case(Base):
     address = Column(Text)                        # ADD 1 (primary address line)
     address2 = Column(Text)                        # ADD 2 (+ ADD 3) — kept separate
     pincode = Column(String(10), index=True)
+    # Field-corrected contact: a caller / head-office user adds the customer's latest
+    # address / phone discovered mid-cycle. Surfaced to the assigned FOS (+ notified).
+    new_address = Column(Text)
+    new_phone = Column(String(20))
+    new_contact_by = Column(String(120))          # who last updated it (name)
+    new_contact_at = Column(DateTime)             # when
     latitude = Column(Float)
     longitude = Column(Float)
 
@@ -413,3 +444,19 @@ class AuditLog(Base):
     new_value = Column(Text)
     detail = Column(Text)                          # human summary
     meta = Column(JSON, default=dict)              # anything extra (case_ids, counts...)
+
+
+class Notification(Base):
+    """A message delivered to one user (e.g. a FOS) — currently used when a caller /
+    head-office updates a customer's new address or phone on one of their cases."""
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)   # recipient
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=True, index=True)
+    type = Column(String(30), default="contact_update", index=True)
+    title = Column(String(160))
+    body = Column(Text)
+    read = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime, default=utcnow, index=True)
+    created_by = Column(String(120))               # who triggered it (name)

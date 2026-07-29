@@ -191,4 +191,28 @@ interface ApiService {
     // --- AI Assist ---
     @POST("api/ai")
     suspend fun aiAssist(@Body body: AIRequest): AIResponse
+
+    // --- My E-ID / profile ---
+    @GET("api/manpower/me")
+    suspend fun myProfile(): EmployeeProfile
+
+    @PATCH("api/manpower/me")
+    suspend fun updateMyProfile(@Body body: Map<String, String?>): Map<String, Any?>
+
+    @POST("api/auth/change-password")
+    suspend fun changePassword(@Body body: ChangePasswordRequest): Token
+
+    // --- Notifications (bell) ---
+    @GET("api/notifications")
+    suspend fun notifications(@Query("limit") limit: Int = 30): NotificationList
+
+    @POST("api/notifications/{id}/read")
+    suspend fun markNotificationRead(@Path("id") id: Int)
+
+    @POST("api/notifications/read-all")
+    suspend fun markAllNotificationsRead()
+
+    // --- Customer contact update (caller / head office) ---
+    @PATCH("api/cases/{id}/contact-update")
+    suspend fun contactUpdate(@Path("id") id: Int, @Body body: Map<String, String?>): Case
 }

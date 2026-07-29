@@ -709,6 +709,68 @@ def mark_unpaid(case_id: int, db: Session = Depends(get_db),
     return case
 
 
+class ContactUpdateIn(BaseModel):
+    new_address: str | None = None
+    new_phone: str | None = None
+
+
+# Who may record a customer's latest address/phone (found mid-cycle). Callers + head office
+# primarily; admin/manager/backend/teamlead allowed too.
+CONTACT_EDIT_ROLES = ("admin", "headoffice", "manager", "backend", "telecaller", "teamlead")
+
+
+@router.post("/{case_id}/contact-update", response_model=schemas.CaseOut)
+def contact_update(case_id: int, body: ContactUpdateIn, db: Session = Depends(get_db),
+                   actor: models.User = Depends(require_roles(*CONTACT_EDIT_ROLES))):
+    """A caller / head-office records the customer's latest address / phone discovered
+    mid-cycle. It's stored on the case, shown to the assigned field officer, and the FOS is
+    notified instantly (live push + a persisted bell notification)."""
+    case = _scope(db.query(models.Case), actor).filter(models.Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    na = (body.new_address or "").strip() or None
+    nph = (body.new_phone or "").strip() or None
+    if na is None and nph is None:
+        raise HTTPException(status_code=400, detail="Provide a new address and/or new phone")
+    changed = []
+    if na is not None and na != (case.new_address or None):
+        audit.record(db, actor, "edit", case, field="new_address",
+                     old=case.new_address, new=na, detail="Updated customer new address")
+        case.new_address = na
+        changed.append("address")
+    if nph is not None and nph != (case.new_phone or None):
+        audit.record(db, actor, "edit", case, field="new_phone",
+                     old=case.new_phone, new=nph, detail="Updated customer new phone")
+        case.new_phone = nph
+        changed.append("phone")
+    if not changed:
+        return case                                  # nothing actually different
+    case.new_contact_by = actor.name
+    case.new_contact_at = datetime.now(timezone.utc)
+
+    # Alert the assigned field officer (persisted bell + live push).
+    if case.assigned_fos_id:
+        parts = []
+        if "phone" in changed and case.new_phone:
+            parts.append(f"📞 {case.new_phone}")
+        if "address" in changed and case.new_address:
+            parts.append(f"📍 {case.new_address}")
+        who = case.customer_name or case.account_no or f"case #{case.id}"
+        from .notifications import push
+        push(db, case.assigned_fos_id,
+             title=f"Updated contact — {who}",
+             body="  ·  ".join(parts) + f"   (by {actor.name})",
+             case_id=case.id, ntype="contact_update", by_name=actor.name)
+
+    db.commit()
+    db.refresh(case)
+    from .realtime import notify_data_changed
+    notify_data_changed(case.bank, case.product)
+    case.propensity = propensity(case)
+    _mark_today(db, [case])
+    return case
+
+
 class IdsIn(BaseModel):
     ids: list[int] = []
     reason: str | None = None

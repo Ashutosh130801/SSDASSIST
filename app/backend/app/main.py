@@ -13,7 +13,8 @@ from .config import get_settings
 from . import models  # noqa: F401  (register models)
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
-                      team, mis, feedback, reminders, audit_log, archive, catalog)
+                      team, mis, feedback, reminders, audit_log, archive, catalog, manpower,
+                      notifications)
 
 settings = get_settings()
 
@@ -26,6 +27,10 @@ def _ensure_columns():
     wanted = {
         "cases": {
             "address2": "TEXT",
+            "new_address": "TEXT",
+            "new_phone": "VARCHAR(20)",
+            "new_contact_by": "VARCHAR(120)",
+            "new_contact_at": "TIMESTAMP",
             "period": "VARCHAR(7)",
             "close_date": "DATE",
             "closing_type": "VARCHAR(12)",
@@ -58,6 +63,29 @@ def _ensure_columns():
             "employment_type": "VARCHAR(30)",
             "joining_date": "DATE",
             "address": "TEXT",
+            "designation": "VARCHAR(80)",
+            "location": "VARCHAR(80)",
+            "hr_ref": "VARCHAR(30)",
+            "gender": "VARCHAR(10)",
+            "dob": "DATE",
+            "blood_group": "VARCHAR(8)",
+            "marital_status": "VARCHAR(20)",
+            "ctc": "VARCHAR(30)",
+            "emergency_name": "VARCHAR(80)",
+            "emergency_relation": "VARCHAR(30)",
+            "dra_status": "VARCHAR(20)",
+            "pvc_status": "VARCHAR(20)",
+            "aadhar_number": "VARCHAR(20)",
+            "pan_number": "VARCHAR(20)",
+            "bank_holder": "VARCHAR(120)",
+            "bank_account": "VARCHAR(40)",
+            "ifsc_code": "VARCHAR(20)",
+            "bank_name": "VARCHAR(80)",
+            "aadhar_address": "TEXT",
+            "current_address": "TEXT",
+            "rent_own": "VARCHAR(10)",
+            "profile_completed": "BOOLEAN",
+            "must_change_password": "BOOLEAN",
             "emergency_contact": "VARCHAR(60)",
             "photo_url": "VARCHAR(255)",
             "failed_login_count": "INTEGER",
@@ -178,7 +206,7 @@ async def _security_headers(request, call_next):
 
 for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, devices,
           leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis, feedback,
-          reminders, audit_log, archive, catalog):
+          reminders, audit_log, archive, catalog, manpower, notifications):
     app.include_router(r.router)
 
 

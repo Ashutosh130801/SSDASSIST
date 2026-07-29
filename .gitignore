@@ -1,0 +1,7 @@
+
+# Sensitive HR data / credentials — never commit
+SSDE Man power.xlsx
+SSDE_login_credentials.xlsx
+SSDE_ALL_LOGINS.xlsx
+app/backend/.env
+app/backend/*.db
