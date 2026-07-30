@@ -4690,10 +4690,11 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
         <div className="brand"><img src="assets/logo.png" alt="" />
           <div><div className="n brandfont" style={{ fontSize: 16 }}>{(config && config.brand_name) || 'RecoverIQ'}</div>
             <div className="s" style={{ fontSize: 10 }}>{roleName(user.role)}</div></div></div>
-        {nav.map(([id, ic, label]) => <div key={id} className={cx('navitem', view === id && 'active')} onClick={() => setView(id)}>
-          <span className="ic">{ic}</span>{label}</div>)}
-        <div style={{ flex: 1 }} />
-        <div className="navitem" onClick={onLogout}><span className="ic">⎋</span>Sign out</div>
+        <div className="navscroll">
+          {nav.map(([id, ic, label]) => <div key={id} className={cx('navitem', view === id && 'active')} onClick={() => setView(id)}>
+            <span className="ic">{ic}</span>{label}</div>)}
+        </div>
+        <div className="navitem signout" onClick={onLogout}><span className="ic">⎋</span>Sign out</div>
       </aside>
       <main className="main">
         <div className="topbar">

@@ -77,7 +77,14 @@ textarea.input{resize:vertical;min-height:70px}
   border-right:1px solid var(--stroke-soft);position:sticky;top:0;height:100vh;
   background:#fff;
 }
-.brand{display:flex;align-items:center;gap:11px;padding:6px 8px 18px}
+.brand{display:flex;align-items:center;gap:11px;padding:6px 8px 18px;flex-shrink:0}
+/* Scrollable middle so long menus (admin) never hide the Sign out button. */
+.navscroll{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:6px;
+  margin:0 -4px;padding:0 4px}
+.navscroll::-webkit-scrollbar{width:6px}
+.navscroll::-webkit-scrollbar-thumb{background:var(--stroke-soft);border-radius:6px}
+.sidebar .signout{flex-shrink:0;margin-top:8px;border-top:1px solid var(--stroke-soft);
+  border-radius:0 0 11px 11px;padding-top:12px}
 .brand img{width:42px;height:42px;border-radius:12px;box-shadow:0 6px 18px rgba(37,99,235,.28)}
 .brand .n{font-weight:600;font-size:17px;letter-spacing:.2px;color:var(--ink)}
 .brand .s{font-size:11px;color:var(--gold);letter-spacing:1.4px;text-transform:uppercase;font-weight:700}
