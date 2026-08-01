@@ -61,13 +61,6 @@ fun FieldAgentTrackingScreen(
     onNeedTrackingPermissions: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val onDuty by vm.repo.onDutyFlow.collectAsState(initial = false)
-
-    // If duty was left on (survived a restart), make sure the service is actually running.
-    LaunchedEffect(onDuty) { if (onDuty) Tracking.start(context) }
-
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -76,6 +69,42 @@ fun FieldAgentTrackingScreen(
             fontWeight = FontWeight.Bold)
         Text(user.roleLabel + (user.branch?.let { " · $it" } ?: ""), color = Muted)
 
+        OnDutyCard(vm, onNeedTrackingPermissions, onRequestBatteryExemption)
+
+        SectionTitle("Today's activity")
+        AsyncContent(block = { vm.repo.myTodayRoute() }) { route, _ ->
+            InfoCard {
+                Text("${route.count} location updates recorded today",
+                    style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                if (route.distanceKm > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text("Distance covered: ${route.distanceKm} km",
+                        style = MaterialTheme.typography.bodySmall, color = Muted)
+                }
+                route.points.lastOrNull()?.let { last ->
+                    Text("Last fix: ${"%.5f".format(last.lat)}, ${"%.5f".format(last.lng)}",
+                        style = MaterialTheme.typography.bodySmall, color = Muted)
+                }
+            }
+        }
+    }
+}
+
+/** The on-duty on/off switch (+ battery-optimisation nudge). Reusable so it can sit on the
+ *  field officer's home dashboard as well as the dedicated On Duty screen. */
+@Composable
+fun OnDutyCard(
+    vm: AuthViewModel,
+    onNeedTrackingPermissions: () -> Unit,
+    onRequestBatteryExemption: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val onDuty by vm.repo.onDutyFlow.collectAsState(initial = false)
+    // If duty was left on (survived a restart), make sure the service is actually running.
+    LaunchedEffect(onDuty) { if (onDuty) Tracking.start(context) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         InfoCard {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween) {
@@ -113,23 +142,6 @@ fun FieldAgentTrackingScreen(
                     }
                 }
                 TextButton(onClick = onRequestBatteryExemption) { Text("Allow unrestricted battery") }
-            }
-        }
-
-        SectionTitle("Today's activity")
-        AsyncContent(block = { vm.repo.myTodayRoute() }) { route, _ ->
-            InfoCard {
-                Text("${route.count} location updates recorded today",
-                    style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                if (route.distanceKm > 0) {
-                    Spacer(Modifier.height(4.dp))
-                    Text("Distance covered: ${route.distanceKm} km",
-                        style = MaterialTheme.typography.bodySmall, color = Muted)
-                }
-                route.points.lastOrNull()?.let { last ->
-                    Text("Last fix: ${"%.5f".format(last.lat)}, ${"%.5f".format(last.lng)}",
-                        style = MaterialTheme.typography.bodySmall, color = Muted)
-                }
             }
         }
     }

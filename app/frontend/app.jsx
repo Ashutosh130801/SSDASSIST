@@ -942,7 +942,7 @@ function ReassignModal({ ids, onClose, onDone }) {
 }
 
 function CasesView({ user }) {
-  const canUpload = user.role === 'admin' || user.role === 'backend';
+  const canUpload = user.role === 'admin' || user.role === 'backend' || user.role === 'headoffice';
   const canReassign = ['admin', 'manager', 'teamlead', 'headoffice'].includes(user.role);
   const [reassignOpen, setReassignOpen] = useState(false);
   const isAdmin = user.role === 'admin';

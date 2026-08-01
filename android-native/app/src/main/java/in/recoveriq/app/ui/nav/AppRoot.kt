@@ -287,7 +287,10 @@ private fun navEntriesFor(
 
     return when (user.role) {
         "fos" -> listOf(
-            dashboard,
+            // Home dashboard leads with the On Duty on/off switch.
+            NavEntry("dashboard", "My Stats", Icons.Filled.SpaceDashboard) {
+                DashboardScreen(vm, user, onNeedTrackingPermissions, onRequestBatteryExemption)
+            },
             NavEntry("onduty", "On Duty", Icons.Filled.LocationOn) {
                 FieldAgentTrackingScreen(vm, user, onNeedTrackingPermissions, onRequestBatteryExemption)
             },

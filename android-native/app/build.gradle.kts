@@ -17,7 +17,7 @@ android {
 
         // The live backend base URL. Overridable at build time:  -PBASE_URL=https://...
         val baseUrl = (project.findProperty("BASE_URL") as String?)
-            ?: "https://REPLACE-WITH-YOUR-APP-URL/"
+            ?: "https://recoveriq.ssdenterprises.org.in/"
         buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
 
         // Certificate pin (SHA-256 of the server's SPKI). Empty string = pinning disabled.

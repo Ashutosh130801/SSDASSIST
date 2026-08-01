@@ -26,13 +26,19 @@ import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.common.AsyncContent
 import `in`.recoveriq.app.ui.common.InfoCard
 import `in`.recoveriq.app.ui.common.SectionTitle
+import `in`.recoveriq.app.ui.fos.OnDutyCard
 import `in`.recoveriq.app.ui.theme.BrandBlue
 import `in`.recoveriq.app.ui.theme.Good
 import `in`.recoveriq.app.ui.theme.Muted
 import `in`.recoveriq.app.ui.theme.MutedDim
 
 @Composable
-fun DashboardScreen(vm: AuthViewModel, user: User) {
+fun DashboardScreen(
+    vm: AuthViewModel,
+    user: User,
+    onNeedTrackingPermissions: () -> Unit = {},
+    onRequestBatteryExemption: () -> Unit = {},
+) {
     AsyncContent(block = { vm.repo.dashboard() }) { d, _ ->
         LazyColumn(
             Modifier.fillMaxSize().padding(16.dp),
@@ -42,6 +48,10 @@ fun DashboardScreen(vm: AuthViewModel, user: User) {
                 Text(if (user.isFieldAgent || user.isTelecaller) "My stats" else "Dashboard",
                     style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Text(user.roleLabel + (user.branch?.let { " · $it" } ?: ""), color = Muted)
+            }
+            // Field officers: the on-duty switch is the first thing on their home screen.
+            if (user.isFieldAgent) {
+                item { OnDutyCard(vm, onNeedTrackingPermissions, onRequestBatteryExemption) }
             }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {

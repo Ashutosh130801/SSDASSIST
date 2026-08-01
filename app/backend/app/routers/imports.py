@@ -34,7 +34,7 @@ def _parse_due(val):
 @router.post("/preview")
 async def preview(file: UploadFile = File(...), default_bank: str | None = Form(None),
                   product: str | None = Form(None), segment: str | None = Form(None),
-                  admin: models.User = Depends(require_roles("admin", "backend"))):
+                  admin: models.User = Depends(require_roles("admin", "backend", "headoffice"))):
     content = await file.read()
     try:
         records, sheet = import_workbook(content, default_bank=default_bank)
@@ -59,7 +59,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                  product: str | None = Form(None), segment: str | None = Form(None),
                  branch: str | None = Form(None), auto_allocate: bool = Form(True),
                  year: int | None = Form(None), month: int | None = Form(None),
-                 admin: models.User = Depends(require_roles("admin", "backend")), db: Session = Depends(get_db)):
+                 admin: models.User = Depends(require_roles("admin", "backend", "headoffice")), db: Session = Depends(get_db)):
     content = await file.read()
     try:
         records, sheet = import_workbook(content, default_bank=default_bank)
@@ -293,7 +293,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
 
 
 @router.get("/export")
-def export(db: Session = Depends(get_db), admin: models.User = Depends(require_roles("admin", "backend"))):
+def export(db: Session = Depends(get_db), admin: models.User = Depends(require_roles("admin", "backend", "headoffice"))):
     data = export_cases(db)
     return StreamingResponse(
         io.BytesIO(data),

@@ -12,6 +12,11 @@ services:
       POSTGRES_DB: ssd_recovery
     volumes:
       - ssd_pgdata:/var/lib/postgresql/data
+    # Expose Postgres to a GUI (DBeaver/pgAdmin) running ON THE SAME PC only.
+    # Bound to 127.0.0.1 so it is NOT reachable from the network/internet.
+    # To browse from another machine, use an SSH tunnel instead of changing this.
+    ports:
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ssd -d ssd_recovery"]
       interval: 5s

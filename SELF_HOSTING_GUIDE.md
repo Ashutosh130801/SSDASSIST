@@ -197,11 +197,32 @@ any existing cases to the right staff, and purges demo data.
 This is what lets field officers' phones reach your PC from anywhere, safely, with automatic
 HTTPS — and no router/port changes.
 
-### D1. Put your domain on Cloudflare (free)
-1. Create a free account at **cloudflare.com** and click **Add a site**; enter your domain.
-2. Cloudflare gives you **two nameservers**. Go to wherever you bought the domain and set its
-   nameservers to those two. (Propagation can take 15 min–a few hours.) Cloudflare shows
-   "Active" when done.
+### D1. Put your domain on Cloudflare (free) — GoDaddy steps
+You keep the domain at GoDaddy (you still own and renew it there); you just move its **DNS** to
+Cloudflare so the tunnel can attach your app to it.
+
+1. **Add the domain to Cloudflare.** Create a free account at **cloudflare.com** → **Add a
+   site** → type your GoDaddy domain (e.g. `ssdenterprises.in`) → choose the **Free** plan.
+   Cloudflare scans your current DNS and then shows **two nameservers**, e.g.
+   `dana.ns.cloudflare.com` and `rob.ns.cloudflare.com`. Copy both.
+
+2. **Point GoDaddy at Cloudflare's nameservers.** Log in to GoDaddy → **My Products** → your
+   domain → **Manage DNS** (or **Domain Settings**) → **Nameservers** → **Change** → choose
+   **"I'll use my own nameservers"** → delete GoDaddy's and paste the **two Cloudflare
+   nameservers** → **Save**. (Labels vary slightly, but it's always under the domain's
+   *Nameservers* section.)
+
+3. **Wait for it to go live.** Propagation takes ~15 min to a few hours. Cloudflare flips the
+   site status from *Pending* to **Active** (and emails you).
+
+> **Before you save at GoDaddy — protect your email/website.** Moving nameservers moves *all*
+> DNS for the domain. Cloudflare usually auto-imports your existing records during the Step 1
+> scan, but open the Cloudflare **DNS** tab and confirm your **MX records** (and any existing
+> website A records) are present — otherwise email could stop working. If you use GoDaddy email
+> or Google Workspace, double-check those MX entries carried over.
+>
+> Prefer not to move the whole domain? You can delegate just a subdomain to Cloudflare instead,
+> but the full nameserver move is simplest and is what the rest of this guide assumes.
 
 ### D2. Install the tunnel agent on the PC
 **[Ubuntu PC]**
