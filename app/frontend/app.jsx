@@ -464,6 +464,24 @@ const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', tea
 const roleName = (r) => ROLE_LABEL[r] || r;
 
 /* ============================== Login ============================== */
+/* Shows a "Download Android app" button, but only once a build has been published to the
+   server (/downloads/version.json exists). Serves the APK straight from this domain. */
+function AndroidDownloadButton({ block, style, compact }) {
+  const [ver, setVer] = useState(null);
+  useEffect(() => {
+    fetch('/downloads/version.json', { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null)).then(setVer).catch(() => setVer(null));
+  }, []);
+  if (!ver) return null;
+  const label = compact ? '🤖 Android app' : '🤖 Download Android app';
+  return (
+    <a className={cx('btn', block && 'block')} href="/downloads/RecoverIQ-native.apk" download
+      style={{ marginTop: compact ? 0 : 10, ...style }}
+      title={'Install on an Android phone' + (ver.version_name ? ' (v' + ver.version_name + ')' : '')}>
+      {label}{ver.version_name && !compact ? ' · v' + ver.version_name : ''}
+    </a>
+  );
+}
 function Login({ onLogin, config }) {
   const [email, setEmail] = useState(''); const [pw, setPw] = useState('');
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
@@ -533,6 +551,7 @@ function Login({ onLogin, config }) {
               🔐 Sign in with passkey / biometric</button>}
           {config && config.google_client_id ?
             <div id="gbtn" style={{ marginTop: 14, display: 'flex', justifyContent: 'center' }}></div> : null}
+          <AndroidDownloadButton block />
           <div className="divider"></div>
           <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.6 }}>
             Use the credentials issued by your administrator. Trouble signing in from a new device?
@@ -4712,6 +4731,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
           {nav.map(([id, ic, label]) => <div key={id} className={cx('navitem', view === id && 'active')} onClick={() => setView(id)}>
             <span className="ic">{ic}</span>{label}</div>)}
         </div>
+        <AndroidDownloadButton compact block style={{ margin: '4px 0' }} />
         <div className="navitem signout" onClick={onLogout}><span className="ic">⎋</span>Sign out</div>
       </aside>
       <main className="main">
