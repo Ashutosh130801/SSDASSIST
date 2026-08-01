@@ -12,8 +12,10 @@ android {
         applicationId = "in.recoveriq.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        // Overridable at build time so CI can stamp an increasing version each run:
+        //   -PVERSION_CODE=<n>  -PVERSION_NAME=1.0.<n>
+        versionCode = (project.findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: 1
+        versionName = (project.findProperty("VERSION_NAME") as String?) ?: "1.0.0"
 
         // The live backend base URL. Overridable at build time:  -PBASE_URL=https://...
         val baseUrl = (project.findProperty("BASE_URL") as String?)

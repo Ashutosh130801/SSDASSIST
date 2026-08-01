@@ -4500,14 +4500,25 @@ const PROFILE_FIELDS = [
   ['emergency_relation', 'Relation', 'text'], ['current_address', 'Current address', 'text'],
   ['aadhar_number', 'Aadhaar number', 'text'], ['pan_number', 'PAN', 'text'],
   ['bank_holder', 'Bank a/c holder', 'text'], ['bank_account', 'Bank account no.', 'text'],
-  ['ifsc_code', 'IFSC', 'text'], ['bank_name', 'Bank name', 'text'], ['photo_url', 'Profile photo URL', 'text'],
+  ['ifsc_code', 'IFSC', 'text'], ['bank_name', 'Bank name', 'text'],
 ];
 function ProfileView({ user }) {
   const [me, setMe] = useState(null);
   const [f, setF] = useState({});
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [photoBusy, setPhotoBusy] = useState(false);
   const load = () => api('/api/manpower/me').then(m => { setMe(m); setF(m); }).catch(() => setMe({}));
+  const uploadPhoto = async (fileObj) => {
+    if (!fileObj) return;
+    if (!/^image\//.test(fileObj.type || '')) { toast('Please choose an image file', 'err'); return; }
+    setPhotoBusy(true);
+    try {
+      const fd = new FormData(); fd.append('file', fileObj);
+      await api('/api/manpower/me/photo', { method: 'POST', form: fd });
+      toast('Profile photo updated.'); load();
+    } catch (e) { toast(e.message, 'err'); } finally { setPhotoBusy(false); }
+  };
   useEffect(() => { load(); }, []);
   const isHR = ['admin', 'headoffice', 'hr'].includes(user.role);
   const canEdit = me && (!me.profile_completed || isHR);
@@ -4537,7 +4548,14 @@ function ProfileView({ user }) {
           download the directory. Only real employees imported from the HR sheet carry these fields.
         </p></div>}
       <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 18, alignItems: 'start', flexWrap: 'wrap' }}>
-        <EIDCard e={{ ...me, ...f }} />
+        <div>
+          <EIDCard e={{ ...me, ...f }} />
+          <label className="btn sm" style={{ marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 6, cursor: photoBusy ? 'default' : 'pointer', opacity: photoBusy ? 0.6 : 1 }}>
+            {photoBusy ? 'Uploading…' : '📷 Change photo'}
+            <input type="file" accept="image/*" style={{ display: 'none' }} disabled={photoBusy}
+              onChange={e => { uploadPhoto(e.target.files[0]); e.target.value = ''; }} />
+          </label>
+        </div>
         <div style={{ minWidth: 280, flex: 1 }}>
           {!editing ? (<>
             <div className="dl">

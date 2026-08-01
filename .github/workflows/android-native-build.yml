@@ -69,7 +69,8 @@ jobs:
 
       - name: Build debug APK
         run: |
-          ARGS=""
+          # Stamp an increasing version so the in-app updater can detect new builds.
+          ARGS="-PVERSION_CODE=${{ github.run_number }} -PVERSION_NAME=1.0.${{ github.run_number }}"
           if [ -n "${{ steps.cfg.outputs.url }}" ]; then ARGS="$ARGS -PBASE_URL=${{ steps.cfg.outputs.url }}"; fi
           if [ -n "${{ steps.cfg.outputs.pin }}" ]; then ARGS="$ARGS -PCERT_PIN=${{ steps.cfg.outputs.pin }}"; fi
           echo "Building with: $ARGS"
@@ -77,6 +78,26 @@ jobs:
 
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk ../RecoverIQ-native.apk
+
+      - name: Publish APK + version.json to the served folder (for in-app updates)
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p app/frontend/downloads
+          cp RecoverIQ-native.apk app/frontend/downloads/RecoverIQ-native.apk
+          # url left blank on purpose — the app builds it from its own BASE_URL.
+          cat > app/frontend/downloads/version.json <<EOF
+          {
+            "version_code": ${{ github.run_number }},
+            "version_name": "1.0.${{ github.run_number }}",
+            "url": "",
+            "notes": "Latest improvements and fixes."
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app/frontend/downloads/RecoverIQ-native.apk app/frontend/downloads/version.json
+          git commit -m "Publish app build #${{ github.run_number }} for in-app update" || echo "nothing to commit"
+          git push
 
       - name: Upload APK (artifact)
         uses: actions/upload-artifact@v4

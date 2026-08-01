@@ -8,13 +8,14 @@
 """
 import io
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import models, audit
 from ..database import get_db
 from ..deps import get_current_user, require_roles
+from ..storage import save_photo, resolve as resolve_photo
 
 router = APIRouter(prefix="/api/manpower", tags=["manpower"])
 
@@ -43,7 +44,7 @@ def _emp(u: models.User) -> dict:
         "bank_holder": u.bank_holder, "bank_account": u.bank_account, "ifsc_code": u.ifsc_code,
         "bank_name": u.bank_name, "current_address": u.current_address,
         "aadhar_address": u.aadhar_address, "rent_own": u.rent_own, "ctc": u.ctc,
-        "photo_url": u.photo_url, "is_active": u.is_active,
+        "photo_url": resolve_photo(u.photo_url), "is_active": u.is_active,
         "profile_completed": bool(u.profile_completed),
     }
 
@@ -114,6 +115,24 @@ def download(role: str | None = None, location: str | None = None,
 def my_profile(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     """The signed-in employee's own profile / E-ID data."""
     return _emp(user)
+
+
+@router.post("/me/photo")
+async def upload_my_photo(file: UploadFile = File(...), db: Session = Depends(get_db),
+                         user: models.User = Depends(get_current_user)):
+    """Upload / replace the signed-in employee's profile photo. Allowed ANY time (not
+    subject to the one-time profile lock), so staff can update their picture whenever."""
+    ct = (file.content_type or "").lower()
+    if not ct.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Please upload an image file")
+    content = await file.read()
+    if len(content) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image too large (max 8 MB)")
+    ref = save_photo(content, file.filename or "photo.jpg", ct, folder="profiles")
+    user.photo_url = ref
+    audit.record(db, user, "profile_update", None, entity_type="staff", detail="Updated profile photo")
+    db.commit()
+    return {"ok": True, "photo_url": resolve_photo(ref)}
 
 
 @router.patch("/me")

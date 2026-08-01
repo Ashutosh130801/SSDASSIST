@@ -53,6 +53,13 @@ import `in`.recoveriq.app.ui.theme.Good
 import `in`.recoveriq.app.ui.theme.Muted
 import `in`.recoveriq.app.ui.theme.MutedDim
 import `in`.recoveriq.app.ui.theme.TextDark
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import coil.compose.AsyncImage
+import `in`.recoveriq.app.BuildConfig
 import kotlinx.coroutines.launch
 
 /** My E-ID — the employee's identity card, one-time self-edit of details, and change password. */
@@ -69,6 +76,8 @@ fun ProfileScreen(vm: AuthViewModel, user: User) {
 
         AsyncContent(key = refresh, block = { vm.repo.myProfile() }) { p, reload ->
             EidCard(p)
+
+            PhotoUploadButton(vm) { refresh++; reload() }
 
             DetailsCard(p)
 
@@ -130,15 +139,23 @@ private fun EidCard(p: EmployeeProfile) {
             )
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
+                val photo = absPhotoUrl(p.photoUrl)
                 Box(
-                    Modifier.size(72.dp).background(Color.White.copy(alpha = 0.18f), CircleShape),
+                    Modifier.size(72.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.18f)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        initials(p.name),
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold, color = Color.White,
-                    )
+                    if (photo != null) {
+                        AsyncImage(
+                            model = photo, contentDescription = "Profile photo",
+                            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
+                        )
+                    } else {
+                        Text(
+                            initials(p.name),
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold, color = Color.White,
+                        )
+                    }
                 }
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
@@ -418,6 +435,30 @@ fun ForcePasswordChangeScreen(vm: AuthViewModel, onChanged: () -> Unit) {
             colors = ButtonDefaults.buttonColors(containerColor = BrandBlue),
         ) { Text(if (busy) "Saving…" else "Continue") }
     }
+}
+
+@Composable
+private fun PhotoUploadButton(vm: AuthViewModel, onDone: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch {
+            busy = true
+            val bytes = runCatching { ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+            busy = false
+            if (bytes != null && runCatching { vm.repo.uploadProfilePhoto(bytes) }.isSuccess) onDone()
+        }
+    }
+    OutlinedButton(onClick = { picker.launch("image/*") }, enabled = !busy) {
+        Text(if (busy) "Uploading…" else "📷 Change photo")
+    }
+}
+
+/** Make a stored photo ref absolute so Coil can load it (local refs come back as "/uploads/…"). */
+private fun absPhotoUrl(u: String?): String? {
+    if (u.isNullOrBlank()) return null
+    return if (u.startsWith("http")) u else BuildConfig.BASE_URL.trimEnd('/') + u
 }
 
 private fun initials(name: String): String =

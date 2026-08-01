@@ -143,6 +143,9 @@ private fun MainNav(
         }
     }
 
+    // Offer an in-app update if a newer build is published to the server.
+    `in`.recoveriq.app.UpdateGate()
+
     // First login with the shared starter password: force a change before anything else.
     var mustChange by remember { mutableStateOf(user.mustChangePassword) }
     if (mustChange) {

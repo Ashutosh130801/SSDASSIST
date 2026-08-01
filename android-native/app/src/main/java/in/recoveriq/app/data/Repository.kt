@@ -164,6 +164,15 @@ class Repository(context: Context) {
         Api.service.updateMyProfile(patch)
     }
 
+    /** Upload/replace the signed-in employee's profile photo. Returns the new photo URL. */
+    suspend fun uploadProfilePhoto(bytes: ByteArray, filename: String = "photo.jpg"): String? {
+        val part = MultipartBody.Part.createFormData(
+            "file", filename, bytes.toRequestBody("image/*".toMediaType()),
+        )
+        val r = Api.service.uploadProfilePhoto(part)
+        return r["photo_url"] as? String
+    }
+
     /** Set a new password; refreshes the stored token + user so the app continues signed in. */
     suspend fun changePassword(current: String, new: String): Token {
         val t = Api.service.changePassword(ChangePasswordRequest(current, new))

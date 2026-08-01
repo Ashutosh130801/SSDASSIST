@@ -28,10 +28,11 @@ def _bucket():
     return _client.bucket(settings.gcs_bucket)
 
 
-def save_photo(content: bytes, filename: str = "", content_type: str = "image/jpeg") -> str:
+def save_photo(content: bytes, filename: str = "", content_type: str = "image/jpeg",
+               folder: str = "visits") -> str:
     """Persist bytes and return a stored reference (an opaque string)."""
     ext = (os.path.splitext(filename or "")[1] or ".jpg").lower()
-    key = f"visits/{uuid.uuid4().hex}{ext}"
+    key = f"{folder}/{uuid.uuid4().hex}{ext}"
     if settings.gcs_bucket:
         blob = _bucket().blob(key)
         blob.upload_from_string(content, content_type=content_type or "image/jpeg")

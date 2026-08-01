@@ -350,11 +350,11 @@ Browser → repo → **Actions** tab: the *Deploy to self-hosted server* job run
 and goes green in 1–3 minutes. Refresh the app — your change is live. **That's push-here →
 reflected-there working.**
 
-> **Field-visit photos note:** the runner checks out code into its own folder each deploy, so
-> photos saved to the local `uploads/` folder can be lost on redeploy. The **database** (cases,
-> users, MIS, logins, the new address/phone data, notifications) is safe — it lives in a
-> Postgres volume that persists across deploys and reboots. To keep photos permanently, set a
-> `GCS_BUCKET` (Google Cloud Storage) in `~/recoveriq.env`.
+> **Photos & data persistence:** both uploaded photos (field visits + profile pictures) and the
+> database are kept on **persistent local Docker volumes on this PC** (`ssd_uploads` and
+> `ssd_pgdata`) — stored on your own disk, never the cloud, and untouched by redeploys or
+> reboots. Nothing is lost when you push new code. (Cloud storage via `GCS_BUCKET` remains an
+> optional alternative, but is not required for local self-hosting.)
 
 ---
 

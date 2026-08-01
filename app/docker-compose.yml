@@ -47,6 +47,9 @@ services:
     volumes:
       - ./backend:/code/backend
       - ./frontend:/code/frontend
+      # Uploaded photos (visits + profile pics) live on a PERSISTENT local volume — stored on
+      # this PC's disk, never the cloud, and kept across redeploys/reboots (like the database).
+      - ssd_uploads:/code/backend/uploads
     # Creates the admin (from ADMIN_EMAIL/ADMIN_PASSWORD) if missing, then starts the server.
     command: >
       sh -c "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
@@ -54,3 +57,4 @@ services:
 
 volumes:
   ssd_pgdata:
+  ssd_uploads:

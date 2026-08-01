@@ -199,6 +199,10 @@ interface ApiService {
     @PATCH("api/manpower/me")
     suspend fun updateMyProfile(@Body body: Map<String, String?>): Map<String, Any?>
 
+    @Multipart
+    @POST("api/manpower/me/photo")
+    suspend fun uploadProfilePhoto(@Part file: MultipartBody.Part): Map<String, Any?>
+
     @POST("api/auth/change-password")
     suspend fun changePassword(@Body body: ChangePasswordRequest): Token
 
