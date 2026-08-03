@@ -220,6 +220,54 @@ def update_my_profile(body: dict = Body(...), db: Session = Depends(get_db),
     return {"ok": True, "profile_completed": bool(user.profile_completed)}
 
 
+# Registered AFTER the /me routes so "/me" is never captured as an emp_id.
+@router.patch("/{emp_id}")
+def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get_db),
+                  user: models.User = Depends(require_roles("admin", "headoffice", "hr"))):
+    """HR / admin / head office edits any employee's directory details. Only the fields sent
+    are changed. Can also reset the person's password (forces a change on next login)."""
+    from datetime import datetime as _dt
+    u = db.query(models.User).filter(models.User.id == emp_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    new_email = (body.get("email") or "").strip().lower()
+    if new_email and new_email != (u.email or "").lower():
+        if db.query(models.User).filter(models.User.email == new_email,
+                                        models.User.id != u.id).first():
+            raise HTTPException(status_code=400, detail="That login email is already registered")
+        u.email = new_email
+    if (body.get("name") or "").strip():
+        u.name = body["name"].strip()
+    if (body.get("role") or "").strip():
+        u.role = body["role"].strip()
+    if "is_active" in body:
+        u.is_active = bool(body["is_active"])
+    for k in _ADD_FIELDS:
+        if k in body:
+            v = body.get(k)
+            setattr(u, k, v if v not in ("",) else None)
+    for dk in ("dob", "joining_date"):
+        if dk in body:
+            dv = body.get(dk)
+            if dv:
+                try:
+                    setattr(u, dk, _dt.strptime(str(dv)[:10], "%Y-%m-%d").date())
+                except ValueError:
+                    pass
+            else:
+                setattr(u, dk, None)
+    if body.get("password"):
+        from ..security import hash_password
+        u.hashed_password = hash_password(body["password"])
+        u.must_change_password = True
+    audit.record(db, user, "staff_update", None, entity_type="staff", target_user_id=u.id,
+                 detail=f"Edited employee {u.name} ({u.emp_code})")
+    db.commit()
+    db.refresh(u)
+    return _emp(u)
+
+
 # tiny local helper to avoid importing func at module top for one use
 def func_lower(col):
     from sqlalchemy import func

@@ -4426,9 +4426,13 @@ function PaymentEditModal({ row, mode, onClose, onDone }) {
 }
 
 /* ============================== Manpower directory (HR / admin) ============================== */
-/* HR: add a new employee with the full manpower detail set. */
-function AddStaffModal({ roles, onClose, onDone }) {
-  const [f, setF] = useState({ role: 'telecaller', password: 'Ssd@2026' });
+/* HR: add a NEW employee, or edit an EXISTING one (pass `existing`), with the full detail set. */
+function StaffFormModal({ existing, roles, onClose, onDone }) {
+  const editing = !!existing;
+  const init = editing
+    ? { ...existing, dob: (existing.dob || '').slice(0, 10), joining_date: (existing.joining_date || '').slice(0, 10), password: '' }
+    : { role: 'telecaller', password: 'Ssd@2026' };
+  const [f, setF] = useState(init);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
   const ROLE_OPTS = (roles && roles.length ? roles : ['manager', 'teamlead', 'telecaller', 'fos', 'headoffice', 'backend', 'hr', 'it', 'staff', 'admin']);
@@ -4439,16 +4443,20 @@ function AddStaffModal({ roles, onClose, onDone }) {
   const save = async () => {
     if (!f.name || !f.email || !f.role) { setErr('Name, login email and role are required'); return; }
     setBusy(true); setErr('');
-    try { await api('/api/manpower', { method: 'POST', body: f }); toast('Staff added.'); onDone(); }
-    catch (e) { setErr(e.message); } finally { setBusy(false); }
+    try {
+      if (editing) { await api('/api/manpower/' + existing.id, { method: 'PATCH', body: f }); toast('Employee updated.'); }
+      else { await api('/api/manpower', { method: 'POST', body: f }); toast('Staff added.'); }
+      onDone();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 700 }}>
-        <div className="section-h"><h3>Add staff</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <div className="section-h"><h3>{editing ? 'Edit employee' : 'Add staff'}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
         <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
-          A login is created with starter password <b>{f.password || 'Ssd@2026'}</b>; they set their own on first sign-in.
-          A role-wise employee code is generated automatically.
+          {editing
+            ? <>Editing <b>{existing.emp_code || existing.name}</b>. Leave the password blank to keep it unchanged.</>
+            : <>A login is created with starter password <b>{f.password || 'Ssd@2026'}</b>; they set their own on first sign-in. A role-wise employee code is generated automatically.</>}
         </p>
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {field('name', 'Full name *')}
@@ -4476,7 +4484,7 @@ function AddStaffModal({ roles, onClose, onDone }) {
           {field('ifsc_code', 'IFSC')}
           {field('bank_name', 'Bank name')}
           {field('employment_type', 'Employment type')}
-          {field('password', 'Starter password')}
+          {field('password', editing ? 'Reset password (optional)' : 'Starter password')}
         </div>
         <div className="field"><label>Current address</label>
           <textarea className="input" value={f.current_address || ''} onChange={e => set('current_address', e.target.value)} /></div>
@@ -4495,6 +4503,7 @@ function ManpowerView({ user }) {
   const [f, setF] = useState({ role: '', location: '', q: '' });
   const [sel, setSel] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [edit, setEdit] = useState(null);
   const canAdd = ['admin', 'headoffice', 'hr'].includes(user.role);
   useEffect(() => { api('/api/manpower/filters').then(setOpts).catch(() => {}); }, []);
   const load = useCallback(() => {
@@ -4521,7 +4530,8 @@ function ManpowerView({ user }) {
           <button className="btn gold" onClick={dl}>⬇ Download Excel</button>
         </div>
       </div>
-      {addOpen && <AddStaffModal roles={opts.roles} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); }} />}
+      {addOpen && <StaffFormModal roles={opts.roles} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); }} />}
+      {edit && <StaffFormModal existing={edit} roles={opts.roles} onClose={() => setEdit(null)} onDone={() => { setEdit(null); setSel(null); load(); }} />}
       {!rows ? <Loader /> : rows.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No employees match.</div> : (
         <div className="glass card" style={{ padding: 6 }}>
           <div className="tablewrap"><table>
@@ -4538,7 +4548,10 @@ function ManpowerView({ user }) {
       )}
       {sel && <div className="modal-bg" onClick={() => setSel(null)}>
         <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
-          <div className="section-h"><h3>{sel.name}</h3><button className="btn ghost sm" onClick={() => setSel(null)}>✕</button></div>
+          <div className="section-h"><h3>{sel.name}</h3>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {canAdd && <button className="btn sm" onClick={() => setEdit(sel)}>✏ Edit</button>}
+              <button className="btn ghost sm" onClick={() => setSel(null)}>✕</button></div></div>
           <EIDCard e={sel} />
           <div className="dl" style={{ marginTop: 10 }}>
             {[['Emp code', sel.emp_code], ['HR ref', sel.hr_ref], ['Role', roleName(sel.role)], ['Designation', sel.designation],
