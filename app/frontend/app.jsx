@@ -4488,6 +4488,11 @@ function StaffFormModal({ existing, roles, onClose, onDone }) {
         </div>
         <div className="field"><label>Current address</label>
           <textarea className="input" value={f.current_address || ''} onChange={e => set('current_address', e.target.value)} /></div>
+        {editing && f.role !== existing.role && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, margin: '6px 0' }}>
+            <input type="checkbox" checked={!!f.regen_code} onChange={e => set('regen_code', e.target.checked)} />
+            Regenerate employee code to match the new role (current: <b>{existing.emp_code || '—'}</b>)
+          </label>)}
         {err && <div style={{ color: 'var(--bad)', fontSize: 13, margin: '6px 0' }}>{err}</div>}
         <div className="toolbar" style={{ marginTop: 8 }}>
           <button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />

@@ -239,8 +239,14 @@ def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get
         u.email = new_email
     if (body.get("name") or "").strip():
         u.name = body["name"].strip()
+    old_role = u.role
     if (body.get("role") or "").strip():
         u.role = body["role"].strip()
+    # Optional: when the role changes, regenerate the emp code so its prefix matches the new
+    # role (e.g. FO001 → TL003). Off by default — existing sheet references keep the old code.
+    if body.get("regen_code") and u.role != old_role:
+        from .users import generate_emp_code
+        u.emp_code = generate_emp_code(db, u.role)
     if "is_active" in body:
         u.is_active = bool(body["is_active"])
     for k in _ADD_FIELDS:
