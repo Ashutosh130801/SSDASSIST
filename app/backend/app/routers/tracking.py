@@ -236,6 +236,69 @@ def route_for_date(officer_id: int, date: str, db: Session = Depends(get_db),
     return clean_route(pings)             # strip GPS jitter so the drawn route isn't spiky
 
 
+@router.get("/roster")
+def fos_roster(date: str | None = None, db: Session = Depends(get_db),
+               user: models.User = Depends(require_roles("admin", "manager", "headoffice", "teamlead"))):
+    """All field officers split into ACTIVE (shared location on the day) vs INACTIVE (no
+    tracking that day), for today or any past date (date='YYYY-MM-DD'). Powers the live-map popup."""
+    if date:
+        try:
+            y, m, d = (int(x) for x in date.split("-"))
+            day = datetime(y, m, d, tzinfo=IST).date()
+        except Exception:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    else:
+        day = _ist_today()
+    start_utc = datetime(day.year, day.month, day.day, tzinfo=IST).astimezone(timezone.utc)
+    end_utc = start_utc + timedelta(days=1)
+
+    q = db.query(models.User).filter(models.User.role == "fos", models.User.is_active.isnot(False))
+    if user.role == "manager" and user.branch:
+        q = q.filter(models.User.branch == user.branch)
+    elif user.role == "teamlead":
+        q = q.filter(models.User.team_lead_id == user.id)
+    foses = q.order_by(models.User.name).all()
+    ids = [u.id for u in foses]
+
+    pings = []
+    if ids:
+        pings = (db.query(models.LocationPing)
+                 .filter(models.LocationPing.officer_id.in_(ids),
+                         models.LocationPing.created_at >= start_utc,
+                         models.LocationPing.created_at < end_utc)
+                 .order_by(models.LocationPing.created_at.asc()).all())
+    by_officer: dict = {}
+    for p in pings:
+        by_officer.setdefault(p.officer_id, []).append(p)
+
+    def _info(u):
+        base = {"id": u.id, "name": u.name, "emp_code": u.emp_code, "branch": u.branch,
+                "location": u.location, "phone": u.phone, "active": u.id in by_officer}
+        ps = by_officer.get(u.id)
+        if ps:
+            cleaned = clean_route(ps) or ps
+            dist = 0.0
+            for a, b in zip(cleaned, cleaned[1:]):
+                dist += _haversine_km((a.latitude, a.longitude), (b.latitude, b.longitude))
+            base.update({
+                "pings": len(ps),
+                "first_seen": _as_utc(ps[0].created_at).isoformat(),
+                "last_seen": _as_utc(ps[-1].created_at).isoformat(),
+                "distance_km": round(dist, 2),
+            })
+        return base
+
+    active = [_info(u) for u in foses if u.id in by_officer]
+    inactive = [_info(u) for u in foses if u.id not in by_officer]
+    return {
+        "date": day.isoformat(),
+        "is_today": day == _ist_today(),
+        "total": len(foses), "active_count": len(active), "inactive_count": len(inactive),
+        "active": active, "inactive": inactive,
+    }
+
+
 @router.get("/distance-report")
 def distance_report(start: str, end: str, officer_id: int | None = None,
                     db: Session = Depends(get_db),

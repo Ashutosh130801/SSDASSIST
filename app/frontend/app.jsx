@@ -1199,6 +1199,13 @@ function LiveMap({ config }) {
   const visitMarks = useRef([]);
   const [dayVisits, setDayVisits] = useState(null); const [selVisit, setSelVisit] = useState(null);
   const [showReport, setShowReport] = useState(false); const [drawerCase, setDrawerCase] = useState(null);
+  const [rosterOpen, setRosterOpen] = useState(false); const [roster, setRoster] = useState(null); const [rosterDate, setRosterDate] = useState('');
+  const loadRoster = useCallback((d) => {
+    setRoster(null);
+    api('/api/tracking/roster' + (d ? '?date=' + d : '')).then(setRoster).catch(() => setRoster({ active: [], inactive: [], active_count: 0, inactive_count: 0, total: 0, error: true }));
+  }, []);
+  const openRoster = () => { setRosterDate(''); setRosterOpen(true); loadRoster(''); };
+  const fmtT = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
 
   const refresh = useCallback(async () => {
     try {
@@ -1333,6 +1340,7 @@ function LiveMap({ config }) {
         </select>
         <div style={{ flex: 1 }} />
         {routeActive.current && <button className="btn sm" onClick={() => { clearRoute(); setRouteInfo(null); refresh(); }}>✕ Clear route</button>}
+        <button className="btn sm" onClick={openRoster}>🧑‍🤝‍🧑 FOS roster</button>
         <button className="btn sm" onClick={refresh}>↻ Refresh</button>
       </div>
       {status === 'nokey' && <div className="glass card" style={{ marginBottom: 12, color: 'var(--warn)' }}>
@@ -1386,6 +1394,43 @@ function LiveMap({ config }) {
           </div>}
         </div>
       </div>
+
+      {rosterOpen && <div className="modal-bg" onClick={() => setRosterOpen(false)}>
+        <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 640 }}>
+          <div className="section-h"><h3>Field officers — {roster ? (roster.is_today ? 'Today' : roster.date) : '…'}</h3>
+            <button className="btn ghost sm" onClick={() => setRosterOpen(false)}>✕</button></div>
+          <div className="toolbar" style={{ gap: 10, marginBottom: 10, alignItems: 'flex-end' }}>
+            <div className="field" style={{ margin: 0 }}><label style={{ fontSize: 11 }}>Date</label>
+              <input className="input" type="date" max={new Date().toISOString().slice(0, 10)} value={rosterDate}
+                onChange={e => { setRosterDate(e.target.value); loadRoster(e.target.value); }} /></div>
+            {rosterDate && <button className="btn sm" onClick={() => { setRosterDate(''); loadRoster(''); }}>Today</button>}
+            <div style={{ flex: 1 }} />
+            {roster && !roster.error && <span className="muted" style={{ fontSize: 12.5 }}>
+              <b style={{ color: 'var(--good)' }}>{roster.active_count} active</b> · {roster.inactive_count} inactive · {roster.total} total</span>}
+          </div>
+          {!roster ? <Loader /> : <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="glass card" style={{ padding: 8, maxHeight: 360, overflow: 'auto' }}>
+              <b style={{ color: 'var(--good)' }}>● Active ({roster.active_count})</b>
+              <p className="muted" style={{ fontSize: 11, margin: '2px 0 6px' }}>Shared live location this day</p>
+              {roster.active.length === 0 ? <div className="muted" style={{ fontSize: 12 }}>None.</div> :
+                roster.active.map(o => <div key={o.id} style={{ padding: '6px 0', borderBottom: '1px solid var(--stroke-soft)' }}>
+                  <b>{o.name}</b> <span className="muted" style={{ fontSize: 11 }}>{o.emp_code || ''}</span>
+                  <div className="muted" style={{ fontSize: 11 }}>🏢 {o.branch || o.location || '—'} · {o.pings} pts · {o.distance_km || 0} km</div>
+                  <div className="muted" style={{ fontSize: 11 }}>🕘 {fmtT(o.first_seen)}–{fmtT(o.last_seen)}</div>
+                </div>)}
+            </div>
+            <div className="glass card" style={{ padding: 8, maxHeight: 360, overflow: 'auto' }}>
+              <b style={{ color: 'var(--ink-dim)' }}>● Inactive ({roster.inactive_count})</b>
+              <p className="muted" style={{ fontSize: 11, margin: '2px 0 6px' }}>No tracking this day</p>
+              {roster.inactive.length === 0 ? <div className="muted" style={{ fontSize: 12 }}>None — everyone tracked 🎉</div> :
+                roster.inactive.map(o => <div key={o.id} style={{ padding: '6px 0', borderBottom: '1px solid var(--stroke-soft)' }}>
+                  <b>{o.name}</b> <span className="muted" style={{ fontSize: 11 }}>{o.emp_code || ''}</span>
+                  <div className="muted" style={{ fontSize: 11 }}>🏢 {o.branch || o.location || '—'}{o.phone ? ' · 📞 ' + o.phone : ''}</div>
+                </div>)}
+            </div>
+          </div>}
+        </div>
+      </div>}
 
       {selVisit && <div className="modal-bg" onClick={() => setSelVisit(null)}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
         <div className="section-h"><h3>Visit — {selVisit.customer || '—'}</h3><button className="btn ghost sm" onClick={() => setSelVisit(null)}>✕</button></div>
@@ -1834,6 +1879,41 @@ function StaffView({ config, user }) {
 
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
 
+  // ---- Employee search (across everyone in scope) ----
+  const [q, setQ] = useState('');
+  const q0 = q.trim().toLowerCase();
+  const searchHits = q0 ? (users || []).filter(u =>
+    [u.name, u.emp_code, u.phone, u.email, u.role, u.branch, u.location, u.designation]
+      .some(v => String(v || '').toLowerCase().includes(q0))) : [];
+  const searchBox = <input className="input" style={{ maxWidth: 240 }} placeholder="🔍 Search employees…"
+    value={q} onChange={e => setQ(e.target.value)} />;
+  if (q0) {
+    return (
+      <div>
+        <div className="toolbar">
+          <input className="input" style={{ maxWidth: 240 }} autoFocus placeholder="🔍 Search employees…"
+            value={q} onChange={e => setQ(e.target.value)} />
+          <button className="btn ghost" onClick={() => setQ('')}>✕ Clear</button>
+          <div style={{ flex: 1 }} />
+          <span className="muted" style={{ fontSize: 12 }}>{searchHits.length} match{searchHits.length === 1 ? '' : 'es'}</span>
+        </div>
+        {!users ? <Loader /> : <div className="glass card" style={{ padding: 6 }}>
+          <div className="tablewrap"><table>
+            <thead><tr><th>Code</th><th>Name</th><th>Role</th><th>Branch</th><th>Location</th><th>Phone</th><th></th></tr></thead>
+            <tbody>{searchHits.map(u => <tr key={u.id}>
+              <td className="mono">{u.emp_code || '—'}</td>
+              <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDashUser({ id: u.id, name: u.name, role: u.role, branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>{u.name}</b>
+                {u.is_active === false && <span className="badge" style={{ marginLeft: 6 }}>inactive</span>}</td>
+              <td>{roleName(u.role)}</td><td className="muted">{u.branch || '—'}</td><td>{u.location || '—'}</td><td>{u.phone || '—'}</td>
+              <td style={{ whiteSpace: 'nowrap' }}><button className="btn sm" onClick={() => setDashUser({ id: u.id, name: u.name, role: u.role, branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>Performance</button> <ContactBtns phone={u.phone} /></td></tr>)}
+              {searchHits.length === 0 && <tr><td colSpan="7" className="muted" style={{ padding: 12 }}>No employees match “{q}”.</td></tr>}
+            </tbody></table></div>
+        </div>}
+        {dashUser && <EmployeeDashboard u={dashUser} config={config} onClose={() => setDashUser(null)} />}
+      </div>
+    );
+  }
+
   // ---- Admin / Head Office: branch grid ----
   if (seesAll && !openBranch) {
     return (
@@ -1841,6 +1921,7 @@ function StaffView({ config, user }) {
         <div className="toolbar">
           <div className={cx('chip', !fosMode && 'on')} onClick={() => setFosMode(false)}>🏢 Branches</div>
           <div className={cx('chip', fosMode && 'on')} onClick={() => setFosMode(true)}>🧭 Field Officers</div>
+          {searchBox}
           <div style={{ flex: 1 }} />
           {fosMode && <select className="input" style={{ maxWidth: 180, height: 34 }} value={fosLoc} onChange={e => setFosLoc(e.target.value)}>
             <option value="">All locations</option>{fosLocs.map(l => <option key={l} value={l}>{l}</option>)}</select>}
@@ -1909,6 +1990,7 @@ function StaffView({ config, user }) {
       <div className="toolbar">
         {seesAll && <button className="btn ghost" onClick={() => setOpenBranch(null)}>← Branches</button>}
         <h3 style={{ margin: 0 }}>{branchName}</h3><div style={{ flex: 1 }} />
+        {searchBox}
         <button className="btn" onClick={() => setShowChart(v => !v)}>📊 {showChart ? 'Hide analytics' : 'Analytics'}</button>
         <button className="btn" onClick={() => setShowReport(true)}>📅 Attendance</button>
         {isAdmin && branchName !== 'Unassigned' && <button className="btn" onClick={renameBranch} title="Rename this branch">✏ Rename</button>}
