@@ -69,9 +69,12 @@ def list_manpower(role: str | None = None, location: str | None = None, q: str |
     rows = query.order_by(models.User.name).all()
     out = [_emp(u) for u in rows]
     if q:
-        s = q.lower()
-        out = [e for e in out if s in (e["name"] or "").lower() or s in (e["emp_code"] or "").lower()
-               or s in (e["email"] or "").lower() or s in (e["phone"] or "")]
+        s = q.lower().strip()
+        def _hit(e):
+            return any(s in (str(e.get(k) or "")).lower() for k in
+                       ("name", "emp_code", "email", "phone", "designation",
+                        "location", "branch", "hr_ref", "role"))
+        out = [e for e in out if _hit(e)]
     return out
 
 
@@ -109,6 +112,59 @@ def download(role: str | None = None, location: str | None = None,
     return StreamingResponse(buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=SSDE_manpower.xlsx"})
+
+
+# Fields an HR user can set when adding an employee (mirrors the manpower sheet).
+_ADD_FIELDS = (
+    "phone", "designation", "location", "branch", "hr_ref", "gender", "blood_group",
+    "marital_status", "emergency_contact", "emergency_name", "emergency_relation",
+    "aadhar_number", "pan_number", "bank_holder", "bank_account", "ifsc_code", "bank_name",
+    "current_address", "aadhar_address", "employment_type", "photo_url", "ctc",
+)
+_STARTER_PASSWORD = "Ssd@2026"
+
+
+@router.post("")
+def add_employee(body: dict = Body(...), db: Session = Depends(get_db),
+                 user: models.User = Depends(require_roles("admin", "headoffice", "hr"))):
+    """Add a new employee to the directory with full HR details. Creates a login with a
+    starter password (they set their own on first sign-in) and a role-wise emp code."""
+    from ..security import hash_password
+    from .users import generate_emp_code
+    from datetime import datetime as _dt
+
+    name = (body.get("name") or "").strip()
+    email = (body.get("email") or "").strip().lower()
+    role = (body.get("role") or "").strip()
+    if not name or not email or not role:
+        raise HTTPException(status_code=400, detail="Name, login email and role are required")
+    if db.query(models.User).filter(models.User.email == email).first():
+        raise HTTPException(status_code=400, detail="That login email is already registered")
+
+    u = models.User(
+        name=name, email=email, role=role,
+        emp_code=generate_emp_code(db, role),
+        hashed_password=hash_password(body.get("password") or _STARTER_PASSWORD),
+        must_change_password=True, profile_completed=True, is_active=True,
+    )
+    for k in _ADD_FIELDS:
+        v = body.get(k)
+        if v not in (None, ""):
+            setattr(u, k, v)
+    for dk in ("dob", "joining_date"):
+        dv = body.get(dk)
+        if dv:
+            try:
+                setattr(u, dk, _dt.strptime(str(dv)[:10], "%Y-%m-%d").date())
+            except ValueError:
+                pass
+    db.add(u)
+    db.flush()
+    audit.record(db, user, "staff_create", None, entity_type="staff", target_user_id=u.id,
+                 detail=f"Added employee {name} ({role}) — {u.emp_code}")
+    db.commit()
+    db.refresh(u)
+    return _emp(u)
 
 
 @router.get("/me")

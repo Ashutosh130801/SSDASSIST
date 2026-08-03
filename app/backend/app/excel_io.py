@@ -111,10 +111,16 @@ HEADER_MAP = {
     "enr": "enr", "emios": "_emi_os", "emi0s": "_emi_os",
     "normstab": "norm_stab", "nstab": "norm_stab", "ns": "norm_stab",
     "caller": "_caller", "tcname": "_caller",
+    # Explicit employee-ID columns (the codes generated for staff, e.g. TC001/FO001/TL001).
+    "callerid": "_caller", "callercode": "_caller", "callerempid": "_caller",
+    "callerempcode": "_caller", "tcid": "_caller", "tccode": "_caller", "tcempid": "_caller",
     "fos": "_fos", "fosname": "_fos",
+    "fosid": "_fos", "foscode": "_fos", "fosempid": "_fos", "fosempcode": "_fos",
     "area": "_area", "aera": "_area",                       # AERA = common misspelling of AREA
     "team": "team_lead", "teamlead": "team_lead", "teamleadname": "team_lead",
     "teamleader": "team_lead", "tl": "team_lead", "tlname": "team_lead",
+    "teamleadid": "team_lead", "tlid": "team_lead", "teamleadcode": "team_lead",
+    "tlcode": "team_lead", "tlempid": "team_lead", "teamleadempid": "team_lead",
     "leadname": "team_lead", "reportingtl": "team_lead", "reportingmanager": "team_lead",
     "catallo": "cat", "cat": "cat", "category": "cat",
     "visits": "_visits", "visit": "_visits", "fosdispo": "_fosdispo",

@@ -4426,11 +4426,76 @@ function PaymentEditModal({ row, mode, onClose, onDone }) {
 }
 
 /* ============================== Manpower directory (HR / admin) ============================== */
+/* HR: add a new employee with the full manpower detail set. */
+function AddStaffModal({ roles, onClose, onDone }) {
+  const [f, setF] = useState({ role: 'telecaller', password: 'Ssd@2026' });
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const ROLE_OPTS = (roles && roles.length ? roles : ['manager', 'teamlead', 'telecaller', 'fos', 'headoffice', 'backend', 'hr', 'it', 'staff', 'admin']);
+  const field = (k, label, type = 'text') => (
+    <div className="field" key={k}><label>{label}</label>
+      <input className="input" type={type} value={f[k] || ''} onChange={e => set(k, e.target.value)} /></div>
+  );
+  const save = async () => {
+    if (!f.name || !f.email || !f.role) { setErr('Name, login email and role are required'); return; }
+    setBusy(true); setErr('');
+    try { await api('/api/manpower', { method: 'POST', body: f }); toast('Staff added.'); onDone(); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 700 }}>
+        <div className="section-h"><h3>Add staff</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+          A login is created with starter password <b>{f.password || 'Ssd@2026'}</b>; they set their own on first sign-in.
+          A role-wise employee code is generated automatically.
+        </p>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          {field('name', 'Full name *')}
+          {field('email', 'Login email *', 'email')}
+          <div className="field"><label>Role *</label>
+            <select className="input" value={f.role} onChange={e => set('role', e.target.value)}>
+              {ROLE_OPTS.map(r => <option key={r} value={r}>{roleName(r)}</option>)}</select></div>
+          {field('designation', 'Designation')}
+          {field('phone', 'Phone')}
+          {field('location', 'Location')}
+          {field('branch', 'Branch')}
+          {field('hr_ref', 'HR ref (SSD ID)')}
+          {field('gender', 'Gender')}
+          {field('dob', 'Date of birth', 'date')}
+          {field('joining_date', 'Date of joining', 'date')}
+          {field('blood_group', 'Blood group')}
+          {field('marital_status', 'Marital status')}
+          {field('emergency_name', 'Emergency contact name')}
+          {field('emergency_contact', 'Emergency contact no.')}
+          {field('emergency_relation', 'Relation')}
+          {field('aadhar_number', 'Aadhaar number')}
+          {field('pan_number', 'PAN')}
+          {field('bank_holder', 'Bank a/c holder')}
+          {field('bank_account', 'Bank account no.')}
+          {field('ifsc_code', 'IFSC')}
+          {field('bank_name', 'Bank name')}
+          {field('employment_type', 'Employment type')}
+          {field('password', 'Starter password')}
+        </div>
+        <div className="field"><label>Current address</label>
+          <textarea className="input" value={f.current_address || ''} onChange={e => set('current_address', e.target.value)} /></div>
+        {err && <div style={{ color: 'var(--bad)', fontSize: 13, margin: '6px 0' }}>{err}</div>}
+        <div className="toolbar" style={{ marginTop: 8 }}>
+          <button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
+          <button className="btn gold" disabled={busy} onClick={save}>{busy ? 'Adding…' : 'Add staff'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function ManpowerView({ user }) {
   const [opts, setOpts] = useState({ roles: [], locations: [] });
   const [rows, setRows] = useState(null);
   const [f, setF] = useState({ role: '', location: '', q: '' });
   const [sel, setSel] = useState(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const canAdd = ['admin', 'headoffice', 'hr'].includes(user.role);
   useEffect(() => { api('/api/manpower/filters').then(setOpts).catch(() => {}); }, []);
   const load = useCallback(() => {
     const p = new URLSearchParams(); if (f.role) p.set('role', f.role); if (f.location) p.set('location', f.location); if (f.q) p.set('q', f.q);
@@ -4446,15 +4511,17 @@ function ManpowerView({ user }) {
         <span className="muted" style={{ fontSize: 13 }}>{rows ? `${rows.length} employees` : '…'}</span></div>
       <div className="glass card" style={{ padding: 10, marginBottom: 12 }}>
         <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <input className="input" style={{ maxWidth: 220 }} placeholder="Search name / code / phone" value={f.q} onChange={e => set('q', e.target.value)} />
+          <input className="input" style={{ maxWidth: 240 }} placeholder="🔍 Search name, code, phone, designation…" value={f.q} onChange={e => set('q', e.target.value)} />
           <select className="input" style={selStyle} value={f.role} onChange={e => set('role', e.target.value)}>
             <option value="">All roles</option>{opts.roles.map(r => <option key={r} value={r}>{roleName(r)}</option>)}</select>
           <select className="input" style={selStyle} value={f.location} onChange={e => set('location', e.target.value)}>
             <option value="">All locations</option>{opts.locations.map(l => <option key={l} value={l}>{l}</option>)}</select>
           <div style={{ flex: 1 }} />
+          {canAdd && <button className="btn" onClick={() => setAddOpen(true)}>➕ Add staff</button>}
           <button className="btn gold" onClick={dl}>⬇ Download Excel</button>
         </div>
       </div>
+      {addOpen && <AddStaffModal roles={opts.roles} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); }} />}
       {!rows ? <Loader /> : rows.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No employees match.</div> : (
         <div className="glass card" style={{ padding: 6 }}>
           <div className="tablewrap"><table>

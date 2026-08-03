@@ -99,6 +99,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     # (emp_code, e.g. TC001) generated at profile creation. Fall back to matching by name
     # for older sheets. When matched we also normalise caller_name to the real name (MIS).
     _users = db.query(models.User).all()
+    _by_id = {u.id: u for u in _users}
     _by_code = {u.emp_code.strip().upper(): u for u in _users if u.emp_code}
     _by_name = {u.name.strip().upper(): u for u in _users if u.name}
     # FOS is resolved the same way as caller — straight from the sheet's FOS column
@@ -109,6 +110,12 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     _caller_cands = [(u.name.strip().upper(), u) for u in _users
                      if u.name and u.role in ("telecaller", "teamlead")]
     _fos_cands = [(u.name.strip().upper(), u) for u in _users if u.name and u.role == "fos"]
+    # Team lead is resolved from the sheet's TEAM LEAD ID column (its emp code, e.g. TL001,
+    # or the TL's name). The resolved TL is stamped on the case and the case's caller + FOS
+    # are linked to report to that team lead (so it shows in the team lead's scope).
+    _tl_by_code = {u.emp_code.strip().upper(): u for u in _users if u.emp_code and u.role == "teamlead"}
+    _tl_by_name = {u.name.strip().upper(): u for u in _users if u.name and u.role == "teamlead"}
+    _tl_cands = [(u.name.strip().upper(), u) for u in _users if u.name and u.role == "teamlead"]
 
     def _match(val, by_code, by_name, candidates):
         """Resolve one CALLER/FOS cell to a person and say WHY if it can't.
@@ -140,11 +147,26 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     def _match_fos(val):
         return _match(val, _fos_by_code, _fos_by_name, _fos_cands)
 
+    def _match_teamlead(val):
+        return _match(val, _tl_by_code, _tl_by_name, _tl_cands)
+
     def _resolve_caller(val):
         return _match_caller(val)[0]
 
     def _resolve_fos(val):
         return _match_fos(val)[0]
+
+    def _apply_teamlead(case_obj, cu, fu):
+        """Stamp the resolved team lead on the case and point its caller + FOS at that TL
+        so the team lead sees these cases in their scope. Returns True if a TL was applied."""
+        tl = _match_teamlead(case_obj.team_lead)[0]
+        if not tl:
+            return False
+        case_obj.team_lead = tl.name
+        for person in (cu, fu):
+            if person and getattr(person, "team_lead_id", None) != tl.id:
+                person.team_lead_id = tl.id
+        return True
 
     # Per-row diagnostics: rows whose CALLER/FOS was named on the sheet but didn't map to
     # anyone (typo, person not created yet, or an ambiguous partial name). Blanks are counted
@@ -207,6 +229,9 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                     existing.branch = fu.branch
             elif not existing.assigned_fos_id:
                 _flag(kwargs, "fos", _rawf, _fr)
+            # Team lead: stamp on the case + link its caller/FOS to that TL.
+            _apply_teamlead(existing, cu or _by_id.get(existing.assigned_caller_id),
+                            fu or _by_id.get(existing.assigned_fos_id))
             if default_bank:
                 existing.bank = default_bank
             if product:
@@ -245,6 +270,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             _flag(kwargs, "fos", _rawf, _fr)
         kwargs["import_batch_id"] = batch.id
         new_case = models.Case(**kwargs)
+        _apply_teamlead(new_case, cu, fu)     # stamp TL + link caller/FOS to that team lead
         _apply_period(new_case, rec)
         db.add(new_case)
         imported += 1
