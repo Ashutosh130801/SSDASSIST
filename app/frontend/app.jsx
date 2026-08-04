@@ -4436,10 +4436,17 @@ function SheetView({ user, config }) {
 
   // KPI strip (computed live from the visible data)
   const today = new Date().toISOString().slice(0, 10);
-  const contacted = rows.filter(r => (r.last_contacted_at || '').slice(0, 10) === today).length;
-  const ptp = rows.filter(r => r.disposition === 'PTP' || r.status === 'ptp').length;
-  const collected = rows.reduce((s, r) => s + Number(r.received_amount || 0), 0);
-  const pending = rows.reduce((s, r) => s + Number(r.pending_amount || 0), 0);
+  // KPIs follow the current view: a selected bank/product shows THAT portfolio's totals; with
+  // "all" selected they show the overall figures. (viewRows applies the bank/product filters.)
+  const kpiRows = viewRows();
+  const contacted = kpiRows.filter(r => (r.last_contacted_at || '').slice(0, 10) === today).length;
+  const ptp = kpiRows.filter(r => r.disposition === 'PTP' || r.status === 'ptp').length;
+  const collected = kpiRows.reduce((s, r) => s + Number(r.received_amount || 0), 0);
+  const pending = kpiRows.reduce((s, r) => {
+    const base = Number(r.funding_amount) > 0 ? Number(r.funding_amount)
+      : (Number(r.total_outstanding) > 0 ? Number(r.total_outstanding) : (Number(r.enr) || 0));
+    return s + Math.max(0, base - (Number(r.received_amount) || 0));
+  }, 0);
   const cols = visibleCols();
 
   return (
@@ -4471,11 +4478,13 @@ function SheetView({ user, config }) {
         @media(max-width:720px){.sv-kpis{grid-template-columns:repeat(2,1fr)}}
       `}</style>
 
-      <div className="sv-kpis">
+      <div className="sv-kpis" style={{ position: 'relative' }}>
         <div className="sv-kpi"><b>{contacted}</b><span>Contacted today</span></div>
         <div className="sv-kpi"><b>{ptp}</b><span>Active PTP</span></div>
         <div className="sv-kpi"><b>₹{sheetFmt(collected)}</b><span>Collected</span></div>
         <div className="sv-kpi"><b>₹{sheetFmt(pending)}</b><span>Pending</span></div>
+        <div style={{ alignSelf: 'center', marginLeft: 'auto', fontSize: 11.5, color: 'var(--ink-dim)' }}>
+          {(bankF || prodF) ? `Totals for ${[bankF, prodF].filter(Boolean).join(' · ')}` : 'Totals across all portfolios'}</div>
       </div>
 
       <div className="sv-bar" style={{ position: 'relative' }}>
