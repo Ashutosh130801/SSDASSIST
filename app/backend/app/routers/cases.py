@@ -571,8 +571,9 @@ def record_payment(case_id: int, body: PaymentIn, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="Amount must be greater than zero")
 
     case.received_amount = (Decimal(case.received_amount or 0) + amt)
-    case.pending_amount = (Decimal(case.funding_amount or 0) - Decimal(case.received_amount or 0))
-    if case.pending_amount <= 0:
+    pend = _pay_base_total(case) - Decimal(case.received_amount or 0)
+    case.pending_amount = pend if pend > 0 else Decimal(0)
+    if pend <= 0:
         case.paid_status = "PAID"
         case.status = "paid"
         case.follow_up_date = None
@@ -608,9 +609,15 @@ class MarkPaidIn(BaseModel):
 
 
 def _pay_base_total(case) -> Decimal:
-    """The full amount the case is worth (funding for CC loads, else ENR/TOS)."""
+    """The full amount the case is worth. Funding-load sheets carry a FUNDING AMOUNT; the CC
+    and PL/BL sheets don't, so fall back to Total Outstanding (TOS), then ENR."""
     f = Decimal(case.funding_amount or 0)
-    return f if f > 0 else Decimal(case.enr or 0)
+    if f > 0:
+        return f
+    tos = Decimal(case.total_outstanding or 0)
+    if tos > 0:
+        return tos
+    return Decimal(case.enr or 0)
 
 
 @router.get("/{case_id}/pay-state")

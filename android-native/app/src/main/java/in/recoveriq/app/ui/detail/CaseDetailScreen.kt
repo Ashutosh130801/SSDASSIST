@@ -191,10 +191,14 @@ private fun CaseHeader(case: Case) {
             StatusChip(case.status)
         }
         Spacer(Modifier.height(12.dp))
+        // CC & PL/BL sheets have no FUNDING AMOUNT, so base pending on TOS (then ENR) — never negative.
+        val payBase = if (case.fundingAmount > 0) case.fundingAmount
+            else if (case.totalOutstanding > 0) case.totalOutstanding else case.enr
+        val pend = (payBase - case.receivedAmount).coerceAtLeast(0.0)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Amount("Pending", case.pendingAmount, BrandBlue)
+            Amount("Pending", pend, BrandBlue)
             Amount("Received", case.receivedAmount, Good)
-            Amount("Total", case.totalOutstanding, Muted)
+            Amount(if (case.fundingAmount > 0) "Funded" else "Outstanding", payBase, Muted)
         }
         if (case.propensity != null) {
             Spacer(Modifier.height(8.dp))
@@ -301,9 +305,11 @@ private fun DetailFields(case: Case) {
         Field("Total outstanding", money(case.totalOutstanding))
         Field("Principal", money(case.principalOutstanding))
         Field("Min due", money(case.minAmountDue))
-        Field("Funding target", money(case.fundingAmount))
+        if (case.fundingAmount > 0) Field("Funding target", money(case.fundingAmount))
         Field("Received", money(case.receivedAmount))
-        Field("Pending", money(case.pendingAmount))
+        val base = if (case.fundingAmount > 0) case.fundingAmount
+            else if (case.totalOutstanding > 0) case.totalOutstanding else case.enr
+        Field("Pending", money((base - case.receivedAmount).coerceAtLeast(0.0)))
     }
     SectionTitle("Recovery (MIS)")
     InfoCard {

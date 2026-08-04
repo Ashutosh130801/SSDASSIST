@@ -2814,11 +2814,20 @@ function CaseDrawer({ c, onClose, onChanged }) {
           <StatusBadge s={cur.status} /><PaidBadge s={cur.paid_status} /><PropBadge score={cur.propensity} />
           {cur.escalated && <span className="badge" style={{ background: 'rgba(220,38,38,.15)', color: 'var(--bad)' }}>Escalated</span>}
         </div>
-        <div className="kpi3">
-          <div className="b"><div className="l">Funded</div><div className="v">{INR(cur.funding_amount)}</div></div>
-          <div className="b"><div className="l">Received</div><div className="v" style={{ color: 'var(--good)' }}>{INR(cur.received_amount)}</div></div>
-          <div className="b"><div className="l">Pending</div><div className="v" style={{ color: 'var(--warn)' }}>{INR(cur.pending_amount)}</div></div>
-        </div>
+        {(() => {
+          // Funding-load sheets carry a FUNDING AMOUNT; CC & PL/BL sheets don't, so use Total
+          // Outstanding (TOS) — then ENR — as the base, and derive Pending from it (never negative).
+          const base = Number(cur.funding_amount) > 0 ? Number(cur.funding_amount)
+            : (Number(cur.total_outstanding) > 0 ? Number(cur.total_outstanding) : (Number(cur.enr) || 0));
+          const recv = Number(cur.received_amount) || 0;
+          const pend = Math.max(0, base - recv);
+          const label = Number(cur.funding_amount) > 0 ? 'Funded' : 'Outstanding';
+          return <div className="kpi3">
+            <div className="b"><div className="l">{label}</div><div className="v">{INR(base)}</div></div>
+            <div className="b"><div className="l">Received</div><div className="v" style={{ color: 'var(--good)' }}>{INR(recv)}</div></div>
+            <div className="b"><div className="l">Pending</div><div className="v" style={{ color: 'var(--warn)' }}>{INR(pend)}</div></div>
+          </div>;
+        })()}
         <div className="divider"></div>
         <div className="section-h"><h3 style={{ fontSize: 14 }}>Account details</h3></div>
         <div className="dl">
