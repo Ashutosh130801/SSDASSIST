@@ -5,3 +5,7 @@ SSDE_login_credentials.xlsx
 SSDE_ALL_LOGINS.xlsx
 app/backend/.env
 app/backend/*.db
+
+# Training QA scratch (safe to delete the _qa folder)
+_qa/
+RecoverIQ_Staff_Training.pdf

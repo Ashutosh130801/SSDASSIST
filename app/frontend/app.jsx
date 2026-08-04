@@ -69,6 +69,11 @@ const toMs = (iso) => {
   return new Date(s).getTime();
 };
 const toDate = (iso) => new Date(toMs(iso));
+// Always display timestamps in India Standard Time, regardless of the viewer's device zone.
+const IST_TZ = 'Asia/Kolkata';
+const fmtDT = (iso) => { const d = toDate(iso); return isNaN(d.getTime()) ? '' : d.toLocaleString('en-IN', { timeZone: IST_TZ, day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+const fmtHM = (iso) => { const d = toDate(iso); return isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('en-IN', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit' }); };
+const fmtDay = (iso) => { const d = toDate(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-IN', { timeZone: IST_TZ, day: '2-digit', month: 'short', year: 'numeric' }); };
 
 // Field-officer presence: "live" if their app pinged within the last 3 minutes.
 // "live" if a ping arrived within the last 12s (~3-4 of the 3s refresh cycles). Using a single
@@ -325,10 +330,10 @@ function drawRouteLeaflet(gmap, pts, opts) {
   out.points = P; out.path = P.map(p => [p.lat, p.lng]);
   const GAP = 150 * 1000;   // pings more than 2.5 min apart = the officer was offline
   const popupHtml = (p) => {
-    const d = new Date(p.t);
+    const d = toDate(p.t);
     return '<div style="font-family:sans-serif;font-size:12.5px;color:#111;line-height:1.5">'
-      + '<b>' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '</b><br>'
-      + d.toLocaleDateString('en-IN') + '<br>' + p.lat.toFixed(6) + ', ' + p.lng.toFixed(6) + '</div>';
+      + '<b>' + d.toLocaleTimeString('en-IN', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '</b><br>'
+      + d.toLocaleDateString('en-IN', { timeZone: IST_TZ }) + '<br>' + p.lat.toFixed(6) + ', ' + p.lng.toFixed(6) + '</div>';
   };
   let run = [P[0]];
   const flush = () => {
@@ -413,7 +418,7 @@ async function stampPhoto(file, coords, address) {
     ctx.drawImage(src, 0, 0, cw, ch);
     const now = new Date();
     const lines = [
-      now.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      now.toLocaleString('en-IN', { timeZone: IST_TZ, day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
       coords ? `Lat ${coords.latitude.toFixed(6)}, Lng ${coords.longitude.toFixed(6)}${coords.accuracy ? ` (±${Math.round(coords.accuracy)}m)` : ''}` : 'GPS: not available',
     ];
     if (address) lines.push(String(address).replace(/\s+/g, ' ').slice(0, 64));
@@ -781,6 +786,73 @@ function AddProductModal({ presetBank, onClose, onAdded }) {
   );
 }
 
+/* DPR bulk update — upload a bank's Daily Payment Report for one portfolio, auto-detect
+   columns, preview the paid/unpaid changes, then confirm to apply them. */
+function DprModal({ onClose, onDone }) {
+  const [cat, setCat] = useState(null);
+  const [bank, setBank] = useState(''); const [product, setProduct] = useState('');
+  const [file, setFile] = useState(null);
+  const [prev, setPrev] = useState(null); const [res, setRes] = useState(null);
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  useEffect(() => { api('/api/config').then(c => setCat(c.bank_products)).catch(() => {}); }, []);
+  const products = (cat && bank && cat.products[bank]) || [];
+  const form = () => { const f = new FormData(); f.append('file', file); f.append('default_bank', bank); f.append('product', product); return f; };
+  const changes = prev ? (prev.counts.mark_paid + prev.counts.mark_unpaid) : 0;
+  const doPreview = async () => {
+    if (!file || !bank || !product) return; setErr(''); setBusy(true); setRes(null);
+    try { setPrev(await api('/api/dpr/preview', { method: 'POST', form: form() })); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const doCommit = async () => {
+    setErr(''); setBusy(true);
+    try { const r = await api('/api/dpr/commit', { method: 'POST', form: form() }); setRes(r);
+      toast(`DPR applied — ${r.paid} paid, ${r.unpaid} reversed.`); onDone && onDone();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const badge = (a) => ({ mark_paid: ['✓ Mark paid', 'var(--good)'], mark_unpaid: ['↩ Reverse (unpaid)', 'var(--warn)'], already_paid: ['• Already paid', 'var(--ink-dim)'], unmatched: ['⚠ Unmatched', 'var(--bad)'] }[a] || [a, '']);
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 720 }}>
+        <div className="section-h"><h3>🏦 DPR bulk update</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>Upload a bank's DPR for one portfolio. We auto-detect the account/loan number, amount, status and NORM/STAB columns, match each row to a case, and show a preview before anything changes.</p>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="field"><label>Bank</label>
+            <select className="input" value={bank} onChange={e => { setBank(e.target.value); setProduct(''); setPrev(null); }}>
+              <option value="">— select —</option>{(cat ? cat.banks : []).map(b => <option key={b} value={b}>{b}</option>)}</select></div>
+          <div className="field"><label>Product</label>
+            <select className="input" value={product} onChange={e => { setProduct(e.target.value); setPrev(null); }} disabled={!bank}>
+              <option value="">— select —</option>{products.map(pp => <option key={pp} value={pp}>{pp}</option>)}</select></div>
+        </div>
+        <div className="field"><label>DPR file (.xlsx)</label>
+          <input className="input" type="file" accept=".xlsx,.xls" onChange={e => { setFile(e.target.files[0]); setPrev(null); setRes(null); }} /></div>
+        {err && <div style={{ color: 'var(--bad)', fontSize: 13, marginBottom: 8 }}>{err}</div>}
+        {!res && <div className="toolbar">
+          <button className="btn" onClick={doPreview} disabled={!file || !bank || !product || busy}>{busy && !prev ? 'Reading…' : (prev ? 'Re-preview' : 'Preview')}</button>
+          {prev && <button className="btn gold" onClick={doCommit} disabled={busy || changes === 0}>{busy ? 'Applying…' : `Confirm & apply (${changes} change${changes === 1 ? '' : 's'})`}</button>}
+        </div>}
+        {prev && !res && <div className="glass card" style={{ marginTop: 8 }}>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 13, marginBottom: 6 }}>
+            <span><b style={{ color: 'var(--good)' }}>{prev.counts.mark_paid}</b> to mark paid</span>
+            <span><b style={{ color: 'var(--warn)' }}>{prev.counts.mark_unpaid}</b> to reverse</span>
+            <span><b style={{ color: 'var(--ink-dim)' }}>{prev.counts.already_paid}</b> already paid</span>
+            <span><b style={{ color: 'var(--bad)' }}>{prev.counts.unmatched}</b> unmatched</span>
+          </div>
+          <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>Detected → key: {prev.detected.keys.join(', ') || '—'} · amount: {prev.detected.amount || '—'} · status: {prev.detected.status || '—'} · norm/stab: {prev.detected.ns || '—'}</div>
+          <div className="tablewrap" style={{ maxHeight: 260, overflow: 'auto' }}><table>
+            <thead><tr><th>Action</th><th>Key</th><th>Customer</th><th>Amount</th><th>NORM/STAB</th></tr></thead>
+            <tbody>{prev.rows.map((r, i) => { const [lbl, col] = badge(r.action); return <tr key={i}>
+              <td style={{ color: col, whiteSpace: 'nowrap' }}>{lbl}</td>
+              <td className="mono">{r.key || '—'}</td><td>{r.customer || r.name || '—'}</td>
+              <td className="mono">{r.amount ? INR2(r.amount) : '—'}</td><td>{r.norm_stab || '—'}</td></tr>; })}</tbody></table></div>
+          {prev.capped && <div className="muted" style={{ fontSize: 11 }}>Showing the first 500 rows.</div>}
+        </div>}
+        {res && <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid var(--good)' }}>
+          <b>Done.</b> <span className="muted" style={{ fontSize: 13 }}>{res.paid} marked paid · {res.unpaid} reversed · {res.already_paid} already paid · {res.unmatched} unmatched (of {res.total} rows).</span>
+          <div className="toolbar" style={{ marginTop: 8 }}><button className="btn" onClick={onClose}>Close</button></div></div>}
+      </div>
+    </div>
+  );
+}
 function UploadModal({ onClose, onDone }) {
   const [cat, setCat] = useState(null);
   const now = new Date();
@@ -962,6 +1034,8 @@ function ReassignModal({ ids, onClose, onDone }) {
 
 function CasesView({ user }) {
   const canUpload = user.role === 'admin' || user.role === 'backend' || user.role === 'headoffice';
+  const canDpr = ['admin', 'headoffice', 'backend', 'manager'].includes(user.role);
+  const [dprOpen, setDprOpen] = useState(false);
   const canReassign = ['admin', 'manager', 'teamlead', 'headoffice'].includes(user.role);
   const [reassignOpen, setReassignOpen] = useState(false);
   const isAdmin = user.role === 'admin';
@@ -1052,6 +1126,7 @@ function CasesView({ user }) {
         <div className={cx('chip', mode === 'list' && 'on')} onClick={() => setMode('list')}>📋 All cases (Excel)</div>
         {isHO && <div className={cx('chip', mode === 'removed' && 'on')} onClick={() => setMode('removed')}>🗑 Removed cases</div>}
         <div style={{ flex: 1 }} />
+        {canDpr && <button className="btn" onClick={() => setDprOpen(true)} title="Bulk mark paid/unpaid from a bank DPR file">🏦 DPR update</button>}
         {canUpload && <button className="btn gold" onClick={() => setUpload(true)}>⬆ Upload</button>}
         {isAdmin && <>
           <button className="btn" onClick={allocate} disabled={busy}>⚡ Auto-allocate</button>
@@ -1087,7 +1162,7 @@ function CasesView({ user }) {
                     <td><b>{c.customer_name || '—'}</b></td><td>{c.bank}</td><td>{c.product || '—'}</td>
                     <td className="mono">{c.account_no || c.card_no || '—'}</td>
                     <td className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</td>
-                    <td className="muted" style={{ fontSize: 12 }}>{c.removed_at ? new Date(c.removed_at).toLocaleString() : '—'}</td>
+                    <td className="muted" style={{ fontSize: 12 }}>{c.removed_at ? fmtDT(c.removed_at) : '—'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       <button className="btn sm" onClick={() => doRestore([c.id])}>Restore</button>{' '}
                       <button className="btn sm" style={{ color: 'var(--bad)' }} onClick={() => doPurge([c.id])}>Purge</button></td></tr>)}
@@ -1156,6 +1231,7 @@ function CasesView({ user }) {
         )}
       </>)}
       {upload && <UploadModal onClose={() => setUpload(false)} onDone={(shouldClose = true) => { load(); if (shouldClose) setUpload(false); }} />}
+      {dprOpen && <DprModal onClose={() => setDprOpen(false)} onDone={() => { load(); loadSummary(); }} />}
       {campaign && <CampaignModal cases={cases || []} onClose={() => setCampaign(false)} />}
       {delOpen && <div className="modal-bg" onClick={() => setDelOpen(false)}>
         <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
@@ -1205,7 +1281,7 @@ function LiveMap({ config }) {
     api('/api/tracking/roster' + (d ? '?date=' + d : '')).then(setRoster).catch(() => setRoster({ active: [], inactive: [], active_count: 0, inactive_count: 0, total: 0, error: true }));
   }, []);
   const openRoster = () => { setRosterDate(''); setRosterOpen(true); loadRoster(''); };
-  const fmtT = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+  const fmtT = (iso) => fmtHM(iso);
 
   const refresh = useCallback(async () => {
     try {
@@ -2710,6 +2786,15 @@ function CaseDrawer({ c, onClose, onChanged }) {
       await refresh(); onChanged && onChanged();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
+  const canUndo = ['admin', 'headoffice', 'manager', 'backend', 'telecaller', 'teamlead'].includes(meRole);
+  const undoLast = async () => {
+    if (!window.confirm('Undo the last change on this case? This reverses the most recent payment, or restores the last edited field.')) return;
+    setBusy(true);
+    try {
+      const updated = await api(`/api/cases/${c.id}/undo`, { method: 'POST' });
+      setCur(updated); toast('Last change undone.'); await refresh(); onChanged && onChanged();
+    } catch (e) { toast(e.message || 'Nothing to undo', 'err'); } finally { setBusy(false); }
+  };
   const row = (k, v) => <React.Fragment key={k}><div className="dt">{k}</div><div className="dd">{v || '—'}</div></React.Fragment>;
   return (
     <div className="drawer-bg" onClick={onClose}>
@@ -2725,6 +2810,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
           {showCallFos && <a className="btn sm" href={'tel:' + cur.assigned_fos_phone} title={'Call the assigned field agent: ' + (cur.assigned_fos_name || '')}>🧑‍🔧 Call FOS</a>}
           {showCallCaller && <a className="btn sm" href={'tel:' + cur.assigned_caller_phone} title={'Call the assigned caller: ' + (cur.assigned_caller_name || '')}>☎️ Call caller</a>}
           {canEscalate && <button className="btn sm" disabled={busy} onClick={escalate} title={cur.escalated ? 'Return to the FOS/caller pool' : 'Pull off the FOS/caller and own it (stays in MIS & feedback)'}>{cur.escalated ? '↩ Release' : '🚩 Escalate to me'}</button>}
+          {canUndo && <button className="btn sm" disabled={busy} onClick={undoLast} title="Reverse the last payment, or restore the last edited field on this case">↶ Undo last</button>}
           <StatusBadge s={cur.status} /><PaidBadge s={cur.paid_status} /><PropBadge score={cur.propensity} />
           {cur.escalated && <span className="badge" style={{ background: 'rgba(220,38,38,.15)', color: 'var(--bad)' }}>Escalated</span>}
         </div>
@@ -2753,14 +2839,14 @@ function CaseDrawer({ c, onClose, onChanged }) {
             `${Number(cur.norm_amount) ? 'NORM ' + INR(cur.norm_amount) : ''}${Number(cur.stab_amount) ? '  ·  STAB ' + INR(cur.stab_amount) : ''}${cur.norm_stab ? '  ·  paid: ' + cur.norm_stab : ''}`.trim() || '—')}
           {row('Cash collected', Number(cur.received_amount) ? INR(cur.received_amount) : null)}
           {row('Last disposition', cur.disposition)}
-          {row('Last contacted', cur.last_contacted_at ? new Date(cur.last_contacted_at).toLocaleString() : null)}
+          {row('Last contacted', cur.last_contacted_at ? fmtDT(cur.last_contacted_at) : null)}
           {row('Next follow-up', cur.follow_up_date)}
           {row('Remarks', cur.remarks)}
         </div>
         {(cur.new_phone || cur.new_address) && <div className="glass card" style={{ borderLeft: '3px solid var(--gold)', margin: '10px 0' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
             <b>🆕 Latest customer contact</b>
-            <span className="muted" style={{ fontSize: 11 }}>{cur.new_contact_by ? 'by ' + cur.new_contact_by : ''}{cur.new_contact_at ? ' · ' + new Date(cur.new_contact_at).toLocaleString() : ''}</span>
+            <span className="muted" style={{ fontSize: 11 }}>{cur.new_contact_by ? 'by ' + cur.new_contact_by : ''}{cur.new_contact_at ? ' · ' + fmtDT(cur.new_contact_at) : ''}</span>
           </div>
           {cur.new_phone && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span>📞 <b>{cur.new_phone}</b></span>
@@ -2850,7 +2936,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600, fontSize: 13.5 }}>{h.title}{Number(h.amount) > 0 ? ` · ${INR(h.amount)}` : ''}</div>
                 {h.detail && <div className="muted" style={{ fontSize: 12.5 }}>{h.detail}</div>}
-                <div className="muted" style={{ fontSize: 11.5 }}>{h.by ? `by ${h.by} · ` : ''}{h.at ? toDate(h.at).toLocaleString() : ''}
+                <div className="muted" style={{ fontSize: 11.5 }}>{h.by ? `by ${h.by} · ` : ''}{h.at ? fmtDT(h.at) : ''}
                   {h.photo && <a href={h.photo} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📷 photo</a>}
                   {h.lat && <a href={`https://maps.google.com/?q=${h.lat},${h.lng}`} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📍 map</a>}
                   {h.ptp_date && <span style={{ marginLeft: 6, color: 'var(--gold-2)' }}>PTP {String(h.ptp_date).slice(0, 10)}</span>}</div>
@@ -3060,7 +3146,7 @@ function RecordsView({ user }) {
             <thead><tr><th></th><th>When</th><th>Customer</th><th>Bank</th><th>Product</th><th>Area</th><th>Branch</th><th>By</th><th>Detail</th><th>Amount</th><th></th></tr></thead>
             <tbody>{shown.map((r, i) => <tr key={i} style={r.off_location ? { background: 'rgba(240,119,107,.08)' } : null}>
               <td>{icon(r.type)}</td>
-              <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{toDate(r.at).toLocaleString()}</td>
+              <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{fmtDT(r.at)}</td>
               <td><b>{r.customer || '—'}</b></td><td>{r.bank || '—'}</td>
               <td className="muted">{r.product || '—'}</td><td className="muted">{r.area || '—'}</td><td className="muted">{r.branch || '—'}</td>
               <td>{r.by || '—'}</td>
@@ -3087,7 +3173,7 @@ function AuditLogView({ user }) {
   const [opts, setOpts] = useState({ branches: [], banks: [], products: [], actions: [], roles: [], employees: [] });
   const [data, setData] = useState(null);
   const [f, setF] = useState({ role: '', emp: '', action: '', branch: '', bank: '', product: '', days: '', q: '' });
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(false); const [logSel, setLogSel] = useState(null);
   useEffect(() => { api('/api/audit/filters').then(setOpts).catch(() => {}); }, []);
   const load = useCallback(() => {
     setBusy(true);
@@ -3101,7 +3187,7 @@ function AuditLogView({ user }) {
   const reset = () => setF({ role: '', emp: '', action: '', branch: '', bank: '', product: '', days: '', q: '' });
   const active = Object.values(f).filter(Boolean).length;
   const sel = { minWidth: 120, maxWidth: 190, height: 34, padding: '0 8px', fontSize: 13 };
-  const when = (t) => { const d = new Date(t); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
+  const when = (t) => fmtDT(t);
   const items = (data && data.items) || [];
   return (
     <div>
@@ -3132,7 +3218,7 @@ function AuditLogView({ user }) {
         <div className="glass card" style={{ padding: 6 }}>
           <div className="tablewrap"><table>
             <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Case</th><th>Field</th><th>Change</th><th>Detail</th><th>Branch</th></tr></thead>
-            <tbody>{items.map(r => <tr key={r.id}>
+            <tbody>{items.map(r => <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => setLogSel(r)} title="Open full log & case details">
               <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{when(r.at)}</td>
               <td><b>{r.actor || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{r.role}</div></td>
               <td style={{ whiteSpace: 'nowrap' }}>{AUDIT_ICON[r.action] || '•'} {r.action}</td>
@@ -3145,6 +3231,52 @@ function AuditLogView({ user }) {
           {data.total > items.length && <p className="muted" style={{ padding: '8px 12px', fontSize: 12 }}>Showing latest {items.length} of {data.total}. Narrow with filters to see older entries.</p>}
         </div>
       )}
+      {logSel && <AuditDetailModal row={logSel} onClose={() => setLogSel(null)} />}
+    </div>
+  );
+}
+
+/* Popup for one audit entry — who did what & when, plus the linked case's details. */
+function AuditDetailModal({ row, onClose }) {
+  const [c, setC] = useState(null); const [err, setErr] = useState('');
+  useEffect(() => {
+    if (row.case_id) api('/api/cases/' + row.case_id).then(setC)
+      .catch(() => setErr('Case details unavailable (it may be closed or removed).'));
+  }, [row.case_id]);
+  const money = v => v == null || v === '' ? '—' : '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const line = (k, v) => <div className="stat-row"><span className="k">{k}</span><b>{v == null || v === '' ? '—' : v}</b></div>;
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+        <div className="section-h"><h3>{AUDIT_ICON[row.action] || '•'} {row.action} — log detail</h3>
+          <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <div className="glass card" style={{ padding: 12, marginBottom: 10 }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Who &amp; when</div>
+          {line('Done by', (row.actor || '—') + (row.role ? ' · ' + roleName(row.role) : ''))}
+          {line('When (IST)', fmtDT(row.at))}
+          {line('Action', row.action)}
+          {row.field && line('Field', row.field)}
+          {(row.old || row.new) && <div className="stat-row"><span className="k">Change</span>
+            <b><span className="muted">{row.old ?? '∅'}</span> → {row.new ?? '∅'}</b></div>}
+          {row.detail && line('Detail', row.detail)}
+          {row.branch && line('Branch', row.branch)}
+          {(row.bank || row.product) && line('Portfolio', [row.bank, row.product].filter(Boolean).join(' · '))}
+        </div>
+        {row.case_id && <div className="glass card" style={{ padding: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Case #{row.case_id}</div>
+          {err ? <div className="muted" style={{ fontSize: 12.5 }}>{err}</div> : !c ? <Loader /> : <>
+            {line('Customer', c.customer_name)}
+            {line('Account / Card', c.account_no || c.card_no)}
+            {line('Bank / Product', [c.bank, c.product, c.segment].filter(Boolean).join(' · '))}
+            {line('Bucket / Cycle', (c.bucket || '—') + ' · cyc ' + (c.cycle || '—'))}
+            {line('Status', (c.status || '—') + ' · ' + (c.paid_status || '—'))}
+            {line('Funded / Received / Pending', money(c.funding_amount) + ' / ' + money(c.received_amount) + ' / ' + money(c.pending_amount))}
+            {line('Caller', c.assigned_caller_name || c.caller_name)}
+            {line('Field officer', c.assigned_fos_name || c.fos_name)}
+            {line('Phone', c.phone)}
+          </>}
+        </div>}
+      </div>
     </div>
   );
 }
@@ -3363,7 +3495,7 @@ function DevicesView() {
         <td><b>{d.user_name || ('#' + d.user_id)}</b><div className="muted" style={{ fontSize: 11.5 }}>{d.label}</div></td>
         <td>{d.user_branch || '—'}</td>
         <td className="mono" style={{ fontSize: 12 }}>{d.device_id}</td>
-        <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{toDate(d.last_seen).toLocaleString()}</td>
+        <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{fmtDT(d.last_seen)}</td>
         <td style={{ whiteSpace: 'nowrap' }}>
           {isPending
             ? <><button className="btn sm gold" onClick={() => act(d.id, 'approve')}>Approve</button>{' '}<button className="btn sm" onClick={() => act(d.id, 'delete')}>Reject</button></>
@@ -3594,7 +3726,7 @@ function SecurityView({ user }) {
         <div style={{ marginTop: 12 }}>
           {keys.length === 0 ? <p className="muted" style={{ fontSize: 13 }}>No passkeys yet.</p> :
             keys.map(k => <div key={k.id} className="stat-row">
-              <div><b>{k.label || 'Passkey'}</b><div className="muted" style={{ fontSize: 11.5 }}>{k.last_used ? 'Last used ' + toDate(k.last_used).toLocaleDateString() : 'Never used'}</div></div>
+              <div><b>{k.label || 'Passkey'}</b><div className="muted" style={{ fontSize: 11.5 }}>{k.last_used ? 'Last used ' + fmtDay(k.last_used) : 'Never used'}</div></div>
               <button className="btn ghost sm" onClick={() => delKey(k.id)}>Remove</button>
             </div>)}
         </div>
@@ -4256,6 +4388,13 @@ function SheetView({ user, config }) {
       if (value === 'paid' && cur !== 'paid') { setPayModal({ row, mode: 'paid' }); return; }
       if (cur === 'paid' && value !== 'paid') { setPayModal({ row, mode: 'unpaid' }); return; }
     }
+    // Typing a collection into the Amount cell = logging a payment. If the figure goes UP on a
+    // not-yet-paid case, open the payment popup (amount pre-filled, NORM/STAB) so it marks Paid,
+    // credits the caller/FOS and lands in resolved cases — instead of silently editing a number.
+    if (canPayEdit && col.k === 'received_amount' && (row.paid_status || '').toUpperCase() !== 'PAID') {
+      const newAmt = Number(value) || 0, curRecv = Number(row.received_amount) || 0;
+      if (newAmt > curRecv) { setPayModal({ row, mode: 'paid', amount: String(Math.round(newAmt - curRecv)) }); return; }
+    }
     setRows(rs => rs.map(r => r.id === row.id
       ? (col.data ? { ...r, extra: { ...(r.extra || {}), [col.k]: value } } : { ...r, [col.k]: value })
       : r));
@@ -4436,23 +4575,35 @@ function SheetView({ user, config }) {
       </div>
 
       {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
-      {payModal && <PaymentEditModal row={payModal.row} mode={payModal.mode} onClose={() => setPayModal(null)} onDone={applyPayResult} />}
+      {payModal && <PaymentEditModal row={payModal.row} mode={payModal.mode} initAmount={payModal.amount} onClose={() => { setPayModal(null); load(); }} onDone={applyPayResult} />}
     </div>
   );
 }
 
-function PaymentEditModal({ row, mode, onClose, onDone }) {
+function PaymentEditModal({ row, mode, initAmount, onClose, onDone }) {
   const [state, setState] = React.useState(null); const [err, setErr] = React.useState('');
   const [amount, setAmount] = React.useState(''); const [ns, setNs] = React.useState('STAB');
-  const [busy, setBusy] = React.useState(false);
+  const [busy, setBusy] = React.useState(false); const [okOver, setOkOver] = React.useState(false);
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const isCC = (row.segment || '') === 'Credit Card';
+  // Overpayment guard: if the total received would exceed the funded/outstanding amount,
+  // pending goes below zero — usually a duplicate payment being logged twice.
+  const base = state ? (Number(state.funding_amount) || Number(state.enr) || 0) : 0;
+  const already = state ? (Number(state.received_amount) || 0) : 0;
+  const willBe = already + (Number(amount) || 0);
+  const over = base > 0 ? (willBe - base) : 0;
+  const isOver = mode === 'paid' && over > 1;
   React.useEffect(() => {
     api('/api/cases/' + row.id + '/pay-state').then(s => {
       setState(s);
-      const due = Number(s.pending_amount) > 0 ? Number(s.pending_amount)
-        : Math.max(0, (Number(s.funding_amount) || Number(s.enr) || 0) - Number(s.received_amount || 0));
-      setAmount(due ? String(Math.round(due)) : '');
+      // If the user typed an amount into the Amount cell, use that; otherwise pre-fill the outstanding due.
+      if (initAmount != null && initAmount !== '') {
+        setAmount(String(Math.round(Number(initAmount))));
+      } else {
+        const due = Number(s.pending_amount) > 0 ? Number(s.pending_amount)
+          : Math.max(0, (Number(s.funding_amount) || Number(s.enr) || 0) - Number(s.received_amount || 0));
+        setAmount(due ? String(Math.round(due)) : '');
+      }
       if (s.norm_stab) setNs(s.norm_stab);
     }).catch(e => setErr(e.message || 'Could not load'));
   }, []);
@@ -4485,8 +4636,15 @@ function PaymentEditModal({ row, mode, onClose, onDone }) {
             <div className="field"><label>Amount paid (₹)</label><input className="input" type="number" value={amount} onChange={e => setAmount(e.target.value)} /></div>
             {isCC && <div className="field"><label>Paid at (credit card)</label>
               <select className="input" value={ns} onChange={e => setNs(e.target.value)}><option>STAB</option><option>NORM</option><option>ROLLBACK</option></select></div>}
+            {isOver && <div className="glass card" style={{ background: 'rgba(220,38,38,.08)', border: '1px solid rgba(220,38,38,.35)', padding: 10, marginTop: 4 }}>
+              <div style={{ color: 'var(--bad)', fontWeight: 700, fontSize: 13 }}>⚠ Overpayment — likely a duplicate</div>
+              <div className="muted" style={{ fontSize: 12.5, marginTop: 3, lineHeight: 1.5 }}>
+                Total received would become <b>{money(willBe)}</b> — that's <b>{money(over)}</b> more than the outstanding <b>{money(base)}</b>, so pending goes below zero. This usually means the payment was already logged. Don't record it twice.</div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12.5, color: 'var(--ink)' }}>
+                <input type="checkbox" checked={okOver} onChange={e => setOkOver(e.target.checked)} /> This is a genuine additional payment, not a duplicate</label>
+            </div>}
             {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
-            <button className="btn gold block" disabled={busy} onClick={confirmPaid} style={{ marginTop: 6 }}>{busy ? 'Saving…' : 'OK — mark paid'}</button>
+            <button className="btn gold block" disabled={busy || (isOver && !okOver)} onClick={confirmPaid} style={{ marginTop: 6 }}>{busy ? 'Saving…' : (isOver ? 'Log anyway' : 'OK — mark paid')}</button>
           </>
         ) : (
           <>
@@ -4837,7 +4995,7 @@ function NotificationBell({ onOpenCase, style }) {
           items.map(n => <div key={n.id} onClick={() => click(n)} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: n.read ? 'transparent' : 'rgba(37,99,235,.08)', borderBottom: '1px solid var(--line)' }}>
             <div style={{ fontWeight: n.read ? 500 : 700, fontSize: 13 }}>{n.title}</div>
             <div className="muted" style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{n.body}</div>
-            <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>{n.created_at ? new Date(n.created_at).toLocaleString() : ''}</div>
+            <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>{n.created_at ? fmtDT(n.created_at) : ''}</div>
           </div>)}
       </div>}
     </div>

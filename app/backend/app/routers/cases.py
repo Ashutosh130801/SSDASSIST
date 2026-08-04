@@ -709,6 +709,85 @@ def mark_unpaid(case_id: int, db: Session = Depends(get_db),
     return case
 
 
+_UNDO_NUMERIC = {"received_amount", "pending_amount", "funding_amount", "enr", "norm_amount",
+                 "stab_amount", "total_outstanding", "principal_outstanding", "min_amount_due",
+                 "rollback_amount"}
+
+
+@router.post("/{case_id}/undo", response_model=schemas.CaseOut)
+def undo_last(case_id: int, db: Session = Depends(get_db),
+              actor: models.User = Depends(require_roles(*PAY_EDIT_ROLES))):
+    """Undo the single most recent change on a case — reverse the last payment, or restore the
+    last edited field to its previous value. Repeatable: each call steps one change further back."""
+    case = _scope(db.query(models.Case), actor).filter(models.Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    _ensure_open(case, actor)
+
+    # Which audit entries have already been undone (so we don't undo the same thing twice).
+    undone_ids = set()
+    for u in db.query(models.AuditLog).filter(models.AuditLog.case_id == case_id,
+                                              models.AuditLog.action == "undo").all():
+        t = (u.meta or {}).get("undo_of")
+        if t:
+            undone_ids.add(t)
+
+    entries = (db.query(models.AuditLog)
+               .filter(models.AuditLog.case_id == case_id,
+                       models.AuditLog.action.in_(["payment", "paid", "cell_edit", "edit"]))
+               .order_by(models.AuditLog.at.desc(), models.AuditLog.id.desc()).all())
+    target = next((e for e in entries if e.id not in undone_ids), None)
+    if not target:
+        raise HTTPException(status_code=400, detail="Nothing to undo on this case")
+
+    if target.action in ("payment", "paid"):
+        # Reverse the most recent payment that hasn't already been reversed.
+        logs = [l for l in db.query(models.CallLog).filter(models.CallLog.case_id == case_id)
+                .order_by(models.CallLog.created_at.asc()).all() if l.ptp_amount is not None]
+        pos = [l for l in logs if Decimal(str(l.ptp_amount)) > 0]
+        neg = sum(1 for l in logs if Decimal(str(l.ptp_amount)) < 0)
+        undoable = pos[:len(pos) - neg] if neg < len(pos) else []
+        if not undoable:
+            raise HTTPException(status_code=400, detail="No payment left to undo")
+        amt = Decimal(str(undoable[-1].ptp_amount))
+        new_recv = Decimal(case.received_amount or 0) - amt
+        case.received_amount = new_recv if new_recv > 0 else Decimal(0)
+        pend = _pay_base_total(case) - Decimal(case.received_amount or 0)
+        case.pending_amount = pend if pend > 0 else Decimal(0)
+        if Decimal(case.received_amount or 0) <= 0:
+            case.paid_status, case.status, case.norm_stab = "UNPAID", "allocated", None
+        elif case.pending_amount > 0:
+            case.paid_status, case.status = "PARTIAL", "allocated"
+        credit_id = case.assigned_caller_id or case.assigned_fos_id or actor.id
+        db.add(models.CallLog(case_id=case.id, caller_id=credit_id, disposition="PAYMENT",
+                              ptp_amount=(-amt), note=f"Undo: reversed payment ₹{amt}"))
+        desc = f"Reversed last payment ₹{amt}"
+    else:
+        field = target.field
+        if not field:
+            raise HTTPException(status_code=400, detail="Nothing to undo on this case")
+        old = target.old_value
+        if field in _UNDO_NUMERIC:
+            try:
+                val = Decimal(str(old)) if old not in (None, "") else Decimal(0)
+            except Exception:
+                val = Decimal(0)
+        else:
+            val = old if old not in ("",) else None
+        setattr(case, field, val)
+        desc = f"Restored {field} to '{old if old not in (None, '') else '—'}'"
+
+    audit.record(db, actor, "undo", case, detail=desc, meta={"undo_of": target.id})
+    audit.stamp_case(case, actor)
+    db.commit()
+    db.refresh(case)
+    from .realtime import notify_data_changed
+    notify_data_changed(case.bank, case.product)
+    case.propensity = propensity(case)
+    _mark_today(db, [case])
+    return case
+
+
 class ContactUpdateIn(BaseModel):
     new_address: str | None = None
     new_phone: str | None = None
