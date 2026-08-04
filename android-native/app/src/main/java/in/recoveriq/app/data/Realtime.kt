@@ -82,11 +82,11 @@ object Realtime {
                                 NotificationItem(
                                     id = n.optInt("id", 0),
                                     caseId = n.optInt("case_id", 0).takeIf { it > 0 },
-                                    type = n.optString("type", null),
-                                    title = n.optString("title", null),
-                                    body = n.optString("body", null),
-                                    createdBy = n.optString("created_by", null),
-                                    createdAt = n.optString("created_at", null),
+                                    type = n.optString("type").ifEmpty { null },
+                                    title = n.optString("title").ifEmpty { null },
+                                    body = n.optString("body").ifEmpty { null },
+                                    createdBy = n.optString("created_by").ifEmpty { null },
+                                    createdAt = n.optString("created_at").ifEmpty { null },
                                 )
                             )
                         }

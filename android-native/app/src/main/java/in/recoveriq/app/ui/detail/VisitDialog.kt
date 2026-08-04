@@ -2,6 +2,15 @@ package `in`.recoveriq.app.ui.detail
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.location.Geocoder
+import android.media.ExifInterface
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -28,16 +37,27 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import `in`.recoveriq.app.ui.common.DatePickerField
 import `in`.recoveriq.app.ui.theme.Muted
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 /** Result payload the caller uploads via Repository.createVisit(...). */
 data class VisitDraft(
@@ -48,11 +68,133 @@ data class VisitDraft(
     val ptpDate: String? = null,
 )
 
+// ---------------------------------------------------------------------------
+// GPS-stamp helpers — replicate a "GPS Map Camera": the captured photo is
+// watermarked with the live coordinates, accuracy, address and IST timestamp,
+// so the image itself is tamper-proof proof of where/when the visit happened.
+// ---------------------------------------------------------------------------
+
+private fun decodeSampled(file: File, maxPx: Int): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.absolutePath, bounds)
+    if (bounds.outWidth <= 0) return null
+    var sample = 1
+    val longest = maxOf(bounds.outWidth, bounds.outHeight)
+    while (longest / sample > maxPx) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    return BitmapFactory.decodeFile(file.absolutePath, opts)
+}
+
+/** Cameras often store the photo sideways with an EXIF rotation flag — apply it. */
+private fun applyExifRotation(file: File, bmp: Bitmap): Bitmap {
+    return runCatching {
+        val exif = ExifInterface(file.absolutePath)
+        val deg = when (exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+        if (deg == 0f) bmp else {
+            val m = Matrix().apply { postRotate(deg) }
+            Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+        }
+    }.getOrDefault(bmp)
+}
+
+/** Split a line into <=maxLines lines that fit maxWidth, ellipsizing the last one. */
+private fun wrap(paint: Paint, text: String, maxWidth: Float, maxLines: Int): List<String> {
+    if (text.isBlank()) return emptyList()
+    val words = text.split(" ")
+    val lines = ArrayList<String>()
+    var cur = StringBuilder()
+    for (w in words) {
+        val trial = if (cur.isEmpty()) w else "$cur $w"
+        if (paint.measureText(trial) <= maxWidth) {
+            cur = StringBuilder(trial)
+        } else {
+            if (cur.isNotEmpty()) lines.add(cur.toString())
+            cur = StringBuilder(w)
+            if (lines.size == maxLines - 1) break
+        }
+    }
+    if (cur.isNotEmpty() && lines.size < maxLines) lines.add(cur.toString())
+    // Ellipsize the final line if content still overflows.
+    if (lines.isNotEmpty()) {
+        val last = lines.last()
+        if (paint.measureText(last) > maxWidth) {
+            var s = last
+            while (s.isNotEmpty() && paint.measureText("$s…") > maxWidth) s = s.dropLast(1)
+            lines[lines.size - 1] = "$s…"
+        }
+    }
+    return lines
+}
+
+/** Draw the translucent geo-stamp banner across the bottom of the photo. */
+private fun stampPhoto(src: Bitmap, lat: Double?, lng: Double?, acc: Double?, address: String?): Bitmap {
+    val bmp = if (src.isMutable) src else src.copy(Bitmap.Config.ARGB_8888, true)
+    val c = Canvas(bmp)
+    val w = bmp.width.toFloat()
+    val h = bmp.height.toFloat()
+    val scale = (w / 1080f).coerceAtLeast(0.5f)
+    val pad = 20f * scale
+    val big = 40f * scale
+    val small = 32f * scale
+
+    val timeFmt = SimpleDateFormat("dd MMM yyyy, hh:mm:ss a", Locale.ENGLISH)
+        .apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }
+    val stamp = "${timeFmt.format(Date())} IST"
+
+    // Build the lines from whatever data is available.
+    val body = ArrayList<String>()
+    val addr = address?.trim().orEmpty()
+    val paintBody = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; textSize = small; typeface = Typeface.DEFAULT
+        setShadowLayer(4f * scale, 0f, 0f, Color.BLACK)
+    }
+    val textW = w - pad * 2 - 10f * scale
+    if (addr.isNotEmpty()) body.addAll(wrap(paintBody, addr, textW, 2))
+    if (lat != null && lng != null) {
+        body.add("Lat ${"%.6f".format(lat)}   Lng ${"%.6f".format(lng)}")
+        val a = acc?.let { "  ±${it.toInt()} m" } ?: ""
+        body.add("GPS location$a")
+    } else {
+        body.add("Location unavailable")
+    }
+    body.add(stamp)
+
+    val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; textSize = big
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        setShadowLayer(4f * scale, 0f, 0f, Color.BLACK)
+    }
+    val title = "RecoverIQ • Field visit"
+
+    val lineGap = 1.28f
+    val panelH = pad * 2 + big * lineGap + small * lineGap * body.size
+    val top = h - panelH
+
+    // Dark scrim + blue accent edge.
+    c.drawRect(0f, top, w, h, Paint().apply { color = Color.argb(160, 0, 0, 0) })
+    c.drawRect(0f, top, 10f * scale, h, Paint().apply { color = Color.parseColor("#3B82F6") })
+
+    var y = top + pad + big
+    c.drawText(title, pad + 10f * scale, y, titlePaint)
+    y += big * (lineGap - 1f)
+    for (ln in body) {
+        y += small * lineGap
+        c.drawText(ln, pad + 10f * scale, y, paintBody)
+    }
+    return bmp
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @SuppressLint("MissingPermission")
 @Composable
 fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (VisitDraft) -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val dispositions = listOf("Met customer", "Not available", "Paid", "Wrong address", "Person moved", "PTP")
     var disp by remember { mutableStateOf("Met customer") }
     var paid by remember { mutableStateOf(false) }
@@ -62,20 +204,58 @@ fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (Vis
     var ptpDate by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var photo by remember { mutableStateOf<Bitmap?>(null) }
+    var stamping by remember { mutableStateOf(false) }
     var lat by remember { mutableStateOf<Double?>(null) }
     var lng by remember { mutableStateOf<Double?>(null) }
     var acc by remember { mutableStateOf<Double?>(null) }
+    var address by remember { mutableStateOf<String?>(null) }
 
-    // Grab the current location once when the dialog opens.
+    // A private cache file the camera writes the full-res photo into, shared via FileProvider.
+    val photoFile = remember { File(context.cacheDir, "visit_${System.currentTimeMillis()}.jpg") }
+    val photoUri: Uri = remember {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+    }
+
+    // Grab a fresh, high-accuracy fix when the dialog opens, then reverse-geocode to an address.
     androidx.compose.runtime.LaunchedEffect(Unit) {
+        val fused = LocationServices.getFusedLocationProviderClient(context)
         runCatching {
-            LocationServices.getFusedLocationProviderClient(context).lastLocation
-                .addOnSuccessListener { loc -> if (loc != null) { lat = loc.latitude; lng = loc.longitude; acc = loc.accuracy.toDouble() } }
+            fused.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null && lat == null) { lat = loc.latitude; lng = loc.longitude; acc = loc.accuracy.toDouble() }
+            }
+        }
+        runCatching {
+            fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                .addOnSuccessListener { loc ->
+                    if (loc != null) {
+                        lat = loc.latitude; lng = loc.longitude; acc = loc.accuracy.toDouble()
+                        scope.launch(Dispatchers.IO) {
+                            val a = runCatching {
+                                @Suppress("DEPRECATION")
+                                Geocoder(context, Locale.ENGLISH)
+                                    .getFromLocation(loc.latitude, loc.longitude, 1)
+                                    ?.firstOrNull()
+                                    ?.let { it.getAddressLine(0) ?: listOfNotNull(it.subLocality, it.locality, it.adminArea).joinToString(", ") }
+                            }.getOrNull()
+                            if (!a.isNullOrBlank()) withContext(Dispatchers.Main) { address = a }
+                        }
+                    }
+                }
         }
     }
 
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bmp ->
-        if (bmp != null) photo = bmp
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        if (ok) {
+            stamping = true
+            scope.launch(Dispatchers.Default) {
+                val stamped = runCatching {
+                    val raw = decodeSampled(photoFile, 1600) ?: return@runCatching null
+                    val rotated = applyExifRotation(photoFile, raw)
+                    stampPhoto(rotated.copy(Bitmap.Config.ARGB_8888, true), lat, lng, acc, address)
+                }.getOrNull()
+                withContext(Dispatchers.Main) { if (stamped != null) photo = stamped; stamping = false }
+            }
+        }
     }
 
     AlertDialog(
@@ -87,7 +267,11 @@ fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (Vis
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    if (lat != null) "Location captured ✓" else "Getting current location…",
+                    when {
+                        lat == null -> "Getting current location…"
+                        address != null -> "Location ✓  $address"
+                        else -> "Location captured ✓"
+                    },
                     style = MaterialTheme.typography.labelSmall, color = Muted,
                 )
                 Text("Outcome", style = MaterialTheme.typography.labelSmall, color = Muted)
@@ -128,18 +312,24 @@ fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (Vis
                     label = { Text("Note") }, modifier = Modifier.fillMaxWidth())
 
                 photo?.let {
-                    Image(it.asImageBitmap(), "Visit photo",
-                        modifier = Modifier.fillMaxWidth().height(140.dp).padding(top = 4.dp))
+                    Image(it.asImageBitmap(), "Visit photo (geo-tagged)",
+                        modifier = Modifier.fillMaxWidth().height(180.dp).padding(top = 4.dp))
                 }
-                OutlinedButton(onClick = { camera.launch(null) }, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (photo == null) "Take photo" else "Retake photo")
+                OutlinedButton(onClick = { camera.launch(photoUri) }, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        when {
+                            stamping -> "Stamping location…"
+                            photo == null -> "📷 Take geo-tagged photo"
+                            else -> "Retake photo"
+                        }
+                    )
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = {
                 val jpeg = photo?.let { bmp ->
-                    ByteArrayOutputStream().use { out -> bmp.compress(Bitmap.CompressFormat.JPEG, 80, out); out.toByteArray() }
+                    ByteArrayOutputStream().use { out -> bmp.compress(Bitmap.CompressFormat.JPEG, 85, out); out.toByteArray() }
                 }
                 onConfirm(VisitDraft(
                     lat = lat, lng = lng, accuracy = acc,
