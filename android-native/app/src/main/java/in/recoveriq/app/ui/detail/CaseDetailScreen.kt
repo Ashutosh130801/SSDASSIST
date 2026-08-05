@@ -147,6 +147,8 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
             if (showVisit) {
                 LogVisitDialog(
                     isCreditCard = isCC,
+                    agentName = user.name,
+                    caseLabel = "Case #${case.id}" + (case.customerName?.let { " • $it" } ?: ""),
                     onDismiss = { showVisit = false },
                     onConfirm = { v ->
                         scope.launch {

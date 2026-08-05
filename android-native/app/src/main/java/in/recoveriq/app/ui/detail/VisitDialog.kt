@@ -52,12 +52,15 @@ import `in`.recoveriq.app.ui.theme.Muted
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.TimeUnit
 
 /** Result payload the caller uploads via Repository.createVisit(...). */
 data class VisitDraft(
@@ -84,6 +87,38 @@ private fun decodeSampled(file: File, maxPx: Int): Bitmap? {
     val opts = BitmapFactory.Options().apply { inSampleSize = sample }
     return BitmapFactory.decodeFile(file.absolutePath, opts)
 }
+
+/**
+ * Fetch a small OpenStreetMap tile centred on the fix and drop a red pin at the exact
+ * position — this is the little map thumbnail the GPS Map Camera app shows.
+ */
+private fun fetchMapThumb(lat: Double, lng: Double): Bitmap? = runCatching {
+    val z = 16
+    val n = Math.pow(2.0, z.toDouble())
+    val xf = (lng + 180.0) / 360.0 * n
+    val latRad = Math.toRadians(lat)
+    val yf = (1.0 - Math.log(Math.tan(latRad) + 1.0 / Math.cos(latRad)) / Math.PI) / 2.0 * n
+    val xt = Math.floor(xf).toInt()
+    val yt = Math.floor(yf).toInt()
+    val url = "https://tile.openstreetmap.org/$z/$xt/$yt.png"
+    val client = OkHttpClient.Builder().callTimeout(6, TimeUnit.SECONDS).build()
+    val req = Request.Builder().url(url)
+        .header("User-Agent", "RecoverIQ-Android/1.0 (field-visit geotag)").build()
+    client.newCall(req).execute().use { resp ->
+        if (!resp.isSuccessful) return@runCatching null
+        val bytes = resp.body?.bytes() ?: return@runCatching null
+        val tile = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@runCatching null
+        val out = tile.copy(Bitmap.Config.ARGB_8888, true)
+        val cv = Canvas(out)
+        val px = ((xf - xt) * out.width).toFloat()
+        val py = ((yf - yt) * out.height).toFloat()
+        val r = out.width * 0.07f
+        cv.drawCircle(px, py + r, r, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 0, 0, 0) }) // shadow
+        cv.drawCircle(px, py, r, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#EF4444") })
+        cv.drawCircle(px, py, r * 0.38f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        out
+    }
+}.getOrNull()
 
 /** Cameras often store the photo sideways with an EXIF rotation flag — apply it. */
 private fun applyExifRotation(file: File, bmp: Bitmap): Bitmap {
@@ -132,7 +167,10 @@ private fun wrap(paint: Paint, text: String, maxWidth: Float, maxLines: Int): Li
 }
 
 /** Draw the translucent geo-stamp banner across the bottom of the photo. */
-private fun stampPhoto(src: Bitmap, lat: Double?, lng: Double?, acc: Double?, address: String?): Bitmap {
+private fun stampPhoto(
+    src: Bitmap, lat: Double?, lng: Double?, acc: Double?, address: String?,
+    agentName: String?, caseLabel: String?, mapThumb: Bitmap?,
+): Bitmap {
     val bmp = if (src.isMutable) src else src.copy(Bitmap.Config.ARGB_8888, true)
     val c = Canvas(bmp)
     val w = bmp.width.toFloat()
@@ -141,29 +179,16 @@ private fun stampPhoto(src: Bitmap, lat: Double?, lng: Double?, acc: Double?, ad
     val pad = 20f * scale
     val big = 40f * scale
     val small = 32f * scale
+    val edge = 10f * scale
 
     val timeFmt = SimpleDateFormat("dd MMM yyyy, hh:mm:ss a", Locale.ENGLISH)
         .apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }
     val stamp = "${timeFmt.format(Date())} IST"
 
-    // Build the lines from whatever data is available.
-    val body = ArrayList<String>()
-    val addr = address?.trim().orEmpty()
     val paintBody = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; textSize = small; typeface = Typeface.DEFAULT
         setShadowLayer(4f * scale, 0f, 0f, Color.BLACK)
     }
-    val textW = w - pad * 2 - 10f * scale
-    if (addr.isNotEmpty()) body.addAll(wrap(paintBody, addr, textW, 2))
-    if (lat != null && lng != null) {
-        body.add("Lat ${"%.6f".format(lat)}   Lng ${"%.6f".format(lng)}")
-        val a = acc?.let { "  ±${it.toInt()} m" } ?: ""
-        body.add("GPS location$a")
-    } else {
-        body.add("Location unavailable")
-    }
-    body.add(stamp)
-
     val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; textSize = big
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
@@ -171,20 +196,51 @@ private fun stampPhoto(src: Bitmap, lat: Double?, lng: Double?, acc: Double?, ad
     }
     val title = "RecoverIQ • Field visit"
 
+    // Reserve a square on the right for the map thumbnail (if we fetched one).
+    val mapSize = if (mapThumb != null) 300f * scale else 0f
+    val mapGap = if (mapThumb != null) pad else 0f
+    val textW = w - pad * 2 - edge - mapSize - mapGap
+
+    // Build the lines from whatever data is available.
+    val body = ArrayList<String>()
+    agentName?.takeIf { it.isNotBlank() }?.let { body.addAll(wrap(paintBody, "Agent: $it", textW, 1)) }
+    caseLabel?.takeIf { it.isNotBlank() }?.let { body.addAll(wrap(paintBody, it, textW, 1)) }
+    address?.trim()?.takeIf { it.isNotEmpty() }?.let { body.addAll(wrap(paintBody, it, textW, 2)) }
+    if (lat != null && lng != null) {
+        body.add("Lat ${"%.6f".format(lat)}   Lng ${"%.6f".format(lng)}")
+        body.add("GPS location" + (acc?.let { "  ±${it.toInt()} m" } ?: ""))
+    } else {
+        body.add("Location unavailable")
+    }
+    body.add(stamp)
+
     val lineGap = 1.28f
-    val panelH = pad * 2 + big * lineGap + small * lineGap * body.size
+    val textBlockH = pad * 2 + big * lineGap + small * lineGap * body.size
+    // Grow the panel so the map thumbnail always fits inside it.
+    val panelH = maxOf(textBlockH, mapSize + pad * 2)
     val top = h - panelH
 
     // Dark scrim + blue accent edge.
     c.drawRect(0f, top, w, h, Paint().apply { color = Color.argb(160, 0, 0, 0) })
-    c.drawRect(0f, top, 10f * scale, h, Paint().apply { color = Color.parseColor("#3B82F6") })
+    c.drawRect(0f, top, edge, h, Paint().apply { color = Color.parseColor("#3B82F6") })
+
+    // Map thumbnail on the right, vertically centred, with a white frame.
+    if (mapThumb != null) {
+        val mx = w - pad - mapSize
+        val my = top + (panelH - mapSize) / 2f
+        val frame = 3f * scale
+        c.drawRect(mx - frame, my - frame, mx + mapSize + frame, my + mapSize + frame,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        val scaled = Bitmap.createScaledBitmap(mapThumb, mapSize.toInt(), mapSize.toInt(), true)
+        c.drawBitmap(scaled, mx, my, null)
+    }
 
     var y = top + pad + big
-    c.drawText(title, pad + 10f * scale, y, titlePaint)
+    c.drawText(title, pad + edge, y, titlePaint)
     y += big * (lineGap - 1f)
     for (ln in body) {
         y += small * lineGap
-        c.drawText(ln, pad + 10f * scale, y, paintBody)
+        c.drawText(ln, pad + edge, y, paintBody)
     }
     return bmp
 }
@@ -192,7 +248,13 @@ private fun stampPhoto(src: Bitmap, lat: Double?, lng: Double?, acc: Double?, ad
 @OptIn(ExperimentalLayoutApi::class)
 @SuppressLint("MissingPermission")
 @Composable
-fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (VisitDraft) -> Unit) {
+fun LogVisitDialog(
+    isCreditCard: Boolean,
+    agentName: String? = null,
+    caseLabel: String? = null,
+    onDismiss: () -> Unit,
+    onConfirm: (VisitDraft) -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val dispositions = listOf("Met customer", "Not available", "Paid", "Wrong address", "Person moved", "PTP")
@@ -209,6 +271,7 @@ fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (Vis
     var lng by remember { mutableStateOf<Double?>(null) }
     var acc by remember { mutableStateOf<Double?>(null) }
     var address by remember { mutableStateOf<String?>(null) }
+    var mapThumb by remember { mutableStateOf<Bitmap?>(null) }
 
     // A private cache file the camera writes the full-res photo into, shared via FileProvider.
     val photoFile = remember { File(context.cacheDir, "visit_${System.currentTimeMillis()}.jpg") }
@@ -239,6 +302,10 @@ fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (Vis
                             }.getOrNull()
                             if (!a.isNullOrBlank()) withContext(Dispatchers.Main) { address = a }
                         }
+                        scope.launch(Dispatchers.IO) {
+                            val m = fetchMapThumb(loc.latitude, loc.longitude)
+                            if (m != null) withContext(Dispatchers.Main) { mapThumb = m }
+                        }
                     }
                 }
         }
@@ -251,7 +318,8 @@ fun LogVisitDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (Vis
                 val stamped = runCatching {
                     val raw = decodeSampled(photoFile, 1600) ?: return@runCatching null
                     val rotated = applyExifRotation(photoFile, raw)
-                    stampPhoto(rotated.copy(Bitmap.Config.ARGB_8888, true), lat, lng, acc, address)
+                    stampPhoto(rotated.copy(Bitmap.Config.ARGB_8888, true),
+                        lat, lng, acc, address, agentName, caseLabel, mapThumb)
                 }.getOrNull()
                 withContext(Dispatchers.Main) { if (stamped != null) photo = stamped; stamping = false }
             }
