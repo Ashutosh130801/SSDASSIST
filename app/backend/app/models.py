@@ -260,6 +260,7 @@ class ImportBatch(Base):
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String(255))
     bank = Column(String(40))
+    product = Column(String(80))                     # the portfolio this upload loaded into
     sheet = Column(String(80))
     rows_total = Column(Integer, default=0)
     rows_imported = Column(Integer, default=0)

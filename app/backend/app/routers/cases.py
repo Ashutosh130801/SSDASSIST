@@ -405,7 +405,7 @@ def product_summary(db: Session = Depends(get_db), user: models.User = Depends(g
 @router.get("/removed", response_model=list[schemas.CaseOut])
 def removed_cases(bank: str | None = None, product: str | None = None,
                   db: Session = Depends(get_db),
-                  actor: models.User = Depends(require_roles("headoffice"))):
+                  actor: models.User = Depends(require_roles("headoffice", "admin"))):
     """The Removed-cases bin — soft-deleted cases head office can review and restore.
     Declared before /{case_id} so the literal path isn't captured as an id."""
     q = db.query(models.Case).filter(models.Case.removed.is_(True))
@@ -870,8 +870,8 @@ class IdsIn(BaseModel):
 
 @router.post("/remove")
 def remove_cases(body: IdsIn, db: Session = Depends(get_db),
-                 actor: models.User = Depends(require_roles("headoffice"))):
-    """Soft-delete the selected cases (head office only). They move to the Removed bin and
+                 actor: models.User = Depends(require_roles("headoffice", "admin"))):
+    """Soft-delete the selected cases (head office / admin). They move to the Removed bin and
     drop out of every list, MIS, dashboard and performance calc until restored."""
     if not body.ids:
         raise HTTPException(status_code=400, detail="No cases selected")
@@ -896,7 +896,7 @@ def remove_cases(body: IdsIn, db: Session = Depends(get_db),
 
 @router.post("/restore")
 def restore_cases(body: IdsIn, db: Session = Depends(get_db),
-                  actor: models.User = Depends(require_roles("headoffice"))):
+                  actor: models.User = Depends(require_roles("headoffice", "admin"))):
     """Restore soft-deleted cases back into active work."""
     if not body.ids:
         raise HTTPException(status_code=400, detail="No cases selected")
@@ -919,7 +919,7 @@ def restore_cases(body: IdsIn, db: Session = Depends(get_db),
 
 @router.post("/removed/purge")
 def purge_removed(body: IdsIn, db: Session = Depends(get_db),
-                  actor: models.User = Depends(require_roles("headoffice"))):
+                  actor: models.User = Depends(require_roles("headoffice", "admin"))):
     """Permanently delete cases from the Removed bin (irreversible). If ids is empty,
     purges the entire bin."""
     q = db.query(models.Case).filter(models.Case.removed.is_(True))

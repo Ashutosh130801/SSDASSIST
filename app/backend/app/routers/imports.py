@@ -90,8 +90,8 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
         case_obj.close_date = cd
         case_obj.closing_type = ctype
 
-    batch = models.ImportBatch(filename=file.filename, bank=default_bank, sheet=sheet,
-                               rows_total=len(records), uploaded_by=admin.id)
+    batch = models.ImportBatch(filename=file.filename, bank=default_bank, product=product,
+                               sheet=sheet, rows_total=len(records), uploaded_by=admin.id)
     db.add(batch)
     db.flush()
 
@@ -324,6 +324,62 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             "assigned_caller_total": assigned_caller,
             "assignment_report": assignment_report,
             "batch_id": batch.id}
+
+
+@router.get("/batches")
+def recent_batches(limit: int = 40, db: Session = Depends(get_db),
+                   admin: models.User = Depends(require_roles("admin", "headoffice"))):
+    """Recent portfolio uploads, newest first — so admin/head office can undo a wrong upload.
+    live = cases from this upload still active (not already removed); removed = already pulled out."""
+    from sqlalchemy import func
+    rows = (db.query(models.ImportBatch)
+            .order_by(models.ImportBatch.created_at.desc()).limit(limit).all())
+    names = {u.id: u.name for u in db.query(models.User).all()}
+    # counts per batch (live vs removed) in two grouped queries
+    live = dict(db.query(models.Case.import_batch_id, func.count(models.Case.id))
+                .filter(models.Case.import_batch_id.isnot(None), models.Case.removed.isnot(True))
+                .group_by(models.Case.import_batch_id).all())
+    gone = dict(db.query(models.Case.import_batch_id, func.count(models.Case.id))
+                .filter(models.Case.import_batch_id.isnot(None), models.Case.removed.is_(True))
+                .group_by(models.Case.import_batch_id).all())
+    return [{
+        "id": b.id, "filename": b.filename, "bank": b.bank, "product": b.product,
+        "rows_total": b.rows_total, "rows_imported": b.rows_imported,
+        "uploaded_by": names.get(b.uploaded_by) or "—",
+        "created_at": b.created_at.isoformat() if b.created_at else None,
+        "live": int(live.get(b.id, 0)), "removed": int(gone.get(b.id, 0)),
+    } for b in rows]
+
+
+@router.post("/batches/{batch_id}/delete")
+def delete_batch(batch_id: int, db: Session = Depends(get_db),
+                 actor: models.User = Depends(require_roles("admin", "headoffice"))):
+    """Undo a whole upload: soft-remove every case that came in on this batch (reversible via
+    the Removed-cases bin). Use when a wrong file was uploaded to a portfolio."""
+    from datetime import datetime, timezone
+    batch = db.query(models.ImportBatch).filter(models.ImportBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    rows = (db.query(models.Case)
+            .filter(models.Case.import_batch_id == batch_id, models.Case.removed.isnot(True)).all())
+    now = datetime.now(timezone.utc)
+    banks = set()
+    for c in rows:
+        c.removed = True
+        c.removed_at = now
+        c.removed_by = actor.id
+        c.allocation_reason = f"Upload undone (#{batch_id})"
+        audit.stamp_case(c, actor)
+        banks.add((c.bank, c.product))
+    audit.record(db, actor, "delete", None, entity_type="import",
+                 detail=f"Undid upload #{batch_id} ({batch.filename or ''}) — {len(rows)} cases removed",
+                 meta={"batch_id": batch_id, "count": len(rows),
+                       "bank": batch.bank, "product": batch.product})
+    db.commit()
+    from .realtime import notify_data_changed
+    for bank, product in banks:
+        notify_data_changed(bank, product)
+    return {"batch_id": batch_id, "removed": len(rows)}
 
 
 @router.get("/export")

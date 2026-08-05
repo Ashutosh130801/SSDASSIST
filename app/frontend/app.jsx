@@ -857,6 +857,55 @@ function DprModal({ onClose, onDone }) {
     </div>
   );
 }
+/* Recent uploads — admin/head office can undo a wrong portfolio upload. Removing an upload
+   soft-deletes its cases (they land in the Removed-cases bin and can be restored). */
+function UploadsModal({ onClose, onDone }) {
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(0);
+  const [confirmId, setConfirmId] = useState(null);
+  const load = () => api('/api/import/batches').then(setRows).catch(() => setRows([]));
+  useEffect(() => { load(); }, []);
+  const del = async (b) => {
+    setBusy(b.id);
+    try {
+      const r = await api('/api/import/batches/' + b.id + '/delete', { method: 'POST' });
+      toast(`Upload undone — ${r.removed} case${r.removed === 1 ? '' : 's'} moved to Removed bin.`);
+      setConfirmId(null); await load(); onDone && onDone();
+    } catch (e) { toast(e.message || 'Could not undo upload'); }
+    finally { setBusy(0); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 760 }}>
+        <div className="section-h"><h3>↩ Recent uploads</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+          Uploaded a wrong file? Undo it here — every case from that upload moves to the Removed-cases bin
+          (reversible: restore them from there if needed).
+        </p>
+        {!rows ? <Loader /> : rows.length === 0 ? <p className="muted" style={{ padding: 12 }}>No uploads yet.</p> : (
+          <div className="tablewrap" style={{ maxHeight: 420, overflow: 'auto' }}><table>
+            <thead><tr><th>When</th><th>Bank · Product</th><th>File</th><th>By</th><th>Live</th><th></th></tr></thead>
+            <tbody>{rows.map(b => <tr key={b.id}>
+              <td className="muted" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{b.created_at ? fmtDT(b.created_at) : '—'}</td>
+              <td><b>{b.bank || '—'}</b> · {b.product || '—'}</td>
+              <td className="muted" style={{ fontSize: 12, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={b.filename}>{b.filename || '—'}</td>
+              <td className="muted" style={{ fontSize: 12 }}>{b.uploaded_by}</td>
+              <td className="mono">{b.live}{b.removed ? <span className="muted" style={{ fontSize: 11 }}> (+{b.removed} removed)</span> : ''}</td>
+              <td style={{ textAlign: 'right' }}>
+                {confirmId === b.id
+                  ? <span style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn sm" style={{ background: 'var(--bad)', color: '#fff', border: 'none' }}
+                        disabled={busy === b.id} onClick={() => del(b)}>{busy === b.id ? 'Removing…' : `Remove ${b.live}`}</button>
+                      <button className="btn ghost sm" onClick={() => setConfirmId(null)} style={{ marginLeft: 6 }}>Cancel</button>
+                    </span>
+                  : <button className="btn sm" disabled={!b.live} onClick={() => setConfirmId(b.id)}>🗑 Undo</button>}
+              </td></tr>)}</tbody></table></div>
+        )}
+        <div className="toolbar" style={{ marginTop: 8 }}><div style={{ flex: 1 }} /><button className="btn" onClick={onClose}>Close</button></div>
+      </div>
+    </div>
+  );
+}
 function UploadModal({ onClose, onDone }) {
   const [cat, setCat] = useState(null);
   const now = new Date();
@@ -1043,7 +1092,9 @@ function CasesView({ user }) {
   const canReassign = ['admin', 'manager', 'teamlead', 'headoffice'].includes(user.role);
   const [reassignOpen, setReassignOpen] = useState(false);
   const isAdmin = user.role === 'admin';
-  const isHO = user.role === 'headoffice';          // only head office may remove/restore cases
+  const isHO = ['headoffice', 'admin'].includes(user.role);   // head office / admin may remove/restore cases
+  const canUploads = ['headoffice', 'admin'].includes(user.role);  // …and undo a whole upload batch
+  const [uploadsOpen, setUploadsOpen] = useState(false);
   const [picked, setPicked] = useState({});          // selected case ids (head office delete)
   const [delOpen, setDelOpen] = useState(false); const [delReason, setDelReason] = useState('');
   const [removedRows, setRemovedRows] = useState(null); const [pickedRm, setPickedRm] = useState({});
@@ -1131,6 +1182,7 @@ function CasesView({ user }) {
         {isHO && <div className={cx('chip', mode === 'removed' && 'on')} onClick={() => setMode('removed')}>🗑 Removed cases</div>}
         <div style={{ flex: 1 }} />
         {canDpr && <button className="btn" onClick={() => setDprOpen(true)} title="Bulk mark paid/unpaid from a bank DPR file">🏦 DPR update</button>}
+        {canUploads && <button className="btn" onClick={() => setUploadsOpen(true)} title="Undo a wrong portfolio upload">↩ Undo upload</button>}
         {canUpload && <button className="btn gold" onClick={() => setUpload(true)}>⬆ Upload</button>}
         {isAdmin && <>
           <button className="btn" onClick={allocate} disabled={busy}>⚡ Auto-allocate</button>
@@ -1236,6 +1288,7 @@ function CasesView({ user }) {
       </>)}
       {upload && <UploadModal onClose={() => setUpload(false)} onDone={(shouldClose = true) => { load(); if (shouldClose) setUpload(false); }} />}
       {dprOpen && <DprModal onClose={() => setDprOpen(false)} onDone={() => { load(); loadSummary(); }} />}
+      {uploadsOpen && <UploadsModal onClose={() => setUploadsOpen(false)} onDone={() => { load(); loadSummary(); }} />}
       {campaign && <CampaignModal cases={cases || []} onClose={() => setCampaign(false)} />}
       {delOpen && <div className="modal-bg" onClick={() => setDelOpen(false)}>
         <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>

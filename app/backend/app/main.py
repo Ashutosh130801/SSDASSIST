@@ -103,6 +103,9 @@ def _ensure_columns():
         "visits": {
             "distance_from_case_m": "FLOAT",
         },
+        "import_batches": {
+            "product": "VARCHAR(80)",
+        },
     }
     insp = inspect(engine)
     with engine.begin() as conn:
