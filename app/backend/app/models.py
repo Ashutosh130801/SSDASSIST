@@ -61,6 +61,11 @@ class User(Base):
     aadhar_address = Column(Text)
     current_address = Column(Text)
     rent_own = Column(String(10))
+    # Dual role: a caller/FOS can ALSO be a team lead. They keep their primary role/emp_code
+    # and get a second team-lead ID (tl_emp_code). On login they pick which "view" to use and
+    # can switch anytime — one hat at a time (the active view drives all scoping).
+    also_team_lead = Column(Boolean, default=False)
+    tl_emp_code = Column(String(20), nullable=True)      # e.g. TL014, alongside FO012 / TC003
     # E-ID / profile lifecycle: staff may edit their own profile ONCE after first login.
     profile_completed = Column(Boolean, default=False)   # they finished their one-time edit
     must_change_password = Column(Boolean, default=False)

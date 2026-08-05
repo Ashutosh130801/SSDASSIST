@@ -8,15 +8,24 @@ from .. import models, schemas
 from ..database import get_db
 from ..config import get_settings
 from ..security import verify_password, create_access_token, hash_password
-from ..deps import get_current_user
+from ..deps import get_current_user, allowed_views
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 settings = get_settings()
 
 
-def _token_for(user: models.User) -> schemas.Token:
-    tok = create_access_token(subject=user.id, role=user.role, name=user.name)
-    return schemas.Token(access_token=tok, user=schemas.UserOut.model_validate(user))
+def _token_for(user: models.User, active_role: str | None = None) -> schemas.Token:
+    # `user.role` here is the account's PRIMARY role (loaded from the DB). active_role is the
+    # chosen view for a dual-role user; it defaults to the primary role.
+    primary = getattr(user, "_primary_role", None) or user.role
+    views = allowed_views(user)
+    active = active_role if (active_role in views) else primary
+    tok = create_access_token(subject=user.id, role=primary, name=user.name, active_role=active)
+    user.available_views = views
+    user.active_view = active
+    out = schemas.UserOut.model_validate(user)
+    out.role = active                     # the app treats `role` as the active view
+    return schemas.Token(access_token=tok, user=out)
 
 
 def _aware(dt):
@@ -168,3 +177,17 @@ def google_login(body: schemas.GoogleLogin, db: Session = Depends(get_db)):
 @router.get("/me", response_model=schemas.UserOut)
 def me(user: models.User = Depends(get_current_user)):
     return user
+
+
+@router.post("/switch-view", response_model=schemas.Token)
+def switch_view(body: dict = Body(...), db: Session = Depends(get_db),
+                user: models.User = Depends(get_current_user)):
+    """Dual-role users flip between their hats (e.g. caller ↔ team lead). Re-issues a token
+    whose active view is the requested one — one hat at a time. `user.role` here is already the
+    effective (active) role from the current token, but the picker validates against the full
+    set of allowed views so any hat can be selected."""
+    want = (body.get("view") or "").strip()
+    views = getattr(user, "available_views", None) or [getattr(user, "_primary_role", user.role)]
+    if want not in views:
+        raise HTTPException(status_code=400, detail=f"Not an available view. Choose one of: {', '.join(views)}")
+    return _token_for(user, active_role=want)

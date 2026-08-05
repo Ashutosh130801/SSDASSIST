@@ -19,7 +19,7 @@ from ..deps import require_roles
 from .cases import _mark_today, _pay_base_total, _scope, propensity
 
 router = APIRouter(prefix="/api/dpr", tags=["dpr"])
-DPR_ROLES = ("admin", "headoffice", "manager", "backend")
+DPR_ROLES = ("admin", "headoffice", "manager", "backend", "teamlead")
 
 
 def _norm(h):

@@ -84,6 +84,8 @@ def _ensure_columns():
             "aadhar_address": "TEXT",
             "current_address": "TEXT",
             "rent_own": "VARCHAR(10)",
+            "also_team_lead": "BOOLEAN",
+            "tl_emp_code": "VARCHAR(20)",
             "profile_completed": "BOOLEAN",
             "must_change_password": "BOOLEAN",
             "emergency_contact": "VARCHAR(60)",
@@ -157,8 +159,33 @@ def _backfill_norm_stab():
         db.close()
 
 
+def _fix_negative_pending():
+    """One-time repair: an earlier amount-edit path computed pending as funding − received
+    (funding is 0 for CC/PL-BL) without using TOS, leaving negative pendings. Recompute those
+    from the real base (funding → TOS → ENR) − received, floored at 0, so pending shows the
+    true remaining balance (TOS − received) even on resolved cases. Self-limiting: only touches
+    rows where pending < 0, so it's a no-op on every restart after the first."""
+    from decimal import Decimal
+    from .database import SessionLocal
+    from . import models as _m
+    from .routers.cases import _pay_base_total
+    db = SessionLocal()
+    try:
+        rows = db.query(_m.Case).filter(_m.Case.pending_amount < 0).all()
+        for c in rows:
+            pend = _pay_base_total(c) - Decimal(c.received_amount or 0)
+            c.pending_amount = pend if pend > 0 else Decimal(0)
+        if rows:
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 _backfill_emp_codes()
 _backfill_norm_stab()
+_fix_negative_pending()
 
 
 def _maybe_seed():

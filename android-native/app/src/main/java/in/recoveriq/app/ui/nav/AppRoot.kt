@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.SpaceDashboard
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -96,10 +97,62 @@ fun AppRoot(
     onRequestBatteryExemption: () -> Unit,
 ) {
     val state by vm.state.collectAsState()
+    val pickView by vm.pickView.collectAsState()
     when (val s = state) {
         is AuthState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
         is AuthState.LoggedOut -> LoginScreen(vm)
-        is AuthState.LoggedIn -> MainNav(vm, s.user, onNeedTrackingPermissions, onRequestBatteryExemption)
+        is AuthState.LoggedIn ->
+            if (pickView && s.user.availableViews.size > 1) ViewPickerScreen(vm, s.user)
+            else MainNav(vm, s.user, onNeedTrackingPermissions, onRequestBatteryExemption)
+    }
+}
+
+private fun viewMeta(v: String): Triple<String, String, String> = when (v) {
+    "teamlead" -> Triple("👥", "Team Leader", "Your team’s cases, MIS & DPR")
+    "fos" -> Triple("🗺️", "Field Agent", "Your field visits & route")
+    "telecaller" -> Triple("📞", "Tele-calling", "Your calling queue")
+    "manager" -> Triple("🏢", "Manager", "Branch overview")
+    "headoffice" -> Triple("🏛️", "Head Office", "All portfolios")
+    "admin" -> Triple("🛡️", "Administrator", "Full access")
+    else -> Triple("•", v, "")
+}
+
+/** Dual-role "which hat?" picker, shown after login and on Switch view. One hat at a time. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ViewPickerScreen(vm: AuthViewModel, user: User) {
+    Column(
+        Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+    ) {
+        androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 24.dp))
+        Text("Choose your view", style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold, color = BrandBlue)
+        Text("Hi ${user.name.substringBefore(' ')} — you have more than one role. Pick how to work now; you can switch anytime.",
+            style = MaterialTheme.typography.bodyMedium, color = Muted)
+        user.availableViews.forEach { v ->
+            val (ic, title, sub) = viewMeta(v)
+            androidx.compose.material3.Card(
+                onClick = { vm.switchView(v) },
+                colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = CardWhite),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                androidx.compose.foundation.layout.Row(
+                    Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(14.dp),
+                ) {
+                    Text(ic, style = MaterialTheme.typography.headlineMedium)
+                    Column(Modifier.weight(1f)) {
+                        Text(title + (if (v == user.activeView) "  ·  current" else ""),
+                            fontWeight = FontWeight.Bold, color = TextDark)
+                        Text(sub, style = MaterialTheme.typography.bodySmall, color = Muted)
+                    }
+                    Text("→", color = Muted)
+                }
+            }
+        }
+        androidx.compose.material3.TextButton(onClick = { vm.logout() }) { Text("Sign out") }
     }
 }
 
@@ -234,6 +287,16 @@ private fun HomeScaffold(
                         onClick = { scope.launch { drawerState.close() }; onOpenAi() },
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                     )
+                    if (user.availableViews.size > 1) {
+                        NavigationDrawerItem(
+                            label = { Text("Switch view") },
+                            icon = { Icon(Icons.Filled.SwapHoriz, null) },
+                            selected = false,
+                            colors = itemColors,
+                            onClick = { scope.launch { drawerState.close() }; vm.showViewPicker() },
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                        )
+                    }
                     NavigationDrawerItem(
                         label = { Text("Sign out") },
                         icon = { Icon(Icons.AutoMirrored.Filled.Logout, null) },

@@ -37,6 +37,12 @@ class AuthViewModel(app: Application) : AndroidViewModel(app) {
     private val _needsOtp = MutableStateFlow(false)
     val needsOtp: StateFlow<Boolean> = _needsOtp.asStateFlow()
 
+    /** True right after a dual-role user logs in (or taps Switch view): show the hat picker.
+     *  NOT set on session restore, so it doesn't nag on every app launch. */
+    private val _pickView = MutableStateFlow(false)
+    val pickView: StateFlow<Boolean> = _pickView.asStateFlow()
+    fun showViewPicker() { _pickView.value = true }
+
     init {
         viewModelScope.launch {
             repo.bootstrapToken()
@@ -59,6 +65,7 @@ class AuthViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val token = repo.login(email, password, otp)
                 _needsOtp.value = false
+                _pickView.value = token.user.availableViews.size > 1   // dual role → ask which hat
                 _state.value = AuthState.LoggedIn(token.user)
             } catch (e: HttpException) {
                 val body = runCatching { e.response()?.errorBody()?.string() }.getOrNull().orEmpty()
@@ -83,6 +90,15 @@ class AuthViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 _busy.value = false
             }
+        }
+    }
+
+    /** Dual-role: switch the active hat (caller/FOS ↔ team lead) and re-render as that view. */
+    fun switchView(view: String) {
+        viewModelScope.launch {
+            runCatching { repo.switchView(view) }
+                .onSuccess { _pickView.value = false; _state.value = AuthState.LoggedIn(it.user) }
+                .onFailure { _error.value = "Could not switch view." }
         }
     }
 

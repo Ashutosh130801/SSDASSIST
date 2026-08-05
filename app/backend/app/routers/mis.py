@@ -27,7 +27,7 @@ OBSTACLE = {"DISPUTE", "WRONG NUMBER", "WRONG_NUMBER", "RNR", "SWITCHED OFF", "S
 
 router = APIRouter(prefix="/api/mis", tags=["mis"])
 
-MIS_ROLES = ("admin", "manager", "backend", "headoffice")
+MIS_ROLES = ("admin", "manager", "backend", "headoffice", "teamlead")
 
 
 def _f(x) -> float:

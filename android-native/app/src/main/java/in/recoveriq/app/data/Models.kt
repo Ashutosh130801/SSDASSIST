@@ -40,6 +40,11 @@ data class User(
     @Json(name = "profile_completed") val profileCompleted: Boolean = false,
     val designation: String? = null,
     val location: String? = null,
+    // Dual role (caller/FOS who is also a team lead)
+    @Json(name = "also_team_lead") val alsoTeamLead: Boolean = false,
+    @Json(name = "tl_emp_code") val tlEmpCode: String? = null,
+    @Json(name = "available_views") val availableViews: List<String> = emptyList(),
+    @Json(name = "active_view") val activeView: String? = null,
 ) {
     val isFieldAgent get() = role == "fos"
     val isTelecaller get() = role == "telecaller"

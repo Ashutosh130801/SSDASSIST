@@ -55,6 +55,11 @@ class UserOut(UserBase):
     id: int
     emp_code: Optional[str] = None
     team_lead_name: Optional[str] = None    # resolved name of the team lead (display only)
+    # Dual-role (caller/FOS who is also a team lead)
+    also_team_lead: Optional[bool] = None
+    tl_emp_code: Optional[str] = None
+    available_views: Optional[List[str]] = None   # hats this account can switch between
+    active_view: Optional[str] = None             # the hat currently in effect
     is_active: bool
     must_change_password: Optional[bool] = None
     profile_completed: Optional[bool] = None

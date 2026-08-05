@@ -46,6 +46,7 @@ def _emp(u: models.User) -> dict:
         "aadhar_address": u.aadhar_address, "rent_own": u.rent_own, "ctc": u.ctc,
         "photo_url": resolve_photo(u.photo_url), "is_active": u.is_active,
         "profile_completed": bool(u.profile_completed),
+        "also_team_lead": bool(u.also_team_lead), "tl_emp_code": u.tl_emp_code,
     }
 
 
@@ -247,6 +248,14 @@ def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get
     if body.get("regen_code") and u.role != old_role:
         from .users import generate_emp_code
         u.emp_code = generate_emp_code(db, u.role)
+    # Dual role: grant/revoke the team-lead hat on a caller/FOS. Granting keeps their primary
+    # role + emp_code and issues a second team-lead ID (tl_emp_code) if they don't have one.
+    if "also_team_lead" in body:
+        grant = bool(body["also_team_lead"])
+        u.also_team_lead = grant
+        if grant and u.role != "teamlead" and not u.tl_emp_code:
+            from .users import generate_emp_code
+            u.tl_emp_code = generate_emp_code(db, "teamlead")
     if "is_active" in body:
         u.is_active = bool(body["is_active"])
     for k in _ADD_FIELDS:

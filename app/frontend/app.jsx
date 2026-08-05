@@ -1038,7 +1038,7 @@ function ReassignModal({ ids, onClose, onDone }) {
 
 function CasesView({ user }) {
   const canUpload = user.role === 'admin' || user.role === 'backend' || user.role === 'headoffice';
-  const canDpr = ['admin', 'headoffice', 'backend', 'manager'].includes(user.role);
+  const canDpr = ['admin', 'headoffice', 'backend', 'manager', 'teamlead'].includes(user.role);
   const [dprOpen, setDprOpen] = useState(false);
   const canReassign = ['admin', 'manager', 'teamlead', 'headoffice'].includes(user.role);
   const [reassignOpen, setReassignOpen] = useState(false);
@@ -4755,10 +4755,16 @@ function StaffFormModal({ existing, roles, onClose, onDone }) {
             <input type="checkbox" checked={!!f.regen_code} onChange={e => set('regen_code', e.target.checked)} />
             Regenerate employee code to match the new role (current: <b>{existing.emp_code || '—'}</b>)
           </label>)}
+        {editing && ['telecaller', 'fos'].includes(f.role) && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, margin: '6px 0' }}>
+            <input type="checkbox" checked={!!f.also_team_lead} onChange={e => set('also_team_lead', e.target.checked)} />
+            Also a team lead — adds a Team Leader view they can switch to
+            {existing.tl_emp_code ? <> (team-lead ID: <b>{existing.tl_emp_code}</b>)</> : <> (a team-lead ID is generated on save)</>}
+          </label>)}
         {err && <div style={{ color: 'var(--bad)', fontSize: 13, margin: '6px 0' }}>{err}</div>}
         <div className="toolbar" style={{ marginTop: 8 }}>
           <button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
-          <button className="btn gold" disabled={busy} onClick={save}>{busy ? 'Adding…' : 'Add staff'}</button>
+          <button className="btn gold" disabled={busy} onClick={save}>{busy ? 'Saving…' : (editing ? 'Save changes' : 'Add staff')}</button>
         </div>
       </div>
     </div>
@@ -4954,7 +4960,7 @@ const NAV = {
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   hr: [['manpower', '🧑‍💼', 'Manpower'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
@@ -5023,7 +5029,7 @@ function NotificationBell({ onOpenCase, style }) {
     </div>
   );
 }
-function Shell({ user, config, onLogout, installEvt, onInstall }) {
+function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, onSwitchView }) {
   const baseNav = NAV[user.role] || NAV.telecaller;
   // Everyone gets a personal E-ID / profile entry.
   const nav = baseNav.some(n => n[0] === 'profile') ? baseNav : [...baseNav, ['profile', '🪪', 'My E-ID']];
@@ -5074,6 +5080,10 @@ function Shell({ user, config, onLogout, installEvt, onInstall }) {
         <div className="brand"><img src="assets/logo.png" alt="" />
           <div><div className="n brandfont" style={{ fontSize: 16 }}>{(config && config.brand_name) || 'RecoverIQ'}</div>
             <div className="s" style={{ fontSize: 10 }}>{roleName(user.role)}</div></div></div>
+        {canSwitchView && <div className="navitem" onClick={onSwitchView}
+          title="You have more than one role — switch your active view"
+          style={{ background: 'rgba(59,130,246,.10)', color: 'var(--info)', fontWeight: 600 }}>
+          <span className="ic">🔀</span>Switch view</div>}
         <div className="navscroll">
           {nav.map(([id, ic, label]) => <div key={id} className={cx('navitem', view === id && 'active')} onClick={() => setView(id)}>
             <span className="ic">{ic}</span>{label}</div>)}
@@ -5139,9 +5149,59 @@ function ForcePasswordChange({ user, onDone, onLogout }) {
   );
 }
 
+/* Dual-role "which hat?" picker — shown right after login for a caller/FOS who is also a
+   team lead, and again whenever they tap "Switch view". One hat at a time. */
+const VIEW_META = {
+  teamlead: ['👥', 'Team Leader', 'Your team’s cases, MIS & DPR'],
+  fos: ['🗺️', 'Field Agent', 'Your field visits & route'],
+  telecaller: ['📞', 'Tele-calling', 'Your calling queue'],
+  manager: ['🏢', 'Manager', 'Branch overview'],
+  headoffice: ['🏛️', 'Head Office', 'All portfolios'],
+  admin: ['🛡️', 'Administrator', 'Full access'],
+};
+function ViewPicker({ user, onPicked, onLogout }) {
+  const [busy, setBusy] = useState('');
+  const views = user.available_views || [user.role];
+  const pick = async (v) => {
+    setBusy(v);
+    try {
+      const r = await api('/api/auth/switch-view', { method: 'POST', body: { view: v } });
+      store.t = r.access_token; store.u = r.user; onPicked(r.user);
+    } catch (e) { toast(e.message || 'Could not switch view'); setBusy(''); }
+  };
+  return (
+    <div style={{ display: 'flex', minHeight: '100vh', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div className="glass card" style={{ maxWidth: 460, width: '100%', padding: 26 }}>
+        <div className="brandfont" style={{ fontSize: 20, fontWeight: 700, color: 'var(--info)' }}>Choose your view</div>
+        <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+          Hi {user.name?.split(' ')[0] || 'there'} — you have more than one role. Pick how you want to work now; you can switch anytime.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 14 }}>
+          {views.map(v => { const [ic, title, sub] = VIEW_META[v] || ['•', v, '']; return (
+            <button key={v} className="glass card" disabled={!!busy}
+              onClick={() => pick(v)}
+              style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px', cursor: 'pointer', textAlign: 'left', border: '1px solid var(--stroke)' }}>
+              <span style={{ fontSize: 26 }}>{ic}</span>
+              <span style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700 }}>{title}{v === user.active_view ? '  ·  current' : ''}</div>
+                <div className="muted" style={{ fontSize: 12 }}>{sub}</div>
+              </span>
+              <span className="muted">{busy === v ? '…' : '→'}</span>
+            </button>
+          ); })}
+        </div>
+        <button className="btn ghost block" style={{ marginTop: 14 }} onClick={onLogout}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [user, setUser] = useState(store.u); const [config, setConfig] = useState(null); const [ready, setReady] = useState(false);
   const [installEvt, setInstallEvt] = useState(null);
+  const [pendingPick, setPendingPick] = useState(false);
+  // After a fresh login (or password change), a dual-role user must choose a view.
+  const handleLogin = (u) => { setUser(u); setPendingPick(!!(u && (u.available_views || []).length > 1)); };
   useEffect(() => {
     api('/api/config', { auth: false }).then(cfg => { setConfig(cfg); window.__ssdCfg = cfg; }).catch(() => setConfig({}));
     if (store.t) api('/api/auth/me').then(u => { setUser(u); store.u = u; }).catch(() => { store.t = null; setUser(null); }).finally(() => setReady(true));
@@ -5153,12 +5213,16 @@ function App() {
   const logout = () => { store.t = null; store.u = null; setUser(null); };
   const install = async () => { if (!installEvt) return; installEvt.prompt(); try { await installEvt.userChoice; } catch {} setInstallEvt(null); };
   if (!ready || !config) return <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center' }}><Loader /></div>;
+  const multiView = user && (user.available_views || []).length > 1;
   return (<>
     <Toaster />
     {user ? (user.must_change_password
-        ? <ForcePasswordChange user={user} onDone={setUser} onLogout={logout} />
-        : <Shell user={user} config={config} onLogout={logout} installEvt={installEvt} onInstall={install} />)
-      : <Login onLogin={setUser} config={config} />}
+        ? <ForcePasswordChange user={user} onDone={handleLogin} onLogout={logout} />
+        : (pendingPick && multiView)
+          ? <ViewPicker user={user} onPicked={(u) => { setUser(u); setPendingPick(false); }} onLogout={logout} />
+          : <Shell user={user} config={config} onLogout={logout} installEvt={installEvt} onInstall={install}
+                   canSwitchView={multiView} onSwitchView={() => setPendingPick(true)} />)
+      : <Login onLogin={handleLogin} config={config} />}
   </>);
 }
 

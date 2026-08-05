@@ -113,9 +113,17 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     # Team lead is resolved from the sheet's TEAM LEAD ID column (its emp code, e.g. TL001,
     # or the TL's name). The resolved TL is stamped on the case and the case's caller + FOS
     # are linked to report to that team lead (so it shows in the team lead's scope).
-    _tl_by_code = {u.emp_code.strip().upper(): u for u in _users if u.emp_code and u.role == "teamlead"}
-    _tl_by_name = {u.name.strip().upper(): u for u in _users if u.name and u.role == "teamlead"}
-    _tl_cands = [(u.name.strip().upper(), u) for u in _users if u.name and u.role == "teamlead"]
+    # Team leads = real teamlead-role users, PLUS caller/FOS who were granted the team-lead hat
+    # (matched by their second team-lead ID, tl_emp_code, or their name).
+    _tls = [u for u in _users if u.role == "teamlead" or getattr(u, "also_team_lead", False)]
+    _tl_by_code = {}
+    for u in _tls:
+        if u.role == "teamlead" and u.emp_code:
+            _tl_by_code[u.emp_code.strip().upper()] = u
+        if getattr(u, "also_team_lead", False) and getattr(u, "tl_emp_code", None):
+            _tl_by_code[u.tl_emp_code.strip().upper()] = u
+    _tl_by_name = {u.name.strip().upper(): u for u in _tls if u.name}
+    _tl_cands = [(u.name.strip().upper(), u) for u in _tls if u.name]
 
     def _match(val, by_code, by_name, candidates):
         """Resolve one CALLER/FOS cell to a person and say WHY if it can't.

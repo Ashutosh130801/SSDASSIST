@@ -42,6 +42,13 @@ class Repository(context: Context) {
         return token
     }
 
+    suspend fun switchView(view: String): Token {
+        val token = Api.service.switchView(mapOf("view" to view))
+        Api.token = token.accessToken
+        session.save(token)
+        return token
+    }
+
     suspend fun logout() {
         Api.token = null
         session.clear()

@@ -21,6 +21,10 @@ interface ApiService {
     @GET("api/auth/me")
     suspend fun me(): User
 
+    // Dual-role: flip the active "view" (e.g. caller ↔ team lead). Returns a fresh token.
+    @POST("api/auth/switch-view")
+    suspend fun switchView(@Body body: Map<String, String>): Token
+
     // --- Tracking ---
     @POST("api/tracking/ping")
     suspend fun ping(@Body body: PingCreate): PingOut

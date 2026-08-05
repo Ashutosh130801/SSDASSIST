@@ -34,12 +34,16 @@ def _fos_expiry() -> datetime:
     return cutoff.astimezone(timezone.utc)
 
 
-def create_access_token(subject: str, role: str, name: str) -> str:
+def create_access_token(subject: str, role: str, name: str, active_role: str | None = None) -> str:
+    # `role` is the account's PRIMARY role (drives token lifetime — FOS auto-logout at 7pm).
+    # `active_role` is the currently chosen "view" for a dual-role user (caller/FOS who is also
+    # a team lead); it defaults to the primary role and is carried in the `av` claim.
     if role == "fos":
         expire = _fos_expiry()
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
-    payload = {"sub": str(subject), "role": role, "name": name, "exp": expire}
+    payload = {"sub": str(subject), "role": role, "name": name,
+               "av": (active_role or role), "exp": expire}
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 

@@ -467,10 +467,12 @@ def update_case(case_id: int, body: schemas.CaseUpdate, db: Session = Depends(ge
         else:
             audit.record(db, user, "edit", case, field=k, old=old, new=v)
     audit.stamp_case(case, user)
-    # keep pending consistent when received changes
+    # keep pending consistent when received changes — use the same collection base
+    # (funding → TOS → ENR) as record_payment, and never let pending go below zero.
     if "received_amount" in data:
-        case.pending_amount = (Decimal(case.funding_amount or 0) - Decimal(case.received_amount or 0))
-        if case.pending_amount <= 0 and Decimal(case.received_amount or 0) > 0:
+        pend = _pay_base_total(case) - Decimal(case.received_amount or 0)
+        case.pending_amount = pend if pend > 0 else Decimal(0)
+        if Decimal(case.received_amount or 0) > 0 and case.pending_amount <= 0:
             case.paid_status = "PAID"
             case.status = "paid"
     db.commit()
@@ -571,17 +573,21 @@ def record_payment(case_id: int, body: PaymentIn, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="Amount must be greater than zero")
 
     case.received_amount = (Decimal(case.received_amount or 0) + amt)
+    # Pending is always the real balance = base (TOS when no funding) − received. It stays
+    # visible even after the case is resolved; it does NOT get zeroed on 'paid'.
     pend = _pay_base_total(case) - Decimal(case.received_amount or 0)
     case.pending_amount = pend if pend > 0 else Decimal(0)
-    if pend <= 0:
+    if body.norm_stab:
+        ns = body.norm_stab.upper()
+        case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
+    # A NORM/STAB (settlement) payment resolves the case regardless of the remaining balance;
+    # a full collection (nothing left) also resolves it. Otherwise it's a partial.
+    if bool(body.norm_stab) or pend <= 0:
         case.paid_status = "PAID"
         case.status = "paid"
         case.follow_up_date = None
     else:
         case.paid_status = "PARTIAL"
-    if body.norm_stab:
-        ns = body.norm_stab.upper()
-        case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
 
     note = f"₹{amt} via {body.mode}" + (f" — {body.note}" if body.note else "")
     db.add(models.CallLog(case_id=case.id, caller_id=user.id,
