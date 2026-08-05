@@ -22,6 +22,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -231,6 +232,18 @@ private fun DetailRow(label: String, value: String?) {
     }
 }
 
+/**
+ * Force dark input text on text fields in this screen. The app's default content
+ * color here is white, which made typed characters invisible on the light field.
+ */
+@Composable
+private fun darkFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = TextDark, unfocusedTextColor = TextDark,
+    disabledTextColor = TextDark, cursorColor = BrandBlue,
+    focusedBorderColor = BrandBlue, unfocusedBorderColor = Muted,
+    focusedLabelColor = BrandBlue, unfocusedLabelColor = Muted,
+)
+
 @Composable
 private fun EditDetailsCard(vm: AuthViewModel, p: EmployeeProfile, onSaved: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -280,6 +293,7 @@ private fun EditDetailsCard(vm: AuthViewModel, p: EmployeeProfile, onSaved: () -
             OutlinedTextField(
                 value = pair.first, onValueChange = pair.second,
                 label = { Text(label) }, singleLine = label != "Current address",
+                colors = darkFieldColors(),
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
             )
         }
@@ -332,18 +346,21 @@ private fun ChangePasswordDialog(vm: AuthViewModel, onDismiss: () -> Unit) {
                         value = current, onValueChange = { current = it },
                         label = { Text("Current password") }, singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
+                        colors = darkFieldColors(),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
                         value = next, onValueChange = { next = it },
                         label = { Text("New password") }, singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
+                        colors = darkFieldColors(),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
                         value = confirm, onValueChange = { confirm = it },
                         label = { Text("Confirm new password") }, singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
+                        colors = darkFieldColors(),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     err?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
@@ -402,17 +419,20 @@ fun ForcePasswordChangeScreen(vm: AuthViewModel, onChanged: () -> Unit) {
         OutlinedTextField(
             value = current, onValueChange = { current = it },
             label = { Text("Current (starter) password") }, singleLine = true,
-            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+            visualTransformation = PasswordVisualTransformation(),
+            colors = darkFieldColors(), modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
             value = next, onValueChange = { next = it },
             label = { Text("New password") }, singleLine = true,
-            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+            visualTransformation = PasswordVisualTransformation(),
+            colors = darkFieldColors(), modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
             value = confirm, onValueChange = { confirm = it },
             label = { Text("Confirm new password") }, singleLine = true,
-            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+            visualTransformation = PasswordVisualTransformation(),
+            colors = darkFieldColors(), modifier = Modifier.fillMaxWidth(),
         )
         err?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         Button(

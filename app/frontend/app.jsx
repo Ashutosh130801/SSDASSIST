@@ -797,7 +797,7 @@ function DprModal({ onClose, onDone }) {
   useEffect(() => { api('/api/config').then(c => setCat(c.bank_products)).catch(() => {}); }, []);
   const products = (cat && bank && cat.products[bank]) || [];
   const form = () => { const f = new FormData(); f.append('file', file); f.append('default_bank', bank); f.append('product', product); return f; };
-  const changes = prev ? (prev.counts.mark_paid + prev.counts.mark_unpaid) : 0;
+  const changes = prev ? (prev.counts.mark_paid + prev.counts.mark_unpaid + (prev.counts.field_updates || 0)) : 0;
   const doPreview = async () => {
     if (!file || !bank || !product) return; setErr(''); setBusy(true); setRes(null);
     try { setPrev(await api('/api/dpr/preview', { method: 'POST', form: form() })); }
@@ -814,7 +814,7 @@ function DprModal({ onClose, onDone }) {
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 720 }}>
         <div className="section-h"><h3>🏦 DPR bulk update</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
-        <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>Upload a bank's DPR for one portfolio. We auto-detect the account/loan number, amount, status and NORM/STAB columns, match each row to a case, and show a preview before anything changes.</p>
+        <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>Upload a bank's DPR for one portfolio. We match each row by account/loan number, then update <b>every recognised column present in the file</b> — payment status &amp; amount plus contact, address, balances, bucket, PTP date, remarks and more. Blank cells never overwrite existing data. You'll see a preview before anything changes.</p>
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div className="field"><label>Bank</label>
             <select className="input" value={bank} onChange={e => { setBank(e.target.value); setProduct(''); setPrev(null); }}>
@@ -836,18 +836,22 @@ function DprModal({ onClose, onDone }) {
             <span><b style={{ color: 'var(--warn)' }}>{prev.counts.mark_unpaid}</b> to reverse</span>
             <span><b style={{ color: 'var(--ink-dim)' }}>{prev.counts.already_paid}</b> already paid</span>
             <span><b style={{ color: 'var(--bad)' }}>{prev.counts.unmatched}</b> unmatched</span>
+            <span><b style={{ color: 'var(--info)' }}>{prev.counts.field_updates || 0}</b> field updates{prev.counts.rows_with_updates ? ` (${prev.counts.rows_with_updates} rows)` : ''}</span>
           </div>
-          <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>Detected → key: {prev.detected.keys.join(', ') || '—'} · amount: {prev.detected.amount || '—'} · status: {prev.detected.status || '—'} · norm/stab: {prev.detected.ns || '—'}</div>
+          <div className="muted" style={{ fontSize: 11.5, marginBottom: 4 }}>Match/pay → key: {prev.detected.keys.join(', ') || '—'} · amount: {prev.detected.amount || '—'} · status: {prev.detected.status || '—'} · norm/stab: {prev.detected.ns || '—'}</div>
+          {prev.detected.fields && Object.keys(prev.detected.fields).length > 0 &&
+            <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>Other columns synced → {Object.entries(prev.detected.fields).map(([f, h]) => `${f} (${h})`).join(' · ')}</div>}
           <div className="tablewrap" style={{ maxHeight: 260, overflow: 'auto' }}><table>
-            <thead><tr><th>Action</th><th>Key</th><th>Customer</th><th>Amount</th><th>NORM/STAB</th></tr></thead>
-            <tbody>{prev.rows.map((r, i) => { const [lbl, col] = badge(r.action); return <tr key={i}>
+            <thead><tr><th>Action</th><th>Key</th><th>Customer</th><th>Amount</th><th>NORM/STAB</th><th>Other updates</th></tr></thead>
+            <tbody>{prev.rows.map((r, i) => { const [lbl, col] = badge(r.action); const ups = r.updates || {}; const uk = Object.keys(ups); return <tr key={i}>
               <td style={{ color: col, whiteSpace: 'nowrap' }}>{lbl}</td>
               <td className="mono">{r.key || '—'}</td><td>{r.customer || r.name || '—'}</td>
-              <td className="mono">{r.amount ? INR2(r.amount) : '—'}</td><td>{r.norm_stab || '—'}</td></tr>; })}</tbody></table></div>
+              <td className="mono">{r.amount ? INR2(r.amount) : '—'}</td><td>{r.norm_stab || '—'}</td>
+              <td style={{ fontSize: 11.5 }} title={uk.map(k => `${k}: ${ups[k]}`).join('\n')}>{uk.length ? `${uk.length}: ${uk.join(', ')}` : '—'}</td></tr>; })}</tbody></table></div>
           {prev.capped && <div className="muted" style={{ fontSize: 11 }}>Showing the first 500 rows.</div>}
         </div>}
         {res && <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid var(--good)' }}>
-          <b>Done.</b> <span className="muted" style={{ fontSize: 13 }}>{res.paid} marked paid · {res.unpaid} reversed · {res.already_paid} already paid · {res.unmatched} unmatched (of {res.total} rows).</span>
+          <b>Done.</b> <span className="muted" style={{ fontSize: 13 }}>{res.paid} marked paid · {res.unpaid} reversed · {res.already_paid} already paid · {res.field_updates || 0} field updates · {res.unmatched} unmatched (of {res.total} rows).</span>
           <div className="toolbar" style={{ marginTop: 8 }}><button className="btn" onClick={onClose}>Close</button></div></div>}
       </div>
     </div>

@@ -44,6 +44,108 @@ _NS = {"normstab", "norm", "stab", "type", "paidat", "settlementtype", "category
 _DATE = {"date", "paymentdate", "txndate", "transactiondate", "paiddate", "collectiondate",
          "depositdate", "valuedate"}
 
+# Full-sync field map: any of these columns, if present in the DPR, updates the matching
+# case field (only when the cell has a value — blanks never wipe existing data). Payment
+# columns (amount/status/norm-stab) are handled by the payment pipeline, not here.
+# kind: s = short string, t = text, d = decimal/number, dt = date.
+_FIELD_SPECS = [
+    ("customer_name", _NAME, "s", 160),
+    ("phone", {"phone", "mobile", "mobileno", "phoneno", "contactno", "contact",
+               "contactnumber", "phone1", "mobile1", "primaryphone", "cell", "mobilenumber"}, "s", 20),
+    ("alt_phone", {"altphone", "alternatephone", "alternatemobile", "phone2", "mobile2",
+                   "altmobile", "altcontact", "secondaryphone", "alternatenumber"}, "s", 20),
+    ("new_phone", {"newphone", "newmobile", "updatedphone", "updatedmobile", "revisedphone",
+                   "newcontact", "newnumber", "updatedcontact"}, "s", 20),
+    ("address", {"address", "add1", "addr", "add", "customeraddress", "residenceaddress",
+                 "resiaddress", "communicationaddress", "address1", "custaddress"}, "t", None),
+    ("new_address", {"newaddress", "updatedaddress", "revisedaddress", "newadd", "currentaddress"}, "t", None),
+    ("pincode", {"pincode", "pin", "zip", "zipcode", "postalcode"}, "s", 10),
+    ("bucket", {"bucket", "bkt", "dpdbucket", "bucketname"}, "s", 30),
+    ("cycle", {"cycle", "cyc", "cycledate"}, "s", 10),
+    ("total_outstanding", {"tos", "totaloutstanding", "totalos", "outstanding", "outstandingamount",
+                           "currbal", "currentbalance", "currentoutstanding", "ledgerbalance", "tob",
+                           "totaloutstandingbalance", "balanceoutstanding", "totalod"}, "d", None),
+    ("principal_outstanding", {"pos", "principaloutstanding", "principal", "principalos",
+                               "principalbalance", "prinos", "pob"}, "d", None),
+    ("min_amount_due", {"mad", "minamountdue", "minimumamountdue", "mindue", "minamt",
+                        "minimumdue", "minimumamount"}, "d", None),
+    ("funding_amount", {"funding", "fundingamount", "fundamount", "committedamount",
+                        "committed", "targetamount"}, "d", None),
+    ("enr", {"enr", "endnetreceivable", "endnetreceivables", "netreceivable", "netreceivables"}, "d", None),
+    ("norm_amount", {"normamount", "odnorm", "odnormamount", "normtarget", "normvalue"}, "d", None),
+    ("stab_amount", {"stabamount", "odstab", "odstabamount", "stabtarget", "stabvalue"}, "d", None),
+    ("rollback_amount", {"rollbackamount", "odrollback", "rollbacktarget", "rollbackvalue"}, "d", None),
+    ("caller_name", {"caller", "callername", "tccaller", "telecaller"}, "s", 80),
+    ("fos_name", {"fos", "fosname", "fieldofficer", "fieldexecutive", "fename"}, "s", 120),
+    ("team", {"area", "areacode", "region", "zone"}, "s", 40),
+    ("team_lead", {"teamlead", "tlname", "teamleadname", "supervisor"}, "s", 40),
+    ("cat", {"cat", "catallo", "catcode", "catallocation"}, "s", 20),
+    ("disposition", {"disposition", "dispo", "dispocode", "dispositioncode", "dispositionstatus"}, "s", 60),
+    ("remarks", {"remarks", "remark", "comment", "comments", "note", "notes", "feedback", "observation"}, "t", None),
+    ("follow_up_date", {"ptpdate", "followupdate", "nextfollowup", "promisedate", "promiseddate",
+                        "ptpdt", "nextactiondate"}, "dt", None),
+]
+
+
+def _coerce(kind, v):
+    """Convert a raw cell to the case-field type; None means 'no value / skip'."""
+    import datetime as _dt
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    if kind == "d":
+        return _dec(v)
+    if kind == "dt":
+        if isinstance(v, _dt.datetime):
+            return v.date()
+        if isinstance(v, _dt.date):
+            return v
+        s = str(v).strip()
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y",
+                    "%d %b %Y", "%Y/%m/%d", "%d.%m.%Y"):
+            try:
+                return _dt.datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        return None
+    return str(v).strip() or None
+
+
+def _detect_fields(headers):
+    """Map each recognised extra column to a case field: {attr: (header, kind, maxlen)}."""
+    present = [h for h in headers if h]
+    out = {}
+    for attr, aliases, kind, maxlen in _FIELD_SPECS:
+        for h in present:
+            if h in aliases and attr not in out:
+                out[attr] = (h, kind, maxlen)
+                break
+    return out
+
+
+def _proposed_fields(case, row, field_cols):
+    """Return {attr: new_value} for columns present with a value that differs from the case."""
+    import datetime as _dt
+    ups = {}
+    for attr, (h, kind, maxlen) in field_cols.items():
+        val = _coerce(kind, row.get(h))
+        if val is None:
+            continue
+        if kind in ("s", "t") and maxlen:
+            val = val[:maxlen]
+        old = getattr(case, attr, None)
+        if kind == "d":
+            if old is not None and _dec(old) == val:
+                continue
+        elif kind == "dt":
+            oldd = old.date() if isinstance(old, _dt.datetime) else old
+            if oldd == val:
+                continue
+        else:
+            if (str(old).strip() if old is not None else "") == val:
+                continue
+        ups[attr] = val
+    return ups
+
 
 def _read_rows(content: bytes):
     import openpyxl
@@ -134,6 +236,8 @@ def _prepare(content, default_bank, product, user, db):
     if not cols["keys"]:
         raise HTTPException(status_code=400,
                             detail="No account / card / loan number column found in the DPR.")
+    field_cols = _detect_fields(headers)
+    cols["fields"] = {attr: h for attr, (h, _k, _m) in field_cols.items()}
     q = _scope(db.query(models.Case), user).filter(models.Case.bank == default_bank,
                                                    models.Case.product == product)
     cases = [c for c in q.all() if c.removed is not True]
@@ -165,10 +269,12 @@ def _prepare(content, default_bank, product, user, db):
             act = "mark_paid"
         else:
             act = "mark_unpaid"
+        field_ups = _proposed_fields(match, r, field_cols)
         items.append({"action": act, "case_id": match.id, "key": keyshow,
                       "customer": match.customer_name, "amount": float(amount or 0),
                       "norm_stab": ns, "current": match.paid_status,
-                      "_case": match, "_amount": amount, "_ns": ns})
+                      "updates": {k: str(v) for k, v in field_ups.items()},
+                      "_case": match, "_amount": amount, "_ns": ns, "_fields": field_ups})
     return cols, items
 
 
@@ -181,6 +287,8 @@ async def dpr_preview(file: UploadFile = File(...), default_bank: str = Form(...
     counts = {"mark_paid": 0, "mark_unpaid": 0, "already_paid": 0, "unmatched": 0}
     for it in items:
         counts[it["action"]] = counts.get(it["action"], 0) + 1
+    counts["field_updates"] = sum(len(it.get("_fields") or {}) for it in items)
+    counts["rows_with_updates"] = sum(1 for it in items if it.get("_fields"))
     public = [{k: v for k, v in it.items() if not k.startswith("_")} for it in items]
     return {"bank": default_bank, "product": product, "detected": cols,
             "total": len(items), "counts": counts,
@@ -193,17 +301,40 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
                      user: models.User = Depends(require_roles(*DPR_ROLES))):
     content = await file.read()
     cols, items = _prepare(content, default_bank, product, user, db)
-    paid_n = unpaid_n = already_n = unmatched_n = 0
+    paid_n = unpaid_n = already_n = unmatched_n = fields_n = 0
     touched = []
+
+    def _touch(c):
+        if c not in touched:
+            touched.append(c)
+
     for it in items:
         act = it["action"]
         if act == "unmatched":
             unmatched_n += 1
             continue
+        case = it["_case"]
+
+        # Full-sync: apply any other recognised columns present (before payment math,
+        # so an updated total_outstanding feeds the pending calculation).
+        ups = it.get("_fields") or {}
+        if ups:
+            for attr, val in ups.items():
+                setattr(case, attr, val)
+            if "new_phone" in ups or "new_address" in ups:
+                import datetime as _dt
+                case.new_contact_by = user.name
+                case.new_contact_at = _dt.datetime.utcnow()
+            audit.record(db, user, "edit", case,
+                         detail="DPR sync: " + ", ".join(sorted(ups.keys())),
+                         meta={"fields": {k: str(v) for k, v in ups.items()}})
+            audit.stamp_case(case, user)
+            fields_n += len(ups)
+            _touch(case)
+
         if act == "already_paid":
             already_n += 1
             continue
-        case = it["_case"]
         if act == "mark_paid":
             amt = it["_amount"] if (it["_amount"] and it["_amount"] > 0) else (
                 _pay_base_total(case) - Decimal(case.received_amount or 0))
@@ -223,7 +354,7 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
                          detail=f"DPR bulk paid ₹{amt}{tag}")
             audit.stamp_case(case, user)
             paid_n += 1
-            touched.append(case)
+            _touch(case)
         else:  # mark_unpaid (reversal)
             prev = Decimal(case.received_amount or 0)
             case.received_amount = Decimal(0)
@@ -237,12 +368,14 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
                          detail="DPR bulk reversal")
             audit.stamp_case(case, user)
             unpaid_n += 1
-            touched.append(case)
+            _touch(case)
 
     audit.record(db, user, "import", None, entity_type="import",
-                 detail=f"DPR update {default_bank}/{product}: {paid_n} paid, {unpaid_n} reversed",
+                 detail=f"DPR update {default_bank}/{product}: {paid_n} paid, {unpaid_n} reversed, "
+                        f"{fields_n} field updates",
                  meta={"bank": default_bank, "product": product, "paid": paid_n,
-                       "unpaid": unpaid_n, "already": already_n, "unmatched": unmatched_n})
+                       "unpaid": unpaid_n, "already": already_n, "unmatched": unmatched_n,
+                       "field_updates": fields_n})
     db.commit()
     for c in touched:
         db.refresh(c)
@@ -251,4 +384,4 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
     _mark_today(db, touched)
     return {"bank": default_bank, "product": product, "total": len(items),
             "paid": paid_n, "unpaid": unpaid_n, "already_paid": already_n,
-            "unmatched": unmatched_n}
+            "unmatched": unmatched_n, "field_updates": fields_n}
