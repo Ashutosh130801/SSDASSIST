@@ -85,8 +85,21 @@ class AuthViewModel(app: Application) : AndroidViewModel(app) {
                         _error.value = "Server error — the backend is down or out of disk space. Contact your admin."
                     else -> _error.value = detail ?: "Sign-in failed (${e.code()})."
                 }
+            } catch (e: javax.net.ssl.SSLPeerUnverifiedException) {
+                // Cert-pin mismatch (common when the server is behind Cloudflare, which rotates
+                // certificates). The app needs rebuilding with an EMPTY CERT_PIN.
+                _error.value = "Secure-connection check failed (certificate pin). The app must be rebuilt without pinning."
+            } catch (e: javax.net.ssl.SSLException) {
+                _error.value = "TLS/SSL error reaching the server. If it uses Cloudflare, rebuild the app without cert pinning."
+            } catch (e: java.net.UnknownHostException) {
+                _error.value = "Can't find the server — check the app's server address / your DNS."
+            } catch (e: java.net.SocketTimeoutException) {
+                _error.value = "Server received the request but didn't reply in time. Please try again."
+            } catch (e: java.net.ConnectException) {
+                _error.value = "Can't connect to the server (it may be down)."
             } catch (e: Exception) {
-                _error.value = "Network error — check your connection."
+                // Surface the exception class so the exact cause is visible in the field.
+                _error.value = "Network error (${e.javaClass.simpleName}). Check your connection."
             } finally {
                 _busy.value = false
             }

@@ -37,6 +37,8 @@ object Api {
         val b = chain.request().newBuilder()
         // Skip ngrok's free-tier browser-warning interstitial so API calls get real JSON.
         b.header("ngrok-skip-browser-warning", "true")
+        // A stable User-Agent so a Cloudflare WAF/allow rule can identify (and whitelist) the app.
+        b.header("User-Agent", "RecoverIQ-Android/${BuildConfig.VERSION_NAME}")
         val hadToken = !token.isNullOrBlank()
         token?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
         val resp = chain.proceed(b.build())
@@ -48,9 +50,13 @@ object Api {
     private val client: OkHttpClient by lazy {
         val b = OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(45, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
+            // Force HTTP/1.1. Cloudflare Tunnel frequently resets HTTP/2 streams mid-response,
+            // which surfaces in the app as a bogus "Network error" even though the request
+            // already reached the origin. HTTP/1.1 is far more reliable through the tunnel.
+            .protocols(listOf(okhttp3.Protocol.HTTP_1_1))
             .addInterceptor(authInterceptor)
 
         // Certificate pinning — only when a pin is supplied at build time.
