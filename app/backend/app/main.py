@@ -186,9 +186,21 @@ def _fix_negative_pending():
         db.close()
 
 
+def _backfill_dual_role_flag():
+    """The also_team_lead column is new, so rows created before it exists carry NULL. Set them
+    to 0 so the value is a real boolean everywhere (the native app rejects a null here)."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("UPDATE users SET also_team_lead = 0 WHERE also_team_lead IS NULL"))
+        except Exception:
+            pass
+
+
 _backfill_emp_codes()
 _backfill_norm_stab()
 _fix_negative_pending()
+_backfill_dual_role_flag()
 
 
 def _maybe_seed():

@@ -2,7 +2,7 @@ from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List
 
-from pydantic import BaseModel, EmailStr, ConfigDict, Field
+from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator
 
 
 # ---------- Auth / Users ----------
@@ -61,6 +61,18 @@ class UserOut(UserBase):
     available_views: Optional[List[str]] = None   # hats this account can switch between
     active_view: Optional[str] = None             # the hat currently in effect
     is_active: bool
+
+    # Never emit null for these — the native app parses them as non-null (a NULL from an
+    # older DB row would otherwise fail JSON decoding on the phone).
+    @field_validator("also_team_lead", mode="before")
+    @classmethod
+    def _atl_bool(cls, v):
+        return bool(v)
+
+    @field_validator("must_change_password", "profile_completed", mode="before")
+    @classmethod
+    def _flag_bool(cls, v):
+        return bool(v)
     must_change_password: Optional[bool] = None
     profile_completed: Optional[bool] = None
     designation: Optional[str] = None
