@@ -44,6 +44,24 @@ def save_photo(content: bytes, filename: str = "", content_type: str = "image/jp
     return f"/uploads/{fname}"
 
 
+def read_bytes(ref) -> bytes | None:
+    """Read the raw bytes back for a stored reference (for zip/export)."""
+    if not ref:
+        return None
+    if ref.startswith(_GCS_PREFIX):
+        key = ref[len(_GCS_PREFIX):]
+        try:
+            return _bucket().blob(key).download_as_bytes()
+        except Exception:
+            return None
+    fname = ref.split("/uploads/")[-1]
+    try:
+        with open(os.path.join(_UPLOAD_DIR, fname), "rb") as f:
+            return f.read()
+    except Exception:
+        return None
+
+
 def resolve(ref):
     """Turn a stored reference into a URL a browser <img> can load.
 

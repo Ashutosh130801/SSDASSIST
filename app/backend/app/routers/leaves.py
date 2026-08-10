@@ -62,7 +62,7 @@ def list_leaves(status: str | None = None, scope: str = "auto", db: Session = De
     """scope=mine -> only my leaves; scope=team -> branch/all (admin/manager);
     scope=auto -> mine for staff, team for admin/manager."""
     q = db.query(models.Leave)
-    want_team = scope == "team" or (scope == "auto" and user.role in ("admin", "manager"))
+    want_team = scope == "team" or (scope == "auto" and user.role in ("admin", "manager", "hr", "headoffice"))
     if not want_team or user.role in ("fos", "telecaller"):
         q = q.filter(models.Leave.user_id == user.id)
     elif user.role == "manager":
@@ -101,7 +101,7 @@ def balance(db: Session = Depends(get_db), user: models.User = Depends(get_curre
 
 @router.post("/{leave_id}/{decision}", response_model=schemas.LeaveOut)
 def decide(leave_id: int, decision: str, db: Session = Depends(get_db),
-           actor: models.User = Depends(require_roles("admin", "manager"))):
+           actor: models.User = Depends(require_roles("admin", "manager", "hr", "headoffice"))):
     if decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="decision must be approve or reject")
     lv = db.query(models.Leave).filter(models.Leave.id == leave_id).first()
@@ -120,7 +120,7 @@ def decide(leave_id: int, decision: str, db: Session = Depends(get_db),
 
 @router.get("/insights")
 def insights(db: Session = Depends(get_db),
-             actor: models.User = Depends(require_roles("admin", "manager"))):
+             actor: models.User = Depends(require_roles("admin", "manager", "hr", "headoffice"))):
     today = _today()
     q_pending = db.query(models.Leave).filter(models.Leave.status == "pending")
     q_today = db.query(models.Leave).filter(models.Leave.status == "approved",

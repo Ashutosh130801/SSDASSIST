@@ -77,6 +77,8 @@ def _agg(rows: list) -> dict:
         "rollback_target": round(rollback_target, 2),         # sum of rollback amounts on file
         "rollback_count": len(rb_paid),
         "amount": round(sum(_f(c.received_amount) for c in rows), 2),   # CASH COLL
+        "pending": round(sum(_f(c.pending_amount) for c in rows), 2),   # outstanding still to collect
+        "recovery_pct": _pct(sum(_f(c.received_amount) for c in rows), total_enr),  # cash collected / ENR
         "visited": sum(1 for c in rows if c.visited),
         "not_visited": sum(1 for c in rows if not c.visited),
     }
@@ -92,9 +94,14 @@ def _group(cases: list, keyfn) -> list:
     return out
 
 
-def compute_mis(db: Session, user: models.User, bank: str, product: str) -> dict:
+def compute_mis(db: Session, user: models.User, bank: str, product: str,
+                period: str | None = None, area: str | None = None) -> dict:
     from .cases import propensity as _prop
     q = _scope(db.query(models.Case), user).filter(models.Case.bank == bank, models.Case.product == product)
+    if period:                          # month-wise MIS: this month vs next month
+        q = q.filter(models.Case.period == period)
+    if area:                            # full MIS scoped to a single AREA (team) code
+        q = q.filter(models.Case.team == area)
     cases = q.all()
     for c in cases:                     # score is a transient attribute — set it for the insight tables
         c.propensity = _prop(c)
@@ -301,13 +308,26 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str) -> dict
     }
 
 
+def _period_for(month_bucket: str | None) -> str | None:
+    """Map a 'current' / 'next' filter to a concrete 'YYYY-MM' period (None = all months)."""
+    from .cases import _current_period, _next_period
+    if month_bucket == "current":
+        return _current_period()
+    if month_bucket == "next":
+        return _next_period()
+    return None
+
+
 @router.get("")
-def mis(bank: str = Query(...), product: str = Query(...),
+def mis(bank: str = Query(...), product: str = Query(...), month_bucket: str | None = None,
+        area: str | None = None,
         db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     if not bank or not product:
         raise HTTPException(status_code=400, detail="bank and product are required")
-    out = compute_mis(db, user, bank, product)
+    out = compute_mis(db, user, bank, product, period=_period_for(month_bucket), area=area or None)
     out["table_names"] = TABLE_NAMES
+    out["month_bucket"] = month_bucket or "all"
+    out["area"] = area or ""
     return out
 
 
@@ -341,10 +361,13 @@ _GROUP = [("label", "NAME"), ("count", "COUNT"), ("paid", "PAID"), ("unpaid", "U
           ("norm_pct", "NORM %"), ("stab_pct", "STAB %"), ("rollback_pct", "ROLLBACK %"),
           ("rollback_collected", "ROLLBACK COLL"),
           ("amount", "CASH COLL"), ("visited", "VISITED"), ("not_visited", "NOT VISITED")]
+_AREA = [("label", "AREA"), ("count", "COUNT"), ("paid", "PAID"), ("unpaid", "UNPAID"),
+         ("enr", "ENR"), ("pending", "PENDING"), ("amount", "COLLECTED"), ("recovery_pct", "RECOVERY %"),
+         ("pct", "PAID %"), ("norm_pct", "NORM %"), ("stab_pct", "STAB %")]
 _CASELIST = [("customer", "Customer"), ("account", "Account"), ("pending", "Pending"),
              ("enr", "ENR"), ("propensity", "Score"), ("fos", "FOS"), ("caller", "Caller"), ("contacted", "Contacted")]
 _TABLE_COLS = {
-    "by_fos": _GROUP, "by_caller": _GROUP, "by_area": _GROUP, "by_team_lead": _GROUP,
+    "by_fos": _GROUP, "by_caller": _GROUP, "by_area": _AREA, "by_team_lead": _GROUP,
     "by_cat": _GROUP, "by_dpd": _GROUP,
     "leaderboard": [("emp", "EMP NAME"), ("count", "COUNT"), ("unpaid", "UNPAID"), ("paid", "PAID"),
                     ("enr", "ENR"), ("target_pct", "TARGET %"), ("target_enr", "TARGET ENR"),
@@ -363,7 +386,7 @@ _KV = {"projection", "funnel", "settlement", "overall"}   # dict blocks -> key/v
 # Human table names (also used to build the on-screen index)
 TABLE_NAMES = {
     "overall": "Overall summary", "leaderboard": "Employee performance & leaderboard",
-    "by_fos": "FOS-wise", "by_caller": "Caller-wise", "by_area": "Area-wise (NORM/STAB)",
+    "by_fos": "FOS-wise", "by_caller": "Caller-wise", "by_area": "Area-wise recovery (pending · collected · %)",
     "by_team_lead": "Team-lead wise", "by_cat": "Category-wise", "by_dpd": "Bucket (DPD) recovery",
     "projection": "Month-end projection", "trend": "Collection trend (30d)",
     "funnel": "Conversion & PTP funnel", "untouched_table": "Untouched high-value cases",
@@ -375,7 +398,8 @@ TABLE_NAMES = {
 
 @router.get("/download")
 def download(bank: str = Query(...), product: str = Query(...),
-             tables: str = Query(",".join(TABLE_NAMES.keys())),
+             tables: str = Query(",".join(TABLE_NAMES.keys())), month_bucket: str | None = None,
+             area: str | None = None,
              db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -415,7 +439,7 @@ def download(bank: str = Query(...), product: str = Query(...),
             w = max((len(str(c.value)) for c in col if c.value is not None), default=10)
             ws.column_dimensions[col[0].column_letter].width = min(max(w + 2, 12), 42)
 
-    data = compute_mis(db, user, bank, product)
+    data = compute_mis(db, user, bank, product, period=_period_for(month_bucket), area=area or None)
     wanted = [t.strip() for t in tables.split(",") if t.strip()]
     wb = openpyxl.Workbook()
     wb.remove(wb.active)

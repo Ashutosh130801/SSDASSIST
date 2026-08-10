@@ -259,6 +259,7 @@ def list_cases(
     search: str | None = None,
     period: str | None = None,          # "YYYY-MM" — admin can view a past month's cases
     month_bucket: str | None = None,    # 'current' | 'next' — this month vs next month
+    area: str | None = None,            # AREA/region code (team) — scope to one area
     closed: bool | None = None,         # True = only closed(locked), False = only open
     closing_type: str | None = None,    # cyc / month_end / due_date
     cyc: int | None = None,             # cycle day-of-month it closes on
@@ -286,6 +287,8 @@ def list_cases(
         q = q.filter(models.Case.product == product)
     if segment:
         q = q.filter(models.Case.segment == segment)
+    if area:
+        q = q.filter(models.Case.team == area)
     if status:
         q = q.filter(models.Case.status == status)
     if paid_status:
@@ -379,25 +382,47 @@ def deescalate_case(case_id: int, db: Session = Depends(get_db),
     return {"ok": True}
 
 
+@router.get("/areas")
+def portfolio_areas(bank: str | None = None, product: str | None = None,
+                    db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Distinct AREA codes (team) in a portfolio, so the UI can offer an area filter."""
+    q = _scope(db.query(models.Case.team).distinct(), user)
+    if bank:
+        q = q.filter(models.Case.bank == bank)
+    if product:
+        q = q.filter(models.Case.product == product)
+    return sorted({(t or "").strip() for (t,) in q.all() if t and str(t).strip()})
+
+
 @router.get("/product-summary")
 def product_summary(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     """Product cards: one row per bank + product + segment with case counts and money,
     scoped to what the user may see (admin all, manager their branch)."""
+    cur, nxt = _current_period(), _next_period()
     rows = (
         _scope(db.query(
-            models.Case.bank, models.Case.product, models.Case.segment,
+            models.Case.bank, models.Case.product, models.Case.segment, models.Case.period,
             func.count(models.Case.id),
             func.coalesce(func.sum(models.Case.pending_amount), 0),
             func.coalesce(func.sum(models.Case.received_amount), 0),
         ), user)
-        .group_by(models.Case.bank, models.Case.product, models.Case.segment)
+        .group_by(models.Case.bank, models.Case.product, models.Case.segment, models.Case.period)
         .all()
     )
-    out = [
-        {"bank": b or "—", "product": p or "—", "segment": s,
-         "count": c, "pending": float(pd or 0), "received": float(rc or 0)}
-        for b, p, s, c, pd, rc in rows
-    ]
+    # Roll the per-period rows up per portfolio, keeping this-month vs next-month counts split.
+    agg: dict = {}
+    for b, p, s, per, c, pd, rc in rows:
+        d = agg.setdefault((b, p, s), {"count": 0, "pending": 0.0, "received": 0.0,
+                                       "count_current": 0, "count_next": 0})
+        d["count"] += c
+        d["pending"] += float(pd or 0)
+        d["received"] += float(rc or 0)
+        if per == cur:
+            d["count_current"] += c
+        elif per == nxt:
+            d["count_next"] += c
+    out = [{"bank": b or "—", "product": p or "—", "segment": s, **d}
+           for (b, p, s), d in agg.items()]
     out.sort(key=lambda x: (x["bank"], x["product"]))
     return out
 

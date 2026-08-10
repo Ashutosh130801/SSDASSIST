@@ -269,6 +269,20 @@ class ImportBatch(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
 
+class EmployeeDocument(Base):
+    """HR document vault — one row per uploaded file for an employee (PAN, Aadhaar, …)."""
+    __tablename__ = "employee_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    doc_type = Column(String(40), index=True)         # pan / aadhaar / photo / signature / ...
+    filename = Column(String(255))                    # original filename
+    ref = Column(String(400))                         # storage reference (/uploads/.. or gcs://..)
+    content_type = Column(String(100))
+    uploaded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    uploaded_at = Column(DateTime(timezone=True), default=utcnow)
+
+
 class Leave(Base):
     __tablename__ = "leaves"
 

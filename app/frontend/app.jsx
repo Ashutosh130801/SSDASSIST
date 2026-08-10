@@ -324,16 +324,20 @@ function drawRouteLeaflet(gmap, pts, opts) {
   const out = { layers: [], path: [], points: [] };
   if (!L || !gmap || !gmap._map) return out;
   const lm = gmap._map;
-  const P = (pts || []).map(p => ({ lat: p.latitude, lng: p.longitude, t: toMs(p.created_at) }))
+  const P = (pts || []).map(p => ({ lat: p.latitude, lng: p.longitude, t: toMs(p.created_at || p.last_seen || p.at) }))
     .filter(p => p.lat != null && p.lng != null && !isNaN(p.lat) && !isNaN(p.lng));
   if (!P.length) return out;
   out.points = P; out.path = P.map(p => [p.lat, p.lng]);
   const GAP = 150 * 1000;   // pings more than 2.5 min apart = the officer was offline
   const popupHtml = (p) => {
     const d = toDate(p.t);
+    const ok = !isNaN(d.getTime());
+    const when = ok
+      ? '<b>' + d.toLocaleTimeString('en-IN', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '</b><br>'
+        + d.toLocaleDateString('en-IN', { timeZone: IST_TZ }) + '<br>'
+      : '<span style="color:#64748b">Time not recorded</span><br>';
     return '<div style="font-family:sans-serif;font-size:12.5px;color:#111;line-height:1.5">'
-      + '<b>' + d.toLocaleTimeString('en-IN', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '</b><br>'
-      + d.toLocaleDateString('en-IN', { timeZone: IST_TZ }) + '<br>' + p.lat.toFixed(6) + ', ' + p.lng.toFixed(6) + '</div>';
+      + when + p.lat.toFixed(6) + ', ' + p.lng.toFixed(6) + '</div>';
   };
   let run = [P[0]];
   const flush = () => {
@@ -1104,7 +1108,8 @@ function CasesView({ user }) {
   const [product, setProduct] = useState(''); const [segment, setSegment] = useState('');
   const [paid, setPaid] = useState(''); const [q, setQ] = useState('');
   const [openState, setOpenState] = useState(''); const [cyc, setCyc] = useState('');   // ''|'open'|'closed', cycle day
-  const [monthB, setMonthB] = useState('');   // '' | 'current' | 'next'
+  const [monthB, setMonthB] = useState('current');   // default to THIS month so months are never mixed. '' | 'current' | 'next'
+  const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // AREA-wise filter
   const nextPeriod = (window.__ssdCfg || {}).next_period;
   const [upload, setUpload] = useState(false); const [busy, setBusy] = useState(false); const [drawer, setDrawer] = useState(null); const [campaign, setCampaign] = useState(false);
   const [resetOpen, setResetOpen] = useState(false); const [resetTxt, setResetTxt] = useState('');
@@ -1116,13 +1121,16 @@ function CasesView({ user }) {
     if (openState) p.set('closed', openState === 'closed' ? 'true' : 'false');
     if (cyc) p.set('cyc', cyc);
     if (monthB) p.set('month_bucket', monthB);
+    if (area) p.set('area', area);
     api('/api/cases?' + p).then(setCases);
-  }, [bank, product, segment, paid, q, openState, cyc, monthB]);
+  }, [bank, product, segment, paid, q, openState, cyc, monthB, area]);
   useEffect(() => { loadSummary(); api('/api/users').then(us => { const m = {}; (us || []).forEach(u => { m[u.id] = u.name; }); setStaff(m); }).catch(() => {}); }, []);
+  // Populate the AREA list for whichever portfolio is open.
+  useEffect(() => { if (mode === 'list' && (bank || product)) { const p = new URLSearchParams(); if (bank) p.set('bank', bank); if (product) p.set('product', product); api('/api/cases/areas?' + p).then(a => setAreas(a || [])).catch(() => setAreas([])); } }, [mode, bank, product]);
   useEffect(() => { if (mode !== 'list') return; const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load, mode]);
   useDataChanged(() => { loadSummary(); if (mode === 'list') load(); });   // live product cards / list
-  const openProduct = (c) => { setBank(c.bank === '—' ? '' : c.bank); setProduct(c.product === '—' ? '' : c.product); setSegment(c.segment || ''); setMode('list'); };
-  const backToProducts = () => { setProduct(''); setSegment(''); setBank(''); setMode('products'); loadSummary(); };
+  const openProduct = (c, mb = 'current') => { setBank(c.bank === '—' ? '' : c.bank); setProduct(c.product === '—' ? '' : c.product); setSegment(c.segment || ''); setMonthB(mb); setArea(''); setMode('list'); };
+  const backToProducts = () => { setProduct(''); setSegment(''); setBank(''); setArea(''); setAreas([]); setMode('products'); loadSummary(); };
   const INRc = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const allocate = async () => { setBusy(true); try {
     const r = await api('/api/cases/allocate', { method: 'POST', body: { only_unallocated: true } });
@@ -1230,10 +1238,21 @@ function CasesView({ user }) {
         !summary ? <Loader /> : summary.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No cases uploaded yet.{canUpload && ' Use ⬆ Upload to add a product file.'}</div> :
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: 14 }}>
             {summary.map((c, i) => (
-              <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => openProduct(c)}>
+              <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => openProduct(c, 'current')}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <b style={{ fontSize: 15 }}>{c.bank} · {c.product}</b><span className="badge allocated">{c.count}</span></div>
                 {c.segment && <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{c.segment}</div>}
+                {/* Month-wise split so this-month and next-month data are never mixed. */}
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <div onClick={e => { e.stopPropagation(); openProduct(c, 'current'); }}
+                    style={{ flex: 1, textAlign: 'center', padding: '7px 4px', borderRadius: 10, background: 'rgba(59,130,246,.10)' }}>
+                    <div className="muted" style={{ fontSize: 10.5 }}>📅 This month</div>
+                    <b style={{ fontSize: 17, color: 'var(--info)' }}>{c.count_current ?? 0}</b></div>
+                  <div onClick={e => { e.stopPropagation(); openProduct(c, 'next'); }}
+                    style={{ flex: 1, textAlign: 'center', padding: '7px 4px', borderRadius: 10, background: 'rgba(120,120,120,.08)' }}>
+                    <div className="muted" style={{ fontSize: 10.5 }}>🔜 Next month</div>
+                    <b style={{ fontSize: 17 }}>{c.count_next ?? 0}</b></div>
+                </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
                   <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(c.received)}</b></div>
                   <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(c.pending)}</b></div></div>
@@ -1250,6 +1269,8 @@ function CasesView({ user }) {
           <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
           {[['', 'All months'], ['current', '📅 This month'], ['next', '🔜 Next month']].map(([v, lbl]) =>
             <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
+          {areas.length > 0 && <select className="input" style={{ maxWidth: 150 }} value={area} onChange={e => setArea(e.target.value)} title="Filter by area">
+            <option value="">📍 All areas</option>{areas.map(a => <option key={a} value={a}>{a}</option>)}</select>}
           <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
           {[['', 'All'], ['open', '🟢 Open'], ['closed', '🔒 Closed']].map(([v, lbl]) =>
             <div key={v} className={cx('chip', openState === v && 'on')} onClick={() => setOpenState(v)}>{lbl}</div>)}
@@ -3828,6 +3849,8 @@ function MISView({ user }) {
   const [prods, setProds] = useState(null); const [sel, setSel] = useState(null); const [ov, setOv] = useState(null);
   const [d, setD] = useState(null); const [err, setErr] = useState(''); const [emp, setEmp] = useState('');
   const [full, setFull] = useState(false);
+  const [monthB, setMonthB] = useState('current');   // month-wise MIS: 'current' | 'next' | '' (all)
+  const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // area-wise MIS
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   useEffect(() => {
     api('/api/cases/product-summary').then(rows => {
@@ -3837,15 +3860,18 @@ function MISView({ user }) {
     }).catch(() => setProds([]));
     api('/api/mis/overview').then(setOv).catch(() => {});
   }, []);
-  const load = () => { if (!sel) { setD(null); return; } api(`/api/mis?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}`).then(setD).catch(e => setErr(e.message || 'Could not load MIS')); };
-  useEffect(() => { setErr(''); setD(null); load(); }, [sel]);
+  const mbq = (monthB ? `&month_bucket=${monthB}` : '') + (area ? `&area=${encodeURIComponent(area)}` : '');
+  const load = () => { if (!sel) { setD(null); return; } api(`/api/mis?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${mbq}`).then(setD).catch(e => setErr(e.message || 'Could not load MIS')); };
+  useEffect(() => { setErr(''); setD(null); load(); }, [sel, monthB, area]);
+  // Area list for the selected portfolio (reset area when switching portfolio).
+  useEffect(() => { setArea(''); if (!sel) { setAreas([]); return; } api(`/api/cases/areas?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}`).then(a => setAreas(a || [])).catch(() => setAreas([])); }, [sel]);
   // Real-time: recompute the MIS instantly whenever any log/payment/edit lands.
   useDataChanged(m => { if (!sel) return; if (m && m.product && m.product !== sel.product) return; load(); api('/api/mis/overview').then(setOv).catch(() => {}); });
   const saveTarget = (e) => {          // ONE product-wide target for every FOS & caller
     const v = parseFloat(e.target.value) || 0;
     api('/api/mis/target', { method: 'PUT', body: { bank: sel.bank, product: sel.product, target_pct: v } }).then(load).catch(() => {});
   };
-  const dl = (tables) => download(`/api/mis/download?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&tables=${tables}`, `MIS_${sel.bank}_${sel.product}.xlsx`);
+  const dl = (tables) => download(`/api/mis/download?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&tables=${tables}${mbq}`, `MIS_${sel.bank}_${sel.product}_${monthB || 'all'}.xlsx`);
 
   if (!prods) return <Loader />;
   if (!prods.length) return <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No products with cases yet. Upload a product file first.</div>;
@@ -3867,9 +3893,11 @@ function MISView({ user }) {
   const goto = tk => { const el = document.getElementById('mis-' + tk); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
 
   const GROUP = [['label', 'Name'], ['count', 'Count'], ['paid', 'Paid'], ['unpaid', 'Unpaid'], ['enr', 'ENR'], ['paid_enr', 'Paid ENR'], ['pct', 'Paid %'], ['norm_pct', 'NORM %'], ['stab_pct', 'STAB %'], ['rollback_pct', 'RB %'], ['rollback_collected', 'RB ₹'], ['amount', 'Cash'], ['visited', 'Vis'], ['not_visited', 'Not vis']];
+  // Area-wise gets its own columns highlighting outstanding + recovery rate per area.
+  const AREA = [['label', 'Area'], ['count', 'Count'], ['paid', 'Paid'], ['unpaid', 'Unpaid'], ['enr', 'ENR'], ['pending', 'Pending'], ['amount', 'Collected'], ['recovery_pct', 'Recovery %'], ['pct', 'Paid %'], ['norm_pct', 'NORM %'], ['stab_pct', 'STAB %']];
   const CASES = [['customer', 'Customer'], ['account', 'Account'], ['pending', 'Pending'], ['enr', 'ENR'], ['propensity', 'Score'], ['fos', 'FOS'], ['caller', 'Caller']];
   const TABLES = [
-    ['by_fos', GROUP], ['by_caller', GROUP], ['by_area', GROUP], ['by_team_lead', GROUP], ['by_cat', GROUP], ['by_dpd', GROUP],
+    ['by_fos', GROUP], ['by_caller', GROUP], ['by_area', AREA], ['by_team_lead', GROUP], ['by_cat', GROUP], ['by_dpd', GROUP],
     ['aging', [['label', 'Recency'], ['count', 'Count'], ['pending', 'Pending']]],
     ['untouched_table', CASES], ['top_pending', CASES], ['priority', CASES],
     ['obstacles', [['caller', 'Caller'], ['total', 'Total'], ['obstacles', 'Obstacles'], ['rate_pct', 'Rate %']]],
@@ -3922,6 +3950,12 @@ function MISView({ user }) {
           onChange={e => { const [b, p] = e.target.value.split('||'); setSel({ bank: b, product: p }); setEmp(''); }}>
           {prods.map((p, i) => <option key={i} value={p.bank + '||' + p.product}>{p.bank} · {p.product}</option>)}
         </select>
+        {/* Month-wise MIS — keep this-month and next-month figures cleanly separate. */}
+        {[['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, lbl]) =>
+          <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
+        {/* Area-wise — full MIS for one AREA only. */}
+        {areas.length > 0 && <select className="input" style={{ maxWidth: 160 }} value={area} onChange={e => setArea(e.target.value)} title="Full MIS for one area">
+          <option value="">📍 All areas</option>{areas.map(a => <option key={a} value={a}>{a}</option>)}</select>}
         {d && <select className="input" style={{ maxWidth: 220 }} value={emp} onChange={e => setEmp(e.target.value)}>
           <option value="">All employees</option>
           {d.by_fos.map((r, i) => <option key={i} value={r.label}>{r.label}</option>)}
@@ -4830,6 +4864,7 @@ function ManpowerView({ user }) {
   const [sel, setSel] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [edit, setEdit] = useState(null);
+  const [offerFor, setOfferFor] = useState(null);
   const canAdd = ['admin', 'headoffice', 'hr'].includes(user.role);
   useEffect(() => { api('/api/manpower/filters').then(setOpts).catch(() => {}); }, []);
   const load = useCallback(() => {
@@ -4888,7 +4923,101 @@ function ManpowerView({ user }) {
               ['Account', sel.bank_account], ['IFSC', sel.ifsc_code], ['Current address', sel.current_address]].map(([k, v]) =>
               <React.Fragment key={k}><div className="dt">{k}</div><div className="dd">{v || '—'}</div></React.Fragment>)}
           </div>
+          {canAdd && <EmployeeDocs emp={sel} />}
+          {canAdd && <div className="toolbar" style={{ marginTop: 10 }}>
+            <button className="btn gold" onClick={() => setOfferFor(sel)}>📝 Generate offer letter</button>
+          </div>}
         </div></div>}
+      {offerFor && <OfferLetterModal emp={offerFor} onClose={() => setOfferFor(null)} />}
+    </div>
+  );
+}
+
+/* HR document vault for one employee — upload / download each of the required documents. */
+const DOC_LIST = [
+  ['pan', 'PAN card'], ['aadhaar', 'Aadhaar card'], ['photo', 'Photo'],
+  ['signature', 'Signature (white paper)'], ['pvc', 'PVC'], ['dra', 'DRA certificate'],
+  ['cibil', 'CIBIL report (Paisabazaar)'], ['bank_details', 'Bank account details'],
+  ['reference', 'Reference contact details'], ['whatsapp', 'WhatsApp no. (not PhonePe)'],
+  ['email', 'Email ID proof'],
+];
+function EmployeeDocs({ emp }) {
+  const [docs, setDocs] = useState(null);
+  const [busy, setBusy] = useState('');
+  const load = () => api(`/api/manpower/${emp.id}/documents`).then(setDocs).catch(() => setDocs([]));
+  useEffect(() => { load(); }, [emp.id]);
+  const byType = {}; (docs || []).forEach(d => { byType[d.doc_type] = d; });
+  const up = async (type, file) => {
+    if (!file) return; setBusy(type);
+    try { const fd = new FormData(); fd.append('doc_type', type); fd.append('file', file);
+      await api(`/api/manpower/${emp.id}/documents`, { method: 'POST', form: fd });
+      toast('Uploaded.'); await load();
+    } catch (e) { toast(e.message || 'Upload failed'); } finally { setBusy(''); }
+  };
+  const del = async (d) => { setBusy(d.doc_type);
+    try { await api(`/api/manpower/${emp.id}/documents/${d.id}`, { method: 'DELETE' }); await load(); }
+    catch (e) { toast(e.message); } finally { setBusy(''); } };
+  const zipName = (emp.name || 'employee').replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '_') + '.zip';
+  return (
+    <div className="glass card" style={{ marginTop: 12, padding: 12 }}>
+      <div className="section-h" style={{ marginTop: 0 }}><h3 style={{ margin: 0, fontSize: 15 }}>📄 Documents</h3>
+        <button className="btn sm" onClick={() => download(`/api/manpower/${emp.id}/documents.zip`, zipName)}>⬇ Download all (.zip)</button></div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {DOC_LIST.map(([k, label]) => { const d = byType[k]; return (
+          <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '4px 0', borderBottom: '1px solid var(--line)' }}>
+            <span style={{ flex: 1 }}>{d ? '✅' : '⬜'} {label}</span>
+            {d && <a className="btn ghost sm" onClick={() => download(`/api/manpower/${emp.id}/documents/${d.id}/download`, d.filename || k)}>⬇</a>}
+            {d && <button className="btn ghost sm" disabled={busy === k} onClick={() => del(d)}>🗑</button>}
+            <label className="btn sm" style={{ cursor: 'pointer', margin: 0 }}>{busy === k ? '…' : (d ? 'Replace' : 'Upload')}
+              <input type="file" style={{ display: 'none' }} onChange={e => up(k, e.target.files[0])} /></label>
+          </div>); })}
+      </div>
+    </div>
+  );
+}
+
+/* Generate → edit → download / email an offer letter for a (new) employee. */
+function OfferLetterModal({ emp, onClose }) {
+  const ref = React.useRef(null);
+  const [html, setHtml] = useState('');
+  const [to, setTo] = useState(emp.email || '');
+  const [busy, setBusy] = useState('');
+  const [meta, setMeta] = useState({ designation: emp.designation || '', department: '', location: emp.location || emp.branch || '', joining_date: '', ctc: '' });
+  const gen = async () => { setBusy('gen');
+    try { const r = await api('/api/manpower/offer-letter', { method: 'POST', body: { emp_id: emp.id, ...meta } });
+      setHtml(r.html); if (!to && r.email) setTo(r.email);
+    } catch (e) { toast(e.message); } finally { setBusy(''); } };
+  useEffect(() => { gen(); }, []);
+  const current = () => (ref.current ? ref.current.innerHTML : html);
+  const print = () => { const w = window.open('', '_blank'); if (!w) return;
+    w.document.write(`<html><head><title>Offer Letter — ${emp.name}</title></head><body style="padding:24px">${current()}</body></html>`);
+    w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch (e) {} }, 300); };
+  const sendEmail = async () => { if (!to) { toast('Add a recipient email'); return; } setBusy('mail');
+    try { const r = await api('/api/manpower/offer-letter/email', { method: 'POST', body: { emp_id: emp.id, to, html: current(), subject: `Offer of Employment — ${emp.name}` } });
+      toast('Offer letter emailed to ' + r.to); onClose();
+    } catch (e) { toast(e.message || 'Could not send (check SMTP settings)'); } finally { setBusy(''); } };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 820 }}>
+        <div className="section-h"><h3>📝 Offer letter — {emp.name}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>Fill the details that aren't on file, generate, then edit the salary break-up directly in the preview before downloading or emailing.</p>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+          {[['designation', 'Designation'], ['department', 'Department'], ['location', 'Location'], ['joining_date', 'Joining date'], ['ctc', 'Annual CTC (₹)']].map(([k, lbl]) =>
+            <div className="field" key={k}><label>{lbl}</label><input className="input" value={meta[k]} onChange={e => setMeta(m => ({ ...m, [k]: e.target.value }))} /></div>)}
+        </div>
+        <div className="toolbar" style={{ margin: '6px 0' }}>
+          <button className="btn" disabled={busy === 'gen'} onClick={gen}>{busy === 'gen' ? 'Generating…' : '↻ Regenerate'}</button>
+          <div style={{ flex: 1 }} />
+          <input className="input" style={{ maxWidth: 240 }} placeholder="Recipient email" value={to} onChange={e => setTo(e.target.value)} />
+        </div>
+        <div ref={ref} contentEditable suppressContentEditableWarning dangerouslySetInnerHTML={{ __html: html }}
+          style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 10, padding: 18, maxHeight: 400, overflow: 'auto' }} />
+        <div className="toolbar" style={{ marginTop: 10 }}>
+          <button className="btn" onClick={print}>🖨 Download / Print</button>
+          <div style={{ flex: 1 }} />
+          <button className="btn gold" disabled={busy === 'mail'} onClick={sendEmail}>{busy === 'mail' ? 'Sending…' : '✉ Send to employee'}</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -5013,7 +5142,7 @@ const NAV = {
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   hr: [['manpower', '🧑‍💼', 'Manpower'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],

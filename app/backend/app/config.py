@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     admin_email: str = "admin@ssdenterprises.in"
     admin_password: str = "Admin@2006"
 
+    # SMTP for HR emails (offer letters). Use an app password for Gmail.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""              # falls back to smtp_user
+    company_name: str = "SSD Enterprises"
+
     # Set to true (env SEED_ON_START=1) for the first cloud deploy to create the
     # demo staff/admin, then redeploy with it off.
     seed_on_start: bool = False

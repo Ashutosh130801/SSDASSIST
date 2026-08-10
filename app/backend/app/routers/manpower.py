@@ -7,15 +7,17 @@
   admin/HR can change it.
 """
 import io
+import os
+import zipfile
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import models, audit
 from ..database import get_db
 from ..deps import get_current_user, require_roles
-from ..storage import save_photo, resolve as resolve_photo
+from ..storage import save_photo, resolve as resolve_photo, read_bytes
 
 router = APIRouter(prefix="/api/manpower", tags=["manpower"])
 
@@ -287,3 +289,242 @@ def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get
 def func_lower(col):
     from sqlalchemy import func
     return func.lower(col)
+
+
+# ---------------------------------------------------------------------------
+# HR document vault — upload / list / download / zip per employee.
+# ---------------------------------------------------------------------------
+DOC_TYPES = [
+    ("pan", "PAN card"),
+    ("aadhaar", "Aadhaar card"),
+    ("photo", "Photo"),
+    ("signature", "Signature (white paper)"),
+    ("pvc", "PVC"),
+    ("dra", "DRA certificate"),
+    ("cibil", "CIBIL report (Paisabazaar)"),
+    ("bank_details", "Bank account details"),
+    ("reference", "Reference contact details"),
+    ("whatsapp", "WhatsApp no. (not PhonePe-linked)"),
+    ("email", "Email ID proof"),
+]
+_DOC_KEYS = {k for k, _ in DOC_TYPES}
+
+
+@router.get("/doc-types")
+def doc_types(user: models.User = Depends(require_roles(*HR_ROLES))):
+    return [{"key": k, "label": lbl} for k, lbl in DOC_TYPES]
+
+
+@router.get("/{emp_id}/documents")
+def list_documents(emp_id: int, db: Session = Depends(get_db),
+                   user: models.User = Depends(require_roles(*HR_ROLES))):
+    rows = (db.query(models.EmployeeDocument)
+            .filter(models.EmployeeDocument.user_id == emp_id)
+            .order_by(models.EmployeeDocument.uploaded_at.desc()).all())
+    latest = {}
+    for d in rows:                       # keep the most-recent per type
+        latest.setdefault(d.doc_type, d)
+    return [{"id": d.id, "doc_type": d.doc_type, "filename": d.filename,
+             "url": resolve_photo(d.ref),
+             "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None}
+            for d in latest.values()]
+
+
+@router.post("/{emp_id}/documents")
+async def upload_document(emp_id: int, doc_type: str = Form(...), file: UploadFile = File(...),
+                          db: Session = Depends(get_db),
+                          user: models.User = Depends(require_roles(*HR_ROLES))):
+    emp = db.query(models.User).filter(models.User.id == emp_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if doc_type not in _DOC_KEYS:
+        raise HTTPException(status_code=400, detail="Unknown document type")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    ref = save_photo(content, filename=file.filename or doc_type,
+                     content_type=file.content_type or "application/octet-stream", folder="documents")
+    # Replace any prior file of this type (keep one current per type).
+    db.query(models.EmployeeDocument).filter(
+        models.EmployeeDocument.user_id == emp_id,
+        models.EmployeeDocument.doc_type == doc_type).delete()
+    d = models.EmployeeDocument(user_id=emp_id, doc_type=doc_type, filename=file.filename,
+                                ref=ref, content_type=file.content_type, uploaded_by=user.id)
+    db.add(d)
+    audit.record(db, user, "staff_update", None, entity_type="staff", target_user_id=emp_id,
+                 detail=f"Uploaded document '{doc_type}' for {emp.name}")
+    db.commit()
+    db.refresh(d)
+    return {"id": d.id, "doc_type": d.doc_type, "filename": d.filename, "url": resolve_photo(d.ref)}
+
+
+@router.get("/{emp_id}/documents.zip")
+def documents_zip(emp_id: int, db: Session = Depends(get_db),
+                  user: models.User = Depends(require_roles(*HR_ROLES))):
+    emp = db.query(models.User).filter(models.User.id == emp_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    rows = db.query(models.EmployeeDocument).filter(models.EmployeeDocument.user_id == emp_id).all()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for d in rows:
+            data = read_bytes(d.ref)
+            if data is None:
+                continue
+            ext = os.path.splitext(d.filename or "")[1] or ""
+            z.writestr(f"{d.doc_type}{ext}", data)
+    buf.seek(0)
+    safe = "".join(ch for ch in (emp.name or f"emp{emp_id}")
+                   if ch.isalnum() or ch in " _-").strip().replace(" ", "_") or f"emp{emp_id}"
+    return StreamingResponse(buf, media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="{safe}.zip"'})
+
+
+@router.get("/{emp_id}/documents/{doc_id}/download")
+def download_document(emp_id: int, doc_id: int, db: Session = Depends(get_db),
+                      user: models.User = Depends(require_roles(*HR_ROLES))):
+    d = (db.query(models.EmployeeDocument)
+         .filter(models.EmployeeDocument.id == doc_id, models.EmployeeDocument.user_id == emp_id).first())
+    if not d:
+        raise HTTPException(status_code=404, detail="Document not found")
+    data = read_bytes(d.ref)
+    if data is None:
+        raise HTTPException(status_code=404, detail="File missing from storage")
+    return StreamingResponse(io.BytesIO(data), media_type=d.content_type or "application/octet-stream",
+                             headers={"Content-Disposition": f'attachment; filename="{d.filename or d.doc_type}"'})
+
+
+@router.delete("/{emp_id}/documents/{doc_id}")
+def delete_document(emp_id: int, doc_id: int, db: Session = Depends(get_db),
+                    user: models.User = Depends(require_roles(*HR_ROLES))):
+    n = (db.query(models.EmployeeDocument)
+         .filter(models.EmployeeDocument.id == doc_id, models.EmployeeDocument.user_id == emp_id)
+         .delete())
+    db.commit()
+    return {"deleted": n}
+
+
+# ---------------------------------------------------------------------------
+# Offer-letter generator — preview (editable HTML) + email to the candidate.
+# ---------------------------------------------------------------------------
+def _esc(x) -> str:
+    return str("" if x is None else x).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _offer_letter_html(emp, d: dict) -> str:
+    from datetime import date as _date
+    from ..config import get_settings
+    s = get_settings()
+    company = d.get("company") or s.company_name
+    today = d.get("date") or _date.today().strftime("%d %B %Y")
+    name = d.get("name") or emp.name or "[Employee Name]"
+    designation = d.get("designation") or emp.designation or "[Designation]"
+    department = d.get("department") or "[Department]"
+    location = d.get("location") or emp.location or emp.branch or "[Location]"
+    joining = d.get("joining_date") or "[Date of Joining]"
+    ctc = d.get("ctc") or emp.ctc or "[Annual CTC]"
+    # Salary breakup: list of {component, monthly, annual}. HR edits these placeholders.
+    salary = d.get("salary") or [
+        {"component": "Basic", "monthly": "[____]", "annual": "[____]"},
+        {"component": "HRA", "monthly": "[____]", "annual": "[____]"},
+        {"component": "Special Allowance", "monthly": "[____]", "annual": "[____]"},
+        {"component": "Gross Salary", "monthly": "[____]", "annual": "[____]"},
+        {"component": "Deductions (PF/ESI/PT)", "monthly": "[____]", "annual": "[____]"},
+        {"component": "Net Take-home", "monthly": "[____]", "annual": "[____]"},
+    ]
+    sal_rows = "".join(
+        f"<tr><td>{_esc(r.get('component'))}</td>"
+        f"<td style='text-align:right'>{_esc(r.get('monthly'))}</td>"
+        f"<td style='text-align:right'>{_esc(r.get('annual'))}</td></tr>" for r in salary)
+    terms = d.get("terms") or [
+        "This offer is contingent on successful verification of the documents submitted.",
+        "You will be on probation for the first 6 months from the date of joining.",
+        "Your employment is governed by the company's policies, which may be amended from time to time.",
+        "Either party may terminate this employment by serving 30 days' written notice.",
+    ]
+    terms_html = "".join(f"<li>{_esc(t)}</li>" for t in terms)
+    return f"""<div style="font-family:Georgia,serif;color:#111;max-width:720px;line-height:1.6">
+  <div style="text-align:center;border-bottom:2px solid #1D4ED8;padding-bottom:10px;margin-bottom:18px">
+    <div style="font-size:22px;font-weight:700;color:#1D4ED8">{_esc(company)}</div>
+    <div style="font-size:12px;color:#555">Offer of Employment</div>
+  </div>
+  <div style="text-align:right;font-size:13px">Date: {_esc(today)}</div>
+  <p>Dear <b>{_esc(name)}</b>,</p>
+  <p>We are pleased to offer you the position of <b>{_esc(designation)}</b> in the
+     <b>{_esc(department)}</b> department at <b>{_esc(location)}</b>, with a date of joining of
+     <b>{_esc(joining)}</b>. Your annual cost to company (CTC) will be <b>{_esc(ctc)}</b>.</p>
+  <h3 style="color:#1D4ED8;margin:18px 0 6px">Salary Break-up</h3>
+  <table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:13px">
+    <thead><tr style="background:#EEF3FB">
+      <th style="border:1px solid #cbd5e1;padding:6px 8px;text-align:left">Component</th>
+      <th style="border:1px solid #cbd5e1;padding:6px 8px;text-align:right">Monthly (₹)</th>
+      <th style="border:1px solid #cbd5e1;padding:6px 8px;text-align:right">Annual (₹)</th>
+    </tr></thead>
+    <tbody>{sal_rows}</tbody>
+  </table>
+  <h3 style="color:#1D4ED8;margin:18px 0 6px">Terms &amp; Conditions</h3>
+  <ol style="font-family:Arial,sans-serif;font-size:13px">{terms_html}</ol>
+  <p>We look forward to welcoming you to the {_esc(company)} team. Please sign and return a copy
+     of this letter as a token of your acceptance.</p>
+  <div style="margin-top:34px;display:flex;justify-content:space-between;font-size:13px">
+    <div>_____________________<br/>For {_esc(company)}<br/>(HR / Authorised Signatory)</div>
+    <div>_____________________<br/>{_esc(name)}<br/>(Candidate's acceptance)</div>
+  </div>
+</div>"""
+
+
+def _send_email(to: str, subject: str, html: str, attachments=None):
+    from ..config import get_settings
+    s = get_settings()
+    if not s.smtp_host or not s.smtp_user:
+        raise HTTPException(status_code=400,
+                            detail="Email is not configured. Set SMTP_HOST, SMTP_USER and SMTP_PASSWORD.")
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.application import MIMEApplication
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = subject
+    msg["From"] = s.smtp_from or s.smtp_user
+    msg["To"] = to
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText("Please open this email in an HTML-capable client.", "plain"))
+    alt.attach(MIMEText(html, "html"))
+    msg.attach(alt)
+    for fn, data, _ctype in (attachments or []):
+        part = MIMEApplication(data)
+        part.add_header("Content-Disposition", "attachment", filename=fn)
+        msg.attach(part)
+    with smtplib.SMTP(s.smtp_host, s.smtp_port, timeout=20) as server:
+        server.starttls()
+        server.login(s.smtp_user, s.smtp_password)
+        server.sendmail(msg["From"], [to], msg.as_string())
+
+
+@router.post("/offer-letter")
+def offer_letter_preview(body: dict = Body(...), db: Session = Depends(get_db),
+                         user: models.User = Depends(require_roles(*HR_ROLES))):
+    emp = db.query(models.User).filter(models.User.id == body.get("emp_id")).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return {"html": _offer_letter_html(emp, body), "email": emp.email}
+
+
+@router.post("/offer-letter/email")
+def offer_letter_email(body: dict = Body(...), db: Session = Depends(get_db),
+                       user: models.User = Depends(require_roles(*HR_ROLES))):
+    emp = db.query(models.User).filter(models.User.id == body.get("emp_id")).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    to = (body.get("to") or emp.email or "").strip()
+    if not to:
+        raise HTTPException(status_code=400, detail="No recipient email — add the employee's email first")
+    html = body.get("html") or _offer_letter_html(emp, body)
+    subject = body.get("subject") or f"Offer of Employment — {emp.name}"
+    safe = "".join(ch for ch in (emp.name or "candidate") if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
+    full = f"<html><body>{html}</body></html>"
+    _send_email(to, subject, full, attachments=[(f"OfferLetter_{safe}.html", full.encode("utf-8"), "text/html")])
+    audit.record(db, user, "staff_update", None, entity_type="staff", target_user_id=emp.id,
+                 detail=f"Emailed offer letter to {to}")
+    db.commit()
+    return {"sent": True, "to": to}
