@@ -4776,7 +4776,7 @@ function PaymentEditModal({ row, mode, initAmount, onClose, onDone }) {
 
 /* ============================== Manpower directory (HR / admin) ============================== */
 /* HR: add a NEW employee, or edit an EXISTING one (pass `existing`), with the full detail set. */
-function StaffFormModal({ existing, roles, onClose, onDone }) {
+function StaffFormModal({ existing, roles, onClose, onDone, isAdmin }) {
   const editing = !!existing;
   const init = editing
     ? { ...existing, dob: (existing.dob || '').slice(0, 10), joining_date: (existing.joining_date || '').slice(0, 10), password: '' }
@@ -4784,7 +4784,10 @@ function StaffFormModal({ existing, roles, onClose, onDone }) {
   const [f, setF] = useState(init);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
-  const ROLE_OPTS = (roles && roles.length ? roles : ['manager', 'teamlead', 'telecaller', 'fos', 'headoffice', 'backend', 'hr', 'it', 'staff', 'admin']);
+  let ROLE_OPTS = (roles && roles.length ? roles : ['manager', 'teamlead', 'telecaller', 'fos', 'headoffice', 'backend', 'hr', 'it', 'staff', 'admin']);
+  // Only an admin may assign the Administrator role — hide it for everyone else,
+  // unless the person being edited is already an admin (keep it shown so it's not dropped).
+  if (!isAdmin && !(existing && existing.role === 'admin')) ROLE_OPTS = ROLE_OPTS.filter(r => r !== 'admin');
   const field = (k, label, type = 'text') => (
     <div className="field" key={k}><label>{label}</label>
       <input className="input" type={type} value={f[k] || ''} onChange={e => set(k, e.target.value)} /></div>
@@ -4891,8 +4894,8 @@ function ManpowerView({ user }) {
           <button className="btn gold" onClick={dl}>⬇ Download Excel</button>
         </div>
       </div>
-      {addOpen && <StaffFormModal roles={opts.roles} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); }} />}
-      {edit && <StaffFormModal existing={edit} roles={opts.roles} onClose={() => setEdit(null)} onDone={() => { setEdit(null); setSel(null); load(); }} />}
+      {addOpen && <StaffFormModal roles={opts.roles} isAdmin={user.role === 'admin'} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); }} />}
+      {edit && <StaffFormModal existing={edit} roles={opts.roles} isAdmin={user.role === 'admin'} onClose={() => setEdit(null)} onDone={() => { setEdit(null); setSel(null); load(); }} />}
       {!rows ? <Loader /> : rows.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No employees match.</div> : (
         <div className="glass card" style={{ padding: 6 }}>
           <div className="tablewrap"><table>

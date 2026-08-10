@@ -141,6 +141,9 @@ def add_employee(body: dict = Body(...), db: Session = Depends(get_db),
     role = (body.get("role") or "").strip()
     if not name or not email or not role:
         raise HTTPException(status_code=400, detail="Name, login email and role are required")
+    if role == "admin" and user.role != "admin":
+        raise HTTPException(status_code=403,
+                            detail="Only an administrator can create another Administrator.")
     if db.query(models.User).filter(models.User.email == email).first():
         raise HTTPException(status_code=400, detail="That login email is already registered")
 
@@ -243,8 +246,13 @@ def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get
     if (body.get("name") or "").strip():
         u.name = body["name"].strip()
     old_role = u.role
-    if (body.get("role") or "").strip():
-        u.role = body["role"].strip()
+    new_role = (body.get("role") or "").strip()
+    if new_role:
+        # Only an admin may grant the admin role, or change an existing admin's role.
+        if (new_role == "admin" or old_role == "admin") and user.role != "admin":
+            raise HTTPException(status_code=403,
+                                detail="Only an administrator can assign or change the Administrator role.")
+        u.role = new_role
     # Optional: when the role changes, regenerate the emp code so its prefix matches the new
     # role (e.g. FO001 → TL003). Off by default — existing sheet references keep the old code.
     if body.get("regen_code") and u.role != old_role:
