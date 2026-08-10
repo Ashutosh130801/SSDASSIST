@@ -49,7 +49,29 @@ def _emp(u: models.User) -> dict:
         "photo_url": resolve_photo(u.photo_url), "is_active": u.is_active,
         "profile_completed": bool(u.profile_completed),
         "also_team_lead": bool(u.also_team_lead), "tl_emp_code": u.tl_emp_code,
+        "all_roles": _all_roles(u), "all_ids": _all_ids(u),
     }
+
+
+_ROLE_LABELS = {"telecaller": "Tele-calling Agent", "fos": "Field Agent", "teamlead": "Team Lead",
+                "manager": "Collections Manager", "admin": "Administrator", "headoffice": "Head Office",
+                "backend": "Back-office Official", "hr": "HR", "it": "IT", "staff": "Staff"}
+
+
+def _all_roles(u) -> str:
+    """Both roles for a dual-role user, e.g. 'Field Agent + Team Lead'."""
+    label = _ROLE_LABELS.get(u.role, (u.role or "").title())
+    if getattr(u, "also_team_lead", False) and u.role != "teamlead":
+        return f"{label} + Team Lead"
+    return label
+
+
+def _all_ids(u) -> str:
+    """Both IDs for a dual-role user, e.g. 'FO012 / TL014'."""
+    ids = [u.emp_code] if u.emp_code else []
+    if getattr(u, "also_team_lead", False) and getattr(u, "tl_emp_code", None):
+        ids.append(u.tl_emp_code)
+    return " / ".join(ids)
 
 
 @router.get("/filters")
@@ -94,8 +116,9 @@ def download(role: str | None = None, location: str | None = None,
     rows = query.order_by(models.User.role, models.User.name).all()
 
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Manpower"
-    cols = [("emp_code", "Emp Code"), ("hr_ref", "HR Ref"), ("name", "Name"),
-            ("role", "Role"), ("designation", "Designation"), ("location", "Location"),
+    cols = [("emp_code", "Emp Code"), ("tl_emp_code", "Team Lead ID"), ("all_roles", "Roles"),
+            ("hr_ref", "HR Ref"), ("name", "Name"),
+            ("role", "Primary Role"), ("designation", "Designation"), ("location", "Location"),
             ("branch", "Branch"), ("phone", "Phone"), ("email", "Email"), ("gender", "Gender"),
             ("dob", "DOB"), ("joining_date", "DOJ"), ("blood_group", "Blood"),
             ("marital_status", "Marital"), ("emergency_contact", "Emergency No"),

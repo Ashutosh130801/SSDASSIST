@@ -4901,8 +4901,8 @@ function ManpowerView({ user }) {
           <div className="tablewrap"><table>
             <thead><tr><th>Code</th><th>Name</th><th>Role</th><th>Designation</th><th>Location</th><th>Branch</th><th>Phone</th><th>DOJ</th><th></th></tr></thead>
             <tbody>{rows.map(e => <tr key={e.id} style={{ cursor: 'pointer' }} onClick={() => setSel(e)}>
-              <td className="mono">{e.emp_code || '—'}</td><td><b>{e.name}</b></td>
-              <td><span className="badge allocated">{roleName(e.role)}</span></td>
+              <td className="mono">{e.emp_code || '—'}{e.also_team_lead && e.tl_emp_code ? <span className="muted"> / {e.tl_emp_code}</span> : ''}</td><td><b>{e.name}</b></td>
+              <td><span className="badge allocated">{roleName(e.role)}</span>{e.also_team_lead && e.role !== 'teamlead' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ Team Lead</span>}</td>
               <td className="muted" style={{ fontSize: 12 }}>{e.designation || '—'}</td>
               <td>{e.location || '—'}</td><td className="muted">{e.branch || '—'}</td>
               <td>{e.phone || '—'}</td><td className="muted" style={{ fontSize: 12 }}>{e.joining_date || '—'}</td>
@@ -4918,7 +4918,7 @@ function ManpowerView({ user }) {
               <button className="btn ghost sm" onClick={() => setSel(null)}>✕</button></div></div>
           <EIDCard e={sel} />
           <div className="dl" style={{ marginTop: 10 }}>
-            {[['Emp code', sel.emp_code], ['HR ref', sel.hr_ref], ['Role', roleName(sel.role)], ['Designation', sel.designation],
+            {[['Emp code(s)', sel.all_ids || sel.emp_code], ['HR ref', sel.hr_ref], ['Role(s)', sel.all_roles || roleName(sel.role)], ['Designation', sel.designation],
               ['Location', sel.location], ['Branch', sel.branch], ['Email', sel.email], ['Phone', sel.phone],
               ['Gender', sel.gender], ['DOB', sel.dob], ['Blood group', sel.blood_group], ['Marital', sel.marital_status],
               ['Emergency', (sel.emergency_name || '') + (sel.emergency_contact ? ' · ' + sel.emergency_contact : '')],
@@ -5039,7 +5039,7 @@ function EIDCard({ e }) {
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 17, fontWeight: 700 }}>{e.name}</div>
           <div className="muted" style={{ fontSize: 13 }}>{e.designation || roleName(e.role)}</div>
-          <div style={{ marginTop: 6, fontSize: 13 }}><b className="mono">{e.emp_code}</b> · {roleName(e.role)}</div>
+          <div style={{ marginTop: 6, fontSize: 13 }}><b className="mono">{e.all_ids || e.emp_code}</b> · {e.all_roles || roleName(e.role)}</div>
           <div className="muted" style={{ fontSize: 12 }}>{[e.location, e.branch].filter(Boolean).join(' · ')}</div>
           <div className="muted" style={{ fontSize: 12 }}>{e.phone}{e.blood_group ? ' · 🩸 ' + e.blood_group : ''}</div>
         </div>

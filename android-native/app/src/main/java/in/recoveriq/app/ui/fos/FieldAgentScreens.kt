@@ -14,8 +14,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,8 +53,10 @@ import `in`.recoveriq.app.ui.common.InfoCard
 import `in`.recoveriq.app.ui.common.SectionTitle
 import `in`.recoveriq.app.ui.common.rememberLiveKey
 import `in`.recoveriq.app.ui.theme.Bad
+import `in`.recoveriq.app.ui.theme.BrandBlue
 import `in`.recoveriq.app.ui.theme.Good
 import `in`.recoveriq.app.ui.theme.Muted
+import `in`.recoveriq.app.ui.theme.TextDark
 import `in`.recoveriq.app.ui.theme.Warn
 
 @Composable
@@ -191,8 +196,20 @@ private val CASE_FILTERS: List<Pair<String, (Case) -> Boolean>> = listOf(
 fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     val liveKey = rememberLiveKey()
     var sel by remember { mutableStateOf("All") }
+    var query by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize()) {
         SectionTitle("My accounts", Modifier.padding(start = 16.dp, top = 12.dp))
+        OutlinedTextField(
+            value = query, onValueChange = { query = it },
+            singleLine = true,
+            leadingIcon = { Icon(Icons.Filled.Search, null) },
+            placeholder = { Text("Search name / account / phone") },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = TextDark, unfocusedTextColor = TextDark,
+                cursorColor = BrandBlue, focusedBorderColor = BrandBlue, unfocusedBorderColor = Muted,
+            ),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        )
         RemindersBanner(vm, liveKey, onOpenCase)
         AsyncContent(key = liveKey, block = { vm.repo.myCases() }) { cases, _ ->
             if (cases.isEmpty()) {
@@ -223,12 +240,21 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
                 }
             }
             val pred = CASE_FILTERS.first { it.first == sel }.second
+            val q = query.trim().lowercase()
+            fun matches(c: Case): Boolean {
+                if (q.isEmpty()) return true
+                val digits = q.filter { it.isDigit() }
+                return listOf(c.customerName, c.accountNo, c.cardNo, c.phone, c.altPhone)
+                    .any { it != null && it.lowercase().contains(q) } ||
+                    (digits.isNotEmpty() && listOf(c.accountNo, c.cardNo, c.phone, c.altPhone)
+                        .any { it != null && it.filter { ch -> ch.isDigit() }.contains(digits) })
+            }
             // Untouched & highest-priority on top; visited/contacted below; paid last.
-            val ordered = cases.filter(pred).sortedWith(
+            val ordered = cases.filter { pred(it) && matches(it) }.sortedWith(
                 compareBy({ stateRank(it.workState) }, { -(it.propensity ?: 0) }, { -it.pendingAmount }),
             )
             if (ordered.isEmpty()) {
-                EmptyState("No cases in this filter.")
+                EmptyState(if (q.isEmpty()) "No cases in this filter." else "No cases match \"$query\".")
             } else {
                 LazyColumn(
                     Modifier.fillMaxSize(),
