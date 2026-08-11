@@ -20,7 +20,7 @@ from .realtime import notify_data_changed
 
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
 IST = timezone(timedelta(hours=5, minutes=30))
-FEEDBACK_ROLES = ("admin", "manager", "telecaller", "backend", "headoffice")
+FEEDBACK_ROLES = ("admin", "manager", "telecaller", "backend", "headoffice", "teamlead")
 
 # ---- The bank's feedback format (order matters — matches the agency's Excel) ----
 COLUMNS = [
@@ -89,6 +89,9 @@ def _scope_feedback(db: Session, user, bank, product, branch=None):
                                      models.Case.removed.isnot(True))
     if user.role == "manager":
         q = q.filter(models.Case.branch == user.branch)
+    elif user.role == "teamlead":
+        from .cases import teamlead_case_filter
+        q = q.filter(teamlead_case_filter(user))     # a team lead sees their team's feedback
     elif branch:
         q = q.filter(models.Case.branch == branch)
     return q

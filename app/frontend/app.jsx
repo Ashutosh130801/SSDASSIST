@@ -4409,6 +4409,10 @@ function SheetView({ user, config }) {
             const m = JSON.parse(e.data);
             if (m.type === 'case_update' && m.case) {
               setRows(rs => { const i = rs.findIndex(r => r.id === m.case.id); if (i < 0) return rs; const cp = rs.slice(); cp[i] = { ...cp[i], ...m.case }; return cp; });
+            } else if (m.type === 'data_changed' || m.type === 'payment' || m.type === 'case_changed') {
+              // A payment/log/edit landed anywhere (e.g. a telecaller logged a payment) —
+              // pull the sheet fresh so paid/pending/status reflect it automatically.
+              load();
             } else if (m.type === 'presence') {
               setPresence(p => { const cp = { ...p }; if (m.editors && m.editors.length) cp[m.case_id] = m.editors; else delete cp[m.case_id]; return cp; });
             }
