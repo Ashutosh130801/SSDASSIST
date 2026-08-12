@@ -244,7 +244,7 @@ def _window(db: Session, u: models.User, start):
     if start:
         q = q.filter(models.CallLog.created_at >= start)
     calls = q.all()
-    ptp = sum(1 for c in calls if (c.disposition or "") in ("PTP", "RTP"))
+    ptp = sum(1 for c in calls if (c.disposition or "") == "PTP")   # RTP = Refuse to Pay, not a promise
     collected = _d(sum(_d(c.ptp_amount) for c in calls if (c.disposition or "") == "PAID"))
     return {"label": "calls", "count": len(calls), "ptp": ptp, "collected": collected}
 
@@ -332,7 +332,7 @@ def employee_dashboard(uid: int, db: Session = Depends(get_db),
             disp[c.disposition] = disp.get(c.disposition, 0) + 1
     dispositions = sorted(({"label": k, "count": v} for k, v in disp.items()), key=lambda x: x["count"], reverse=True)
 
-    ptp_cases = [c for c in cases if (c.disposition or "").upper() in ("PTP", "RTP")]
+    ptp_cases = [c for c in cases if (c.disposition or "").upper() == "PTP"]
     ptp_kept = sum(1 for c in ptp_cases if paid(c))
     ptp_broken = sum(1 for c in ptp_cases if not paid(c) and c.follow_up_date and c.follow_up_date < today_d)
 

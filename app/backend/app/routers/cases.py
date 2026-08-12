@@ -181,13 +181,13 @@ def propensity(c) -> int:
     Pure function of the case's current signals (no extra queries)."""
     s = 50
     disp = (c.disposition or "").upper()
-    if "PTP" in disp or "RTP" in disp:
+    if "PTP" in disp:                       # includes BPTP; RTP (Refuse to Pay) is NOT a promise
         s += 22
     if (c.paid_status or "") == "PARTIAL":
         s += 15
     if float(c.received_amount or 0) > 0:
         s += 8
-    if any(x in disp for x in ("RNR", "SWITCH", "WRONG", "NOT REACHABLE", "REFUSED", "DISPUTE")):
+    if any(x in disp for x in ("RTP", "RNR", "SWITCH", "WRONG", "NOT REACHABLE", "REFUSED", "DISPUTE")):
         s -= 22
     if "X" in (c.bucket or "").upper():
         s -= 8

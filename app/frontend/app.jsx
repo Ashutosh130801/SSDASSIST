@@ -1110,6 +1110,7 @@ function CasesView({ user }) {
   const [openState, setOpenState] = useState(''); const [cyc, setCyc] = useState('');   // ''|'open'|'closed', cycle day
   const [monthB, setMonthB] = useState('current');   // default to THIS month so months are never mixed. '' | 'current' | 'next'
   const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // AREA-wise filter
+  const [flaggedOnly, setFlaggedOnly] = useState(false);   // ⚠ caution-flagged cases only
   const nextPeriod = (window.__ssdCfg || {}).next_period;
   const [upload, setUpload] = useState(false); const [busy, setBusy] = useState(false); const [drawer, setDrawer] = useState(null); const [campaign, setCampaign] = useState(false);
   const [resetOpen, setResetOpen] = useState(false); const [resetTxt, setResetTxt] = useState('');
@@ -1271,6 +1272,9 @@ function CasesView({ user }) {
             <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
           {areas.length > 0 && <select className="input" style={{ maxWidth: 150 }} value={area} onChange={e => setArea(e.target.value)} title="Filter by area">
             <option value="">📍 All areas</option>{areas.map(a => <option key={a} value={a}>{a}</option>)}</select>}
+          {(cases || []).some(c => c.flagged) && <div className={cx('chip', flaggedOnly && 'on')} onClick={() => setFlaggedOnly(v => !v)}
+            style={flaggedOnly ? { background: 'rgba(220,38,38,.12)', color: 'var(--bad)' } : { color: 'var(--bad)' }}
+            title="Cases flagged for review (e.g. old RTP)">⚠️ Flagged ({(cases || []).filter(c => c.flagged).length})</div>}
           <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
           {[['', 'All'], ['open', '🟢 Open'], ['closed', '🔒 Closed']].map(([v, lbl]) =>
             <div key={v} className={cx('chip', openState === v && 'on')} onClick={() => setOpenState(v)}>{lbl}</div>)}
@@ -1290,9 +1294,9 @@ function CasesView({ user }) {
                   onChange={e => setPicked(e.target.checked ? Object.fromEntries(cases.map(c => [c.id, true])) : {})} /></th>}
                 <th>Customer</th><th>Bank</th><th>Product</th><th>Caller</th><th>FOS</th><th>Account</th><th>Target</th><th>Received</th>
                 <th>Pending</th><th>Status</th><th>Paid</th><th>Pincode</th><th>Dispo</th></tr></thead>
-              <tbody>{cases.map(c => <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
+              <tbody>{(flaggedOnly ? cases.filter(c => c.flagged) : cases).map(c => <tr key={c.id} style={{ cursor: 'pointer', ...(c.flagged ? { boxShadow: 'inset 3px 0 0 var(--bad)' } : {}) }} onClick={() => setDrawer(c)}>
                 {(isHO || canReassign) && <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={!!picked[c.id]} onChange={() => togglePick(c.id)} /></td>}
-                <td><b>{c.customer_name || '—'}</b>{c.closed && <span className="badge" title={`Closed ${c.close_date || ''} · locked`} style={{ background: '#e5e7eb', color: '#374151', marginLeft: 6, fontSize: 10 }}>🔒 closed</span>}{nextPeriod && c.period === nextPeriod && <span className="badge" title="Next month's data" style={{ background: '#dbeafe', color: '#1e40af', marginLeft: 6, fontSize: 10 }}>🔜 next</span>}<div className="muted" style={{ fontSize: 12 }}>{c.phone}</div></td>
+                <td><b>{c.customer_name || '—'}</b>{c.flagged && <span title={c.flag_reason || 'Needs review'} style={{ marginLeft: 6, color: 'var(--bad)', cursor: 'help' }}>⚠️</span>}{c.closed && <span className="badge" title={`Closed ${c.close_date || ''} · locked`} style={{ background: '#e5e7eb', color: '#374151', marginLeft: 6, fontSize: 10 }}>🔒 closed</span>}{nextPeriod && c.period === nextPeriod && <span className="badge" title="Next month's data" style={{ background: '#dbeafe', color: '#1e40af', marginLeft: 6, fontSize: 10 }}>🔜 next</span>}<div className="muted" style={{ fontSize: 12 }}>{c.phone}</div></td>
                 <td>{c.bank}</td><td>{c.product || '—'}</td>
                 <td className="muted">{staff[c.assigned_caller_id] || '—'}</td>
                 <td className="muted">{staff[c.assigned_fos_id] || '—'}</td>
@@ -2270,7 +2274,7 @@ const EMP_CLUSTERS = [
   ['pending', 'Pending ₹', c => (c.paid_status || '') !== 'PAID' && Number(c.pending_amount || 0) > 0],
   ['recovered', 'Recovered', c => Number(c.received_amount || 0) > 0],
   ['resolved', 'Resolved', c => c.status === 'paid' || c.status === 'closed'],
-  ['ptp', 'PTP', c => ['PTP', 'RTP'].includes((c.disposition || '').toUpperCase())],
+  ['ptp', 'PTP', c => (c.disposition || '').toUpperCase() === 'PTP'],
   ['visited', 'Visited', c => c.visited || c.visited_today],
   ['notvisited', 'Not visited', c => !(c.visited || c.visited_today)],
   ['contacted', 'Contacted', c => !!c.last_contacted_at || c.contacted_today],
@@ -2387,7 +2391,7 @@ function VisitModal({ c, onClose, onDone }) {
       f.append('location_correct', locOk); f.append('person_moved', moved);
       f.append('paid', paid); f.append('amount_collected', paid ? (amount || '0') : '0');
       f.append('disposition', moved ? 'MOVED' : dispo); f.append('note', note);
-      if (ptpDate && (dispo === 'PTP' || dispo === 'RTP') && !paid) f.append('ptp_date', ptpDate);
+      if (ptpDate && dispo === 'PTP' && !paid) f.append('ptp_date', ptpDate);
       if (photo) f.append('photo', photo);
       await api('/api/visits', { method: 'POST', form: f });
       toast('Visit saved.'); onDone();
@@ -2421,7 +2425,7 @@ function VisitModal({ c, onClose, onDone }) {
         {!moved && <div className="field"><label>Disposition</label>
           <select className="input" value={dispo} onChange={e => setDispo(e.target.value)}>
             {DISPOS_FIELD.map(d => <option key={d}>{d}</option>)}</select></div>}
-        {!moved && !paid && (dispo === 'PTP' || dispo === 'RTP') && <div className="field"><label>PTP date <span className="muted" style={{ fontWeight: 400 }}>(promised date — case re-surfaces then)</span></label>
+        {!moved && !paid && dispo === 'PTP' && <div className="field"><label>PTP date <span className="muted" style={{ fontWeight: 400 }}>(promised date — case re-surfaces then)</span></label>
           <input className="input" type="date" value={ptpDate} onChange={e => setPtpDate(e.target.value)} /></div>}
         <div className="field"><label>Note</label>
           <textarea className="input" value={note} onChange={e => setNote(e.target.value)} placeholder="What happened at the location…" /></div>
@@ -2749,7 +2753,7 @@ function CallModal({ c, onClose, onDone }) {
   const [ptpDate, setPtpDate] = useState(''); const [followDate, setFollowDate] = useState('');
   const [paidAmt, setPaidAmt] = useState(''); const [note, setNote] = useState(''); const [normStab, setNormStab] = useState('STAB');
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
-  const isPTP = dispo === 'PTP' || dispo === 'RTP'; const isPaid = dispo === 'PAID'; const isCC = c.segment === 'Credit Card';
+  const isPTP = dispo === 'PTP';   // RTP = Refuse to Pay is not a promise const isPaid = dispo === 'PAID'; const isCC = c.segment === 'Credit Card';
   const save = async () => {
     setErr(''); setBusy(true);
     const body = { case_id: c.id, disposition: dispo, note };
@@ -2799,7 +2803,7 @@ function CallModal({ c, onClose, onDone }) {
 function histIcon(d) {
   const s = (d || '').toUpperCase();
   if (s.includes('PAYMENT')) return '💰';
-  if (s.includes('PTP') || s.includes('RTP')) return '🤝';
+  if (s.includes('PTP')) return '🤝';   // RTP (Refuse to Pay) is not a promise
   if (s.includes('PAID')) return '✅';
   if (s.includes('RNR') || s.includes('NO ANSWER') || s.includes('SWITCH')) return '📵';
   return '📞';
@@ -2822,7 +2826,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
       setCur(updated); setNcEdit(false); toast('Saved — assigned field officer notified.'); await refresh(); onChanged && onChanged();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
-  const isPTP = dispo === 'PTP' || dispo === 'RTP'; const isPaid = dispo === 'PAID'; const isCC = cur.segment === 'Credit Card';
+  const isPTP = dispo === 'PTP';   // RTP = Refuse to Pay is not a promise const isPaid = dispo === 'PAID'; const isCC = cur.segment === 'Credit Card';
   const refresh = () => Promise.all([
     api(`/api/cases/${c.id}`).then(setCur).catch(() => {}),
     api(`/api/cases/${c.id}/timeline`).then(setHist).catch(() => setHist([])),
@@ -4736,7 +4740,7 @@ function PaymentEditModal({ row, mode, initAmount, onClose, onDone }) {
     } catch (e) { setErr(e.message); setBusy(false); }
   };
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onClick={onClose} style={{ zIndex: 1000 }}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
         <div className="section-h"><h3>{mode === 'paid' ? '💰 Mark as PAID' : '↩ Revert to UNPAID'}</h3>
           <button className="btn ghost sm" onClick={onClose}>✕</button></div>
@@ -4806,7 +4810,7 @@ function StaffFormModal({ existing, roles, onClose, onDone, isAdmin }) {
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onClick={onClose} style={{ zIndex: 1000 }}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 700 }}>
         <div className="section-h"><h3>{editing ? 'Edit employee' : 'Add staff'}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
         <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
@@ -5004,7 +5008,7 @@ function OfferLetterModal({ emp, onClose }) {
       toast('Offer letter emailed to ' + r.to); onClose();
     } catch (e) { toast(e.message || 'Could not send (check SMTP settings)'); } finally { setBusy(''); } };
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onClick={onClose} style={{ zIndex: 1000 }}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 820 }}>
         <div className="section-h"><h3>📝 Offer letter — {emp.name}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
         <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>Fill the details that aren't on file, generate, then edit the salary break-up directly in the preview before downloading or emailing.</p>

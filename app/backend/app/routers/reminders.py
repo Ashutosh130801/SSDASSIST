@@ -19,7 +19,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 def my_reminders(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     today = datetime.now(IST).date()
     q = db.query(models.Case).filter(
-        models.Case.disposition.in_(["PTP", "RTP"]),
+        models.Case.disposition == "PTP",          # RTP = Refuse to Pay is not a promise
         models.Case.status.notin_(["paid", "closed"]),
         models.Case.follow_up_date.isnot(None),
         models.Case.follow_up_date <= today,

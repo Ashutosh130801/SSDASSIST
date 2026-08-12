@@ -48,6 +48,9 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
     disp = (body.disposition or "").upper()
     case.disposition = body.disposition
     case.last_contacted_at = datetime.now(timezone.utc)   # -> moves to "Contacted today"
+    if case.flagged:                                       # acted on → clear the review caution
+        case.flagged = False
+        case.flag_reason = None
 
     if disp == "PAID":
         amt = Decimal(str(body.paid_amount or 0))
@@ -61,7 +64,7 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
         if body.norm_stab:
             ns = body.norm_stab.upper()
             case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
-    elif disp in ("PTP", "RTP"):
+    elif disp == "PTP":                                    # RTP = Refuse to Pay is NOT a promise
         case.status = "ptp"
         case.follow_up_date = body.ptp_date or body.follow_up_date   # re-queues on the promised date
     else:
@@ -70,7 +73,7 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
 
     audit.record(db, user, "call", case, new=body.disposition,
                  detail=f"Call logged — {body.disposition or 'no disposition'}"
-                        + (f", PTP ₹{body.ptp_amount}" if (disp in ('PTP', 'RTP') and body.ptp_amount) else ""))
+                        + (f", PTP ₹{body.ptp_amount}" if (disp == 'PTP' and body.ptp_amount) else ""))
     audit.stamp_case(case, user)
     db.commit()
     db.refresh(call)
@@ -143,17 +146,22 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
 
 @router.get("/ptp-tracker")
 def ptp_tracker(bank: str | None = None, db: Session = Depends(get_db),
-                user: models.User = Depends(require_roles("telecaller", "admin", "manager"))):
+                user: models.User = Depends(require_roles("telecaller", "admin", "manager",
+                                                          "teamlead", "headoffice", "backend"))):
     """All active promise-to-pay cases with promised amount + date, split into
-    overdue / due today / upcoming so broken promises are chased first."""
+    overdue / due today / upcoming so broken promises are chased first. (RTP = Refuse to Pay
+    is a negative outcome and is NOT included here.)"""
     today = _ist_today()
     q = db.query(models.Case).filter(
-        models.Case.disposition.in_(["PTP", "RTP"]),
+        models.Case.disposition == "PTP",
         models.Case.status.notin_(["paid", "closed"]),
         models.Case.removed.isnot(True),
     )
     if user.role == "telecaller":
         q = q.filter(models.Case.assigned_caller_id == user.id)
+    elif user.role == "teamlead":
+        from .cases import teamlead_case_filter
+        q = q.filter(teamlead_case_filter(user))
     elif user.role == "manager":
         from sqlalchemy import or_, select
         ids = select(models.User.id).where(models.User.branch == user.branch)
@@ -167,7 +175,7 @@ def ptp_tracker(bank: str | None = None, db: Session = Depends(get_db),
     for c in cases:
         last_ptp = (
             db.query(models.CallLog)
-            .filter(models.CallLog.case_id == c.id, models.CallLog.disposition.in_(["PTP", "RTP"]))
+            .filter(models.CallLog.case_id == c.id, models.CallLog.disposition == "PTP")
             .order_by(models.CallLog.created_at.desc()).first()
         )
         promised = c.follow_up_date

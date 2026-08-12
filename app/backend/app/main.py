@@ -58,6 +58,8 @@ def _ensure_columns():
             "removed": "BOOLEAN",
             "removed_at": "TIMESTAMP",
             "removed_by": "INTEGER",
+            "flagged": "BOOLEAN",
+            "flag_reason": "VARCHAR(160)",
         },
         "users": {
             "employment_type": "VARCHAR(30)",
@@ -197,10 +199,40 @@ def _backfill_dual_role_flag():
             pass
 
 
+def _reset_rtp_promises():
+    """One-time cleanup: RTP = 'Refuse to Pay' was previously treated as a promise, so those
+    cases are stuck in 'ptp' status with a follow-up date. Pull them out of PTP and drop a red
+    caution flag so HR/managers can spot and reconsider them. Self-limiting: only touches RTP
+    cases still parked in ptp / with a follow-up, so it's a no-op after the first run."""
+    from .database import SessionLocal
+    from . import models as _m
+    from sqlalchemy import func, or_
+    db = SessionLocal()
+    try:
+        rows = (db.query(_m.Case)
+                .filter(func.upper(_m.Case.disposition) == "RTP",
+                        or_(_m.Case.status == "ptp", _m.Case.follow_up_date.isnot(None)))
+                .all())
+        for c in rows:
+            if (c.paid_status or "").upper() == "PAID":
+                continue                                  # already resolved — leave it
+            c.status = "in_progress"
+            c.follow_up_date = None
+            c.flagged = True
+            c.flag_reason = "RTP (Refuse to Pay) — was in PTP; review / take action"
+        if rows:
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 _backfill_emp_codes()
 _backfill_norm_stab()
 _fix_negative_pending()
 _backfill_dual_role_flag()
+_reset_rtp_promises()
 
 
 def _maybe_seed():

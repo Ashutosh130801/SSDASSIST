@@ -98,7 +98,7 @@ async def create_visit(
     else:
         # unpaid / partial after a visit → carry to the promised date, else next working day
         case.follow_up_date = pd or (datetime.now(IST).date() + timedelta(days=1))
-        if pd or (disposition or "").upper() in ("PTP", "RTP"):
+        if pd or (disposition or "").upper() == "PTP":       # RTP = Refuse to Pay, not a promise
             case.status = "ptp"
     audit.record(db, user, "visit", case, new=disposition,
                  detail=f"Field visit — {disposition or 'logged'}"

@@ -368,7 +368,7 @@ fun LogVisitDialog(
                     }
                 }
                 // Promise-to-pay date — the visit re-surfaces the case on that day (rollover).
-                if (!paid && (disp == "PTP" || disp == "RTP")) {
+                if (!paid && disp == "PTP") {   // RTP = Refuse to Pay is not a promise
                     Text("PTP date (promised)", style = MaterialTheme.typography.labelSmall, color = Muted)
                     DatePickerField(label = "Pick date", iso = ptpDate, onPick = { ptpDate = it })
                 }
@@ -405,7 +405,7 @@ fun LogVisitDialog(
                     amount = amount.toDoubleOrNull() ?: 0.0,
                     disposition = disp, note = note.ifBlank { null }, photoJpeg = jpeg,
                     normStab = if (paid && isCreditCard) normStab else null,
-                    ptpDate = if (!paid && (disp == "PTP" || disp == "RTP") && ptpDate.isNotBlank()) ptpDate else null,
+                    ptpDate = if (!paid && disp == "PTP" && ptpDate.isNotBlank()) ptpDate else null,
                 ))
             }) { Text("Save visit") }
         },

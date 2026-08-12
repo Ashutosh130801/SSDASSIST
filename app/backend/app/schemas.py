@@ -289,6 +289,8 @@ class CaseOut(CaseBase):
     last_contacted_at: Optional[datetime] = None
     follow_up_date: Optional[date] = None
     propensity: Optional[int] = None
+    flagged: Optional[bool] = None
+    flag_reason: Optional[str] = None
     period: Optional[str] = None
     close_date: Optional[date] = None
     closing_type: Optional[str] = None

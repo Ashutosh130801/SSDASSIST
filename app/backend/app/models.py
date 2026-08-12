@@ -160,6 +160,11 @@ class Case(Base):
     assigned_caller_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     allocation_reason = Column(String(120))
 
+    # Caution flag — a red mark drawing attention to a case that needs manual review
+    # (e.g. an old RTP "Refuse to Pay" that was wrongly sitting in PTP).
+    flagged = Column(Boolean, default=False, index=True)
+    flag_reason = Column(String(160))
+
     # escalation — pulled off the FOS/caller by admin/manager/backend to handle personally.
     # Excluded from the FOS/caller's individual performance, but STILL counted in MIS & feedback.
     escalated = Column(Boolean, default=False, index=True)

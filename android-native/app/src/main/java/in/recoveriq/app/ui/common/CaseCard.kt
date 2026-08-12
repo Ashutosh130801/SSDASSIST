@@ -86,9 +86,10 @@ fun CaseCard(
         "touched" -> Warn.copy(alpha = 0.12f)
         else -> CardWhite
     }
-    val cardBorder = when (state) {
-        "paid" -> Good.copy(alpha = 0.5f)
-        "touched" -> Warn.copy(alpha = 0.5f)
+    val cardBorder = when {
+        case.flagged == true -> Bad.copy(alpha = 0.7f)     // red caution — needs review
+        state == "paid" -> Good.copy(alpha = 0.5f)
+        state == "touched" -> Warn.copy(alpha = 0.5f)
         else -> GlassStroke
     }
     Surface(
@@ -102,7 +103,8 @@ fun CaseCard(
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column(Modifier.weight(1f)) {
-                    Text(case.customerName ?: "Unnamed customer", fontWeight = FontWeight.Bold,
+                    Text((if (case.flagged == true) "⚠️ " else "") + (case.customerName ?: "Unnamed customer"),
+                        fontWeight = FontWeight.Bold,
                         color = TextDark, style = MaterialTheme.typography.titleSmall)
                     // line 2: account · bank · product
                     Text(listOfNotNull(case.accountNo, case.bank, case.product).joinToString(" · "),
@@ -137,6 +139,7 @@ fun CaseCard(
                     if (state == "paid") TouchTag("PAID", Good)
                     else if (state == "touched") TouchTag(if (case.visitedToday == true) "VISITED" else "DONE TODAY", Warn)
                     if (case.escalated == true) TouchTag("ESCALATED", Warn)
+                    if (case.flagged == true) TouchTag("⚠ REVIEW", Bad)
                 }
                 if (showQuickActions && !case.phone.isNullOrBlank()) {
                     Row {

@@ -200,6 +200,8 @@ data class Case(
     @Json(name = "contacted_today") val contactedToday: Boolean? = false,
     val escalated: Boolean? = false,
     val propensity: Int? = null,
+    val flagged: Boolean? = false,
+    @Json(name = "flag_reason") val flagReason: String? = null,
 ) {
     /** Working state for FOS/caller lists: fresh (untouched) → touched today → paid. */
     val workState: String

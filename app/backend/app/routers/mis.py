@@ -172,7 +172,7 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
 
     contacted = [c for c in cases if c.last_contacted_at or c.visited]
     paid_contacted = [c for c in contacted if _is_paid(c)]
-    ptp_cases = [c for c in cases if (c.disposition or "").upper() in ("PTP", "RTP")]
+    ptp_cases = [c for c in cases if (c.disposition or "").upper() == "PTP"]   # RTP = refuse, excluded
     ptp_kept = [c for c in ptp_cases if _is_paid(c)]
     ptp_broken = [c for c in ptp_cases if not _is_paid(c) and c.follow_up_date and c.follow_up_date < today]
     untouched = [c for c in cases if not c.last_contacted_at and not c.visited]
@@ -479,7 +479,7 @@ def highlights(db: Session = Depends(get_db), user: models.User = Depends(requir
     collected = sum(_f(c.received_amount) for c in cases)
     norm_target = sum(_f(c.norm_amount) for c in cases)
     untouched = [c for c in cases if not c.last_contacted_at and not c.visited]
-    ptp_broken = sum(1 for c in cases if (c.disposition or "").upper() in ("PTP", "RTP")
+    ptp_broken = sum(1 for c in cases if (c.disposition or "").upper() == "PTP"
                      and not _is_paid(c) and c.follow_up_date and c.follow_up_date < today)
 
     # Target gap per (bank, product, FOS) using manager-entered targets.
