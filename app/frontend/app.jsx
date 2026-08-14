@@ -1364,6 +1364,9 @@ function LiveMap({ config }) {
   const [dayVisits, setDayVisits] = useState(null); const [selVisit, setSelVisit] = useState(null);
   const [showReport, setShowReport] = useState(false); const [drawerCase, setDrawerCase] = useState(null);
   const [rosterOpen, setRosterOpen] = useState(false); const [roster, setRoster] = useState(null); const [rosterDate, setRosterDate] = useState('');
+  const [rosterQ, setRosterQ] = useState('');
+  const _rmatch = o => { const q = rosterQ.trim().toLowerCase(); if (!q) return true;
+    return [o.name, o.emp_code, o.branch, o.location, o.phone].some(v => (v || '').toString().toLowerCase().includes(q)); };
   const loadRoster = useCallback((d) => {
     setRoster(null);
     api('/api/tracking/roster' + (d ? '?date=' + d : '')).then(setRoster).catch(() => setRoster({ active: [], inactive: [], active_count: 0, inactive_count: 0, total: 0, error: true }));
@@ -1568,6 +1571,9 @@ function LiveMap({ config }) {
               <input className="input" type="date" max={new Date().toISOString().slice(0, 10)} value={rosterDate}
                 onChange={e => { setRosterDate(e.target.value); loadRoster(e.target.value); }} /></div>
             {rosterDate && <button className="btn sm" onClick={() => { setRosterDate(''); loadRoster(''); }}>Today</button>}
+            <div className="field" style={{ margin: 0, minWidth: 200 }}><label style={{ fontSize: 11 }}>Search</label>
+              <input className="input" value={rosterQ} onChange={e => setRosterQ(e.target.value)}
+                placeholder="🔍 Name / ID / branch / phone" /></div>
             <div style={{ flex: 1 }} />
             {roster && !roster.error && <span className="muted" style={{ fontSize: 12.5 }}>
               <b style={{ color: 'var(--good)' }}>{roster.active_count} active</b> · {roster.inactive_count} inactive · {roster.total} total</span>}
@@ -1576,8 +1582,8 @@ function LiveMap({ config }) {
             <div className="glass card" style={{ padding: 8, maxHeight: 360, overflow: 'auto' }}>
               <b style={{ color: 'var(--good)' }}>● Active ({roster.active_count})</b>
               <p className="muted" style={{ fontSize: 11, margin: '2px 0 6px' }}>Shared live location this day</p>
-              {roster.active.length === 0 ? <div className="muted" style={{ fontSize: 12 }}>None.</div> :
-                roster.active.map(o => <div key={o.id} style={{ padding: '6px 0', borderBottom: '1px solid var(--stroke-soft)' }}>
+              {roster.active.filter(_rmatch).length === 0 ? <div className="muted" style={{ fontSize: 12 }}>{rosterQ ? 'No match.' : 'None.'}</div> :
+                roster.active.filter(_rmatch).map(o => <div key={o.id} style={{ padding: '6px 0', borderBottom: '1px solid var(--stroke-soft)' }}>
                   <b>{o.name}</b> <span className="muted" style={{ fontSize: 11 }}>{o.emp_code || ''}</span>
                   <div className="muted" style={{ fontSize: 11 }}>🏢 {o.branch || o.location || '—'} · {o.pings} pts · {o.distance_km || 0} km</div>
                   <div className="muted" style={{ fontSize: 11 }}>🕘 {fmtT(o.first_seen)}–{fmtT(o.last_seen)}</div>
@@ -1586,8 +1592,8 @@ function LiveMap({ config }) {
             <div className="glass card" style={{ padding: 8, maxHeight: 360, overflow: 'auto' }}>
               <b style={{ color: 'var(--ink-dim)' }}>● Inactive ({roster.inactive_count})</b>
               <p className="muted" style={{ fontSize: 11, margin: '2px 0 6px' }}>No tracking this day</p>
-              {roster.inactive.length === 0 ? <div className="muted" style={{ fontSize: 12 }}>None — everyone tracked 🎉</div> :
-                roster.inactive.map(o => <div key={o.id} style={{ padding: '6px 0', borderBottom: '1px solid var(--stroke-soft)' }}>
+              {roster.inactive.filter(_rmatch).length === 0 ? <div className="muted" style={{ fontSize: 12 }}>{rosterQ ? 'No match.' : 'None — everyone tracked 🎉'}</div> :
+                roster.inactive.filter(_rmatch).map(o => <div key={o.id} style={{ padding: '6px 0', borderBottom: '1px solid var(--stroke-soft)' }}>
                   <b>{o.name}</b> <span className="muted" style={{ fontSize: 11 }}>{o.emp_code || ''}</span>
                   <div className="muted" style={{ fontSize: 11 }}>🏢 {o.branch || o.location || '—'}{o.phone ? ' · 📞 ' + o.phone : ''}</div>
                 </div>)}
@@ -3138,11 +3144,15 @@ function AIAssist({ user }) {
 /* ============================== PTP Tracker ============================== */
 function PTPTracker() {
   const [data, setData] = useState(null); const [bank, setBank] = useState(''); const [drawer, setDrawer] = useState(null);
+  const [err, setErr] = useState('');
   const load = () => { const p = new URLSearchParams(); if (bank) p.set('bank', bank);
-    api('/api/calls/ptp-tracker' + (p.toString() ? '?' + p : '')).then(setData)
-      .catch(() => setData({ rows: [], counts: { overdue: 0, today: 0, upcoming: 0 } })); };
+    setErr('');
+    api('/api/calls/ptp-tracker' + (p.toString() ? '?' + p : '')).then(d => setData(d))
+      .catch(e => { setErr(e.message || 'Could not load promises'); setData({ rows: [], counts: { overdue: 0, today: 0, upcoming: 0 } }); }); };
   useEffect(() => { load(); }, [bank]);
   if (!data) return <Loader />;
+  if (err) return <div className="glass card" style={{ color: 'var(--bad)' }}>Couldn’t load the PTP tracker: {err}
+    <button className="btn sm" style={{ marginLeft: 10 }} onClick={load}>Retry</button></div>;
   const groups = [['overdue', 'Overdue', 'unpaid'], ['today', 'Due today', 'partial'], ['upcoming', 'Upcoming', 'ptp']];
   return (
     <div>
@@ -3499,7 +3509,8 @@ const LEAVE_TYPES = ['Casual', 'Sick', 'Earned', 'Unpaid'];
 function LeaveView({ user }) {
   const [bal, setBal] = useState(null); const [mine, setMine] = useState(null);
   const [team, setTeam] = useState(null); const [ins, setIns] = useState(null);
-  const isMgr = user.role === 'admin' || user.role === 'manager';
+  // HR + head office approve leave org-wide, alongside admin/manager.
+  const isMgr = ['admin', 'manager', 'hr', 'headoffice'].includes(user.role);
   const [ltype, setLtype] = useState('Casual'); const [s1, setS1] = useState(''); const [s2, setS2] = useState('');
   const [reason, setReason] = useState(''); const [busy, setBusy] = useState(false);
   const load = () => {
@@ -4281,6 +4292,73 @@ function EscalationsView({ user }) {
   );
 }
 
+/* ==================== My Performance (caller / FOS own scorecard) ==================== */
+function MyPerformance({ user }) {
+  const [monthB, setMonthB] = useState('current');
+  const [d, setD] = useState(null); const [err, setErr] = useState('');
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const load = () => api('/api/mis/my-performance?month_bucket=' + monthB).then(setD).catch(e => setErr(e.message || 'Could not load'));
+  useEffect(() => { load(); }, [monthB]);
+  useDataChanged(load);   // live: refresh my scorecard whenever a payment/log lands
+  if (err) return <div className="glass card" style={{ color: 'var(--bad)' }}>{err}</div>;
+  if (!d) return <Loader />;
+  const t = d.totals || {};
+  const roleWord = d.as_fos ? 'field agents' : 'callers';
+  return (
+    <div>
+      <div className="toolbar" style={{ marginBottom: 12, alignItems: 'center', gap: 10 }}>
+        <select className="sv-btn" value={monthB} onChange={e => setMonthB(e.target.value)} title="Each month is a separate book">
+          <option value="current">This month</option>
+          <option value="next">Next month</option>
+          <option value="">All months</option>
+        </select>
+        <span className="muted" style={{ fontSize: 12 }}>Each portfolio is kept separate for the month you pick — nothing is merged.</span>
+      </div>
+
+      <div className="kpis">
+        <StatCard icon="📁" label="My cases" accent="blue" value={(t.count || 0).toLocaleString('en-IN')}
+          sub={<span>{t.paid || 0} paid · {t.unpaid || 0} open</span>} />
+        <StatCard icon="💼" label="My book (ENR)" value={money(t.enr)} sub="Total receivables assigned to me" />
+        <StatCard icon="✅" label="Achieved (ENR)" accent="green" value={money(t.paid_enr)} valueColor="var(--good)"
+          sub={<span><b style={{ color: 'var(--good)' }}>{t.achieved_pct || 0}%</b> of my book</span>} />
+        <StatCard icon="💰" label="Cash collected" accent="amber" value={money(t.collected)}
+          sub={<span>{money(t.pending)} still pending</span>} />
+      </div>
+
+      {(!d.portfolios || !d.portfolios.length) && <div className="glass card muted" style={{ marginTop: 12 }}>
+        No portfolios assigned to you for this month yet.</div>}
+
+      {(d.portfolios || []).map((p, i) => (
+        <div key={i} className="glass card" style={{ marginTop: 14, padding: 12 }}>
+          <div className="section-h">
+            <h3 style={{ margin: 0 }}>{p.label}</h3>
+            {p.rank && <span className="badge paid" style={{ fontSize: 12 }}>🏆 Rank #{p.rank} of {p.field_size}</span>}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(128px,1fr))', gap: 10, margin: '10px 0 12px' }}>
+            <div className="glass card" style={{ padding: 10 }}><div className="muted" style={{ fontSize: 12 }}>Cases</div><b style={{ fontSize: 18 }}>{p.count}</b><div className="muted" style={{ fontSize: 11 }}>{p.paid} paid · {p.unpaid} open</div></div>
+            <div className="glass card" style={{ padding: 10 }}><div className="muted" style={{ fontSize: 12 }}>My ENR</div><b style={{ fontSize: 18 }}>{money(p.enr)}</b></div>
+            <div className="glass card" style={{ padding: 10 }}><div className="muted" style={{ fontSize: 12 }}>Achieved</div><b style={{ fontSize: 18, color: 'var(--good)' }}>{p.achieved_pct}%</b><div className="muted" style={{ fontSize: 11 }}>{money(p.paid_enr)}</div></div>
+            <div className="glass card" style={{ padding: 10 }}><div className="muted" style={{ fontSize: 12 }}>Target</div><b style={{ fontSize: 18 }}>{p.target_pct}%</b><div className="muted" style={{ fontSize: 11 }}>{p.target_pct ? money(p.target_enr) : 'not set'}</div></div>
+            <div className="glass card" style={{ padding: 10 }}><div className="muted" style={{ fontSize: 12 }}>To target</div><b style={{ fontSize: 18, color: p.to_target_pct >= 100 ? 'var(--good)' : 'var(--warn)' }}>{p.to_target_pct}%</b>{p.gap_enr > 0 && <div className="muted" style={{ fontSize: 11 }}>gap {money(p.gap_enr)}</div>}</div>
+            <div className="glass card" style={{ padding: 10 }}><div className="muted" style={{ fontSize: 12 }}>Cash</div><b style={{ fontSize: 18 }}>{money(p.collected)}</b><div className="muted" style={{ fontSize: 11 }}>{money(p.pending)} pending</div></div>
+          </div>
+          {p.leaderboard && p.leaderboard.length > 0 && <div>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Leaderboard — {roleWord} on this portfolio (you are highlighted)</div>
+            <div className="tablewrap"><table><thead><tr>
+              <th>#</th><th>Agent</th><th>Cases</th><th>ENR</th><th>Achieved %</th><th>Paid ENR</th><th>Cash coll</th></tr></thead>
+              <tbody>{p.leaderboard.map((r, j) => <tr key={j} style={r.you ? { background: 'rgba(37,99,235,.12)', fontWeight: 700 } : null}>
+                <td>{r.rank}</td><td>{r.name}{r.you ? ' (you)' : ''}</td><td>{r.count}</td>
+                <td className="mono">{money(r.enr)}</td><td><b>{r.achieved_pct}%</b></td>
+                <td className="mono" style={{ color: 'var(--good)' }}>{money(r.paid_enr)}</td>
+                <td className="mono">{money(r.collected)}</td></tr>)}
+              </tbody></table></div>
+          </div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ==================== Live Sheet (telecaller spreadsheet) ==================== */
 const SHEET_COLS = [
   { k: 'customer_name', t: 'Customer', type: 'text' },
@@ -4385,6 +4463,7 @@ function SheetView({ user, config }) {
   const [live, setLive] = React.useState(false);
   const [search, setSearch] = React.useState('');
   const [bankF, setBankF] = React.useState(''); const [prodF, setProdF] = React.useState('');
+  const [monthB, setMonthB] = React.useState('current');   // default THIS month so months aren't merged
   const [payModal, setPayModal] = React.useState(null);   // {row, mode:'paid'|'unpaid'}
   const [presence, setPresence] = React.useState({});      // case_id -> [{id,name,role,field}]
   const wsRef = React.useRef(null);
@@ -4393,10 +4472,18 @@ function SheetView({ user, config }) {
   // accounting popups (callers only on their own cases — enforced by the backend scope).
   const canPayEdit = ['admin', 'headoffice', 'manager', 'backend', 'telecaller', 'teamlead'].includes(user.role);
 
-  const load = () => api('/api/cases?limit=2000').then(d => setRows(Array.isArray(d) ? d : [])).catch(e => setErr(e.message || 'Could not load'));
+  const monthBRef = React.useRef(monthB);
+  React.useEffect(() => { monthBRef.current = monthB; }, [monthB]);
+  const load = () => {
+    const mb = monthBRef.current;
+    return api('/api/cases?limit=2000' + (mb ? '&month_bucket=' + encodeURIComponent(mb) : ''))
+      .then(d => setRows(Array.isArray(d) ? d : [])).catch(e => setErr(e.message || 'Could not load'));
+  };
+
+  // Reload the sheet whenever the month filter changes so each month's book is separate.
+  React.useEffect(() => { load(); }, [monthB]);
 
   React.useEffect(() => {
-    load();
     api('/api/sheet/prefs').then(p => setPrefs({
       visible: (p && p.visible) || SHEET_DEFAULT_VISIBLE,
       order: (p && p.order) || SHEET_COLS.map(c => c.k),
@@ -4604,6 +4691,11 @@ function SheetView({ user, config }) {
         <select className="sv-btn" value={prodF} onChange={e => setProdF(e.target.value)}>
           <option value="">All products</option>
           {[...new Set(rows.filter(r => !bankF || r.bank === bankF).map(r => r.product).filter(Boolean))].sort().map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select className="sv-btn" value={monthB} onChange={e => setMonthB(e.target.value)} title="Each month is a separate book">
+          <option value="current">This month</option>
+          <option value="next">Next month</option>
+          <option value="">All months</option>
         </select>
         <div style={{ flex: 1 }} />
         <input value={calc} onChange={e => setCalc(e.target.value)} placeholder="=SUM([pending_amount])"
@@ -4961,8 +5053,21 @@ const DOC_LIST = [
 function EmployeeDocs({ emp }) {
   const [docs, setDocs] = useState(null);
   const [busy, setBusy] = useState('');
+  const [preview, setPreview] = useState(null);   // {url, mime, filename, label}
   const load = () => api(`/api/manpower/${emp.id}/documents`).then(setDocs).catch(() => setDocs([]));
   useEffect(() => { load(); }, [emp.id]);
+  // preview a document inline (image or PDF) — fetch with auth, show via an object URL
+  const view = async (d, label) => { setBusy(d.doc_type);
+    try {
+      const res = await fetch(`/api/manpower/${emp.id}/documents/${d.id}/download`,
+        { headers: store.t ? { Authorization: 'Bearer ' + store.t } : {} });
+      if (!res.ok) { toast('Could not open document'); return; }
+      const blob = await res.blob();
+      const mime = blob.type || res.headers.get('content-type') || '';
+      setPreview({ url: URL.createObjectURL(blob), mime, filename: d.filename || d.doc_type, label });
+    } catch (e) { toast('Could not open: ' + e.message); } finally { setBusy(''); }
+  };
+  const closePreview = () => { if (preview) { try { URL.revokeObjectURL(preview.url); } catch (e) {} } setPreview(null); };
   const byType = {}; (docs || []).forEach(d => { byType[d.doc_type] = d; });
   const up = async (type, file) => {
     if (!file) return; setBusy(type);
@@ -4983,12 +5088,30 @@ function EmployeeDocs({ emp }) {
         {DOC_LIST.map(([k, label]) => { const d = byType[k]; return (
           <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '4px 0', borderBottom: '1px solid var(--line)' }}>
             <span style={{ flex: 1 }}>{d ? '✅' : '⬜'} {label}</span>
-            {d && <a className="btn ghost sm" onClick={() => download(`/api/manpower/${emp.id}/documents/${d.id}/download`, d.filename || k)}>⬇</a>}
-            {d && <button className="btn ghost sm" disabled={busy === k} onClick={() => del(d)}>🗑</button>}
+            {d && <button className="btn ghost sm" disabled={busy === k} onClick={() => view(d, label)} title="View / preview">👁</button>}
+            {d && <a className="btn ghost sm" onClick={() => download(`/api/manpower/${emp.id}/documents/${d.id}/download`, d.filename || k)} title="Download">⬇</a>}
+            {d && <button className="btn ghost sm" disabled={busy === k} onClick={() => del(d)} title="Delete">🗑</button>}
             <label className="btn sm" style={{ cursor: 'pointer', margin: 0 }}>{busy === k ? '…' : (d ? 'Replace' : 'Upload')}
               <input type="file" style={{ display: 'none' }} onChange={e => up(k, e.target.files[0])} /></label>
           </div>); })}
       </div>
+
+      {preview && <div className="modal-bg" onClick={closePreview} style={{ zIndex: 1000 }}>
+        <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 820, width: '90%' }}>
+          <div className="section-h"><h3 style={{ margin: 0, fontSize: 15 }}>{preview.label} — {emp.name}</h3>
+            <button className="btn ghost sm" onClick={closePreview}>✕</button></div>
+          <div style={{ background: '#fff', borderRadius: 10, padding: 8, textAlign: 'center', maxHeight: '70vh', overflow: 'auto' }}>
+            {preview.mime.startsWith('image/') ?
+              <img src={preview.url} alt={preview.label} style={{ maxWidth: '100%', height: 'auto' }} /> :
+              preview.mime.includes('pdf') ?
+                <iframe src={preview.url} title={preview.label} style={{ width: '100%', height: '68vh', border: 'none' }} /> :
+                <div className="muted" style={{ padding: 24 }}>Can’t preview this file type ({preview.mime || 'unknown'}). Use download instead.</div>}
+          </div>
+          <div className="toolbar" style={{ marginTop: 10 }}>
+            <a className="btn sm" href={preview.url} download={preview.filename}>⬇ Download</a>
+          </div>
+        </div>
+      </div>}
     </div>
   );
 }
@@ -5157,11 +5280,11 @@ function ProfileView({ user }) {
 const NAV = {
   admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  fos: [['dashboard', '📊', 'My Stats'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  telecaller: [['dashboard', '📊', 'My Stats'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  fos: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  telecaller: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   hr: [['manpower', '🧑‍💼', 'Manpower'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
   it: [['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
   staff: [['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
@@ -5265,6 +5388,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'fcases': return <FOCases config={config} />;
       case 'fmap': return <FOLiveMap config={config} />;
       case 'queue': return <CallQueue />;
+      case 'myperf': return <MyPerformance user={user} />;
       case 'mis': return <MISView user={user} />;
       case 'sheet': return <SheetView user={user} config={config} />;
       case 'ptp': return <PTPTracker />;

@@ -314,9 +314,11 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
             unmatched_n += 1
             continue
         case = it["_case"]
+        # Snapshot the collection base BEFORE any full-sync field overwrite, so a balance/TOS
+        # column in the DPR can't corrupt how much is treated as paid / still pending.
+        base = _pay_base_total(case)
 
-        # Full-sync: apply any other recognised columns present (before payment math,
-        # so an updated total_outstanding feeds the pending calculation).
+        # Full-sync: apply any other recognised columns present (contact, bucket, etc.).
         ups = it.get("_fields") or {}
         if ups:
             for attr, val in ups.items():
@@ -336,12 +338,14 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
             already_n += 1
             continue
         if act == "mark_paid":
-            amt = it["_amount"] if (it["_amount"] and it["_amount"] > 0) else (
-                _pay_base_total(case) - Decimal(case.received_amount or 0))
+            # The DPR is the case's CURRENT state, not an increment — so SET the received
+            # amount to what the report says (fall back to paid-in-full when no amount given),
+            # never add on top (which double-counted).
+            amt = it["_amount"] if (it["_amount"] and it["_amount"] > 0) else base
             if amt < 0:
                 amt = Decimal(0)
-            case.received_amount = Decimal(case.received_amount or 0) + amt
-            pend = _pay_base_total(case) - Decimal(case.received_amount or 0)
+            case.received_amount = amt
+            pend = base - amt
             case.pending_amount = pend if pend > 0 else Decimal(0)
             case.paid_status, case.status, case.follow_up_date = "PAID", "paid", None
             if it["_ns"]:
@@ -358,7 +362,7 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
         else:  # mark_unpaid (reversal)
             prev = Decimal(case.received_amount or 0)
             case.received_amount = Decimal(0)
-            case.pending_amount = _pay_base_total(case)
+            case.pending_amount = base
             case.paid_status, case.status, case.norm_stab = "UNPAID", "allocated", None
             if prev > 0:
                 credit = case.assigned_caller_id or case.assigned_fos_id or user.id

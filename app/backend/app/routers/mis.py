@@ -132,8 +132,26 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
         lb.sort(key=lambda x: x["achieved_enr"], reverse=True)
         return lb
 
-    by_fos = _group(cases, lambda c: c.fos_name)
-    by_caller_g = _group(cases, lambda c: c.caller_name)
+    # Every FOS/caller in the MIS is shown as their REAL full name + employee ID
+    # (e.g. "Uday Kumar (FO007)"), resolved from the case's assigned person — never the
+    # raw sheet text like "UDAY/KAKINADA , 9032220101". Unallocated cases group as
+    # "Unassigned" so they can't be mistaken for a person.
+    _ppl = {u.id: (u.name, u.emp_code) for u in db.query(models.User).all()}
+
+    def _person_label(uid):
+        if uid and uid in _ppl:
+            nm, code = _ppl[uid]
+            return f"{nm} ({code})" if code else (nm or "Unassigned")
+        return None
+
+    def _fos_label(c):
+        return _person_label(c.assigned_fos_id) or "Unassigned"
+
+    def _caller_label(c):
+        return _person_label(c.assigned_caller_id) or "Unassigned"
+
+    by_fos = _group(cases, _fos_label)
+    by_caller_g = _group(cases, _caller_label)
     leaderboard = _leaderboard(by_fos)                 # FOS performance vs the one target
     caller_leaderboard = _leaderboard(by_caller_g)     # caller performance vs the same target
 
@@ -191,7 +209,7 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
     def case_row(c):
         return {"customer": c.customer_name, "account": c.account_no, "pending": _f(c.pending_amount),
                 "enr": _f(c.enr), "propensity": getattr(c, "propensity", None) or _prop(c),
-                "fos": c.fos_name, "caller": c.caller_name,
+                "fos": _fos_label(c), "caller": _caller_label(c),
                 "contacted": bool(c.last_contacted_at or c.visited)}
 
     untouched_tbl = [case_row(c) for c in sorted(untouched, key=lambda x: _f(x.pending_amount), reverse=True)[:25]]
@@ -213,7 +231,7 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
 
     obg: dict[str, dict] = {}
     for c in cases:
-        k = c.caller_name or "—"
+        k = _caller_label(c)
         o = obg.setdefault(k, {"caller": k, "total": 0, "obstacles": 0})
         o["total"] += 1
         if (c.disposition or "").upper() in OBSTACLE:
@@ -333,6 +351,92 @@ def mis(bank: str = Query(...), product: str = Query(...), month_bucket: str | N
     out["area"] = area or ""
     out["branch"] = branch or ""
     return out
+
+
+@router.get("/my-performance")
+def my_performance(month_bucket: str | None = "current",
+                   db: Session = Depends(get_db),
+                   user: models.User = Depends(get_current_user)):
+    """A caller's (or FOS's) OWN scorecard — per-portfolio achievement, plus where they rank
+    on each portfolio's leaderboard. Every portfolio is kept separate PER MONTH (each month is
+    its own book), so nothing is merged across months. Names on the leaderboard are the real
+    full name + employee id."""
+    is_fos = (user.role == "fos")
+    id_col = models.Case.assigned_fos_id if is_fos else models.Case.assigned_caller_id
+    id_attr = "assigned_fos_id" if is_fos else "assigned_caller_id"
+    period = _period_for(month_bucket)
+
+    myq = db.query(models.Case).filter(id_col == user.id, models.Case.removed.isnot(True))
+    if period:
+        myq = myq.filter(models.Case.period == period)
+    mine = myq.all()
+
+    ppl = {u.id: (u.name, u.emp_code) for u in db.query(models.User).all()}
+    def _lbl(uid):
+        if uid in ppl:
+            nm, code = ppl[uid]
+            return f"{nm} ({code})" if code else (nm or "—")
+        return "Unassigned"
+
+    targets = {(t.bank, t.product): _f(t.target_pct) for t in
+               db.query(models.MisTarget).filter(models.MisTarget.emp_name == "*ALL*").all()}
+
+    # my cases grouped into portfolios (bank + product + branch)
+    buckets: dict[tuple, list] = {}
+    for c in mine:
+        buckets.setdefault((c.bank or "—", c.product or "—", c.branch or ""), []).append(c)
+
+    cards = []
+    for (bank, product, branch), rows in buckets.items():
+        a = _agg(rows)
+        tgt = targets.get((bank, product), 0.0)
+        tenr = round(a["enr"] * tgt / 100.0, 2)
+
+        # the whole portfolio (same bank/product/branch/month) — to rank me against peers
+        pq = db.query(models.Case).filter(models.Case.bank == bank, models.Case.product == product,
+                                          models.Case.removed.isnot(True), id_col.isnot(None))
+        pq = pq.filter(models.Case.branch == branch) if branch else \
+             pq.filter((models.Case.branch.is_(None)) | (models.Case.branch == ""))
+        if period:
+            pq = pq.filter(models.Case.period == period)
+        byp: dict[int, list] = {}
+        for c in pq.all():
+            byp.setdefault(getattr(c, id_attr), []).append(c)
+        lb = []
+        for pid, prows in byp.items():
+            pa = _agg(prows)
+            lb.append({"id": pid, "name": _lbl(pid), "you": (pid == user.id),
+                       "count": pa["count"], "enr": pa["enr"], "paid_enr": pa["paid_enr"],
+                       "achieved_pct": pa["pct"], "collected": pa["amount"]})
+        lb.sort(key=lambda x: x["paid_enr"], reverse=True)
+        for i, r in enumerate(lb):
+            r["rank"] = i + 1
+        my_rank = next((r["rank"] for r in lb if r["you"]), None)
+
+        cards.append({
+            "bank": bank, "product": product, "branch": branch,
+            "label": f"{bank} {product}" + (f" · {branch}" if branch else ""),
+            "count": a["count"], "paid": a["paid"], "unpaid": a["unpaid"],
+            "enr": a["enr"], "paid_enr": a["paid_enr"], "pending": a["pending"],
+            "collected": a["amount"], "achieved_pct": a["pct"],
+            "norm_pct": a["norm_pct"], "stab_pct": a["stab_pct"],
+            "target_pct": tgt, "target_enr": tenr,
+            "to_target_pct": _pct(a["paid_enr"], tenr) if tenr else 0.0,
+            "gap_enr": round(max(tenr - a["paid_enr"], 0), 2),
+            "rank": my_rank, "field_size": len(lb),
+            "leaderboard": lb,
+        })
+    cards.sort(key=lambda x: x["enr"], reverse=True)
+
+    tot = _agg(mine)
+    return {
+        "month_bucket": month_bucket or "all",
+        "as_fos": is_fos,
+        "totals": {"count": tot["count"], "paid": tot["paid"], "unpaid": tot["unpaid"],
+                   "enr": tot["enr"], "paid_enr": tot["paid_enr"], "pending": tot["pending"],
+                   "collected": tot["amount"], "achieved_pct": tot["pct"]},
+        "portfolios": cards,
+    }
 
 
 @router.put("/target")
@@ -511,8 +615,14 @@ def highlights(db: Session = Depends(get_db), user: models.User = Depends(requir
                        "gap_enr": round(gap, 2), "to_target_pct": _pct(g["paid"], tenr)})
     behind.sort(key=lambda x: x["gap_enr"], reverse=True)
 
+    _ppl2 = {u.id: (u.name, u.emp_code) for u in db.query(models.User).all()}
+    def _fos_lbl(c):
+        if c.assigned_fos_id and c.assigned_fos_id in _ppl2:
+            nm, code = _ppl2[c.assigned_fos_id]
+            return f"{nm} ({code})" if code else (nm or "Unassigned")
+        return "Unassigned"
     top_untouched = [{"customer": c.customer_name, "account": c.account_no,
-                      "product": f"{c.bank or '—'} · {c.product or '—'}", "fos": c.fos_name,
+                      "product": f"{c.bank or '—'} · {c.product or '—'}", "fos": _fos_lbl(c),
                       "pending": _f(c.pending_amount)}
                      for c in sorted(untouched, key=lambda x: _f(x.pending_amount), reverse=True)[:8]]
 

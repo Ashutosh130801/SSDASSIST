@@ -33,7 +33,8 @@ def _out(lv, names):
 
 
 def _can_manage(actor, target_user):
-    if actor.role == "admin":
+    # HR and head office approve leave org-wide (any staff, any branch). Admin too.
+    if actor.role in ("admin", "hr", "headoffice"):
         return True
     if actor.role == "manager":
         return target_user and target_user.branch == actor.branch and target_user.role not in ("admin", "manager")

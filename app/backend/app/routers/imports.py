@@ -100,16 +100,19 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     # for older sheets. When matched we also normalise caller_name to the real name (MIS).
     _users = db.query(models.User).all()
     _by_id = {u.id: u for u in _users}
-    _by_code = {u.emp_code.strip().upper(): u for u in _users if u.emp_code}
-    _by_name = {u.name.strip().upper(): u for u in _users if u.name}
-    # FOS is resolved the same way as caller — straight from the sheet's FOS column
-    # (its ID or name), CROSS-BRANCH. A Vizag caller can work a case whose FOS is in
-    # another branch; both come from the file, not from any branch rule.
-    _fos_by_code = {u.emp_code.strip().upper(): u for u in _users if u.emp_code and u.role == "fos"}
-    _fos_by_name = {u.name.strip().upper(): u for u in _users if u.name and u.role == "fos"}
-    _caller_cands = [(u.name.strip().upper(), u) for u in _users
-                     if u.name and u.role in ("telecaller", "teamlead")]
-    _fos_cands = [(u.name.strip().upper(), u) for u in _users if u.name and u.role == "fos"]
+    # Allocation is by EMPLOYEE ID ONLY (per the user): the CALLER column holds the caller's
+    # emp_code (e.g. TC001), the FOS column holds the FOS's emp_code (e.g. FO007). We match the
+    # cell strictly to that ID — no name / fuzzy / GPS guessing — so a case is only ever handed
+    # to the exact person printed in the sheet. Anything that isn't a known ID is reported back
+    # unallocated with a reason, never assigned to someone at random.
+    _caller_by_code = {u.emp_code.strip().upper(): u for u in _users
+                       if u.emp_code and u.role in ("telecaller", "teamlead") and u.is_active}
+    # a dual-role caller/FOS granted the team-lead hat may appear under their TL id too
+    for u in _users:
+        if u.is_active and getattr(u, "also_team_lead", False) and getattr(u, "tl_emp_code", None):
+            _caller_by_code.setdefault(u.tl_emp_code.strip().upper(), u)
+    _fos_by_code = {u.emp_code.strip().upper(): u for u in _users
+                    if u.emp_code and u.role == "fos" and u.is_active}
     # Team lead is resolved from the sheet's TEAM LEAD ID column (its emp code, e.g. TL001,
     # or the TL's name). The resolved TL is stamped on the case and the case's caller + FOS
     # are linked to report to that team lead (so it shows in the team lead's scope).
@@ -125,38 +128,27 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     _tl_by_name = {u.name.strip().upper(): u for u in _tls if u.name}
     _tl_cands = [(u.name.strip().upper(), u) for u in _tls if u.name]
 
-    def _match(val, by_code, by_name, candidates):
-        """Resolve one CALLER/FOS cell to a person and say WHY if it can't.
-        Returns (user_or_None, reason) where reason is:
-          '' matched · 'blank' no value in the cell · 'unknown' name/ID not in the system
-          · 'ambiguous' the partial name fits more than one person (left unassigned on purpose).
-        First-upload safety net: the sheet may hold just part of a name ('Krishna' for
-        'Krishna Sai Durga') — matched only when it points to exactly ONE person."""
+    def _match(val, by_code):
+        """Resolve one CALLER/FOS/TL cell to a person by EMPLOYEE ID ONLY, and say WHY if it can't.
+        No name or fuzzy matching — that caused wrong / confusing assignments. The cell must
+        carry the exact emp_code (e.g. TC001 / FO007 / TL003). Returns (user_or_None, reason):
+          '' matched · 'blank' no value in the cell · 'unknown' the ID isn't a known active employee."""
         if val is None or not str(val).strip():
             return None, "blank"
         key = str(val).strip().upper()
-        exact = by_code.get(key) or by_name.get(key)
-        if exact:
-            return exact, ""
-        if len(key) < 3:
-            return None, "unknown"
-        hits = {}
-        for nm, u in candidates:
-            words = nm.split()
-            if key == nm or key in words or nm.startswith(key) or (words and words[0].startswith(key)):
-                hits[u.id] = u
-        if len(hits) == 1:
-            return next(iter(hits.values())), ""
-        return None, ("ambiguous" if len(hits) > 1 else "unknown")
+        u = by_code.get(key)
+        if u:
+            return u, ""
+        return None, "unknown"
 
     def _match_caller(val):
-        return _match(val, _by_code, _by_name, _caller_cands)
+        return _match(val, _caller_by_code)
 
     def _match_fos(val):
-        return _match(val, _fos_by_code, _fos_by_name, _fos_cands)
+        return _match(val, _fos_by_code)
 
     def _match_teamlead(val):
-        return _match(val, _tl_by_code, _tl_by_name, _tl_cands)
+        return _match(val, _tl_by_code)
 
     def _resolve_caller(val):
         return _match_caller(val)[0]
@@ -179,7 +171,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     # Per-row diagnostics: rows whose CALLER/FOS was named on the sheet but didn't map to
     # anyone (typo, person not created yet, or an ambiguous partial name). Blanks are counted
     # but not listed — not every case carries both a caller and a field officer.
-    _REASON_TEXT = {"unknown": "no matching employee (check spelling / create them first)",
+    _REASON_TEXT = {"unknown": "not a known employee ID — put the caller/FOS ID (e.g. TC001 / FO007) in this column",
                     "ambiguous": "name matches more than one person — use their ID (e.g. TC001)"}
     unresolved_rows: list = []
     blank_caller = blank_fos = 0
@@ -292,9 +284,12 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                        "rows_total": len(records), "skipped": skipped})
     db.commit()
 
+    # Allocation is EMPLOYEE-ID ONLY (from the sheet's CALLER/FOS ID columns, done above).
+    # We deliberately DO NOT run the pincode/GPS/load-balancing auto-allocator here — that
+    # would assign cases to people who weren't named in the sheet, which is exactly the
+    # "random" behaviour the user asked us to stop. Anything without a valid ID stays
+    # unallocated and is reported in assignment_report so it can be fixed and re-uploaded.
     alloc = {"fos_allocated": 0, "caller_allocated": 0}
-    if auto_allocate:
-        alloc = run_allocation(db, only_unallocated=True, bank=default_bank)
 
     # Report the overall assignment state so a repeat upload (0 *new* allocations)
     # isn't mistaken for "nothing is allocated".

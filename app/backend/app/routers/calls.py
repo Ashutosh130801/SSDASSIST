@@ -2,6 +2,7 @@ from decimal import Decimal
 from datetime import datetime, timezone, timedelta, time
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -152,18 +153,22 @@ def ptp_tracker(bank: str | None = None, db: Session = Depends(get_db),
     overdue / due today / upcoming so broken promises are chased first. (RTP = Refuse to Pay
     is a negative outcome and is NOT included here.)"""
     today = _ist_today()
+    # Match any promise-to-pay disposition (PTP / BPTP / lower-case variants) but NOT RTP
+    # (Refuse to Pay) — "RTP" doesn't contain "PTP", so the ILIKE naturally excludes it.
     q = db.query(models.Case).filter(
-        models.Case.disposition == "PTP",
-        models.Case.status.notin_(["paid", "closed"]),
+        models.Case.disposition.ilike("%PTP%"),
+        or_(models.Case.status.is_(None), models.Case.status.notin_(["paid", "closed"])),
         models.Case.removed.isnot(True),
     )
+    # Head office / admin / back-office see EVERY branch's promises (no scoping). Only the
+    # front-line roles are narrowed to their own book.
     if user.role == "telecaller":
         q = q.filter(models.Case.assigned_caller_id == user.id)
     elif user.role == "teamlead":
         from .cases import teamlead_case_filter
         q = q.filter(teamlead_case_filter(user))
     elif user.role == "manager":
-        from sqlalchemy import or_, select
+        from sqlalchemy import select
         ids = select(models.User.id).where(models.User.branch == user.branch)
         q = q.filter(or_(models.Case.branch == user.branch,
                          models.Case.assigned_caller_id.in_(ids), models.Case.assigned_fos_id.in_(ids)))
