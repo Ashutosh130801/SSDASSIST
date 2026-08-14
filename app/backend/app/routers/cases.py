@@ -254,6 +254,7 @@ def list_cases(
     bank: str | None = None,
     product: str | None = None,
     segment: str | None = None,
+    branch: str | None = None,
     status: str | None = None,
     paid_status: str | None = None,
     search: str | None = None,
@@ -287,6 +288,8 @@ def list_cases(
         q = q.filter(models.Case.product == product)
     if segment:
         q = q.filter(models.Case.segment == segment)
+    if branch:
+        q = q.filter(models.Case.branch == branch)
     if area:
         q = q.filter(models.Case.team == area)
     if status:
@@ -383,7 +386,7 @@ def deescalate_case(case_id: int, db: Session = Depends(get_db),
 
 
 @router.get("/areas")
-def portfolio_areas(bank: str | None = None, product: str | None = None,
+def portfolio_areas(bank: str | None = None, product: str | None = None, branch: str | None = None,
                     db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     """Distinct AREA codes (team) in a portfolio, so the UI can offer an area filter."""
     q = _scope(db.query(models.Case.team).distinct(), user)
@@ -391,6 +394,8 @@ def portfolio_areas(bank: str | None = None, product: str | None = None,
         q = q.filter(models.Case.bank == bank)
     if product:
         q = q.filter(models.Case.product == product)
+    if branch:
+        q = q.filter(models.Case.branch == branch)
     return sorted({(t or "").strip() for (t,) in q.all() if t and str(t).strip()})
 
 
@@ -401,19 +406,23 @@ def product_summary(db: Session = Depends(get_db), user: models.User = Depends(g
     cur, nxt = _current_period(), _next_period()
     rows = (
         _scope(db.query(
-            models.Case.bank, models.Case.product, models.Case.segment, models.Case.period,
+            models.Case.bank, models.Case.product, models.Case.segment, models.Case.branch,
+            models.Case.period,
             func.count(models.Case.id),
             func.coalesce(func.sum(models.Case.pending_amount), 0),
             func.coalesce(func.sum(models.Case.received_amount), 0),
         ), user)
-        .group_by(models.Case.bank, models.Case.product, models.Case.segment, models.Case.period)
+        .group_by(models.Case.bank, models.Case.product, models.Case.segment, models.Case.branch,
+                  models.Case.period)
         .all()
     )
-    # Roll the per-period rows up per portfolio, keeping this-month vs next-month counts split.
+    # A portfolio is bank + product + segment + BRANCH — so the same product uploaded for two
+    # branches shows as two separate cards. Keep this-month vs next-month counts split.
     agg: dict = {}
-    for b, p, s, per, c, pd, rc in rows:
-        d = agg.setdefault((b, p, s), {"count": 0, "pending": 0.0, "received": 0.0,
-                                       "count_current": 0, "count_next": 0})
+    for b, p, s, br, per, c, pd, rc in rows:
+        key = (b, p, s, br)
+        d = agg.setdefault(key, {"count": 0, "pending": 0.0, "received": 0.0,
+                                 "count_current": 0, "count_next": 0})
         d["count"] += c
         d["pending"] += float(pd or 0)
         d["received"] += float(rc or 0)
@@ -421,9 +430,9 @@ def product_summary(db: Session = Depends(get_db), user: models.User = Depends(g
             d["count_current"] += c
         elif per == nxt:
             d["count_next"] += c
-    out = [{"bank": b or "—", "product": p or "—", "segment": s, **d}
-           for (b, p, s), d in agg.items()]
-    out.sort(key=lambda x: (x["bank"], x["product"]))
+    out = [{"bank": b or "—", "product": p or "—", "segment": s, "branch": br or "", **d}
+           for (b, p, s, br), d in agg.items()]
+    out.sort(key=lambda x: (x["bank"], x["product"], x["branch"]))
     return out
 
 

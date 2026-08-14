@@ -989,8 +989,12 @@ function UploadModal({ onClose, onDone }) {
             <select className="input" value={segment} onChange={e => setSegment(e.target.value)}>
               <option value="">— select —</option>
               {(cat ? cat.segments : ['Credit Card', 'PL/BL']).map(s => <option key={s} value={s}>{s}</option>)}</select></div>
-          <div className="field"><label>Branch (optional)</label>
-            <input className="input" value={branch} onChange={e => setBranch(e.target.value)} placeholder="Visakhapatnam" /></div>
+          <div className="field"><label>Branch <span className="muted" style={{ fontWeight: 400 }}>(makes a branch-specific portfolio)</span></label>
+            <input className="input" list="ssd-branch-list" value={branch} onChange={e => setBranch(e.target.value)}
+              placeholder="Select or type a branch (e.g. Visakhapatnam)" />
+            <datalist id="ssd-branch-list">
+              {((window.__ssdCfg || {}).branches || ['Visakhapatnam', 'Vijayawada', 'Tirupati', 'Kadapa', 'Hyderabad', 'Telangana']).map(b => <option key={b} value={b} />)}
+            </datalist></div>
         </div>
         <div className="field"><label>Excel file (.xlsx)</label>
           <input className="input" type="file" accept=".xlsx,.xls"
@@ -1110,6 +1114,7 @@ function CasesView({ user }) {
   const [openState, setOpenState] = useState(''); const [cyc, setCyc] = useState('');   // ''|'open'|'closed', cycle day
   const [monthB, setMonthB] = useState('current');   // default to THIS month so months are never mixed. '' | 'current' | 'next'
   const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // AREA-wise filter
+  const [branchF, setBranchF] = useState('');   // portfolio is per-branch
   const [flaggedOnly, setFlaggedOnly] = useState(false);   // ⚠ caution-flagged cases only
   const nextPeriod = (window.__ssdCfg || {}).next_period;
   const [upload, setUpload] = useState(false); const [busy, setBusy] = useState(false); const [drawer, setDrawer] = useState(null); const [campaign, setCampaign] = useState(false);
@@ -1118,20 +1123,21 @@ function CasesView({ user }) {
   const load = useCallback(() => {
     const p = new URLSearchParams();
     if (bank) p.set('bank', bank); if (product) p.set('product', product); if (segment) p.set('segment', segment);
+    if (branchF) p.set('branch', branchF);
     if (paid) p.set('paid_status', paid); if (q) p.set('search', q);
     if (openState) p.set('closed', openState === 'closed' ? 'true' : 'false');
     if (cyc) p.set('cyc', cyc);
     if (monthB) p.set('month_bucket', monthB);
     if (area) p.set('area', area);
     api('/api/cases?' + p).then(setCases);
-  }, [bank, product, segment, paid, q, openState, cyc, monthB, area]);
+  }, [bank, product, segment, branchF, paid, q, openState, cyc, monthB, area]);
   useEffect(() => { loadSummary(); api('/api/users').then(us => { const m = {}; (us || []).forEach(u => { m[u.id] = u.name; }); setStaff(m); }).catch(() => {}); }, []);
   // Populate the AREA list for whichever portfolio is open.
-  useEffect(() => { if (mode === 'list' && (bank || product)) { const p = new URLSearchParams(); if (bank) p.set('bank', bank); if (product) p.set('product', product); api('/api/cases/areas?' + p).then(a => setAreas(a || [])).catch(() => setAreas([])); } }, [mode, bank, product]);
+  useEffect(() => { if (mode === 'list' && (bank || product)) { const p = new URLSearchParams(); if (bank) p.set('bank', bank); if (product) p.set('product', product); if (branchF) p.set('branch', branchF); api('/api/cases/areas?' + p).then(a => setAreas(a || [])).catch(() => setAreas([])); } }, [mode, bank, product, branchF]);
   useEffect(() => { if (mode !== 'list') return; const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load, mode]);
   useDataChanged(() => { loadSummary(); if (mode === 'list') load(); });   // live product cards / list
-  const openProduct = (c, mb = 'current') => { setBank(c.bank === '—' ? '' : c.bank); setProduct(c.product === '—' ? '' : c.product); setSegment(c.segment || ''); setMonthB(mb); setArea(''); setMode('list'); };
-  const backToProducts = () => { setProduct(''); setSegment(''); setBank(''); setArea(''); setAreas([]); setMode('products'); loadSummary(); };
+  const openProduct = (c, mb = 'current') => { setBank(c.bank === '—' ? '' : c.bank); setProduct(c.product === '—' ? '' : c.product); setSegment(c.segment || ''); setBranchF(c.branch || ''); setMonthB(mb); setArea(''); setMode('list'); };
+  const backToProducts = () => { setProduct(''); setSegment(''); setBank(''); setBranchF(''); setArea(''); setAreas([]); setMode('products'); loadSummary(); };
   const INRc = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const allocate = async () => { setBusy(true); try {
     const r = await api('/api/cases/allocate', { method: 'POST', body: { only_unallocated: true } });
@@ -1241,8 +1247,8 @@ function CasesView({ user }) {
             {summary.map((c, i) => (
               <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => openProduct(c, 'current')}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <b style={{ fontSize: 15 }}>{c.bank} · {c.product}</b><span className="badge allocated">{c.count}</span></div>
-                {c.segment && <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{c.segment}</div>}
+                  <b style={{ fontSize: 15 }}>{c.bank} · {c.product}{c.branch ? ' · ' + c.branch : ''}</b><span className="badge allocated">{c.count}</span></div>
+                {(c.segment || c.branch) && <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{[c.segment, c.branch && ('📍 ' + c.branch)].filter(Boolean).join(' · ')}</div>}
                 {/* Month-wise split so this-month and next-month data are never mixed. */}
                 <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                   <div onClick={e => { e.stopPropagation(); openProduct(c, 'current'); }}
@@ -1262,7 +1268,7 @@ function CasesView({ user }) {
       ) : (<>
         <div className="toolbar">
           {product && <button className="btn ghost" onClick={backToProducts}>← Products</button>}
-          {product && <span className="badge allocated">{bank} · {product}{segment ? ' · ' + segment : ''}</span>}
+          {product && <span className="badge allocated">{bank} · {product}{segment ? ' · ' + segment : ''}{branchF ? ' · 📍 ' + branchF : ''}</span>}
           <input className="input" style={{ maxWidth: 240 }} placeholder="Search name / account / phone / pincode"
             value={q} onChange={e => setQ(e.target.value)} />
           {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>
@@ -3859,23 +3865,23 @@ function MISView({ user }) {
   useEffect(() => {
     api('/api/cases/product-summary').then(rows => {
       const seen = {}, list = [];
-      (rows || []).forEach(r => { const k = r.bank + '||' + r.product; if (!seen[k] && r.product !== '—') { seen[k] = 1; list.push({ bank: r.bank, product: r.product }); } });
+      (rows || []).forEach(r => { const k = r.bank + '||' + r.product + '||' + (r.branch || ''); if (!seen[k] && r.product !== '—') { seen[k] = 1; list.push({ bank: r.bank, product: r.product, branch: r.branch || '' }); } });
       setProds(list); if (list[0]) setSel(list[0]);
     }).catch(() => setProds([]));
     api('/api/mis/overview').then(setOv).catch(() => {});
   }, []);
-  const mbq = (monthB ? `&month_bucket=${monthB}` : '') + (area ? `&area=${encodeURIComponent(area)}` : '');
+  const mbq = (monthB ? `&month_bucket=${monthB}` : '') + (area ? `&area=${encodeURIComponent(area)}` : '') + ((sel && sel.branch) ? `&branch=${encodeURIComponent(sel.branch)}` : '');
   const load = () => { if (!sel) { setD(null); return; } api(`/api/mis?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${mbq}`).then(setD).catch(e => setErr(e.message || 'Could not load MIS')); };
   useEffect(() => { setErr(''); setD(null); load(); }, [sel, monthB, area]);
   // Area list for the selected portfolio (reset area when switching portfolio).
-  useEffect(() => { setArea(''); if (!sel) { setAreas([]); return; } api(`/api/cases/areas?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}`).then(a => setAreas(a || [])).catch(() => setAreas([])); }, [sel]);
+  useEffect(() => { setArea(''); if (!sel) { setAreas([]); return; } api(`/api/cases/areas?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${(sel.branch ? '&branch=' + encodeURIComponent(sel.branch) : '')}`).then(a => setAreas(a || [])).catch(() => setAreas([])); }, [sel]);
   // Real-time: recompute the MIS instantly whenever any log/payment/edit lands.
   useDataChanged(m => { if (!sel) return; if (m && m.product && m.product !== sel.product) return; load(); api('/api/mis/overview').then(setOv).catch(() => {}); });
   const saveTarget = (e) => {          // ONE product-wide target for every FOS & caller
     const v = parseFloat(e.target.value) || 0;
     api('/api/mis/target', { method: 'PUT', body: { bank: sel.bank, product: sel.product, target_pct: v } }).then(load).catch(() => {});
   };
-  const dl = (tables) => download(`/api/mis/download?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&tables=${tables}${mbq}`, `MIS_${sel.bank}_${sel.product}_${monthB || 'all'}.xlsx`);
+  const dl = (tables) => download(`/api/mis/download?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&tables=${tables}${mbq}`, `MIS_${sel.bank}_${sel.product}${sel.branch ? '_' + sel.branch : ''}_${monthB || 'all'}.xlsx`);
 
   if (!prods) return <Loader />;
   if (!prods.length) return <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No products with cases yet. Upload a product file first.</div>;
@@ -3950,9 +3956,9 @@ function MISView({ user }) {
         table.mis-grid td,table.mis-grid th{border-color:#dbe3ef}
       `}</style>
       <div className="toolbar">
-        <select className="input" style={{ maxWidth: 260 }} value={sel ? sel.bank + '||' + sel.product : ''}
-          onChange={e => { const [b, p] = e.target.value.split('||'); setSel({ bank: b, product: p }); setEmp(''); }}>
-          {prods.map((p, i) => <option key={i} value={p.bank + '||' + p.product}>{p.bank} · {p.product}</option>)}
+        <select className="input" style={{ maxWidth: 300 }} value={sel ? sel.bank + '||' + sel.product + '||' + (sel.branch || '') : ''}
+          onChange={e => { const [b, p, br] = e.target.value.split('||'); setSel({ bank: b, product: p, branch: br || '' }); setEmp(''); }}>
+          {prods.map((p, i) => <option key={i} value={p.bank + '||' + p.product + '||' + (p.branch || '')}>{p.bank} · {p.product}{p.branch ? ' · 📍 ' + p.branch : ''}</option>)}
         </select>
         {/* Month-wise MIS — keep this-month and next-month figures cleanly separate. */}
         {[['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, lbl]) =>
@@ -4117,7 +4123,7 @@ function FeedbackView({ user }) {
       .catch(e => setSetupErr((e && e.message) || 'Could not load the feedback format. Restart the server if you just updated.'));
     api('/api/cases/product-summary').then(rows => {
       const seen = {}, list = [];
-      (rows || []).forEach(r => { const k = r.bank + '||' + r.product; if (!seen[k] && r.product !== '—') { seen[k] = 1; list.push({ bank: r.bank, product: r.product }); } });
+      (rows || []).forEach(r => { const k = r.bank + '||' + r.product + '||' + (r.branch || ''); if (!seen[k] && r.product !== '—') { seen[k] = 1; list.push({ bank: r.bank, product: r.product, branch: r.branch || '' }); } });
       setProds(list); if (list[0]) setSel(list[0]);
     }).catch(() => setProds([]));
   };

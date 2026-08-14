@@ -95,9 +95,11 @@ def _group(cases: list, keyfn) -> list:
 
 
 def compute_mis(db: Session, user: models.User, bank: str, product: str,
-                period: str | None = None, area: str | None = None) -> dict:
+                period: str | None = None, area: str | None = None, branch: str | None = None) -> dict:
     from .cases import propensity as _prop
     q = _scope(db.query(models.Case), user).filter(models.Case.bank == bank, models.Case.product == product)
+    if branch:                          # branch-specific MIS (same product, different branches)
+        q = q.filter(models.Case.branch == branch)
     if period:                          # month-wise MIS: this month vs next month
         q = q.filter(models.Case.period == period)
     if area:                            # full MIS scoped to a single AREA (team) code
@@ -320,14 +322,16 @@ def _period_for(month_bucket: str | None) -> str | None:
 
 @router.get("")
 def mis(bank: str = Query(...), product: str = Query(...), month_bucket: str | None = None,
-        area: str | None = None,
+        area: str | None = None, branch: str | None = None,
         db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     if not bank or not product:
         raise HTTPException(status_code=400, detail="bank and product are required")
-    out = compute_mis(db, user, bank, product, period=_period_for(month_bucket), area=area or None)
+    out = compute_mis(db, user, bank, product, period=_period_for(month_bucket),
+                      area=area or None, branch=branch or None)
     out["table_names"] = TABLE_NAMES
     out["month_bucket"] = month_bucket or "all"
     out["area"] = area or ""
+    out["branch"] = branch or ""
     return out
 
 
@@ -399,7 +403,7 @@ TABLE_NAMES = {
 @router.get("/download")
 def download(bank: str = Query(...), product: str = Query(...),
              tables: str = Query(",".join(TABLE_NAMES.keys())), month_bucket: str | None = None,
-             area: str | None = None,
+             area: str | None = None, branch: str | None = None,
              db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -439,7 +443,8 @@ def download(bank: str = Query(...), product: str = Query(...),
             w = max((len(str(c.value)) for c in col if c.value is not None), default=10)
             ws.column_dimensions[col[0].column_letter].width = min(max(w + 2, 12), 42)
 
-    data = compute_mis(db, user, bank, product, period=_period_for(month_bucket), area=area or None)
+    data = compute_mis(db, user, bank, product, period=_period_for(month_bucket),
+                       area=area or None, branch=branch or None)
     wanted = [t.strip() for t in tables.split(",") if t.strip()]
     wb = openpyxl.Workbook()
     wb.remove(wb.active)

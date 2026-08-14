@@ -228,11 +228,46 @@ def _reset_rtp_promises():
         db.close()
 
 
+def _fix_dup_tl_codes():
+    """Repair dual-role team-lead IDs: earlier every 'also a team lead' grant reused the same
+    tl_emp_code. Give every dual-role user a UNIQUE tl_emp_code (keeping any already-unique one)."""
+    from .database import SessionLocal
+    from . import models as _m
+    from .routers.users import generate_emp_code
+    db = SessionLocal()
+    try:
+        used = set()
+        for u in db.query(_m.User).filter(_m.User.role == "teamlead").all():
+            if u.emp_code:
+                used.add(u.emp_code.strip().upper())
+        duals = (db.query(_m.User)
+                 .filter(_m.User.also_team_lead.is_(True))
+                 .order_by(_m.User.id).all())
+        changed = False
+        for u in duals:
+            code = (u.tl_emp_code or "").strip().upper()
+            if not code or code in used:              # missing or duplicate → reassign
+                fresh = generate_emp_code(db, "teamlead")
+                u.tl_emp_code = fresh
+                used.add(fresh.strip().upper())
+                db.flush()                            # so the next generate sees it
+                changed = True
+            else:
+                used.add(code)
+        if changed:
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 _backfill_emp_codes()
 _backfill_norm_stab()
 _fix_negative_pending()
 _backfill_dual_role_flag()
 _reset_rtp_promises()
+_fix_dup_tl_codes()
 
 
 def _maybe_seed():
@@ -295,8 +330,14 @@ async def _capture_loop():
 def config(db: Session = Depends(get_db)):
     from .products import catalog
     from .routers.cases import _current_period, _next_period
+    from . import models as _m
+    branches = sorted(
+        {(b or "").strip() for (b,) in db.query(_m.User.branch).distinct().all() if b and str(b).strip()}
+        | {(b or "").strip() for (b,) in db.query(_m.Case.branch).distinct().all() if b and str(b).strip()}
+    )
     return {
         "bank_products": catalog(db),
+        "branches": branches,
         "current_period": _current_period(),
         "next_period": _next_period(),
         "google_maps_api_key": settings.google_maps_api_key,
