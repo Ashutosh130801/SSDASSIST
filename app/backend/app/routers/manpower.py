@@ -523,11 +523,36 @@ def _company(d: dict) -> dict:
     }
 
 
+_NAVY = "#0B234F"
+_GOLD = "#C7A24A"
+_LOGO_URI = None
+
+
+def _logo_data_uri() -> str:
+    """The SSD gold-coin logo (from the company brochure) as a base64 data URI so it embeds
+    directly in the letter HTML — works in print, download, and email without a hosted URL."""
+    global _LOGO_URI
+    if _LOGO_URI is None:
+        import base64
+        p = os.path.join(os.path.dirname(__file__), "..", "assets", "ssd_logo.png")
+        try:
+            with open(p, "rb") as f:
+                _LOGO_URI = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+        except Exception:
+            _LOGO_URI = ""
+    return _LOGO_URI
+
+
 def _letterhead(c: dict, subtitle: str) -> str:
-    return f"""<div style="text-align:center;border-bottom:3px solid #1D4ED8;padding-bottom:12px;margin-bottom:22px">
-    <div style="font-size:25px;font-weight:800;letter-spacing:.6px;color:#12358F">{_esc(c['name'])}</div>
-    <div style="font-size:11.5px;color:#6b7280;margin-top:3px">{_esc(c['address'])}</div>
-    <div style="display:inline-block;margin-top:10px;padding:3px 16px;background:#1D4ED8;color:#fff;border-radius:999px;font-size:11.5px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase">{_esc(subtitle)}</div>
+    logo = _logo_data_uri()
+    logo_html = (f'<img src="{logo}" alt="SSD" style="height:78px;width:auto;display:block;margin:0 auto 8px" />'
+                 if logo else "")
+    return f"""<div style="background:{_NAVY};border:1px solid {_GOLD};border-radius:12px;padding:22px 20px 18px;text-align:center;margin-bottom:22px">
+    {logo_html}
+    <div style="font-family:Georgia,'Times New Roman',serif;font-size:23px;font-weight:700;letter-spacing:1px;color:#F4E9C9">{_esc(c['name'])}</div>
+    <div style="font-size:10px;letter-spacing:3px;color:{_GOLD};text-transform:uppercase;margin-top:5px">Debt Recovery Agency &amp; Management</div>
+    <div style="font-size:11px;color:#c3cde0;margin-top:7px">{_esc(c['address'])}</div>
+    <div style="display:inline-block;margin-top:11px;padding:3px 16px;border:1px solid {_GOLD};color:{_GOLD};border-radius:999px;font-size:10.5px;font-weight:700;letter-spacing:2px;text-transform:uppercase">{_esc(subtitle)}</div>
   </div>"""
 
 
@@ -535,21 +560,22 @@ def _sign_block(c: dict, name: str) -> str:
     return f"""<table style="width:100%;margin-top:40px;font-size:13px"><tr>
     <td style="width:50%;vertical-align:top">
       <div style="height:34px"></div>
-      <div style="border-top:1px solid #9aa4b2;width:230px;padding-top:4px">For <b>{_esc(c['name'])}</b></div>
+      <div style="border-top:2px solid {_GOLD};width:230px;padding-top:4px;color:{_NAVY}">For <b>{_esc(c['name'])}</b></div>
       <div>{_esc(c['signatory'])}</div>
       <div style="color:#6b7280">{_esc(c['signatory_title'])}</div>
     </td>
     <td style="width:50%;vertical-align:top">
       <div style="height:34px"></div>
-      <div style="border-top:1px solid #9aa4b2;width:230px;padding-top:4px">Accepted by <b>{_esc(name)}</b></div>
+      <div style="border-top:2px solid {_GOLD};width:230px;padding-top:4px;color:{_NAVY}">Accepted by <b>{_esc(name)}</b></div>
       <div style="color:#6b7280">Signature &amp; Date</div>
     </td>
   </tr></table>"""
 
 
-_H = "color:#12358F;font-size:15px;margin:20px 0 8px;font-weight:700;border-left:4px solid #1D4ED8;padding-left:8px"
+_H = "color:#0B234F;font-size:15px;margin:20px 0 8px;font-weight:700;border-left:4px solid #C7A24A;padding-left:8px"
 _WRAP = ("font-family:'Segoe UI',Calibri,Arial,sans-serif;color:#1f2937;max-width:760px;"
-         "margin:0 auto;line-height:1.65;font-size:14px;background:#fff;padding:6px 4px")
+         "margin:0 auto;line-height:1.65;font-size:14px;background:#fff;padding:26px 30px;"
+         "border:3px double #C7A24A;border-radius:12px;box-shadow:0 6px 24px rgba(11,35,79,.10)")
 
 
 def _offer_letter_html(emp, d: dict) -> str:
@@ -589,7 +615,7 @@ def _offer_letter_html(emp, d: dict) -> str:
      a copy of this letter within the stipulated time.</p>
   <p>We look forward to welcoming you to our team and anticipate a mutually rewarding professional association.</p>
   <h3 style="{_H}">Position Details</h3>
-  <table style="border-collapse:collapse;width:100%;background:#F7FAFF;border:1px solid #e3e9f1;border-radius:8px;font-size:13.5px">{details}</table>
+  <table style="border-collapse:collapse;width:100%;background:#FBF6E8;border:1px solid #E3D3A6;border-radius:8px;font-size:13.5px">{details}</table>
   <h3 style="{_H}">Compensation &amp; Benefits</h3>
   <p style="margin:6px 0"><b>Annual Salary Package (CTC): {_esc(ctc)}</b></p>
   <p style="font-size:13px;color:#374151">The above-mentioned salary is the total cost to the company and includes all
@@ -696,9 +722,9 @@ def _agreement_letter_html(emp, d: dict) -> str:
   <div style="page-break-before:always;border-top:2px dashed #cbd5e1;margin-top:28px;padding-top:16px"></div>
   <h3 style="{_H}">Annexure A — Salary Structure</h3>
   <table style="border-collapse:collapse;width:100%;font-size:13.5px">
-    <thead><tr style="background:#EEF3FB"><th style="border:1px solid #cbd5e1;padding:6px 10px;text-align:left">Particulars</th><th style="border:1px solid #cbd5e1;padding:6px 10px;text-align:right">INR / Annum</th></tr></thead>
+    <thead><tr style="background:#0B234F;color:#F4E9C9"><th style="border:1px solid #cbd5e1;padding:6px 10px;text-align:left">Particulars</th><th style="border:1px solid #cbd5e1;padding:6px 10px;text-align:right">INR / Annum</th></tr></thead>
     <tbody>{sal_rows}
-      <tr style="background:#F7FAFF;font-weight:700"><td style="border:1px solid #cbd5e1;padding:6px 10px">Total Annual Salary (CTC)</td><td style="border:1px solid #cbd5e1;padding:6px 10px;text-align:right">{_esc(ctc)}</td></tr>
+      <tr style="background:#FBF6E8;font-weight:700;color:#0B234F"><td style="border:1px solid #cbd5e1;padding:6px 10px">Total Annual Salary (CTC)</td><td style="border:1px solid #cbd5e1;padding:6px 10px;text-align:right">{_esc(ctc)}</td></tr>
     </tbody>
   </table>
   <h3 style="{_H}">Annexure B — Terms &amp; Conditions</h3>
