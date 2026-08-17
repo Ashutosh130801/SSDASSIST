@@ -5215,10 +5215,11 @@ function ManpowerView({ user }) {
           </div>
           {canAdd && <EmployeeDocs emp={sel} />}
           {canAdd && <div className="toolbar" style={{ marginTop: 10 }}>
-            <button className="btn gold" onClick={() => setOfferFor(sel)}>📝 Generate offer letter</button>
+            <button className="btn gold" onClick={() => setOfferFor({ emp: sel, kind: 'offer' })}>📝 Offer letter</button>
+            <button className="btn gold" onClick={() => setOfferFor({ emp: sel, kind: 'agreement' })}>📄 Agreement letter</button>
           </div>}
         </div></div>}
-      {offerFor && <OfferLetterModal emp={offerFor} onClose={() => setOfferFor(null)} />}
+      {offerFor && <LetterModal emp={offerFor.emp} kind={offerFor.kind} onClose={() => setOfferFor(null)} />}
     </div>
   );
 }
@@ -5231,12 +5232,60 @@ const DOC_LIST = [
   ['reference', 'Reference contact details'], ['whatsapp', 'WhatsApp no. (not PhonePe)'],
   ['email', 'Email ID proof'],
 ];
+const DOC_LABEL = Object.fromEntries(DOC_LIST);
+DOC_LABEL.other = 'Other / misc';
+// Map a filename to a document type. Order matters (most specific first). Anything that
+// doesn't match a known keyword falls into 'other'.
+const DOC_MATCH = [
+  ['aadhaar', /(aadha?r|aadhaar|uidai)/i],
+  ['pan', /pan(\s|_|-|card|\.|$)/i],
+  ['cibil', /(cibil|paisa|credit.?report)/i],
+  ['pvc', /pvc/i],
+  ['dra', /\bdra\b|dra.?cert/i],
+  ['bank_details', /(bank|passbook|cheque|ifsc|account|acct)/i],
+  ['signature', /(signature|sign(\s|_|-|\.|$)|sig)/i],
+  ['whatsapp', /(whats.?app|wa.?no)/i],
+  ['email', /(e.?mail|gmail)/i],
+  ['reference', /(reference|ref.?contact|ref(\s|_|-|\.|$))/i],
+  ['photo', /(photo|passport|\bpic\b|\bdp\b|profile)/i],
+];
+function detectDocType(name) {
+  const n = (name || '').toLowerCase();
+  for (const [k, re] of DOC_MATCH) if (re.test(n)) return k;
+  return 'other';
+}
 function EmployeeDocs({ emp }) {
   const [docs, setDocs] = useState(null);
   const [busy, setBusy] = useState('');
   const [preview, setPreview] = useState(null);   // {url, mime, filename, label}
+  const [folderPrev, setFolderPrev] = useState(null);   // [{file,name,mime,url,type}] before bulk upload
+  const [folderBusy, setFolderBusy] = useState(false);
+  const [gallery, setGallery] = useState(false);        // view-all modal
   const load = () => api(`/api/manpower/${emp.id}/documents`).then(setDocs).catch(() => setDocs([]));
   useEffect(() => { load(); }, [emp.id]);
+  // ---- folder (bulk) upload: read files, auto-map by filename, confirm, then upload ----
+  const onFolder = (fileList) => {
+    const items = Array.from(fileList || []).filter(f => f.size > 0).map(f => {
+      const mime = f.type || '';
+      return { file: f, name: f.webkitRelativePath || f.name, base: f.name, mime,
+        url: mime.startsWith('image/') ? URL.createObjectURL(f) : null, type: detectDocType(f.name) };
+    });
+    if (!items.length) { toast('No files found in that folder'); return; }
+    setFolderPrev(items);
+  };
+  const closeFolder = () => { (folderPrev || []).forEach(i => { if (i.url) { try { URL.revokeObjectURL(i.url); } catch (e) {} } }); setFolderPrev(null); };
+  const setItemType = (idx, t) => setFolderPrev(list => list.map((i, j) => j === idx ? { ...i, type: t } : i));
+  const uploadFolder = async () => {
+    const items = (folderPrev || []).filter(i => i.type !== 'skip');
+    if (!items.length) { toast('Nothing selected to upload'); return; }
+    setFolderBusy(true);
+    try {
+      const fd = new FormData();
+      items.forEach(i => { fd.append('files', i.file); fd.append('doc_types', i.type); });
+      const r = await api(`/api/manpower/${emp.id}/documents/bulk`, { method: 'POST', form: fd });
+      toast(`Uploaded ${r.uploaded} file(s).`); closeFolder(); await load();
+    } catch (e) { toast(e.message || 'Bulk upload failed'); } finally { setFolderBusy(false); }
+  };
   // preview a document inline (image or PDF) — fetch with auth, show via an object URL
   const view = async (d, label) => { setBusy(d.doc_type);
     try {
@@ -5263,8 +5312,15 @@ function EmployeeDocs({ emp }) {
   const zipName = (emp.name || 'employee').replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '_') + '.zip';
   return (
     <div className="glass card" style={{ marginTop: 12, padding: 12 }}>
-      <div className="section-h" style={{ marginTop: 0 }}><h3 style={{ margin: 0, fontSize: 15 }}>📄 Documents</h3>
-        <button className="btn sm" onClick={() => download(`/api/manpower/${emp.id}/documents.zip`, zipName)}>⬇ Download all (.zip)</button></div>
+      <div className="section-h" style={{ marginTop: 0, flexWrap: 'wrap', gap: 6 }}><h3 style={{ margin: 0, fontSize: 15 }}>📄 Documents</h3>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <label className="btn sm" style={{ cursor: 'pointer', margin: 0 }}>📁 Upload folder
+            <input type="file" multiple style={{ display: 'none' }}
+              ref={el => { if (el) { el.webkitdirectory = true; el.directory = true; } }}
+              onChange={e => { onFolder(e.target.files); e.target.value = ''; }} /></label>
+          <button className="btn sm" onClick={() => setGallery(true)} disabled={!(docs && docs.length)}>🖼 View all ({(docs || []).length})</button>
+          <button className="btn sm" onClick={() => download(`/api/manpower/${emp.id}/documents.zip`, zipName)}>⬇ Download all (.zip)</button>
+        </div></div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {DOC_LIST.map(([k, label]) => { const d = byType[k]; return (
           <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '4px 0', borderBottom: '1px solid var(--line)' }}>
@@ -5293,40 +5349,121 @@ function EmployeeDocs({ emp }) {
           </div>
         </div>
       </div>}
+
+      {/* Folder bulk-upload: preview every file + its auto-detected type, adjust, then upload. */}
+      {folderPrev && <div className="modal-bg" onClick={closeFolder} style={{ zIndex: 1000 }}>
+        <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 760, width: '94%' }}>
+          <div className="section-h"><h3 style={{ margin: 0, fontSize: 15 }}>📁 Upload folder — {emp.name}</h3>
+            <button className="btn ghost sm" onClick={closeFolder}>✕</button></div>
+          <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>{folderPrev.length} file(s) found. We matched each to a document type from its filename — check and adjust, then upload. Set a row to <b>Skip</b> to leave it out.</p>
+          <div className="tablewrap" style={{ maxHeight: '52vh', overflow: 'auto' }}><table>
+            <thead><tr><th></th><th>File</th><th>Maps to</th></tr></thead>
+            <tbody>{folderPrev.map((it, i) => <tr key={i}>
+              <td style={{ width: 46 }}>{it.url ? <img src={it.url} alt="" style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 6 }} /> : <span style={{ fontSize: 22 }}>📄</span>}</td>
+              <td style={{ fontSize: 12.5 }}><b>{it.base}</b><div className="muted" style={{ fontSize: 11 }}>{Math.max(1, Math.round(it.file.size / 1024))} KB</div></td>
+              <td><select className="input" style={{ minWidth: 190, padding: '4px 8px', fontSize: 12.5, background: it.type === 'skip' ? '#FDECEC' : it.type === 'other' ? '#FFF7E6' : '#fff' }}
+                value={it.type} onChange={e => setItemType(i, e.target.value)}>
+                {DOC_LIST.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                <option value="other">Other / misc</option>
+                <option value="skip">— Skip —</option>
+              </select></td>
+            </tr>)}</tbody></table></div>
+          <div className="toolbar" style={{ marginTop: 10 }}>
+            <span className="muted" style={{ fontSize: 12 }}>{folderPrev.filter(i => i.type !== 'skip').length} will be uploaded</span>
+            <div style={{ flex: 1 }} />
+            <button className="btn" onClick={closeFolder}>Cancel</button>
+            <button className="btn gold" disabled={folderBusy} onClick={uploadFolder}>{folderBusy ? 'Uploading…' : '⬆ Upload files'}</button>
+          </div>
+        </div>
+      </div>}
+
+      {/* View all: every uploaded doc (fixed types + extras), with preview / download / delete. */}
+      {gallery && <div className="modal-bg" onClick={() => setGallery(false)} style={{ zIndex: 1000 }}>
+        <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 720, width: '94%' }}>
+          <div className="section-h"><h3 style={{ margin: 0, fontSize: 15 }}>🖼 All documents — {emp.name}</h3>
+            <button className="btn ghost sm" onClick={() => setGallery(false)}>✕</button></div>
+          {(!docs || !docs.length) ? <div className="muted" style={{ padding: 16 }}>No documents uploaded yet.</div> :
+            <div className="tablewrap" style={{ maxHeight: '60vh', overflow: 'auto' }}><table>
+              <thead><tr><th>Type</th><th>File</th><th style={{ textAlign: 'right' }}>Actions</th></tr></thead>
+              <tbody>{docs.map(d => <tr key={d.id}>
+                <td style={{ fontSize: 12.5 }}>{DOC_LABEL[d.doc_type] || d.doc_type}</td>
+                <td style={{ fontSize: 12.5 }} className="muted">{d.filename || '—'}</td>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <button className="btn ghost sm" onClick={() => view(d, DOC_LABEL[d.doc_type] || d.doc_type)} title="View">👁</button>{' '}
+                  <a className="btn ghost sm" onClick={() => download(`/api/manpower/${emp.id}/documents/${d.id}/download`, d.filename || d.doc_type)} title="Download">⬇</a>{' '}
+                  <button className="btn ghost sm" onClick={() => del(d)} title="Delete">🗑</button>
+                </td>
+              </tr>)}</tbody></table></div>}
+          <div className="toolbar" style={{ marginTop: 10 }}>
+            <div style={{ flex: 1 }} />
+            <button className="btn sm" onClick={() => download(`/api/manpower/${emp.id}/documents.zip`, zipName)}>⬇ Download all (.zip)</button>
+          </div>
+        </div>
+      </div>}
     </div>
   );
 }
 
-/* Generate → edit → download / email an offer letter for a (new) employee. */
-function OfferLetterModal({ emp, onClose }) {
+/* Generate → edit → download / email an OFFER or AGREEMENT letter for a (new) employee,
+   using the SSD letter formats. HR fills details, tweaks the salary break-up, then previews. */
+const SALARY_DEFAULT = [
+  { component: 'Basic Salary', annual: '' }, { component: 'House Rent Allowance (HRA)', annual: '' },
+  { component: 'Special Allowance', annual: '' }, { component: 'Bonus', annual: '' },
+  { component: 'Leave Travel Allowance', annual: '' }, { component: 'Commission', annual: '' },
+];
+function LetterModal({ emp, kind: initialKind, onClose }) {
   const ref = React.useRef(null);
+  const [kind, setKind] = useState(initialKind || 'offer');
   const [html, setHtml] = useState('');
   const [to, setTo] = useState(emp.email || '');
   const [busy, setBusy] = useState('');
-  const [meta, setMeta] = useState({ designation: emp.designation || '', department: '', location: emp.location || emp.branch || '', joining_date: '', ctc: '' });
+  const [meta, setMeta] = useState({
+    designation: emp.designation || '', reporting_to: '', location: emp.location || emp.branch || '',
+    joining_date: '', ctc: '', employment_type: 'Full Time', work_schedule: '9:30 AM to 7:30 PM',
+    address: emp.current_address || '', probation_months: '3', notice_days: '30',
+  });
+  const [salary, setSalary] = useState(SALARY_DEFAULT.map(s => ({ ...s })));
+  const isAgr = kind === 'agreement';
+  const ep = isAgr ? 'agreement-letter' : 'offer-letter';
+  const title = isAgr ? 'Employment Agreement' : 'Offer of Employment';
   const gen = async () => { setBusy('gen');
-    try { const r = await api('/api/manpower/offer-letter', { method: 'POST', body: { emp_id: emp.id, ...meta } });
+    try { const r = await api(`/api/manpower/${ep}`, { method: 'POST', body: { emp_id: emp.id, ...meta, salary } });
       setHtml(r.html); if (!to && r.email) setTo(r.email);
     } catch (e) { toast(e.message); } finally { setBusy(''); } };
-  useEffect(() => { gen(); }, []);
+  useEffect(() => { gen(); }, [kind]);   // regenerate when switching letter type
   const current = () => (ref.current ? ref.current.innerHTML : html);
   const print = () => { const w = window.open('', '_blank'); if (!w) return;
-    w.document.write(`<html><head><title>Offer Letter — ${emp.name}</title></head><body style="padding:24px">${current()}</body></html>`);
+    w.document.write(`<html><head><title>${title} — ${emp.name}</title></head><body style="padding:24px">${current()}</body></html>`);
     w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch (e) {} }, 300); };
   const sendEmail = async () => { if (!to) { toast('Add a recipient email'); return; } setBusy('mail');
-    try { const r = await api('/api/manpower/offer-letter/email', { method: 'POST', body: { emp_id: emp.id, to, html: current(), subject: `Offer of Employment — ${emp.name}` } });
-      toast('Offer letter emailed to ' + r.to); onClose();
+    try { const r = await api(`/api/manpower/${ep}/email`, { method: 'POST', body: { emp_id: emp.id, to, html: current(), subject: `${title} — ${emp.name}`, ...meta, salary } });
+      toast('Letter emailed to ' + r.to); onClose();
     } catch (e) { toast(e.message || 'Could not send (check SMTP settings)'); } finally { setBusy(''); } };
+  const setSal = (i, v) => setSalary(list => list.map((s, j) => j === i ? { ...s, annual: v } : s));
+  const F = ([k, lbl]) => <div className="field" key={k}><label>{lbl}</label><input className="input" value={meta[k]} onChange={e => setMeta(m => ({ ...m, [k]: e.target.value }))} /></div>;
+  const fields = isAgr
+    ? [['designation', 'Position / Department'], ['reporting_to', 'Reporting to'], ['location', 'Location'], ['joining_date', 'Commencement date'], ['ctc', 'Annual CTC (₹)'], ['probation_months', 'Probation (months)'], ['notice_days', 'Notice (days)'], ['address', 'Employee address']]
+    : [['designation', 'Job title'], ['reporting_to', 'Reporting to'], ['location', 'Job location'], ['joining_date', 'Start date'], ['ctc', 'Annual CTC (₹)'], ['employment_type', 'Employment type'], ['work_schedule', 'Work schedule']];
   return (
     <div className="modal-bg" onClick={onClose} style={{ zIndex: 1000 }}>
-      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 820 }}>
-        <div className="section-h"><h3>📝 Offer letter — {emp.name}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
-        <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>Fill the details that aren't on file, generate, then edit the salary break-up directly in the preview before downloading or emailing.</p>
-        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-          {[['designation', 'Designation'], ['department', 'Department'], ['location', 'Location'], ['joining_date', 'Joining date'], ['ctc', 'Annual CTC (₹)']].map(([k, lbl]) =>
-            <div className="field" key={k}><label>{lbl}</label><input className="input" value={meta[k]} onChange={e => setMeta(m => ({ ...m, [k]: e.target.value }))} /></div>)}
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 860, width: '96%' }}>
+        <div className="section-h"><h3>📝 Letter — {emp.name}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <div className="toolbar" style={{ marginBottom: 8 }}>
+          <div className={cx('chip', !isAgr && 'on')} onClick={() => setKind('offer')}>📝 Offer letter</div>
+          <div className={cx('chip', isAgr && 'on')} onClick={() => setKind('agreement')}>📄 Agreement letter</div>
         </div>
-        <div className="toolbar" style={{ margin: '6px 0' }}>
+        <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>Fill the details, generate, then fine-tune directly in the preview before downloading or emailing.</p>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>{fields.map(F)}</div>
+        {isAgr && <div style={{ marginTop: 8 }}>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>Salary break-up (Annexure A) — annual ₹ per component</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(210px,1fr))', gap: 6 }}>
+            {salary.map((s, i) => <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ flex: 1, fontSize: 12 }}>{s.component}</span>
+              <input className="input" style={{ width: 100, padding: '4px 6px', fontSize: 12 }} placeholder="₹/yr" value={s.annual} onChange={e => setSal(i, e.target.value)} />
+            </div>)}
+          </div>
+        </div>}
+        <div className="toolbar" style={{ margin: '8px 0' }}>
           <button className="btn" disabled={busy === 'gen'} onClick={gen}>{busy === 'gen' ? 'Generating…' : '↻ Regenerate'}</button>
           <div style={{ flex: 1 }} />
           <input className="input" style={{ maxWidth: 240 }} placeholder="Recipient email" value={to} onChange={e => setTo(e.target.value)} />

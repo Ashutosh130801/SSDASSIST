@@ -338,7 +338,9 @@ DOC_TYPES = [
     ("whatsapp", "WhatsApp no. (not PhonePe-linked)"),
     ("email", "Email ID proof"),
 ]
-_DOC_KEYS = {k for k, _ in DOC_TYPES}
+# "other" is a catch-all bucket for folder uploads whose filename didn't map to a known type.
+# Unlike the 11 fixed types it may hold MANY files (they don't replace each other).
+_DOC_KEYS = {k for k, _ in DOC_TYPES} | {"other"}
 
 
 @router.get("/doc-types")
@@ -353,12 +355,18 @@ def list_documents(emp_id: int, db: Session = Depends(get_db),
             .filter(models.EmployeeDocument.user_id == emp_id)
             .order_by(models.EmployeeDocument.uploaded_at.desc()).all())
     latest = {}
-    for d in rows:                       # keep the most-recent per type
-        latest.setdefault(d.doc_type, d)
-    return [{"id": d.id, "doc_type": d.doc_type, "filename": d.filename,
-             "url": resolve_photo(d.ref),
-             "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None}
-            for d in latest.values()]
+    others = []
+    for d in rows:                       # keep the most-recent per FIXED type; keep ALL "other"
+        if d.doc_type == "other":
+            others.append(d)
+        else:
+            latest.setdefault(d.doc_type, d)
+
+    def _ser(d):
+        return {"id": d.id, "doc_type": d.doc_type, "filename": d.filename,
+                "url": resolve_photo(d.ref),
+                "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None}
+    return [_ser(d) for d in latest.values()] + [_ser(d) for d in others]
 
 
 @router.post("/{emp_id}/documents")
@@ -375,10 +383,11 @@ async def upload_document(emp_id: int, doc_type: str = Form(...), file: UploadFi
         raise HTTPException(status_code=400, detail="Empty file")
     ref = save_photo(content, filename=file.filename or doc_type,
                      content_type=file.content_type or "application/octet-stream", folder="documents")
-    # Replace any prior file of this type (keep one current per type).
-    db.query(models.EmployeeDocument).filter(
-        models.EmployeeDocument.user_id == emp_id,
-        models.EmployeeDocument.doc_type == doc_type).delete()
+    # Replace any prior file of this type (keep one current per FIXED type). "other" accumulates.
+    if doc_type != "other":
+        db.query(models.EmployeeDocument).filter(
+            models.EmployeeDocument.user_id == emp_id,
+            models.EmployeeDocument.doc_type == doc_type).delete()
     d = models.EmployeeDocument(user_id=emp_id, doc_type=doc_type, filename=file.filename,
                                 ref=ref, content_type=file.content_type, uploaded_by=user.id)
     db.add(d)
@@ -389,6 +398,47 @@ async def upload_document(emp_id: int, doc_type: str = Form(...), file: UploadFi
     return {"id": d.id, "doc_type": d.doc_type, "filename": d.filename, "url": resolve_photo(d.ref)}
 
 
+@router.post("/{emp_id}/documents/bulk")
+async def upload_documents_bulk(emp_id: int,
+                                files: list[UploadFile] = File(...),
+                                doc_types: list[str] = Form(...),
+                                db: Session = Depends(get_db),
+                                user: models.User = Depends(require_roles(*HR_ROLES))):
+    """Upload a whole folder for one employee. `files` and `doc_types` are parallel lists —
+    the caller maps each file to a document type (auto-detected from the filename, HR-confirmed).
+    Unknown types fall into 'other'; a type of 'skip' drops that file."""
+    emp = db.query(models.User).filter(models.User.id == emp_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if len(files) != len(doc_types):
+        raise HTTPException(status_code=400, detail="files and doc_types count mismatch")
+    saved = []
+    cleared: set[str] = set()
+    for f, raw_dt in zip(files, doc_types):
+        dt = (raw_dt or "").strip()
+        if dt == "skip" or not dt:
+            continue
+        if dt not in _DOC_KEYS:
+            dt = "other"
+        content = await f.read()
+        if not content:
+            continue
+        ref = save_photo(content, filename=f.filename or dt,
+                         content_type=f.content_type or "application/octet-stream", folder="documents")
+        if dt != "other" and dt not in cleared:      # replace prior once per fixed type
+            db.query(models.EmployeeDocument).filter(
+                models.EmployeeDocument.user_id == emp_id,
+                models.EmployeeDocument.doc_type == dt).delete()
+            cleared.add(dt)
+        db.add(models.EmployeeDocument(user_id=emp_id, doc_type=dt, filename=f.filename,
+                                       ref=ref, content_type=f.content_type, uploaded_by=user.id))
+        saved.append({"doc_type": dt, "filename": f.filename})
+    audit.record(db, user, "staff_update", None, entity_type="staff", target_user_id=emp_id,
+                 detail=f"Bulk-uploaded {len(saved)} document(s) for {emp.name}")
+    db.commit()
+    return {"uploaded": len(saved), "documents": saved}
+
+
 @router.get("/{emp_id}/documents.zip")
 def documents_zip(emp_id: int, db: Session = Depends(get_db),
                   user: models.User = Depends(require_roles(*HR_ROLES))):
@@ -397,13 +447,22 @@ def documents_zip(emp_id: int, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="Employee not found")
     rows = db.query(models.EmployeeDocument).filter(models.EmployeeDocument.user_id == emp_id).all()
     buf = io.BytesIO()
+    seen: dict[str, int] = {}
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for d in rows:
             data = read_bytes(d.ref)
             if data is None:
                 continue
             ext = os.path.splitext(d.filename or "")[1] or ""
-            z.writestr(f"{d.doc_type}{ext}", data)
+            # Fixed types are named by their type; "other" keeps its original filename.
+            base = d.doc_type if d.doc_type != "other" else (os.path.splitext(d.filename or "other")[0] or "other")
+            name = f"{base}{ext}"
+            if name in seen:                         # avoid collisions when a type has >1 file
+                seen[name] += 1
+                name = f"{base}_{seen[name]}{ext}"
+            else:
+                seen[name] = 0
+            z.writestr(name, data)
     buf.seek(0)
     safe = "".join(ch for ch in (emp.name or f"emp{emp_id}")
                    if ch.isalnum() or ch in " _-").strip().replace(" ", "_") or f"emp{emp_id}"
@@ -442,65 +501,216 @@ def _esc(x) -> str:
     return str("" if x is None else x).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _fmt_amount(v):
+    """Nicely format a rupee figure; leave placeholders / text as-is."""
+    try:
+        n = float(str(v).replace(",", "").replace("₹", "").replace("/-", "").strip())
+        return "₹ {:,.0f}/-".format(n)
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _company(d: dict) -> dict:
+    """SSD company block for the letters (each field can be overridden from the request)."""
+    return {
+        "name": d.get("company") or "SRI SAI DHANADA ENTERPRISES",
+        "address": d.get("company_address")
+        or "39-11-5, 4th Floor, Axis Bank Upstairs, Opp Union Bank, Murali Nagar, Visakhapatnam - 530007",
+        "hr_name": d.get("hr_name") or "Nambala Santhi Kumari",
+        "hr_email": d.get("hr_email") or "ssdenterpriseshr@gmail.com",
+        "signatory": d.get("signatory") or "S Govind Rao",
+        "signatory_title": d.get("signatory_title") or "Managing Partner",
+    }
+
+
+def _letterhead(c: dict, subtitle: str) -> str:
+    return f"""<div style="text-align:center;border-bottom:3px solid #1D4ED8;padding-bottom:12px;margin-bottom:22px">
+    <div style="font-size:25px;font-weight:800;letter-spacing:.6px;color:#12358F">{_esc(c['name'])}</div>
+    <div style="font-size:11.5px;color:#6b7280;margin-top:3px">{_esc(c['address'])}</div>
+    <div style="display:inline-block;margin-top:10px;padding:3px 16px;background:#1D4ED8;color:#fff;border-radius:999px;font-size:11.5px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase">{_esc(subtitle)}</div>
+  </div>"""
+
+
+def _sign_block(c: dict, name: str) -> str:
+    return f"""<table style="width:100%;margin-top:40px;font-size:13px"><tr>
+    <td style="width:50%;vertical-align:top">
+      <div style="height:34px"></div>
+      <div style="border-top:1px solid #9aa4b2;width:230px;padding-top:4px">For <b>{_esc(c['name'])}</b></div>
+      <div>{_esc(c['signatory'])}</div>
+      <div style="color:#6b7280">{_esc(c['signatory_title'])}</div>
+    </td>
+    <td style="width:50%;vertical-align:top">
+      <div style="height:34px"></div>
+      <div style="border-top:1px solid #9aa4b2;width:230px;padding-top:4px">Accepted by <b>{_esc(name)}</b></div>
+      <div style="color:#6b7280">Signature &amp; Date</div>
+    </td>
+  </tr></table>"""
+
+
+_H = "color:#12358F;font-size:15px;margin:20px 0 8px;font-weight:700;border-left:4px solid #1D4ED8;padding-left:8px"
+_WRAP = ("font-family:'Segoe UI',Calibri,Arial,sans-serif;color:#1f2937;max-width:760px;"
+         "margin:0 auto;line-height:1.65;font-size:14px;background:#fff;padding:6px 4px")
+
+
 def _offer_letter_html(emp, d: dict) -> str:
     from datetime import date as _date
-    from ..config import get_settings
-    s = get_settings()
-    company = d.get("company") or s.company_name
-    today = d.get("date") or _date.today().strftime("%d %B %Y")
+    c = _company(d)
+    today = d.get("date") or _date.today().strftime("%d/%m/%Y")
     name = d.get("name") or emp.name or "[Employee Name]"
     designation = d.get("designation") or emp.designation or "[Designation]"
-    department = d.get("department") or "[Department]"
-    location = d.get("location") or emp.location or emp.branch or "[Location]"
-    joining = d.get("joining_date") or "[Date of Joining]"
-    ctc = d.get("ctc") or emp.ctc or "[Annual CTC]"
-    # Salary breakup: list of {component, monthly, annual}. HR edits these placeholders.
+    reporting = d.get("reporting_to") or c["hr_name"]
+    start = d.get("joining_date") or "[Start Date]"
+    emp_type = d.get("employment_type") or "Full Time"
+    schedule = d.get("work_schedule") or "9:30 AM to 7:30 PM"
+    location = d.get("location") or emp.location or emp.branch or "In-Office"
+    ctc = _fmt_amount(d.get("ctc") or emp.ctc or "[Annual CTC]")
+    probation = d.get("probation_days") or "60"
+
+    def row(k, v):
+        return (f"<tr><td style='padding:5px 10px;color:#6b7280;width:180px'>{_esc(k)}</td>"
+                f"<td style='padding:5px 10px;font-weight:600'>{_esc(v)}</td></tr>")
+    details = row("Job Title", designation) + row("Reporting To", reporting) + row("Start Date", start) \
+        + row("Employment Type", emp_type) + row("Work Schedule", schedule) + row("Job Location", location)
+    terms = d.get("terms") or [
+        "The employment is at-will — either the company or the employee may terminate the relationship at any time, with or without cause and with or without notice.",
+        f"This offer does not constitute a contract or guarantee of continued employment until you have signed the employment agreement and any other required documents with “{c['name']}”.",
+        f"During the probationary period of {probation} days, your performance will be evaluated to determine your suitability for the role.",
+        "You will be required to sign a Confidentiality / Non-Compete Agreement after accepting this offer to protect the company's interests.",
+    ]
+    terms_html = "".join(f"<li style='margin-bottom:6px'>{_esc(t)}</li>" for t in terms)
+    return f"""<div style="{_WRAP}">
+  {_letterhead(c, 'Offer of Employment')}
+  <div style="text-align:right;font-size:13px;color:#374151">Date: {_esc(today)}</div>
+  <p>Dear <b>{_esc(name)}</b>,</p>
+  <p>We are pleased to extend to you an offer of employment for the position of <b>{_esc(designation)}</b>
+     at <b>{_esc(c['name'])}</b>. We are confident that your skills, experience, and dedication will make a
+     valuable contribution to our organization. Kindly review the terms and conditions outlined in this offer
+     letter carefully. Should you find them acceptable, please indicate your acceptance by signing and returning
+     a copy of this letter within the stipulated time.</p>
+  <p>We look forward to welcoming you to our team and anticipate a mutually rewarding professional association.</p>
+  <h3 style="{_H}">Position Details</h3>
+  <table style="border-collapse:collapse;width:100%;background:#F7FAFF;border:1px solid #e3e9f1;border-radius:8px;font-size:13.5px">{details}</table>
+  <h3 style="{_H}">Compensation &amp; Benefits</h3>
+  <p style="margin:6px 0"><b>Annual Salary Package (CTC): {_esc(ctc)}</b></p>
+  <p style="font-size:13px;color:#374151">The above-mentioned salary is the total cost to the company and includes all
+     payments made and benefits provided by the company, directly or indirectly, to or on your behalf, whether as salary or otherwise.</p>
+  <h3 style="{_H}">Terms &amp; Conditions</h3>
+  <ol style="font-size:13.5px;padding-left:20px">{terms_html}</ol>
+  <h3 style="{_H}">Acceptance</h3>
+  <p style="font-size:13.5px">This Letter of Offer contains the proposed terms and conditions of your employment with the
+     Employer and is subject to the preparation and execution of a formal Contract of Employment. If you have any questions
+     or require further information, please contact <b>{_esc(c['hr_name'])}</b> at
+     <a href="mailto:{_esc(c['hr_email'])}">{_esc(c['hr_email'])}</a>.</p>
+  <p style="font-size:13.5px">I, <b>{_esc(name)}</b>, accept and agree to the proposed terms of employment and request that the
+     Employer prepares a formal contract of employment for execution.</p>
+  {_sign_block(c, name)}
+</div>"""
+
+
+def _agreement_letter_html(emp, d: dict) -> str:
+    from datetime import date as _date
+    c = _company(d)
+    today = d.get("date") or _date.today().strftime("%d/%m/%Y")
+    name = d.get("name") or emp.name or "[Employee Name]"
+    designation = d.get("designation") or emp.designation or "[Department / Designation]"
+    reporting = d.get("reporting_to") or c["hr_name"]
+    location = d.get("location") or emp.location or emp.branch or "Visakhapatnam"
+    commence = d.get("joining_date") or "[Commencement Date]"
+    address = d.get("address") or getattr(emp, "current_address", None) or getattr(emp, "address", None) or "[Employee Address]"
+    ctc_raw = d.get("ctc") or emp.ctc or "360000"
+    ctc = _fmt_amount(ctc_raw)
+    probation_months = d.get("probation_months") or "3"
+    notice = d.get("notice_days") or "30"
     salary = d.get("salary") or [
-        {"component": "Basic", "monthly": "[____]", "annual": "[____]"},
-        {"component": "HRA", "monthly": "[____]", "annual": "[____]"},
-        {"component": "Special Allowance", "monthly": "[____]", "annual": "[____]"},
-        {"component": "Gross Salary", "monthly": "[____]", "annual": "[____]"},
-        {"component": "Deductions (PF/ESI/PT)", "monthly": "[____]", "annual": "[____]"},
-        {"component": "Net Take-home", "monthly": "[____]", "annual": "[____]"},
+        {"component": "Basic Salary", "annual": ""},
+        {"component": "House Rent Allowance (HRA)", "annual": ""},
+        {"component": "Special Allowance", "annual": ""},
+        {"component": "Bonus", "annual": ""},
+        {"component": "Leave Travel Allowance", "annual": ""},
+        {"component": "Commission", "annual": ""},
     ]
     sal_rows = "".join(
-        f"<tr><td>{_esc(r.get('component'))}</td>"
-        f"<td style='text-align:right'>{_esc(r.get('monthly'))}</td>"
-        f"<td style='text-align:right'>{_esc(r.get('annual'))}</td></tr>" for r in salary)
-    terms = d.get("terms") or [
-        "This offer is contingent on successful verification of the documents submitted.",
-        "You will be on probation for the first 6 months from the date of joining.",
-        "Your employment is governed by the company's policies, which may be amended from time to time.",
-        "Either party may terminate this employment by serving 30 days' written notice.",
+        f"<tr><td style='border:1px solid #cbd5e1;padding:6px 10px'>{_esc(r.get('component'))}</td>"
+        f"<td style='border:1px solid #cbd5e1;padding:6px 10px;text-align:right'>{_esc(_fmt_amount(r.get('annual')) if r.get('annual') else '[____]')}</td></tr>"
+        for r in salary)
+    docs = [
+        "Educational certificates with mark sheets (10th, 12th, Graduation, Post-Graduation, certifications).",
+        "Latest salary slip and salary certificate from your last employer.",
+        "Official relieving letter from your last employer.",
+        "Service / experience certificates from all previous employers.",
+        "An updated copy of your CV / resume.",
+        "Form 16 or a taxable income statement from your previous employer.",
+        "Four passport-size colour photographs.",
+        "Valid passport and work permit (foreign nationals only).",
+        "Proof of age (Birth Certificate or SSC memo).",
+        "Proof of address (Aadhaar, Voter ID, or utility bill).",
+        "A copy of your PAN card.",
     ]
-    terms_html = "".join(f"<li>{_esc(t)}</li>" for t in terms)
-    return f"""<div style="font-family:Georgia,serif;color:#111;max-width:720px;line-height:1.6">
-  <div style="text-align:center;border-bottom:2px solid #1D4ED8;padding-bottom:10px;margin-bottom:18px">
-    <div style="font-size:22px;font-weight:700;color:#1D4ED8">{_esc(company)}</div>
-    <div style="font-size:12px;color:#555">Offer of Employment</div>
-  </div>
-  <div style="text-align:right;font-size:13px">Date: {_esc(today)}</div>
+    docs_html = "".join(f"<li style='margin-bottom:4px'>{_esc(x)}</li>" for x in docs)
+    terms_b = [
+        ("Term of Employment", "Your employment is intended to be for an indefinite period, subject to the termination clauses in this agreement and applicable Indian laws."),
+        ("Outside Activities & Conflicts", "You must devote yourself exclusively to the company's business and may not take up other paid work or business without the company's written permission. You must keep company information confidential. The company may transfer you to any department, branch, or associated company as needed."),
+        ("Termination", f"Resignation requires {notice} days' notice or salary in lieu of notice; the company may relieve you earlier. The company may terminate without cause on {notice} days' notice or salary in lieu, and immediately for cause (misconduct, fraud, theft, breach, unauthorised absence over 3 days, or insolvency). On exit you must return all company property and records."),
+        ("Holidays and Leave", "General holidays are declared at the start of the calendar year. You are entitled to vacation and sick leave per company policy. Casual leave without notice is treated as leave against loss of pay; medical leave must be supported by a medical report."),
+        ("Disclosure of Information", "You must disclose any information that may conflict with your employment or the company's interests, and notify any change in personal details in writing within three (3) days."),
+        ("Adherence to Company Policy", "You agree to follow all company policies, directions, and orders issued from time to time."),
+        ("Travel", f"Your primary work location is {location}. You may be required to travel within India or overseas as necessary for your duties."),
+        ("Non-Solicitation", "During employment and for one year after, you agree not to solicit employees to leave or solicit customers for competing entities."),
+        ("Assignment", "This agreement is personal to you and cannot be transferred by you; the company may assign it to its parents, subsidiaries, or affiliates."),
+        ("Arbitration", "This agreement is governed by the laws of India and disputes will be settled under the Indian Arbitration and Conciliation Act, 1996."),
+    ]
+    terms_b_html = "".join(
+        f"<li style='margin-bottom:8px'><b>{_esc(t)}</b><div style='color:#374151'>{_esc(v)}</div></li>"
+        for t, v in terms_b)
+    return f"""<div style="{_WRAP}">
+  {_letterhead(c, 'Employment Agreement / Appointment Order')}
+  <div style="text-align:right;font-size:13px;color:#374151">Date: {_esc(today)}</div>
+  <p style="margin:2px 0">To,<br/><b>{_esc(name)}</b><br/><span style="color:#374151;font-size:13px;white-space:pre-line">{_esc(address)}</span></p>
   <p>Dear <b>{_esc(name)}</b>,</p>
-  <p>We are pleased to offer you the position of <b>{_esc(designation)}</b> in the
-     <b>{_esc(department)}</b> department at <b>{_esc(location)}</b>, with a date of joining of
-     <b>{_esc(joining)}</b>. Your annual cost to company (CTC) will be <b>{_esc(ctc)}</b>.</p>
-  <h3 style="color:#1D4ED8;margin:18px 0 6px">Salary Break-up</h3>
-  <table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:13px">
-    <thead><tr style="background:#EEF3FB">
-      <th style="border:1px solid #cbd5e1;padding:6px 8px;text-align:left">Component</th>
-      <th style="border:1px solid #cbd5e1;padding:6px 8px;text-align:right">Monthly (₹)</th>
-      <th style="border:1px solid #cbd5e1;padding:6px 8px;text-align:right">Annual (₹)</th>
-    </tr></thead>
-    <tbody>{sal_rows}</tbody>
+  <p>We are pleased to offer you a position of <b>{_esc(designation)}</b> with <b>{_esc(c['name'])}</b>
+     (hereinafter referred to as the &ldquo;Agency&rdquo;). This is a regular, full-time position based in
+     <b>{_esc(location)}</b>. You will be reporting to <b>{_esc(reporting)}</b>. The terms of employment in this
+     document and its annexures are confidential and must not be disclosed to third parties without the company's prior approval.</p>
+  <h3 style="{_H}">1. Compensation</h3>
+  <p style="font-size:13.5px">Your CTC will be <b>{_esc(ctc)}</b>. The break-up of your annual gross salary is in
+     <b>Annexure&nbsp;A</b>. You will be entitled to benefits under applicable Indian labour and employment laws and eligible
+     to participate in the company's employee benefit plans. The company may modify, amend, or terminate any benefit at any time.</p>
+  <h3 style="{_H}">2. Terms &amp; Conditions of Employment</h3>
+  <p style="font-size:13.5px">Your employment is governed by the terms in <b>Annexure&nbsp;B</b>.</p>
+  <h3 style="{_H}">3. Commencement of Employment</h3>
+  <p style="font-size:13.5px">You are required to commence employment on <b>{_esc(commence)}</b>. This offer is not valid beyond
+     this date unless extended by the company in writing.</p>
+  <h3 style="{_H}">4. Probation Period</h3>
+  <p style="font-size:13.5px">You will undergo a probation evaluation for <b>{_esc(probation_months)} months</b> from the date of joining.
+     On successful completion, your status is confirmed to a full-time employee. The salary during probation is per Annexure&nbsp;A.</p>
+  <h3 style="{_H}">5. Document Submission Requirements</h3>
+  <p style="font-size:13.5px">On your date of commencement, please report to complete joining formalities and submit the documents in <b>Annexure&nbsp;C</b>.</p>
+  <h3 style="{_H}">6. Employment Invention Assignment Agreement</h3>
+  <p style="font-size:13.5px">You will execute and be bound by an Employment Invention Assignment Agreement (<b>Annexure&nbsp;D</b>),
+     which shall coexist with this Employment Agreement.</p>
+  <h3 style="{_H}">7. Entire Agreement</h3>
+  <p style="font-size:13.5px">This letter agreement (with its annexures) supersedes any prior agreements or representations and may only be
+     modified by a written agreement signed by both parties. Once you accept this offer and join the Company, this letter will serve as
+     your formal Appointment Order.</p>
+  {_sign_block(c, name)}
+  <div style="page-break-before:always;border-top:2px dashed #cbd5e1;margin-top:28px;padding-top:16px"></div>
+  <h3 style="{_H}">Annexure A — Salary Structure</h3>
+  <table style="border-collapse:collapse;width:100%;font-size:13.5px">
+    <thead><tr style="background:#EEF3FB"><th style="border:1px solid #cbd5e1;padding:6px 10px;text-align:left">Particulars</th><th style="border:1px solid #cbd5e1;padding:6px 10px;text-align:right">INR / Annum</th></tr></thead>
+    <tbody>{sal_rows}
+      <tr style="background:#F7FAFF;font-weight:700"><td style="border:1px solid #cbd5e1;padding:6px 10px">Total Annual Salary (CTC)</td><td style="border:1px solid #cbd5e1;padding:6px 10px;text-align:right">{_esc(ctc)}</td></tr>
+    </tbody>
   </table>
-  <h3 style="color:#1D4ED8;margin:18px 0 6px">Terms &amp; Conditions</h3>
-  <ol style="font-family:Arial,sans-serif;font-size:13px">{terms_html}</ol>
-  <p>We look forward to welcoming you to the {_esc(company)} team. Please sign and return a copy
-     of this letter as a token of your acceptance.</p>
-  <div style="margin-top:34px;display:flex;justify-content:space-between;font-size:13px">
-    <div>_____________________<br/>For {_esc(company)}<br/>(HR / Authorised Signatory)</div>
-    <div>_____________________<br/>{_esc(name)}<br/>(Candidate's acceptance)</div>
-  </div>
+  <h3 style="{_H}">Annexure B — Terms &amp; Conditions</h3>
+  <ol style="font-size:13.5px;padding-left:20px">{terms_b_html}</ol>
+  <h3 style="{_H}">Annexure C — Documents to Submit on Joining</h3>
+  <ol style="font-size:13.5px;padding-left:20px">{docs_html}</ol>
+  <p style="font-size:12.5px;color:#6b7280">Note: Please carry all original documents for validation.</p>
+  <h3 style="{_H}">Annexure D — Employment Invention Assignment</h3>
+  <p style="font-size:13.5px">All inventions, works, and intellectual property created during the course of your employment shall
+     belong to the Company. You agree to assign such rights to the Company and to sign any documents required to perfect that assignment.</p>
+  <p style="font-size:13.5px;margin-top:14px"><b>Acceptance of Offer:</b> I have read and accept this offer of employment.</p>
+  {_sign_block(c, name)}
 </div>"""
 
 
@@ -557,5 +767,34 @@ def offer_letter_email(body: dict = Body(...), db: Session = Depends(get_db),
     _send_email(to, subject, full, attachments=[(f"OfferLetter_{safe}.html", full.encode("utf-8"), "text/html")])
     audit.record(db, user, "staff_update", None, entity_type="staff", target_user_id=emp.id,
                  detail=f"Emailed offer letter to {to}")
+    db.commit()
+    return {"sent": True, "to": to}
+
+
+@router.post("/agreement-letter")
+def agreement_letter_preview(body: dict = Body(...), db: Session = Depends(get_db),
+                             user: models.User = Depends(require_roles(*HR_ROLES))):
+    emp = db.query(models.User).filter(models.User.id == body.get("emp_id")).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return {"html": _agreement_letter_html(emp, body), "email": emp.email}
+
+
+@router.post("/agreement-letter/email")
+def agreement_letter_email(body: dict = Body(...), db: Session = Depends(get_db),
+                           user: models.User = Depends(require_roles(*HR_ROLES))):
+    emp = db.query(models.User).filter(models.User.id == body.get("emp_id")).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    to = (body.get("to") or emp.email or "").strip()
+    if not to:
+        raise HTTPException(status_code=400, detail="No recipient email — add the employee's email first")
+    html = body.get("html") or _agreement_letter_html(emp, body)
+    subject = body.get("subject") or f"Employment Agreement — {emp.name}"
+    safe = "".join(ch for ch in (emp.name or "employee") if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
+    full = f"<html><body>{html}</body></html>"
+    _send_email(to, subject, full, attachments=[(f"AgreementLetter_{safe}.html", full.encode("utf-8"), "text/html")])
+    audit.record(db, user, "staff_update", None, entity_type="staff", target_user_id=emp.id,
+                 detail=f"Emailed agreement letter to {to}")
     db.commit()
     return {"sent": True, "to": to}
