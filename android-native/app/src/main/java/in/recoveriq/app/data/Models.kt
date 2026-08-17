@@ -604,3 +604,21 @@ data class NotificationList(
     val unread: Int = 0,
     val items: List<NotificationItem> = emptyList(),
 )
+
+// FTD (today) / MTD (month-till-day) / LMTD (last month-till-day) / Overall cash collected.
+@JsonClass(generateAdapter = true)
+data class Trends(
+    val ftd: Double = 0.0,
+    val mtd: Double = 0.0,
+    val lmtd: Double = 0.0,
+    val overall: Double = 0.0,
+)
+
+@JsonClass(generateAdapter = true)
+data class EmployeeTrends(
+    @Json(name = "user_id") val userId: Int = 0,
+    val name: String? = null,
+    @Json(name = "emp_code") val empCode: String? = null,
+    val cases: Int = 0,
+    val trends: Trends = Trends(),
+)

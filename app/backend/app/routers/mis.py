@@ -84,6 +84,54 @@ def _agg(rows: list) -> dict:
     }
 
 
+def _ist_date(dt):
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST).date()
+
+
+def collection_windows(db: Session, case_ids: list, overall_received=None) -> dict:
+    """Cash collected across comparison windows, from actual payment events (call-log PAYMENTs
+    + field-visit collections), bucketed by IST date:
+      FTD  = For The Day (today)      MTD  = Month Till Day (1st → today)
+      LMTD = Last Month Till Day (same day-of-month last month)   Overall = lifetime.
+    Overall defaults to the lifetime received_amount on the cases when supplied (most accurate)."""
+    import calendar
+    res = {"ftd": 0.0, "mtd": 0.0, "lmtd": 0.0, "overall": float(overall_received or 0.0)}
+    if not case_ids:
+        return {k: round(v, 2) for k, v in res.items()}
+    today = datetime.now(IST).date()
+    som = today.replace(day=1)
+    lm_year, lm_month = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
+    lm_days = calendar.monthrange(lm_year, lm_month)[1]
+    lm_som = date(lm_year, lm_month, 1)
+    lm_till = date(lm_year, lm_month, min(today.day, lm_days))
+
+    calls = (db.query(models.CallLog.created_at, models.CallLog.ptp_amount)
+             .filter(models.CallLog.case_id.in_(case_ids), models.CallLog.disposition == "PAYMENT").all())
+    visits = (db.query(models.Visit.created_at, models.Visit.amount_collected)
+              .filter(models.Visit.case_id.in_(case_ids), models.Visit.amount_collected > 0).all())
+    events = [(c[0], float(c[1] or 0)) for c in calls] + [(v[0], float(v[1] or 0)) for v in visits]
+
+    ev_overall = 0.0
+    for dt, amt in events:
+        d = _ist_date(dt)
+        if d is None:
+            continue
+        ev_overall += amt
+        if d == today:
+            res["ftd"] += amt
+        if som <= d <= today:
+            res["mtd"] += amt
+        if lm_som <= d <= lm_till:
+            res["lmtd"] += amt
+    if overall_received is None:
+        res["overall"] = ev_overall
+    return {k: round(v, 2) for k, v in res.items()}
+
+
 def _group(cases: list, keyfn) -> list:
     buckets: dict[str, list] = {}
     for c in cases:
@@ -305,6 +353,8 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
         "base_label": "TOS" if is_plbl else "ENR",   # PL/BL recovery base is Total Outstanding
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "overall": _agg(cases),
+        # FTD / MTD / LMTD / Overall cash-collected comparison for this portfolio.
+        "trends": collection_windows(db, ids, overall_received=sum(_f(c.received_amount) for c in cases)),
         "product_target": product_target,
         "caller_leaderboard": caller_leaderboard,
         "by_fos": by_fos,
@@ -424,6 +474,7 @@ def my_performance(month_bucket: str | None = "current",
             "to_target_pct": _pct(a["paid_enr"], tenr) if tenr else 0.0,
             "gap_enr": round(max(tenr - a["paid_enr"], 0), 2),
             "rank": my_rank, "field_size": len(lb),
+            "trends": collection_windows(db, [c.id for c in rows], overall_received=a["amount"]),
             "leaderboard": lb,
         })
     cards.sort(key=lambda x: x["enr"], reverse=True)
@@ -435,8 +486,94 @@ def my_performance(month_bucket: str | None = "current",
         "totals": {"count": tot["count"], "paid": tot["paid"], "unpaid": tot["unpaid"],
                    "enr": tot["enr"], "paid_enr": tot["paid_enr"], "pending": tot["pending"],
                    "collected": tot["amount"], "achieved_pct": tot["pct"]},
+        "trends": collection_windows(db, [c.id for c in mine], overall_received=tot["amount"]),
         "portfolios": cards,
     }
+
+
+@router.get("/employee-trends")
+def employee_trends(user_id: int, db: Session = Depends(get_db),
+                    actor: models.User = Depends(get_current_user)):
+    """One person's achievement across FTD / MTD / LMTD / Overall — powers the trend strip on a
+    FOS/caller's own profile and on the profile card managers / HO / admin / team leads open."""
+    from sqlalchemy import or_, func
+    # A person may view their own; managers / HO / admin / team leads / HR / back-office view others.
+    if actor.id != user_id and actor.role not in ("admin", "manager", "headoffice", "teamlead", "hr", "backend"):
+        raise HTTPException(status_code=403, detail="Not allowed")
+    target = db.query(models.User).filter(models.User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    own = or_(models.Case.assigned_fos_id == user_id, models.Case.assigned_caller_id == user_id)
+    ids = [r[0] for r in db.query(models.Case.id)
+           .filter(models.Case.removed.isnot(True), own).all()]
+    overall = db.query(func.coalesce(func.sum(models.Case.received_amount), 0)) \
+        .filter(models.Case.removed.isnot(True), own).scalar()
+    return {
+        "user_id": user_id,
+        "name": target.name,
+        "emp_code": target.emp_code,
+        "cases": len(ids),
+        "trends": collection_windows(db, ids, overall_received=float(overall or 0)),
+    }
+
+
+def _cycle_key(cyc: str):
+    """Sort cycles numerically when they're numbers (1,2,5,10…), else alphabetically."""
+    s = str(cyc or "").strip()
+    digits = "".join(ch for ch in s if ch.isdigit())
+    return (0, int(digits)) if digits else (1, s.upper())
+
+
+@router.get("/by-cycle")
+def mis_by_cycle(month_bucket: str | None = "current",
+                 db: Session = Depends(get_db),
+                 user: models.User = Depends(require_roles(*MIS_ROLES, "fos", "telecaller"))):
+    """Cycle-wise MIS — every portfolio broken down by its billing CYCLE, with the same
+    ENR-based analytics per cycle. Scoped by role: MIS/managers/head office/back-office/team
+    leads see all their cases; a FOS or caller sees ONLY their own (via _scope). This powers
+    the 'Cycle-wise MIS' view for managers and the cycle breakdown on a caller/FOS scorecard."""
+    period = _period_for(month_bucket)
+    q = _scope(db.query(models.Case), user)
+    if period:
+        q = q.filter(models.Case.period == period)
+    cases = q.all()
+
+    targets = {(t.bank, t.product): _f(t.target_pct) for t in
+               db.query(models.MisTarget).filter(models.MisTarget.emp_name == "*ALL*").all()}
+
+    # portfolio (bank+product+branch) -> cycle -> [cases]
+    portfolios: dict[tuple, dict] = {}
+    for c in cases:
+        pkey = (c.bank or "—", c.product or "—", c.branch or "")
+        portfolios.setdefault(pkey, {}).setdefault((c.cycle or "—"), []).append(c)
+
+    out = []
+    for (bank, product, branch), cyc_map in portfolios.items():
+        tgt = targets.get((bank, product), 0.0)
+        cycles = []
+        for cyc, rows in cyc_map.items():
+            a = _agg(rows)
+            tenr = round(a["enr"] * tgt / 100.0, 2)
+            cycles.append({
+                "cycle": cyc, "count": a["count"], "paid": a["paid"], "unpaid": a["unpaid"],
+                "enr": a["enr"], "paid_enr": a["paid_enr"], "pct": a["pct"],
+                "norm_pct": a["norm_pct"], "stab_pct": a["stab_pct"],
+                "collected": a["amount"], "pending": a["pending"],
+                "not_visited": a["not_visited"],
+                "target_pct": tgt, "target_enr": tenr,
+                "to_target_pct": _pct(a["paid_enr"], tenr) if tenr else 0.0,
+            })
+        cycles.sort(key=lambda x: _cycle_key(x["cycle"]))
+        tot = _agg([c for rows in cyc_map.values() for c in rows])
+        out.append({
+            "bank": bank, "product": product, "branch": branch,
+            "label": f"{bank} {product}" + (f" · {branch}" if branch else ""),
+            "cycles": cycles,
+            "totals": {"count": tot["count"], "enr": tot["enr"], "paid_enr": tot["paid_enr"],
+                       "pct": tot["pct"], "collected": tot["amount"], "pending": tot["pending"]},
+        })
+    out.sort(key=lambda x: x["label"])
+    return {"month_bucket": month_bucket or "all", "portfolios": out}
 
 
 @router.put("/target")

@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,11 +44,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import `in`.recoveriq.app.data.EmployeeProfile
+import `in`.recoveriq.app.data.Trends
 import `in`.recoveriq.app.data.User
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.common.AsyncContent
 import `in`.recoveriq.app.ui.common.InfoCard
 import `in`.recoveriq.app.ui.common.SectionTitle
+import `in`.recoveriq.app.ui.common.TrendStrip
 import `in`.recoveriq.app.ui.theme.BrandBlue
 import `in`.recoveriq.app.ui.theme.BrandBlueDark
 import `in`.recoveriq.app.ui.theme.Good
@@ -74,6 +77,16 @@ fun ProfileScreen(vm: AuthViewModel, user: User) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         SectionTitle("My E-ID")
+
+        // Field / calling / team-lead staff see their own FTD / MTD / LMTD / Overall achievement.
+        if (user.isFieldAgent || user.isTelecaller || user.isTeamLead) {
+            val trends by produceState<Trends?>(initialValue = null) {
+                value = runCatching { vm.repo.myTrends().trends }.getOrNull()
+            }
+            trends?.let { t ->
+                InfoCard { TrendStrip(t, title = "My cash collected — FTD / MTD / LMTD / Overall") }
+            }
+        }
 
         AsyncContent(key = refresh, block = { vm.repo.myProfile() }) { p, reload ->
             EidCard(p)

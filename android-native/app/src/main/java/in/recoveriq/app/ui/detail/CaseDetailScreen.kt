@@ -88,8 +88,11 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
         containerColor = androidx.compose.ui.graphics.Color.Transparent,
     ) { pad ->
         AsyncContent(key = refresh, modifier = Modifier.padding(pad), block = { vm.repo.case(caseId) }) { case, _ ->
+            // Apply the Scaffold inset (pad) to the CONTENT too: AsyncContent only forwards the
+            // modifier to its loading/error states, so without this the loaded header scrolls up
+            // under the top bar. padding(pad) reserves the app-bar space; padding(16) is the gutter.
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+                Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 CaseHeader(case)

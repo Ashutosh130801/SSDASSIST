@@ -18,18 +18,22 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import `in`.recoveriq.app.data.TeamMemberCard
+import `in`.recoveriq.app.data.Trends
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.common.Actions
 import `in`.recoveriq.app.ui.common.AsyncContent
 import `in`.recoveriq.app.ui.common.EmptyState
 import `in`.recoveriq.app.ui.common.InfoCard
 import `in`.recoveriq.app.ui.common.SectionTitle
+import `in`.recoveriq.app.ui.common.TrendStrip
 import `in`.recoveriq.app.ui.common.rememberLiveKey
 import `in`.recoveriq.app.ui.theme.BrandBlue
 import `in`.recoveriq.app.ui.theme.Good
@@ -69,7 +73,7 @@ fun TeamLeadDashboardScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
             if (ov.members.isEmpty()) {
                 item { EmptyState("No team members yet.") }
             } else {
-                items(ov.members.size) { i -> MemberCard(ov.members[i]) }
+                items(ov.members.size) { i -> MemberCard(vm, ov.members[i]) }
             }
         }
     }
@@ -85,7 +89,7 @@ private fun Kpi(modifier: Modifier, label: String, value: String, sub: String?, 
 }
 
 @Composable
-private fun MemberCard(m: TeamMemberCard) {
+private fun MemberCard(vm: AuthViewModel, m: TeamMemberCard) {
     val context = LocalContext.current
     InfoCard {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
@@ -107,6 +111,14 @@ private fun MemberCard(m: TeamMemberCard) {
             val line = if (t.label == "visits") "${t.count} visits today"
             else "${t.count} calls today · ${t.ptp ?: 0} PTP"
             Text(line, style = MaterialTheme.typography.labelSmall, color = Muted)
+        }
+        // FTD / MTD / LMTD / Overall achievement for this team member.
+        val trends by produceState<Trends?>(initialValue = null, m.id) {
+            value = runCatching { vm.repo.employeeTrends(m.id).trends }.getOrNull()
+        }
+        trends?.let { t ->
+            Spacer(Modifier.height(8.dp))
+            TrendStrip(t, title = "Cash collected — FTD / MTD / LMTD / Overall")
         }
         if (!m.phone.isNullOrBlank()) {
             Spacer(Modifier.height(8.dp))

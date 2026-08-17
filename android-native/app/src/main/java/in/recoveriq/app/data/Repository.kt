@@ -95,6 +95,11 @@ class Repository(context: Context) {
     // --- Dashboard / activity ---
     suspend fun dashboard(): DashboardResponse = Api.service.dashboard()
     suspend fun activity(kind: String = "all"): List<ActivityItem> = Api.service.activity(kind)
+    suspend fun employeeTrends(userId: Int): EmployeeTrends = Api.service.employeeTrends(userId)
+    suspend fun myTrends(): EmployeeTrends {
+        val id = myId() ?: throw IllegalStateException("Not logged in")
+        return Api.service.employeeTrends(id)
+    }
 
     // --- Litigation ---
     suspend fun legalCases(): List<Legal> = Api.service.legalCases()

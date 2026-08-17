@@ -117,6 +117,10 @@ interface ApiService {
     @GET("api/analytics/dashboard")
     suspend fun dashboard(): DashboardResponse
 
+    // FTD/MTD/LMTD/Overall achievement for one person (self, or a report for a manager/TL).
+    @GET("api/mis/employee-trends")
+    suspend fun employeeTrends(@Query("user_id") userId: Int): EmployeeTrends
+
     @GET("api/analytics/activity")
     suspend fun activity(@Query("kind") kind: String = "all", @Query("limit") limit: Int = 100): List<ActivityItem>
 

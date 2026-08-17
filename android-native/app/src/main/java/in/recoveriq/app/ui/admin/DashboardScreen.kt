@@ -14,6 +14,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -21,11 +23,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import `in`.recoveriq.app.data.BankRow
 import `in`.recoveriq.app.data.LeaderRow
+import `in`.recoveriq.app.data.Trends
 import `in`.recoveriq.app.data.User
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.common.AsyncContent
 import `in`.recoveriq.app.ui.common.InfoCard
 import `in`.recoveriq.app.ui.common.SectionTitle
+import `in`.recoveriq.app.ui.common.TrendStrip
 import `in`.recoveriq.app.ui.fos.OnDutyCard
 import `in`.recoveriq.app.ui.theme.BrandBlue
 import `in`.recoveriq.app.ui.theme.Good
@@ -78,6 +82,17 @@ fun DashboardScreen(
                         Pill("Paid", d.kpis.paid, Good)
                         Pill("Partial", d.kpis.partial, BrandBlue)
                         Pill("Unpaid", d.kpis.unpaid, Muted)
+                    }
+                }
+            }
+            // FOS / caller: their FTD / MTD / LMTD / Overall achievement (cash collected).
+            if (user.isFieldAgent || user.isTelecaller) {
+                item {
+                    val trends by produceState<Trends?>(initialValue = null) {
+                        value = runCatching { vm.repo.myTrends().trends }.getOrNull()
+                    }
+                    trends?.let { t ->
+                        InfoCard { TrendStrip(t, title = "Cash collected — FTD / MTD / LMTD / Overall") }
                     }
                 }
             }

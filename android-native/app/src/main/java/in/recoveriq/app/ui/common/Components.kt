@@ -27,8 +27,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import `in`.recoveriq.app.data.Realtime
+import `in`.recoveriq.app.data.Trends
 import `in`.recoveriq.app.ui.theme.CardWhite
 import `in`.recoveriq.app.ui.theme.GlassStroke
+import `in`.recoveriq.app.ui.theme.Good
+import `in`.recoveriq.app.ui.theme.Muted
 import `in`.recoveriq.app.ui.theme.TextDark
 
 /**
@@ -92,6 +95,48 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
         fontWeight = FontWeight.SemiBold,
         modifier = modifier.padding(vertical = 8.dp),
     )
+}
+
+/**
+ * Cash-collected comparison across time windows: FTD (today) / MTD (month-till-day) /
+ * LMTD (last month-till-day) / Overall. Shown on the FOS/caller dashboard + profile, and on
+ * the report card a team lead / manager opens.
+ */
+@Composable
+fun TrendStrip(trends: Trends, title: String? = null, modifier: Modifier = Modifier) {
+    fun money(v: Double) = "₹" + "%,.0f".format(v)
+    val cells = listOf(
+        Triple("FTD", "Today", trends.ftd),
+        Triple("MTD", "This month", trends.mtd),
+        Triple("LMTD", "Last month", trends.lmtd),
+        Triple("Overall", "Lifetime", trends.overall),
+    )
+    Column(modifier.fillMaxWidth()) {
+        if (title != null) {
+            Text(title, color = Muted, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(bottom = 6.dp))
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            cells.forEach { (lbl, hint, v) ->
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp),
+                    color = CardWhite,
+                    contentColor = TextDark,
+                    border = BorderStroke(1.dp, GlassStroke),
+                ) {
+                    Column(Modifier.padding(8.dp)) {
+                        Text(lbl, color = Muted, style = MaterialTheme.typography.labelSmall)
+                        Text(hint, color = Muted, style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Normal)
+                        Text(money(v), style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (lbl == "FTD") Good else TextDark)
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
