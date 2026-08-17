@@ -3222,15 +3222,24 @@ function PTPTracker() {
             <div className="section-h"><h3 style={{ fontSize: 15 }}><span className={cx('badge', cls)}>{label}</span>
               <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}> · {rows.length}</span></h3></div>
             <div className="tablewrap"><table>
-              <thead><tr><th>Customer</th><th>Bank</th><th>Promised</th><th>Promise date</th><th>Pending</th><th></th></tr></thead>
-              <tbody>{rows.map(r => <tr key={r.case.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(r.case)}>
-                <td><b>{r.case.customer_name}</b><div className="muted" style={{ fontSize: 12 }}>{r.case.phone}</div></td>
-                <td>{r.case.bank}</td>
+              <thead><tr>
+                <th>Customer</th><th>Bank · Product</th><th>Bucket</th><th>Cycle</th><th>Card / A/C</th>
+                <th>Outstanding</th><th>Collected</th><th>Promised (PTP)</th><th>Promise date</th><th>Pending</th><th>Caller / FOS</th><th></th>
+              </tr></thead>
+              <tbody>{rows.map(r => { const c = r.case; return <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
+                <td><b>{c.customer_name}</b><div className="muted" style={{ fontSize: 12 }}>{c.phone || '—'}</div></td>
+                <td>{c.bank}{c.product ? <div className="muted" style={{ fontSize: 12 }}>{c.product}</div> : null}</td>
+                <td>{c.bucket || '—'}</td>
+                <td className="mono">{c.cycle || '—'}</td>
+                <td className="mono" style={{ fontSize: 12 }}>{c.card_no || c.account_no || '—'}</td>
+                <td className="mono">{INR(c.enr || c.total_outstanding || c.funding_amount || 0)}</td>
+                <td className="mono" style={{ color: 'var(--good)' }}>{INR(c.received_amount)}</td>
                 <td className="mono">{r.ptp_amount != null ? INR(r.ptp_amount) : '—'}</td>
-                <td style={{ color: key === 'overdue' ? 'var(--bad)' : 'var(--ink)' }}>{r.promised_date || '—'}</td>
-                <td className="mono" style={{ color: 'var(--warn)' }}>{INR(r.case.pending_amount)}</td>
-                <td><button className="btn sm gold" onClick={e => { e.stopPropagation(); setDrawer(r.case); }}>Open ›</button></td>
-              </tr>)}</tbody></table></div>
+                <td style={{ color: key === 'overdue' ? 'var(--bad)' : 'var(--ink)', whiteSpace: 'nowrap' }}>{r.promised_date || '—'}</td>
+                <td className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</td>
+                <td style={{ fontSize: 12 }}>{c.caller_name || c.fos_name || '—'}</td>
+                <td><button className="btn sm gold" onClick={e => { e.stopPropagation(); setDrawer(c); }}>Open ›</button></td>
+              </tr>; })}</tbody></table></div>
           </div>;
         })}
       {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
@@ -4615,8 +4624,12 @@ function SheetView({ user, config }) {
   }, []);
   const slideTo = (pct) => { const el = scrollRef.current; if (!el) return;
     const max = el.scrollWidth - el.clientWidth; el.scrollLeft = (pct / 100) * max; setScrollPct(pct); };
+  // ◀/▶ move by ~two columns (measured from a real header cell), so it steps like Excel
+  // instead of jumping the whole width in one click.
   const nudge = (dir) => { const el = scrollRef.current; if (!el) return;
-    el.scrollBy({ left: dir * Math.max(220, el.clientWidth * 0.6), behavior: 'smooth' }); };
+    const cell = el.querySelector('table.sv thead th');
+    const colW = cell ? cell.getBoundingClientRect().width : 130;
+    el.scrollBy({ left: dir * Math.max(90, colW * 2), behavior: 'smooth' }); };
   React.useEffect(() => { window.addEventListener('resize', syncSlider); return () => window.removeEventListener('resize', syncSlider); }, [syncSlider]);
   // Re-measure when the columns/rows change (a wider/narrower sheet changes the scroll range).
   React.useEffect(() => { const t = setTimeout(syncSlider, 60); return () => clearTimeout(t); }, [rows, prefs, syncSlider]);
