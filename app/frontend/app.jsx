@@ -2800,7 +2800,8 @@ function CallModal({ c, onClose, onDone }) {
   const [ptpDate, setPtpDate] = useState(''); const [followDate, setFollowDate] = useState('');
   const [paidAmt, setPaidAmt] = useState(''); const [note, setNote] = useState(''); const [normStab, setNormStab] = useState('STAB');
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
-  const isPTP = dispo === 'PTP';   // RTP = Refuse to Pay is not a promise const isPaid = dispo === 'PAID'; const isCC = c.segment === 'Credit Card';
+  const isPTP = dispo === 'PTP';   // RTP = Refuse to Pay is not a promise
+  const isPaid = dispo === 'PAID'; const isCC = c.segment === 'Credit Card';
   const save = async () => {
     setErr(''); setBusy(true);
     const body = { case_id: c.id, disposition: dispo, note };
@@ -2873,7 +2874,8 @@ function CaseDrawer({ c, onClose, onChanged }) {
       setCur(updated); setNcEdit(false); toast('Saved — assigned field officer notified.'); await refresh(); onChanged && onChanged();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
-  const isPTP = dispo === 'PTP';   // RTP = Refuse to Pay is not a promise const isPaid = dispo === 'PAID'; const isCC = cur.segment === 'Credit Card';
+  const isPTP = dispo === 'PTP';   // RTP = Refuse to Pay is not a promise
+  const isPaid = dispo === 'PAID'; const isCC = cur.segment === 'Credit Card';
   const refresh = () => Promise.all([
     api(`/api/cases/${c.id}`).then(setCur).catch(() => {}),
     api(`/api/cases/${c.id}/timeline`).then(setHist).catch(() => setHist([])),
