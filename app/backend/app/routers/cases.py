@@ -416,32 +416,33 @@ def product_summary(db: Session = Depends(get_db), user: models.User = Depends(g
     """Product cards: one row per bank + product + segment with case counts and money,
     scoped to what the user may see (admin all, manager their branch)."""
     cur, nxt = _current_period(), _next_period()
+    # Recovered / Pending are computed the SAME way the case detail does — from the case's real
+    # base (FUNDING → TOS → ENR) minus cash received — NOT the stored pending_amount column, which
+    # is only filled in once a payment/edit lands. That's why fresh portfolios were showing ₹0.
     rows = (
         _scope(db.query(
             models.Case.bank, models.Case.product, models.Case.segment, models.Case.branch,
             models.Case.period,
-            func.count(models.Case.id),
-            func.coalesce(func.sum(models.Case.pending_amount), 0),
-            func.coalesce(func.sum(models.Case.received_amount), 0),
-        ), user)
-        .group_by(models.Case.bank, models.Case.product, models.Case.segment, models.Case.branch,
-                  models.Case.period)
-        .all()
+            models.Case.funding_amount, models.Case.total_outstanding, models.Case.enr,
+            models.Case.received_amount,
+        ), user).all()
     )
     # A portfolio is bank + product + segment + BRANCH — so the same product uploaded for two
     # branches shows as two separate cards. Keep this-month vs next-month counts split.
     agg: dict = {}
-    for b, p, s, br, per, c, pd, rc in rows:
+    for b, p, s, br, per, fund, tos, enr, recv in rows:
+        base = float(fund or 0) or float(tos or 0) or float(enr or 0)   # funding → TOS → ENR
+        rc = float(recv or 0)
         key = (b, p, s, br)
         d = agg.setdefault(key, {"count": 0, "pending": 0.0, "received": 0.0,
                                  "count_current": 0, "count_next": 0})
-        d["count"] += c
-        d["pending"] += float(pd or 0)
-        d["received"] += float(rc or 0)
+        d["count"] += 1
+        d["received"] += rc
+        d["pending"] += max(0.0, base - rc)
         if per == cur:
-            d["count_current"] += c
+            d["count_current"] += 1
         elif per == nxt:
-            d["count_next"] += c
+            d["count_next"] += 1
     out = [{"bank": b or "—", "product": p or "—", "segment": s, "branch": br or "", **d}
            for (b, p, s, br), d in agg.items()]
     out.sort(key=lambda x: (x["bank"], x["product"], x["branch"]))
