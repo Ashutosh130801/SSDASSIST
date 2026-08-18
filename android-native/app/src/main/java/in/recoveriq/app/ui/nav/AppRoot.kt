@@ -30,6 +30,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
@@ -49,7 +50,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavType
@@ -68,6 +72,9 @@ import `in`.recoveriq.app.ui.ai.AiAssistScreen
 import `in`.recoveriq.app.ui.caller.CallQueueScreen
 import `in`.recoveriq.app.ui.caller.PtpTrackerScreen
 import `in`.recoveriq.app.ui.common.CasesScreen
+import `in`.recoveriq.app.ui.common.GuidedTour
+import `in`.recoveriq.app.ui.common.TOUR_DESC
+import `in`.recoveriq.app.ui.common.TourPrefs
 import `in`.recoveriq.app.ui.detail.CaseDetailScreen
 import `in`.recoveriq.app.ui.fos.FieldAgentTrackingScreen
 import `in`.recoveriq.app.ui.fos.FieldTrackingScreen
@@ -245,6 +252,18 @@ private fun HomeScaffold(
     val scope = rememberCoroutineScope()
     val current = items.firstOrNull { it.key == currentKey } ?: items.first()
 
+    // One-time guided tour (per role) + a "?" button to reopen it anytime.
+    val ctx = LocalContext.current
+    var showTour by remember { mutableStateOf(!TourPrefs.seen(ctx, user.role)) }
+    val tourSteps = remember(items) {
+        buildList {
+            add("👋 Welcome, ${user.name.substringBefore(' ')}!" to
+                "A quick tour of your ${user.roleLabel} workspace — we'll walk through each feature. Skip anytime and reopen it from the \"?\" button at the bottom-right.")
+            items.forEach { add(it.label to (TOUR_DESC[it.key] ?: "Open ${it.label}.")) }
+            add("🎉 You're all set!" to "That's the tour. Tap the \"?\" button anytime to see it again. Happy working!")
+        }
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -333,7 +352,20 @@ private fun HomeScaffold(
             },
             containerColor = androidx.compose.ui.graphics.Color.Transparent,
         ) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding)) { current.screen() }
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                current.screen()
+                // Floating help / tour button (bottom-right).
+                FloatingActionButton(
+                    onClick = { showTour = true },
+                    containerColor = BrandBlue,
+                    contentColor = Color.White,
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                ) { Text("?", fontWeight = FontWeight.Bold, fontSize = 22.sp) }
+
+                if (showTour) {
+                    GuidedTour(tourSteps) { TourPrefs.markSeen(ctx, user.role); showTour = false }
+                }
+            }
         }
     }
 }

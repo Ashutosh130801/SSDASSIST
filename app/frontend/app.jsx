@@ -5672,6 +5672,85 @@ function NotificationBell({ onOpenCase, style }) {
     </div>
   );
 }
+/* ==================== Guided tour (per-role onboarding) ==================== */
+const TOUR_DESC = {
+  dashboard: 'Your home base — headline numbers at a glance: total cases, recovery %, cash collected, pending, and your resolution %.',
+  tldash: 'My Team — your team’s overview, members and their performance, all scoped to you.',
+  myperf: 'My Performance — how much you’ve achieved (FTD / MTD / LMTD / Overall), broken down per portfolio, with a live leaderboard.',
+  cases: 'Portfolios & Accounts — browse every portfolio; open any case for full details, payments and history.',
+  fcases: 'My Accounts — your assigned field cases grouped by bank & bucket. Search, filter, or view them on a map.',
+  sheet: 'Live Sheet — an editable spreadsheet of your cases. Log payments and edits here and they sync instantly for everyone.',
+  queue: 'Calling — your call queue: who’s due now, contacted today, upcoming and paid. Search, filter by status/bank/bucket to work faster.',
+  ptp: 'PTP Tracker — promise-to-pay cases split into overdue / due today / upcoming so you chase the right ones first.',
+  mis: 'MIS — full recovery analytics: leaderboards, month-wise and cycle-wise pivots, targets and downloads.',
+  feedback: 'Bank Feedback — the daily bank sheet, auto-filled from call & visit logs. Edit and download it per day.',
+  map: 'Field Tracking — live agent locations, routes and visit history on the map.',
+  fmap: 'Field Tracking — your live location and today’s route; log GPS-stamped visits from here.',
+  leave: 'Leave — apply for leave and track your approvals.',
+  manpower: 'Manpower — employee records, the document vault (upload a whole folder), and offer / agreement letters.',
+  staff: 'Team — branch staff, their profiles and performance.',
+  escalations: 'Escalations — hard or high-value cases pulled up for special attention.',
+  records: 'Activity — a live log of every call, visit and payment.',
+  audit: 'Audit Log — a full trail of every change made in the system.',
+  archive: 'Monthly Archive — closed months, kept for reference.',
+  templates: 'Communication — WhatsApp / SMS message templates.',
+  devices: 'Devices — approve or block the devices your staff log in from.',
+  legal: 'Litigation — the legal / court case tracker.',
+  ai: 'AI Assist — ask plain-English questions about your data.',
+  security: 'Security — change your password and set up 2-factor authentication.',
+  profile: 'My E-ID — your profile, ID card and personal details.',
+};
+
+function TourOverlay({ steps, go, onClose }) {
+  const [idx, setIdx] = useState(0);
+  const [rect, setRect] = useState(null);
+  const step = steps[idx] || {};
+  useEffect(() => {
+    if (step.navId && go) go(step.navId);
+    const measure = () => {
+      if (!step.navId) { setRect(null); return; }
+      const els = Array.from(document.querySelectorAll(`[data-nav="${step.navId}"]`));
+      const el = els.find(e => e.offsetParent !== null) || els[0];
+      setRect(el ? el.getBoundingClientRect() : null);
+    };
+    const t = setTimeout(measure, 90);
+    const on = () => measure();
+    window.addEventListener('resize', on); window.addEventListener('scroll', on, true);
+    return () => { clearTimeout(t); window.removeEventListener('resize', on); window.removeEventListener('scroll', on, true); };
+  }, [idx]); // eslint-disable-line
+  const last = idx === steps.length - 1;
+  const next = () => { if (last) onClose(); else setIdx(i => i + 1); };
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let cardStyle;
+  if (rect && rect.width) {
+    if (vw - rect.right > 350) cardStyle = { left: rect.right + 14, top: Math.min(Math.max(12, rect.top - 8), vh - 240) };
+    else if (rect.top > 260) cardStyle = { left: Math.min(Math.max(12, rect.left), vw - 342), top: rect.top - 224 };
+    else cardStyle = { left: Math.min(Math.max(12, rect.left), vw - 342), top: rect.bottom + 14 };
+  } else cardStyle = { left: '50%', top: '50%', transform: 'translate(-50%,-50%)' };
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 3000 }}>
+      {rect && rect.width
+        ? <div style={{ position: 'fixed', left: rect.left - 6, top: rect.top - 6, width: rect.width + 12, height: rect.height + 12, borderRadius: 12, boxShadow: '0 0 0 9999px rgba(8,15,35,.62)', border: '2px solid var(--gold, #C7A24A)', pointerEvents: 'none', transition: 'all .2s' }} />
+        : <div style={{ position: 'fixed', inset: 0, background: 'rgba(8,15,35,.62)' }} />}
+      <div style={{ position: 'fixed', width: 320, maxWidth: '92vw', ...cardStyle, background: '#fff', color: '#111', borderRadius: 14, boxShadow: '0 18px 50px rgba(0,0,0,.35)', padding: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+          <b style={{ fontSize: 15 }}>{step.title}</b>
+          <button className="btn ghost sm" onClick={onClose} title="Skip tour">Skip ✕</button>
+        </div>
+        <p style={{ fontSize: 13.5, lineHeight: 1.55, margin: '8px 0 12px', color: '#374151' }}>{step.body}</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 4, flex: 1, flexWrap: 'wrap' }}>
+            {steps.map((_, i) => <span key={i} onClick={() => setIdx(i)} style={{ width: 7, height: 7, borderRadius: '50%', cursor: 'pointer', background: i === idx ? 'var(--gold,#C7A24A)' : '#d1d5db' }} />)}
+          </div>
+          {idx > 0 && <button className="btn sm" onClick={() => setIdx(i => Math.max(0, i - 1))}>Back</button>}
+          <button className="btn gold sm" onClick={next}>{last ? 'Done' : 'Next ›'}</button>
+        </div>
+        <div style={{ fontSize: 11, color: '#9aa4b2', marginTop: 6 }}>Step {idx + 1} of {steps.length}</div>
+      </div>
+    </div>
+  );
+}
+
 function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, onSwitchView }) {
   const baseNav = NAV[user.role] || NAV.telecaller;
   // Everyone gets a personal E-ID / profile entry.
@@ -5679,6 +5758,15 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
   const [view, setView] = useState(nav[0][0]);
   const [trackOnboard, setTrackOnboard] = useState(false);
   const [notifCase, setNotifCase] = useState(null);
+  const [tour, setTour] = useState(false);
+  // Per-role guided tour: welcome → one step per feature → finish. Shown once, reopenable.
+  const tourKey = `ssd_tour_${user.id}_${user.role}`;
+  const firstName = (user.name || '').split(' ')[0] || 'there';
+  const tourSteps = [{ title: `👋 Welcome, ${firstName}!`, body: `Here’s a quick tour of your ${roleName(user.role)} workspace — we’ll walk through each feature. You can skip anytime and reopen this from the “?” button in the bottom-right corner.` }]
+    .concat(nav.map(([id, ic, label]) => ({ navId: id, title: `${ic} ${label}`, body: TOUR_DESC[id] || `Open ${label}.` })))
+    .concat([{ title: '🎉 You’re all set!', body: 'That’s the tour. Whenever you need it again, tap the “?” button in the bottom-right corner. Happy working!' }]);
+  const closeTour = () => { try { localStorage.setItem(tourKey, '1'); } catch (e) {} setTour(false); };
+  useEffect(() => { try { if (!localStorage.getItem(tourKey)) { const t = setTimeout(() => setTour(true), 800); return () => clearTimeout(t); } } catch (e) {} }, [tourKey]);
   useLocationPing(user, config);
   useEffect(() => {
     try {
@@ -5729,7 +5817,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
           style={{ background: 'rgba(59,130,246,.10)', color: 'var(--info)', fontWeight: 600 }}>
           <span className="ic">🔀</span>Switch view</div>}
         <div className="navscroll">
-          {nav.map(([id, ic, label]) => <div key={id} className={cx('navitem', view === id && 'active')} onClick={() => setView(id)}>
+          {nav.map(([id, ic, label]) => <div key={id} data-nav={id} className={cx('navitem', view === id && 'active')} onClick={() => setView(id)}>
             <span className="ic">{ic}</span>{label}</div>)}
         </div>
         <AndroidDownloadButton compact block style={{ margin: '4px 0' }} />
@@ -5749,10 +5837,16 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
         {trackOnboard && <NativeTrackingOnboard onDone={() => { try { localStorage.setItem('ssd_trackonboard', '1'); } catch (e) {} setTrackOnboard(false); }} />}
       </main>
       <nav className="mobnav">
-        {nav.map(([id, ic, label]) => <div key={id} className={cx('navitem', view === id && 'active')} onClick={() => setView(id)}>
+        {nav.map(([id, ic, label]) => <div key={id} data-nav={id} className={cx('navitem', view === id && 'active')} onClick={() => setView(id)}>
           <span className="ic">{ic}</span>{label}</div>)}
         <div className="navitem" onClick={onLogout}><span className="ic">⎋</span>Sign out</div>
       </nav>
+
+      {/* Floating help / tour button (bottom-right) — reopens the guided tour anytime. */}
+      <button onClick={() => setTour(true)} title="App tour / help"
+        style={{ position: 'fixed', right: 18, bottom: 'calc(18px + env(safe-area-inset-bottom, 0px))', zIndex: 2500, width: 50, height: 50, borderRadius: '50%', border: '2px solid var(--gold,#C7A24A)', background: 'var(--navy,#0B234F)', color: 'var(--gold,#C7A24A)', fontSize: 22, fontWeight: 800, cursor: 'pointer', boxShadow: '0 8px 22px rgba(11,35,79,.35)' }}>?</button>
+
+      {tour && <TourOverlay steps={tourSteps} go={setView} onClose={closeTour} />}
     </div>
   );
 }
