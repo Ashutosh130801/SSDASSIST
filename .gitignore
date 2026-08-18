@@ -9,3 +9,5 @@ app/backend/*.db
 # Training QA scratch (safe to delete the _qa folder)
 _qa/
 RecoverIQ_Staff_Training.pdf
+_bro_cover.png
+_ssd_logo_preview.png

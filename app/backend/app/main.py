@@ -262,12 +262,60 @@ def _fix_dup_tl_codes():
         db.close()
 
 
+def _clear_random_allocations():
+    """One-time cleanup of the old pincode/GPS auto-allocator's work: strip any FOS/caller
+    assignment that ISN'T backed by the upload sheet. When a case is allocated from its Excel ID,
+    the importer overwrites fos_name/caller_name with the matched user's real name — so an
+    assignment whose stored name doesn't match the assigned user (or where the sheet name is blank)
+    was a 'random' allocation. Those are cleared so the case is unallocated, per the ID-only policy."""
+    import os
+    from .database import SessionLocal
+    from . import models as _m
+    # Run ONCE (not every restart) so we never undo an admin's later manual reassignments.
+    marker = os.path.join(os.path.dirname(__file__), "..", ".alloc_cleaned_v1")
+    if os.path.exists(marker):
+        return
+    db = SessionLocal()
+    try:
+        users = {u.id: ((u.name or "").strip().upper(), (u.emp_code or "").strip().upper())
+                 for u in db.query(_m.User.id, _m.User.name, _m.User.emp_code).all()}
+        changed = 0
+        for c in db.query(_m.Case).filter(_m.Case.removed.isnot(True)).all():
+            for id_attr, name_attr in (("assigned_fos_id", "fos_name"),
+                                       ("assigned_caller_id", "caller_name")):
+                uid = getattr(c, id_attr)
+                if not uid:
+                    continue
+                uname, ucode = users.get(uid, ("", ""))
+                sheet = (getattr(c, name_attr) or "").strip().upper()
+                # Keep only if the sheet clearly names this person (ID-matched rows store the
+                # user's real name); otherwise it was auto/randomly allocated → clear it.
+                ok = bool(sheet) and (
+                    (uname and (uname in sheet or sheet in uname))
+                    or (ucode and ucode in sheet))
+                if not ok:
+                    setattr(c, id_attr, None)
+                    changed += 1
+        if changed:
+            db.commit()
+        try:                                   # mark done so it runs only once
+            with open(marker, "w") as _f:
+                _f.write("done")
+        except Exception:
+            pass
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 _backfill_emp_codes()
 _backfill_norm_stab()
 _fix_negative_pending()
 _backfill_dual_role_flag()
 _reset_rtp_promises()
 _fix_dup_tl_codes()
+_clear_random_allocations()
 
 
 def _maybe_seed():

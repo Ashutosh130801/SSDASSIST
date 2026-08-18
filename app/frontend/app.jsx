@@ -939,6 +939,7 @@ function UploadModal({ onClose, onDone }) {
   const [file, setFile] = useState(null); const [bank, setBank] = useState(''); const [product, setProduct] = useState('');
   const [segment, setSegment] = useState(''); const [branch, setBranch] = useState(''); const [prev, setPrev] = useState(null);
   const [res, setRes] = useState(null);
+  const [fosAssign, setFosAssign] = useState({});   // account_no -> FOS emp_code, chosen at upload
   const [year, setYear] = useState(now.getFullYear()); const [month, setMonth] = useState(now.getMonth() + 1);
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
@@ -958,13 +959,14 @@ function UploadModal({ onClose, onDone }) {
     if (branch) f.append('branch', branch); return f;
   };
   const doPreview = async () => {
-    if (!file) return; setErr(''); setBusy(true);
+    if (!file) return; setErr(''); setBusy(true); setFosAssign({});
     try { setPrev(await api('/api/import/preview', { method: 'POST', form: buildForm() })); }
     catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
   const doCommit = async () => {
     if (!ready) return; setErr(''); setBusy(true);
     try { const f = buildForm(); f.append('auto_allocate', 'true');
+      f.append('fos_overrides', JSON.stringify(fosAssign));   // per-case FOS chosen at upload
       const r = await api('/api/import/commit', { method: 'POST', form: f });
       setRes(r);
       const rep = r.assignment_report || { rows: [] };
@@ -1025,7 +1027,7 @@ function UploadModal({ onClose, onDone }) {
         {err && <div style={{ color: 'var(--bad)', fontSize: 13, marginBottom: 8 }}>{err}</div>}
         <div className="toolbar">
           <button className="btn" onClick={doPreview} disabled={!file || busy}>Preview</button>
-          <button className="btn gold" onClick={doCommit} disabled={!ready || busy}>{busy ? 'Working…' : 'Import & Allocate'}</button>
+          <button className="btn gold" onClick={doCommit} disabled={!ready || busy}>{busy ? 'Working…' : (prev && (prev.no_fos_rows || []).length > 0 ? 'Continue & import' : 'Import & Allocate')}</button>
         </div>
         {prev && <div className="glass card" style={{ marginTop: 6 }}>
           <b>{prev.total_rows}</b> rows found in sheet <b>{prev.sheet}</b>. Preview:
@@ -1034,6 +1036,34 @@ function UploadModal({ onClose, onDone }) {
             <tbody>{prev.sample.map((s, i) => <tr key={i}>
               <td>{s.customer_name}</td><td>{s.bank}</td><td className="mono">{s.account_no}</td>
               <td className="mono">{s.funding_amount}</td><td>{s.pincode || '—'}</td></tr>)}</tbody></table></div>
+        </div>}
+        {prev && (prev.no_fos_rows || []).length > 0 && <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid var(--warn)' }}>
+          <div className="section-h" style={{ marginBottom: 4 }}><b>⚠ {prev.no_fos_count} case(s) have no FOS ID in the sheet</b></div>
+          <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+            You can <b>continue to allocate</b> without a FOS — these become caller-only cases (fully counted in MIS) — or assign a FOS to any of them right here. Rows left as “No FOS” stay caller-only.
+          </p>
+          <div className="tablewrap" style={{ maxHeight: 260, overflow: 'auto' }}><table>
+            <thead><tr><th>Account</th><th>Customer</th><th>FOS in sheet</th><th>Reason</th><th>Assign FOS</th></tr></thead>
+            <tbody>{prev.no_fos_rows.map((r, i) => <tr key={i}>
+              <td className="mono">{r.account_no || '—'}</td><td>{r.customer || '—'}</td>
+              <td>{r.fos_in_sheet || '—'}</td>
+              <td className="muted" style={{ fontSize: 12 }}>{r.reason === 'blank' ? 'No FOS in sheet' : 'FOS ID not recognised'}</td>
+              <td><select className="input" style={{ minWidth: 210, padding: '3px 6px', fontSize: 12.5 }}
+                disabled={!r.account_no} value={fosAssign[r.account_no] || ''}
+                onChange={e => setFosAssign(m => ({ ...m, [r.account_no]: e.target.value }))}>
+                <option value="">— No FOS (caller-only) —</option>
+                {(prev.fos_options || []).map(o => <option key={o.code} value={o.code}>{o.name} ({o.code}){o.branch ? ' · ' + o.branch : ''}</option>)}
+              </select></td>
+            </tr>)}</tbody></table></div>
+          {prev.no_fos_capped && <p className="muted" style={{ fontSize: 11 }}>Showing the first 500 — the rest without a FOS stay caller-only.</p>}
+          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}><b>{Object.values(fosAssign).filter(Boolean).length}</b> FOS assigned here · the rest will be caller-only.</p>
+        </div>}
+        {res && <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid var(--good)' }}>
+          <b>✅ Imported {res.imported} new · {res.updated} updated</b>
+          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            Allocated strictly by the employee IDs in the sheet — {res.assigned_fos_total} case(s) have a FOS, {res.assigned_caller_total} have a caller.
+            {res.assignment_report && res.assignment_report.blank_fos ? ` ${res.assignment_report.blank_fos} case(s) have no FOS (caller-only) — that's expected; they're fully counted in MIS and shown under “No FOS (caller-only)”.` : ''}
+          </p>
         </div>}
         {res && res.assignment_report && (res.assignment_report.rows || []).length > 0 && (() => {
           const rep = res.assignment_report;

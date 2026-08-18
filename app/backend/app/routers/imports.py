@@ -34,7 +34,8 @@ def _parse_due(val):
 @router.post("/preview")
 async def preview(file: UploadFile = File(...), default_bank: str | None = Form(None),
                   product: str | None = Form(None), segment: str | None = Form(None),
-                  admin: models.User = Depends(require_roles("admin", "backend", "headoffice"))):
+                  admin: models.User = Depends(require_roles("admin", "backend", "headoffice")),
+                  db: Session = Depends(get_db)):
     content = await file.read()
     try:
         records, sheet = import_workbook(content, default_bank=default_bank)
@@ -51,7 +52,30 @@ async def preview(file: UploadFile = File(...), default_bank: str | None = Form(
         for k, v in list(s.items()):        # Decimals -> str for JSON
             if hasattr(v, "quantize"):
                 s[k] = str(v)
-    return {"sheet": sheet, "total_rows": len(records), "sample": sample}
+
+    # Pre-upload FOS check: list every row whose FOS ID is missing or unknown, WITH the reason,
+    # so HR can decide up-front — continue without a FOS (caller-only) or pick a FOS per case.
+    fos_by_code = {u.emp_code.strip().upper(): u for u in db.query(models.User).all()
+                   if u.emp_code and u.role == "fos" and u.is_active}
+    no_fos, cap = [], 500
+    for r in records:
+        k = record_to_case_kwargs(r)
+        raw = k.get("fos_name")
+        val = (str(raw).strip() if raw is not None else "")
+        if val and val.upper() in fos_by_code:
+            continue                          # FOS resolved by ID — fine
+        if len(no_fos) < cap:
+            no_fos.append({"account_no": k.get("account_no"),
+                           "customer": k.get("customer_name") or k.get("name"),
+                           "fos_in_sheet": val or None,
+                           "reason": "blank" if not val else "unknown"})
+    fos_options = [{"code": u.emp_code, "name": u.name, "branch": u.branch}
+                   for u in db.query(models.User)
+                   .filter(models.User.role == "fos", models.User.is_active == True)
+                   .order_by(models.User.name).all() if u.emp_code]
+    return {"sheet": sheet, "total_rows": len(records), "sample": sample,
+            "no_fos_rows": no_fos, "no_fos_count": len(no_fos), "no_fos_capped": len(no_fos) >= cap,
+            "fos_options": fos_options}
 
 
 @router.post("/commit")
@@ -59,8 +83,16 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                  product: str | None = Form(None), segment: str | None = Form(None),
                  branch: str | None = Form(None), auto_allocate: bool = Form(True),
                  year: int | None = Form(None), month: int | None = Form(None),
+                 fos_overrides: str | None = Form(None),
                  admin: models.User = Depends(require_roles("admin", "backend", "headoffice")), db: Session = Depends(get_db)):
     content = await file.read()
+    # HR may assign a FOS to specific cases at upload time (for rows the sheet left blank/unknown).
+    # fos_overrides is a JSON map { account_no: FOS emp_code }.
+    import json as _json
+    try:
+        _fos_ov = {str(k).strip(): str(v).strip().upper() for k, v in (_json.loads(fos_overrides or "{}") or {}).items() if v}
+    except Exception:
+        _fos_ov = {}
     try:
         records, sheet = import_workbook(content, default_bank=default_bank)
     except Exception as e:
@@ -105,12 +137,11 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     # cell strictly to that ID — no name / fuzzy / GPS guessing — so a case is only ever handed
     # to the exact person printed in the sheet. Anything that isn't a known ID is reported back
     # unallocated with a reason, never assigned to someone at random.
+    # CALLER column resolves to a TELECALLER's emp_code ONLY (e.g. TC001) — never a team-lead code.
+    # A dual-role caller who also holds a TL hat still matches here by their telecaller emp_code
+    # (their TL id is used only for the TEAM LEAD column, not the caller column).
     _caller_by_code = {u.emp_code.strip().upper(): u for u in _users
-                       if u.emp_code and u.role in ("telecaller", "teamlead") and u.is_active}
-    # a dual-role caller/FOS granted the team-lead hat may appear under their TL id too
-    for u in _users:
-        if u.is_active and getattr(u, "also_team_lead", False) and getattr(u, "tl_emp_code", None):
-            _caller_by_code.setdefault(u.tl_emp_code.strip().upper(), u)
+                       if u.emp_code and u.role == "telecaller" and u.is_active}
     _fos_by_code = {u.emp_code.strip().upper(): u for u in _users
                     if u.emp_code and u.role == "fos" and u.is_active}
     # Team lead is resolved from the sheet's TEAM LEAD ID column (its emp code, e.g. TL001,
@@ -222,6 +253,8 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                 _flag(kwargs, "caller", _rawc, _cr)
             _rawf = kwargs.get("fos_name")
             fu, _fr = _match_fos(_rawf)
+            if not fu and acct and str(acct) in _fos_ov:      # HR-assigned FOS for this case at upload
+                fu = _fos_by_code.get(_fos_ov[str(acct)])
             if fu:
                 existing.assigned_fos_id = fu.id
                 existing.fos_name = fu.name
@@ -261,6 +294,8 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             _flag(kwargs, "caller", _rawc, _cr)
         _rawf = kwargs.get("fos_name")
         fu, _fr = _match_fos(_rawf)
+        if not fu and acct and str(acct) in _fos_ov:      # HR-assigned FOS for this case at upload
+            fu = _fos_by_code.get(_fos_ov[str(acct)])
         if fu:
             kwargs["assigned_fos_id"] = fu.id
             kwargs["fos_name"] = fu.name

@@ -180,23 +180,27 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
         lb.sort(key=lambda x: x["achieved_enr"], reverse=True)
         return lb
 
-    # Every FOS/caller in the MIS is shown as their REAL full name + employee ID
-    # (e.g. "Uday Kumar (FO007)"), resolved from the case's assigned person — never the
-    # raw sheet text like "UDAY/KAKINADA , 9032220101". Unallocated cases group as
-    # "Unassigned" so they can't be mistaken for a person.
+    # Every FOS/caller in the MIS is shown by their REAL full name + employee ID when the case
+    # is allocated to a system user (e.g. "Uday Kumar (FO007)"). When it isn't allocated we fall
+    # back to the FOS/CALLER NAME printed in the upload sheet, so EVERY field officer associated
+    # with the portfolio still appears in the analytics (not lumped into one "Unassigned" bucket).
+    # Only truly blank rows show as "Unassigned".
     _ppl = {u.id: (u.name, u.emp_code) for u in db.query(models.User).all()}
 
     def _person_label(uid):
         if uid and uid in _ppl:
             nm, code = _ppl[uid]
-            return f"{nm} ({code})" if code else (nm or "Unassigned")
+            return f"{nm} ({code})" if code else (nm or None)
         return None
 
+    # Some cases are CALLER-ONLY (no FOS in the sheet) — these are worked only by callers.
+    # They still count in the portfolio; in the FOS-wise pivot they group under a clear
+    # "No FOS (caller-only)" bucket instead of being mistaken for a mis-configured row.
     def _fos_label(c):
-        return _person_label(c.assigned_fos_id) or "Unassigned"
+        return _person_label(c.assigned_fos_id) or (c.fos_name or "").strip() or "— No FOS (caller-only) —"
 
     def _caller_label(c):
-        return _person_label(c.assigned_caller_id) or "Unassigned"
+        return _person_label(c.assigned_caller_id) or (c.caller_name or "").strip() or "— No caller —"
 
     by_fos = _group(cases, _fos_label)
     by_caller_g = _group(cases, _caller_label)

@@ -108,32 +108,10 @@ def choose_caller(db: Session, case: models.Case, callers: List[models.User]) ->
 
 
 def run_allocation(db: Session, only_unallocated: bool = True, bank: Optional[str] = None) -> dict:
-    fos_users = db.query(models.User).filter(models.User.role == "fos", models.User.is_active == True).all()
-    callers = db.query(models.User).filter(models.User.role == "telecaller", models.User.is_active == True).all()
-
-    q = db.query(models.Case).filter(models.Case.removed.isnot(True))
-    if bank:
-        q = q.filter(models.Case.bank == bank)
-    if only_unallocated:
-        q = q.filter((models.Case.assigned_fos_id.is_(None)) | (models.Case.assigned_caller_id.is_(None)))
-    q = q.filter(models.Case.status.notin_(["paid", "closed"]))
-
-    allocated_fos = 0
-    allocated_caller = 0
-    for case in q.all():
-        if case.assigned_fos_id is None and fos_users:
-            fos = choose_fos(db, case, fos_users)
-            if fos:
-                case.assigned_fos_id = fos.id
-                if case.status == "new":
-                    case.status = "allocated"
-                if not case.branch and fos.branch:      # inherit branch from the assigned FOS
-                    case.branch = fos.branch
-                allocated_fos += 1
-        if case.assigned_caller_id is None and callers:
-            caller = choose_caller(db, case, callers)
-            if caller:
-                case.assigned_caller_id = caller.id     # caller is cross-branch — do NOT set branch from caller
-                allocated_caller += 1
-    db.commit()
-    return {"fos_allocated": allocated_fos, "caller_allocated": allocated_caller}
+    """DISABLED BY POLICY. Allocation is now EMPLOYEE-ID ONLY, driven entirely by the CALLER/FOS
+    ID columns in the uploaded Excel (see routers/imports.py). We never auto-assign a case to a
+    FOS/caller by pincode / GPS / load-balancing — that was assigning cases to people who weren't
+    named in the sheet ("random FOS"), which is exactly what must not happen. This is a no-op so
+    every path (seed, the admin /allocate endpoint, etc.) stays ID-only. The heuristic helpers
+    (choose_fos / choose_caller) are kept only for reference and are no longer called."""
+    return {"fos_allocated": 0, "caller_allocated": 0}
