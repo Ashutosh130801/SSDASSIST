@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -29,6 +30,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -227,8 +229,22 @@ private fun ActionBar(
     onPay: () -> Unit, onLogCall: () -> Unit, onLogVisit: () -> Unit,
 ) {
     val context = LocalContext.current
+    var showCallChoice by remember { mutableStateOf(false) }
+    if (showCallChoice) {
+        AlertDialog(
+            onDismissRequest = { showCallChoice = false },
+            title = { Text("Place the call") },
+            text = { Text("Call ${case.customerName ?: "this customer"} through Zoiper (recommended) or your phone dialer?") },
+            confirmButton = {
+                TextButton(onClick = { showCallChoice = false; Actions.dialViaZoiper(context, case.phone) }) { Text("Call via Zoiper") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCallChoice = false; Actions.dial(context, case.phone) }) { Text("Phone dialer") }
+            },
+        )
+    }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ActionBtn("Call", Icons.Filled.Call, Modifier.weight(1f)) { Actions.dial(context, case.phone) }
+        ActionBtn("Call", Icons.Filled.Call, Modifier.weight(1f)) { showCallChoice = true }
         ActionBtn("WhatsApp", Icons.Filled.Chat, Modifier.weight(1f)) { Actions.whatsapp(context, case.phone) }
         ActionBtn("Navigate", Icons.Filled.Navigation, Modifier.weight(1f)) {
             Actions.navigate(context, case.latitude, case.longitude, case.customerName)

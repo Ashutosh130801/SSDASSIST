@@ -234,16 +234,18 @@ def _attach_assignees(db, cases):
         | {c.assigned_caller_id for c in cases if c.assigned_caller_id}
     umap = {}
     if ids:
-        for uid, name, phone in db.query(
-                models.User.id, models.User.name, models.User.phone).filter(models.User.id.in_(ids)).all():
-            umap[uid] = (name, phone)
+        for uid, name, phone, code in db.query(
+                models.User.id, models.User.name, models.User.phone, models.User.emp_code).filter(models.User.id.in_(ids)).all():
+            umap[uid] = (name, phone, code)
     for c in cases:
         f = umap.get(c.assigned_fos_id)
         cc = umap.get(c.assigned_caller_id)
         c.assigned_fos_name = f[0] if f else None
         c.assigned_fos_phone = f[1] if f else None
+        c.assigned_fos_code = f[2] if f else None
         c.assigned_caller_name = cc[0] if cc else None
         c.assigned_caller_phone = cc[1] if cc else None
+        c.assigned_caller_code = cc[2] if cc else None
     return cases
 
 
@@ -264,10 +266,20 @@ def list_cases(
     closed: bool | None = None,         # True = only closed(locked), False = only open
     closing_type: str | None = None,    # cyc / month_end / due_date
     cyc: int | None = None,             # cycle day-of-month it closes on
+    caller_id: int | None = None,       # cases currently assigned to this telecaller (for transfers)
+    fos_id: int | None = None,          # cases currently assigned to this FOS
+    team_lead: str | None = None,       # cases currently under this team-lead (name or emp code)
     limit: int = Query(500, le=5000),
     offset: int = 0,
 ):
     q = _scope(db.query(models.Case), user)
+    if caller_id:
+        q = q.filter(models.Case.assigned_caller_id == caller_id)
+    if fos_id:
+        q = q.filter(models.Case.assigned_fos_id == fos_id)
+    if team_lead:
+        tl = team_lead.strip().lower()
+        q = q.filter(func.lower(func.trim(models.Case.team_lead)) == tl)
     if period:
         q = q.filter(models.Case.period == period)
     if month_bucket == "current":
@@ -527,6 +539,9 @@ class BulkReassign(BaseModel):
     assigned_fos_id: int | None | str = "keep"
     assigned_caller_id: int | None | str = "keep"
     team_lead: str | None = "keep"
+    # Preferred: pick a team lead by their user id from a dropdown; we store their name on the case
+    # (that's what the team-lead scope matches on). null clears it; "keep" leaves it.
+    team_lead_id: int | None | str = "keep"
 
 
 @router.post("/bulk-reassign")
@@ -544,6 +559,11 @@ def bulk_reassign(body: BulkReassign, db: Session = Depends(get_db),
 
     def _uname(uid):
         return db.query(models.User.name).filter(models.User.id == uid).scalar() if uid else None
+
+    # A team lead chosen by id becomes a NAME on the case (the team-lead scope matches on name).
+    tl_target = body.team_lead        # legacy: free-text name / "keep" / ""
+    if body.team_lead_id != "keep":
+        tl_target = "" if body.team_lead_id is None else (_uname(int(body.team_lead_id)) or "")
 
     # Managers/team-leads can only hand cases to staff they oversee.
     if user.role in ("manager", "teamlead"):
@@ -570,9 +590,9 @@ def bulk_reassign(body: BulkReassign, db: Session = Depends(get_db),
                          detail=f"{key.replace('_id','')} → {_uname(new) or 'unassigned'}",
                          target_user_id=new)
             touched = True
-        if body.team_lead != "keep":
+        if tl_target != "keep":
             old_tl = case.team_lead
-            new_tl = (body.team_lead or None)
+            new_tl = (tl_target or None)
             if (old_tl or None) != new_tl:
                 case.team_lead = new_tl
                 audit.record(db, user, "reassign" if new_tl else "deallocate", case,

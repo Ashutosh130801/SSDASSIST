@@ -397,6 +397,7 @@ def config(db: Session = Depends(get_db)):
         "geofence_metres": settings.geofence_metres,
         "brand_name": settings.brand_name,
         "brand_tagline": settings.brand_tagline,
+        "call_scheme": settings.call_scheme,
     }
 
 

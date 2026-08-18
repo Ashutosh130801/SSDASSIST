@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     smtp_from: str = ""              # falls back to smtp_user
     company_name: str = "SSD Enterprises"
 
+    # Dialer scheme telecallers use — Zoiper (registered on the phone, wired to the Dinstar
+    # gateway) picks up "zoiper:<number>" links. Change to sip / callto / tel if needed.
+    call_scheme: str = "zoiper"
+
     # Set to true (env SEED_ON_START=1) for the first cloud deploy to create the
     # demo staff/admin, then redeploy with it off.
     seed_on_start: bool = False

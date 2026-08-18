@@ -279,8 +279,10 @@ class CaseOut(CaseBase):
     # resolved assignee contact (for Call FOS / Call Caller buttons)
     assigned_fos_name: Optional[str] = None
     assigned_fos_phone: Optional[str] = None
+    assigned_fos_code: Optional[str] = None
     assigned_caller_name: Optional[str] = None
     assigned_caller_phone: Optional[str] = None
+    assigned_caller_code: Optional[str] = None
     allocation_reason: Optional[str]
     new_contact_by: Optional[str] = None
     new_contact_at: Optional[datetime] = None

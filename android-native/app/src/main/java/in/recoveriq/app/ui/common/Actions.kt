@@ -101,6 +101,19 @@ object Actions {
         context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$p")))
     }
 
+    /** Place the call through the Zoiper softphone (wired to the Dinstar gateway). Zoiper registers
+     *  the "zoiper:<number>" URL handler; if it isn't installed we fall back to the phone dialer. */
+    fun dialViaZoiper(context: Context, phone: String?, scheme: String = "zoiper") {
+        val p = phone?.let { cleanPhone(it) }.orEmpty()
+        if (p.isBlank()) { toast(context, "No phone number on file"); return }
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$scheme:$p")))
+        }.onFailure {
+            toast(context, "Zoiper not installed — opening dialer")
+            dial(context, phone)
+        }
+    }
+
     fun whatsapp(context: Context, phone: String?, message: String? = null) {
         var p = phone?.let { cleanPhone(it) }.orEmpty()
         if (p.isBlank()) { toast(context, "No phone number on file"); return }

@@ -92,11 +92,38 @@ const agoLabel = (iso) => {
 const kmBetween = (a, b) => { const R = 6371, dLa = (b.lat - a.lat) * Math.PI / 180, dLo = (b.lng - a.lng) * Math.PI / 180,
   la1 = a.lat * Math.PI / 180, la2 = b.lat * Math.PI / 180;
   const h = Math.sin(dLa / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
+// Telecallers dial through the Zoiper softphone (wired to the Dinstar gateway). Zoiper registers
+// the "zoiper:<number>" URL handler; the scheme is configurable (zoiper/sip/callto/tel).
+const callScheme = () => ((window.__ssdCfg || {}).call_scheme || 'zoiper');
+const placeCall = (phone, scheme) => { const n = cleanTel(phone); if (!n) return;
+  try { window.location.href = (scheme || callScheme()) + ':' + n; } catch (e) {} };
+
+// A Call button that asks HOW to place the call: via Zoiper (→ Dinstar) or the phone dialer.
+function CallMenu({ phone, label = 'Call', size = 'sm', gold }) {
+  const [open, setOpen] = useState(false);
+  if (!phone) return null;
+  const n = cleanTel(phone);
+  return (
+    <span style={{ position: 'relative', display: 'inline-block' }}>
+      <button className={cx('btn', size, gold && 'gold')} onClick={() => setOpen(o => !o)} title={'Call ' + phone}>📞 {label}</button>
+      {open && <>
+        <div style={{ position: 'fixed', inset: 0, zIndex: 59 }} onClick={() => setOpen(false)} />
+        <div className="glass" style={{ position: 'absolute', zIndex: 60, top: '100%', left: 0, marginTop: 4, padding: 6, borderRadius: 10, minWidth: 180, boxShadow: 'var(--shadow)' }}>
+          <button className="btn sm gold" style={{ width: '100%', marginBottom: 5 }}
+            onClick={() => { setOpen(false); placeCall(n, callScheme()); }}>☎️ Call via Zoiper</button>
+          <a className="btn ghost sm" style={{ width: '100%', display: 'block', textAlign: 'center' }}
+            href={'tel:' + n} onClick={() => setOpen(false)}>📱 Phone dialer</a>
+        </div>
+      </>}
+    </span>
+  );
+}
+
 // Reusable Call + WhatsApp buttons for a phone number
 function ContactBtns({ phone, text, size = 'sm' }) {
   if (!phone) return null;
   return <>
-    <a className={cx('btn', size)} href={'tel:' + cleanTel(phone)} title={'Call ' + phone}>📞 Call</a>
+    <CallMenu phone={phone} size={size} />
     <a className={cx('btn', size)} style={{ background: '#25D366', color: '#04310f', border: 'none' }}
        href={waHref(phone, text)} target="_blank" rel="noreferrer" title="WhatsApp">💬 WhatsApp</a>
   </>;
@@ -1106,13 +1133,14 @@ function ReassignModal({ ids, onClose, onDone }) {
   useEffect(() => { api('/api/users').then(setUsers).catch(() => setUsers([])); }, []);
   const foses = (users || []).filter(u => u.role === 'fos' && u.is_active !== false);
   const callers = (users || []).filter(u => u.role === 'telecaller' && u.is_active !== false);
-  const leads = [...new Set((users || []).filter(u => u.role === 'teamlead').map(u => u.name))];
+  // Team leads = pure team-lead role + dual-role (also a team lead) users.
+  const leads = (users || []).filter(u => (u.role === 'teamlead' || u.also_team_lead) && u.is_active !== false);
   const val = (s) => s === 'keep' ? 'keep' : (s === 'null' ? null : Number(s));
   const save = async () => {
     setBusy(true);
     try {
       const body = { case_ids: ids, assigned_fos_id: val(fos), assigned_caller_id: val(caller),
-                     team_lead: tl };
+                     team_lead_id: (tl === 'keep' ? 'keep' : (tl === '' ? null : Number(tl))) };
       const r = await api('/api/cases/bulk-reassign', { method: 'POST', body });
       toast(`Updated ${r.updated} of ${r.requested} case${r.requested === 1 ? '' : 's'}.`);
       onDone();
@@ -1137,10 +1165,108 @@ function ReassignModal({ ids, onClose, onDone }) {
         <div className="field"><label>Team lead</label>
           <select className="input" value={tl} onChange={e => setTl(e.target.value)}>
             <option value="keep">Keep as-is</option><option value="">— Clear —</option>
-            {leads.map(n => <option key={n} value={n}>{n}</option>)}
+            {leads.map(u => <option key={u.id} value={u.id}>{u.name} ({(u.tl_emp_code || u.emp_code) || '—'}){u.branch ? ` · ${u.branch}` : ''}</option>)}
           </select></div>
         <div className="toolbar"><button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
           <button className="btn gold" disabled={busy || !ids.length} onClick={save}>{busy ? 'Saving…' : 'Apply'}</button></div>
+      </div>
+    </div>
+  );
+}
+
+/* Transfer / re-allocate: pick whose cases to move (caller / FOS / team lead), review the
+   CURRENT allocation (with IDs), then assign the selected cases to a new caller, FOS or team
+   lead. Performance (MIS) recomputes live from the new assignee, so before/after both reflect. */
+function AllocTransferModal({ onClose, onDone }) {
+  const [users, setUsers] = useState(null);
+  const [srcRole, setSrcRole] = useState('telecaller');   // telecaller | fos | teamlead
+  const [srcId, setSrcId] = useState('');
+  const [cases, setCases] = useState(null); const [loading, setLoading] = useState(false);
+  const [picked, setPicked] = useState({});
+  const [tgtField, setTgtField] = useState('team_lead');  // team_lead | caller | fos
+  const [tgtId, setTgtId] = useState(''); const [busy, setBusy] = useState(false);
+  useEffect(() => { api('/api/users').then(setUsers).catch(() => setUsers([])); }, []);
+  const act = (u) => u.is_active !== false;
+  const callers = (users || []).filter(u => u.role === 'telecaller' && act(u));
+  const foses = (users || []).filter(u => u.role === 'fos' && act(u));
+  const tls = (users || []).filter(u => (u.role === 'teamlead' || u.also_team_lead) && act(u));
+  const srcOptions = srcRole === 'telecaller' ? callers : srcRole === 'fos' ? foses : tls;
+  const tgtOptions = tgtField === 'team_lead' ? tls : tgtField === 'caller' ? callers : foses;
+  const idOf = (u, asTL) => (asTL ? (u.tl_emp_code || u.emp_code) : u.emp_code) || '—';
+  const loadCases = async () => {
+    if (!srcId) { setCases(null); return; }
+    setLoading(true);
+    try {
+      let qs;
+      if (srcRole === 'telecaller') qs = 'caller_id=' + srcId;
+      else if (srcRole === 'fos') qs = 'fos_id=' + srcId;
+      else { const u = tls.find(x => String(x.id) === String(srcId)); qs = 'team_lead=' + encodeURIComponent(u ? u.name : srcId); }
+      const rows = await api('/api/cases?limit=5000&' + qs);
+      setCases(rows || []); const m = {}; (rows || []).forEach(c => m[c.id] = true); setPicked(m);
+    } catch (e) { toast(e.message, 'err'); setCases([]); } finally { setLoading(false); }
+  };
+  useEffect(() => { loadCases(); }, [srcRole, srcId]);
+  const pickedIds = cases ? cases.filter(c => picked[c.id]).map(c => c.id) : [];
+  const apply = async () => {
+    if (!pickedIds.length) { toast('Select at least one case'); return; }
+    if (!tgtId) { toast('Choose who to assign to'); return; }
+    setBusy(true);
+    try {
+      const body = { case_ids: pickedIds };
+      if (tgtField === 'team_lead') body.team_lead_id = Number(tgtId);
+      else if (tgtField === 'caller') body.assigned_caller_id = Number(tgtId);
+      else body.assigned_fos_id = Number(tgtId);
+      const r = await api('/api/cases/bulk-reassign', { method: 'POST', body });
+      toast(`Transferred ${r.updated} of ${r.requested} case${r.requested === 1 ? '' : 's'}.`);
+      onDone();
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 920, width: '96%' }}>
+        <div className="section-h"><h3>🔀 Transfer / re-allocate cases</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>Pick whose cases to move, review the current allocation, then assign the selected cases to a new caller, FOS or team lead. Performance updates automatically.</p>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <div className="field"><label>Source — cases currently assigned to</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <select className="input" style={{ maxWidth: 120 }} value={srcRole} onChange={e => { setSrcRole(e.target.value); setSrcId(''); setCases(null); }}>
+                <option value="telecaller">Caller</option><option value="fos">FOS</option><option value="teamlead">Team lead</option></select>
+              <select className="input" value={srcId} onChange={e => setSrcId(e.target.value)}>
+                <option value="">— select —</option>
+                {srcOptions.map(u => <option key={u.id} value={u.id}>{u.name} ({idOf(u, srcRole === 'teamlead')}){u.branch ? ` · ${u.branch}` : ''}</option>)}</select>
+            </div></div>
+          <div className="field"><label>Assign selected cases to</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <select className="input" style={{ maxWidth: 120 }} value={tgtField} onChange={e => { setTgtField(e.target.value); setTgtId(''); }}>
+                <option value="team_lead">Team lead</option><option value="caller">Caller</option><option value="fos">FOS</option></select>
+              <select className="input" value={tgtId} onChange={e => setTgtId(e.target.value)}>
+                <option value="">— select —</option>
+                {tgtOptions.map(u => <option key={u.id} value={u.id}>{u.name} ({idOf(u, tgtField === 'team_lead')}){u.branch ? ` · ${u.branch}` : ''}</option>)}</select>
+            </div></div>
+        </div>
+        {loading ? <Loader /> : cases && (cases.length === 0
+          ? <div className="glass card muted" style={{ padding: 16 }}>No active cases for this person.</div>
+          : <div className="glass card" style={{ padding: 6, marginTop: 6 }}>
+              <div className="toolbar" style={{ marginBottom: 4 }}>
+                <span className="muted" style={{ fontSize: 12 }}>{pickedIds.length} of {cases.length} selected</span>
+                <div style={{ flex: 1 }} />
+                <button className="btn sm" onClick={() => { const m = {}; cases.forEach(c => m[c.id] = true); setPicked(m); }}>Select all</button>
+                <button className="btn sm" onClick={() => setPicked({})}>Clear</button>
+              </div>
+              <div className="tablewrap" style={{ maxHeight: '46vh', overflow: 'auto' }}><table>
+                <thead><tr><th style={{ width: 28 }}></th><th>Customer</th><th>Account</th><th>Current caller</th><th>Current FOS</th><th>Current TL</th></tr></thead>
+                <tbody>{cases.map(c => <tr key={c.id}>
+                  <td><input type="checkbox" checked={!!picked[c.id]} onChange={() => setPicked(p => ({ ...p, [c.id]: !p[c.id] }))} /></td>
+                  <td>{c.customer_name}</td><td className="mono" style={{ fontSize: 12 }}>{c.account_no || c.card_no || '—'}</td>
+                  <td style={{ fontSize: 12 }}>{c.assigned_caller_name ? `${c.assigned_caller_name} (${c.assigned_caller_code || '—'})` : '—'}</td>
+                  <td style={{ fontSize: 12 }}>{c.assigned_fos_name ? `${c.assigned_fos_name} (${c.assigned_fos_code || '—'})` : '—'}</td>
+                  <td style={{ fontSize: 12 }}>{c.team_lead || '—'}</td>
+                </tr>)}</tbody></table></div>
+            </div>)}
+        <div className="toolbar" style={{ marginTop: 10 }}>
+          <button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
+          <button className="btn gold" disabled={busy || !pickedIds.length || !tgtId} onClick={apply}>{busy ? 'Transferring…' : `Transfer ${pickedIds.length} case${pickedIds.length === 1 ? '' : 's'}`}</button>
+        </div>
       </div>
     </div>
   );
@@ -1152,6 +1278,7 @@ function CasesView({ user }) {
   const [dprOpen, setDprOpen] = useState(false);
   const canReassign = ['admin', 'manager', 'teamlead', 'headoffice'].includes(user.role);
   const [reassignOpen, setReassignOpen] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
   const isAdmin = user.role === 'admin';
   const isHO = ['headoffice', 'admin'].includes(user.role);   // head office / admin may remove/restore cases
   const canUploads = ['headoffice', 'admin'].includes(user.role);  // …and undo a whole upload batch
@@ -1340,6 +1467,7 @@ function CasesView({ user }) {
           {openState === 'closed' && <input className="input" style={{ maxWidth: 96 }} type="number" min="1" max="31"
             placeholder="Cycle day" value={cyc} onChange={e => setCyc(e.target.value)} />}
           {(isHO || canReassign) && <><div style={{ flex: 1 }} />
+            {canReassign && <button className="btn" onClick={() => setTransferOpen(true)} title="Move a caller/FOS/TL's cases to someone else">🔀 Transfer by person</button>}
             {pickedIds.length > 0 && canReassign && <button className="btn gold"
               onClick={() => setReassignOpen(true)}>🔀 Re-allocate {pickedIds.length}</button>}
             {pickedIds.length > 0 && isHO && <button className="btn" style={{ background: 'var(--bad)', color: '#fff', border: 'none' }}
@@ -1398,6 +1526,8 @@ function CasesView({ user }) {
       </div>}
       {reassignOpen && <ReassignModal ids={pickedIds} onClose={() => setReassignOpen(false)}
         onDone={() => { setReassignOpen(false); clearPicks(); load(); loadSummary(); }} />}
+      {transferOpen && <AllocTransferModal onClose={() => setTransferOpen(false)}
+        onDone={() => { setTransferOpen(false); load(); loadSummary(); }} />}
       {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
     </div>
   );
@@ -2966,7 +3096,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
           <button className="btn ghost sm" onClick={onClose}>✕</button>
         </div>
         <div className="toolbar" style={{ margin: '12px 0' }}>
-          {cur.phone && <a className="btn sm gold" href={'tel:' + cur.phone}>📞 Call customer</a>}
+          {cur.phone && <CallMenu phone={cur.phone} label="Call customer" gold />}
           {cur.phone && <a className="btn sm" href={'https://wa.me/' + String(cur.phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a>}
           {showCallFos && <a className="btn sm" href={'tel:' + cur.assigned_fos_phone} title={'Call the assigned field agent: ' + (cur.assigned_fos_name || '')}>🧑‍🔧 Call FOS</a>}
           {showCallCaller && <a className="btn sm" href={'tel:' + cur.assigned_caller_phone} title={'Call the assigned caller: ' + (cur.assigned_caller_name || '')}>☎️ Call caller</a>}
@@ -3020,7 +3150,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
           </div>
           {cur.new_phone && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span>📞 <b>{cur.new_phone}</b></span>
-            <a className="btn sm gold" href={'tel:' + cur.new_phone}>Call</a>
+            <CallMenu phone={cur.new_phone} label="Call" gold />
             <a className="btn sm" href={'https://wa.me/' + String(cur.new_phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a></div>}
           {cur.new_address && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span>📍 {cur.new_address}</span>
@@ -4955,7 +5085,7 @@ function SheetView({ user, config }) {
             {viewRows().map(row => (
               <tr key={row.id}>
                 <td>
-                  {row.phone && <a className="sv-ico" href={'tel:' + row.phone} title="Call">📞</a>}
+                  {row.phone && <a className="sv-ico" href={callScheme() + ':' + cleanTel(row.phone)} title="Call via Zoiper">📞</a>}
                   {row.phone && <button className="sv-ico" title="WhatsApp" onClick={() => window.open('https://wa.me/' + sheetWaNumber(row.phone), '_blank')}>💬</button>}
                   <button className="sv-ico" title="Open on my phone" onClick={() => openCase(row)}>📲</button>
                   {row.closed && <span className="badge" title={`Closed ${row.close_date || ''} — locked`} style={{ background: '#e5e7eb', color: '#374151', marginLeft: 4, fontSize: 10 }}>🔒</span>}
