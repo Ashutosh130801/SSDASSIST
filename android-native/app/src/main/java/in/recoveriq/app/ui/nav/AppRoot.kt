@@ -73,6 +73,7 @@ import `in`.recoveriq.app.ui.caller.CallQueueScreen
 import `in`.recoveriq.app.ui.caller.PtpTrackerScreen
 import `in`.recoveriq.app.ui.common.CasesScreen
 import `in`.recoveriq.app.ui.common.GuidedTour
+import `in`.recoveriq.app.ui.common.LogoLoader
 import `in`.recoveriq.app.ui.common.TOUR_DESC
 import `in`.recoveriq.app.ui.common.TourPrefs
 import `in`.recoveriq.app.ui.detail.CaseDetailScreen
@@ -106,7 +107,7 @@ fun AppRoot(
     val state by vm.state.collectAsState()
     val pickView by vm.pickView.collectAsState()
     when (val s = state) {
-        is AuthState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+        is AuthState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { LogoLoader() }
         is AuthState.LoggedOut -> LoginScreen(vm)
         is AuthState.LoggedIn ->
             if (pickView && s.user.availableViews.size > 1) ViewPickerScreen(vm, s.user)

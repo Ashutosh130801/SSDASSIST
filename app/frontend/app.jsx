@@ -581,7 +581,7 @@ function PaidBadge({ s }) {
   const k = (s || 'UNPAID').toLowerCase();
   return <span className={cx('badge', k.includes('unpaid') ? 'unpaid' : k.includes('partial') ? 'partial' : 'paid')}>{s || 'UNPAID'}</span>;
 }
-function Loader() { return <div className="spin"></div>; }
+function Loader({ size }) { return <div className={cx('ssd-loader', size)}><img src="assets/logo.png" alt="Loading…" /></div>; }
 
 /* ============================== Dashboard ============================== */
 function StatCard({ icon, label, value, sub, accent, valueColor }) {
@@ -5673,6 +5673,8 @@ function NotificationBell({ onOpenCase, style }) {
   );
 }
 /* ==================== Guided tour (per-role onboarding) ==================== */
+// Bump this whenever the app changes enough that everyone should see the tour again.
+const TOUR_VERSION = 1;
 const TOUR_DESC = {
   dashboard: 'Your home base — headline numbers at a glance: total cases, recovery %, cash collected, pending, and your resolution %.',
   tldash: 'My Team — your team’s overview, members and their performance, all scoped to you.',
@@ -5760,7 +5762,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
   const [notifCase, setNotifCase] = useState(null);
   const [tour, setTour] = useState(false);
   // Per-role guided tour: welcome → one step per feature → finish. Shown once, reopenable.
-  const tourKey = `ssd_tour_${user.id}_${user.role}`;
+  const tourKey = `ssd_tour_v${TOUR_VERSION}_${user.id}_${user.role}`;
   const firstName = (user.name || '').split(' ')[0] || 'there';
   const tourSteps = [{ title: `👋 Welcome, ${firstName}!`, body: `Here’s a quick tour of your ${roleName(user.role)} workspace — we’ll walk through each feature. You can skip anytime and reopen this from the “?” button in the bottom-right corner.` }]
     .concat(nav.map(([id, ic, label]) => ({ navId: id, title: `${ic} ${label}`, body: TOUR_DESC[id] || `Open ${label}.` })))

@@ -38,13 +38,17 @@ import `in`.recoveriq.app.ui.theme.CardWhite
 import `in`.recoveriq.app.ui.theme.Muted
 import `in`.recoveriq.app.ui.theme.TextDark
 
-/** Remembers, per role, whether the one-time guided tour has already been shown. */
+/** Remembers, per role + tour version, whether the one-time guided tour has been shown.
+ *  Bump TOUR_VERSION whenever the app changes enough that everyone should see it again. */
+const val TOUR_VERSION = 1
+
 object TourPrefs {
     private const val FILE = "ssd_tour"
+    private fun key(role: String) = "seen_${role}_v$TOUR_VERSION"
     fun seen(ctx: Context, role: String): Boolean =
-        ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE).getBoolean("seen_$role", false)
+        ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE).getBoolean(key(role), false)
     fun markSeen(ctx: Context, role: String) {
-        ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putBoolean("seen_$role", true).apply()
+        ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putBoolean(key(role), true).apply()
     }
 }
 

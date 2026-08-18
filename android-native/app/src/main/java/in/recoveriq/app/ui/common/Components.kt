@@ -1,6 +1,13 @@
 package `in`.recoveriq.app.ui.common
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,6 +16,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -25,8 +33,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import `in`.recoveriq.app.R
 import `in`.recoveriq.app.data.Realtime
 import `in`.recoveriq.app.data.Trends
 import `in`.recoveriq.app.ui.theme.CardWhite
@@ -40,6 +52,29 @@ import `in`.recoveriq.app.ui.theme.TextDark
  * Pass it as AsyncContent(key = rememberLiveKey()) to auto-refresh a screen live, exactly
  * like the web app's useDataChanged hook.
  */
+/**
+ * Branded loading indicator — the SSD coin gently coin-flips and pulses. Replaces the plain
+ * spinner wherever the app is loading content.
+ */
+@Composable
+fun LogoLoader(modifier: Modifier = Modifier, size: Dp = 60.dp) {
+    val tr = rememberInfiniteTransition(label = "ssd-loader")
+    val flip by tr.animateFloat(
+        0f, 360f, infiniteRepeatable(tween(1200, easing = LinearEasing)), label = "flip",
+    )
+    val pulse by tr.animateFloat(
+        0.9f, 1.03f,
+        infiniteRepeatable(tween(700, easing = LinearEasing), RepeatMode.Reverse), label = "pulse",
+    )
+    Image(
+        painter = painterResource(R.drawable.ssd_logo),
+        contentDescription = "Loading",
+        modifier = modifier.size(size).graphicsLayer {
+            rotationY = flip; scaleX = pulse; scaleY = pulse; cameraDistance = 16f * density
+        },
+    )
+}
+
 @Composable
 fun rememberLiveKey(): Long {
     val v by Realtime.dataChanged.collectAsState(initial = 0L)
@@ -77,7 +112,7 @@ fun <T> AsyncContent(
 
     val reload: () -> Unit = { nonce += 1 }
     when (val s = state) {
-        is Load.Loading -> Box(modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+        is Load.Loading -> Box(modifier.fillMaxSize(), Alignment.Center) { LogoLoader() }
         is Load.Err -> Box(modifier.fillMaxSize(), Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(s.message, color = MaterialTheme.colorScheme.error)

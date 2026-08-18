@@ -232,6 +232,18 @@ tr:hover td{background:#F7FAFD}
 .spin{width:34px;height:34px;border:3px solid #E3E9F1;border-top-color:var(--gold-2);
   border-radius:50%;animation:sp .8s linear infinite;margin:40px auto}
 @keyframes sp{to{transform:rotate(360deg)}}
+/* Branded loader — the SSD coin pulsing inside a rotating gold arc. Used everywhere the app loads. */
+.ssd-loader{position:relative;width:60px;height:60px;margin:44px auto}
+.ssd-loader::before{content:"";position:absolute;inset:-7px;border-radius:50%;
+  background:conic-gradient(from 0deg,rgba(199,162,74,0) 0 60%,var(--gold-2,#C7A24A) 90%,rgba(199,162,74,0) 100%);
+  -webkit-mask:radial-gradient(farthest-side,#0000 calc(100% - 4px),#000 0);
+          mask:radial-gradient(farthest-side,#0000 calc(100% - 4px),#000 0);
+  animation:sp .9s linear infinite}
+.ssd-loader img{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;object-fit:contain;
+  animation:ssdpulse 1.4s ease-in-out infinite;filter:drop-shadow(0 2px 6px rgba(11,35,79,.25))}
+.ssd-loader.sm{width:34px;height:34px;margin:0 auto}
+.ssd-loader.lg{width:84px;height:84px}
+@keyframes ssdpulse{0%,100%{transform:scale(.9);opacity:.82}50%{transform:scale(1.02);opacity:1}}
 .ai-msg{padding:12px 14px;border-radius:14px;margin-bottom:10px;font-size:14.5px;line-height:1.5;white-space:pre-wrap}
 .ai-msg.me{background:linear-gradient(135deg,rgba(37,99,235,.14),rgba(37,99,235,.06));align-self:flex-end;max-width:82%}
 .ai-msg.bot{background:#F1F5FB;max-width:92%}
