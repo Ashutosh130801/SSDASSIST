@@ -38,7 +38,10 @@ class User(Base):
     address = Column(Text)
     emergency_contact = Column(String(60))
     photo_url = Column(String(255))
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True)   # False = blocked / left → login denied, hidden from active pickers
+    blocked_reason = Column(String(200))        # why the account was blocked (e.g. "left org", "on hold")
+    blocked_at = Column(DateTime, nullable=True)
+    blocked_by = Column(Integer, nullable=True) # id of the HR/HO/admin who blocked them
     # Full manpower / HR record (from the SSDE manpower sheet)
     designation = Column(String(80))            # real job title (Field Executive, HR Manager...)
     location = Column(String(80))               # duty location / region

@@ -644,27 +644,24 @@ function MultiSelect({ label, icon, options, selected, onChange, width }) {
    Clearbit's free logo API was retired, so we fetch the favicon from Google's service (reliable
    and CORS-friendly), then fall back to DuckDuckGo, then to a coloured initials tile. */
 function BankLogo({ bank, domain, size = 44 }) {
+  // Simple, robust chain: Google favicon → DuckDuckGo → coloured initials tile. No timers — a
+  // loaded logo stays put; we only advance on a real onError. (Google's service responds fast and
+  // never hangs, so nothing here can keep the page in a loading state.)
   const [step, setStep] = useState(0);   // 0 = google, 1 = duckduckgo, 2 = initials
   const ini = (bank || '—').trim().replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase() || '#';
-  // Safety net: if the current logo source hasn't loaded within 4s (blocked / hanging), advance
-  // to the next source, then to initials — so a stuck image request can never keep the page loading.
-  useEffect(() => {
-    if (!domain || step >= 2) return;
-    const t = setTimeout(() => setStep(s => s + 1), 4000);
-    return () => clearTimeout(t);
-  }, [domain, step]);
-  const tile = (child) => (
-    <div style={{ width: size, height: size, borderRadius: size * 0.26, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff', border: '1px solid var(--line)', boxShadow: '0 2px 8px rgba(15,23,42,.08)', overflow: 'hidden', flexShrink: 0 }}>{child}</div>
-  );
   if (!domain || step >= 2) {
     return <div style={{ width: size, height: size, borderRadius: size * 0.26, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#1e3a8a,#3b82f6)', color: '#fff', fontWeight: 800, fontSize: size * 0.34, letterSpacing: .5, flexShrink: 0, boxShadow: '0 2px 8px rgba(30,58,138,.25)' }}>{ini}</div>;
   }
   const src = step === 0
     ? `https://www.google.com/s2/favicons?sz=128&domain=${domain}`
     : `https://icons.duckduckgo.com/ip3/${domain}.ico`;
-  return tile(<img key={step} src={src} alt={bank} loading="lazy" referrerPolicy="no-referrer"
-    onError={() => setStep(s => s + 1)}
-    style={{ width: '72%', height: '72%', objectFit: 'contain' }} />);
+  return (
+    <div style={{ width: size, height: size, borderRadius: size * 0.26, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff', border: '1px solid var(--line)', boxShadow: '0 2px 8px rgba(15,23,42,.08)', overflow: 'hidden', flexShrink: 0 }}>
+      <img key={step} src={src} alt={bank} loading="lazy" referrerPolicy="no-referrer"
+        onError={() => setStep(s => s + 1)}
+        style={{ width: '72%', height: '72%', objectFit: 'contain' }} />
+    </div>
+  );
 }
 
 /* ---------- Clickable person name → opens their performance screen (everywhere except Manpower) ---------- */
@@ -5572,6 +5569,7 @@ function ManpowerView({ user }) {
   const [opts, setOpts] = useState({ roles: [], locations: [] });
   const [rows, setRows] = useState(null);
   const [f, setF] = useState({ role: '', location: '', q: '' });
+  const [statusF, setStatusF] = useState('all');   // all | active | blocked
   const [sel, setSel] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [edit, setEdit] = useState(null);
@@ -5586,10 +5584,24 @@ function ManpowerView({ user }) {
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
   const dl = () => { const p = new URLSearchParams(); if (f.role) p.set('role', f.role); if (f.location) p.set('location', f.location); download('/api/manpower/download?' + p, 'SSDE_manpower.xlsx'); };
   const selStyle = { minWidth: 150, height: 34, padding: '0 8px', fontSize: 13 };
+  // Block / remove an employee who left or stopped working: they can no longer log in and drop out
+  // of every active FOS/caller list, but all their past cases, performance and history stay safe.
+  const blockEmp = (e) => {
+    const reason = window.prompt(`Block / remove ${e.name}?\n\nThey will be signed out everywhere, unable to log in, and hidden from all active pickers. Their previous cases, allocations and performance history stay intact — this is reversible.\n\nReason (e.g. left organisation, on hold):`, e.blocked_reason || 'Left organisation');
+    if (reason === null) return;
+    api('/api/manpower/' + e.id, { method: 'PATCH', body: { is_active: false, block_reason: reason } })
+      .then(() => { toast(e.name + ' blocked — their data is kept safe.'); setSel(null); load(); }).catch(err => toast(err.message, 'err'));
+  };
+  const unblockEmp = (e) => {
+    api('/api/manpower/' + e.id, { method: 'PATCH', body: { is_active: true } })
+      .then(() => { toast(e.name + ' restored — they can log in again.'); setSel(null); load(); }).catch(err => toast(err.message, 'err'));
+  };
+  const shown = (rows || []).filter(e => statusF === 'all' ? true : statusF === 'blocked' ? e.is_active === false : e.is_active !== false);
+  const blockedCount = (rows || []).filter(e => e.is_active === false).length;
   return (
     <div>
       <div className="section-h"><h2 style={{ margin: 0 }}>Manpower</h2>
-        <span className="muted" style={{ fontSize: 13 }}>{rows ? `${rows.length} employees` : '…'}</span></div>
+        <span className="muted" style={{ fontSize: 13 }}>{rows ? `${shown.length} employee${shown.length === 1 ? '' : 's'}${statusF !== 'all' ? ' · ' + statusF : ''}` : '…'}</span></div>
       <div className="glass card" style={{ padding: 10, marginBottom: 12 }}>
         <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
           <input className="input" style={{ maxWidth: 240 }} placeholder="🔍 Search name, code, phone, designation…" value={f.q} onChange={e => set('q', e.target.value)} />
@@ -5597,6 +5609,9 @@ function ManpowerView({ user }) {
             <option value="">All roles</option>{opts.roles.map(r => <option key={r} value={r}>{roleName(r)}</option>)}</select>
           <select className="input" style={selStyle} value={f.location} onChange={e => set('location', e.target.value)}>
             <option value="">All locations</option>{opts.locations.map(l => <option key={l} value={l}>{l}</option>)}</select>
+          {[['all', 'All'], ['active', '🟢 Active'], ['blocked', `⛔ Blocked${blockedCount ? ' (' + blockedCount + ')' : ''}`]].map(([v, lbl]) =>
+            <div key={v} className={cx('chip', statusF === v && 'on')} onClick={() => setStatusF(v)}
+              style={v === 'blocked' && statusF === v ? { background: 'rgba(220,38,38,.12)', color: 'var(--bad)' } : null}>{lbl}</div>)}
           <div style={{ flex: 1 }} />
           {canAdd && <button className="btn" onClick={() => setAddOpen(true)}>➕ Add staff</button>}
           <button className="btn gold" onClick={dl}>⬇ Download Excel</button>
@@ -5604,12 +5619,13 @@ function ManpowerView({ user }) {
       </div>
       {addOpen && <StaffFormModal roles={opts.roles} isAdmin={user.role === 'admin'} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); }} />}
       {edit && <StaffFormModal existing={edit} roles={opts.roles} isAdmin={user.role === 'admin'} onClose={() => setEdit(null)} onDone={() => { setEdit(null); setSel(null); load(); }} />}
-      {!rows ? <Loader /> : rows.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No employees match.</div> : (
+      {!rows ? <Loader /> : shown.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>{statusF === 'blocked' ? 'No blocked employees.' : 'No employees match.'}</div> : (
         <div className="glass card" style={{ padding: 6 }}>
           <div className="tablewrap"><table>
             <thead><tr><th>Code</th><th>Name</th><th>Role</th><th>Designation</th><th>Location</th><th>Branch</th><th>Phone</th><th>DOJ</th><th></th></tr></thead>
-            <tbody>{rows.map(e => <tr key={e.id} style={{ cursor: 'pointer' }} onClick={() => setSel(e)}>
-              <td className="mono">{e.emp_code || '—'}{e.also_team_lead && e.tl_emp_code ? <span className="muted"> / {e.tl_emp_code}</span> : ''}</td><td><b>{e.name}</b></td>
+            <tbody>{shown.map(e => <tr key={e.id} style={{ cursor: 'pointer', ...(e.is_active === false ? { background: 'rgba(220,38,38,.05)' } : {}) }} onClick={() => setSel(e)}>
+              <td className="mono">{e.emp_code || '—'}{e.also_team_lead && e.tl_emp_code ? <span className="muted"> / {e.tl_emp_code}</span> : ''}</td>
+              <td><b>{e.name}</b>{e.is_active === false && <span className="badge unpaid" style={{ marginLeft: 6 }} title={e.blocked_reason || 'Blocked'}>⛔ Blocked</span>}</td>
               <td><span className="badge allocated">{roleName(e.role)}</span>{e.also_team_lead && e.role !== 'teamlead' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ Team Lead</span>}</td>
               <td className="muted" style={{ fontSize: 12 }}>{e.designation || '—'}</td>
               <td>{e.location || '—'}</td><td className="muted">{e.branch || '—'}</td>
@@ -5625,6 +5641,11 @@ function ManpowerView({ user }) {
               {canAdd && <button className="btn sm" onClick={() => setEdit(sel)}>✏ Edit</button>}
               <button className="btn ghost sm" onClick={() => setSel(null)}>✕</button></div></div>
           <EIDCard e={sel} />
+          {sel.is_active === false && <div className="glass card" style={{ marginTop: 10, padding: 12, background: 'rgba(220,38,38,.08)', border: '1px solid rgba(220,38,38,.35)' }}>
+            <b style={{ color: 'var(--bad)' }}>⛔ Blocked — cannot log in</b>
+            <div className="muted" style={{ fontSize: 12.5, marginTop: 3 }}>
+              {sel.blocked_reason ? `Reason: ${sel.blocked_reason}` : 'No reason recorded'}{sel.blocked_at ? ` · ${fmtDT(sel.blocked_at)}` : ''}. All their past cases &amp; performance are preserved.</div>
+          </div>}
           <div className="dl" style={{ marginTop: 10 }}>
             {[['Emp code(s)', sel.all_ids || sel.emp_code], ['HR ref', sel.hr_ref], ['Role(s)', sel.all_roles || roleName(sel.role)], ['Designation', sel.designation],
               ['Location', sel.location], ['Branch', sel.branch], ['Email', sel.email], ['Phone', sel.phone],
@@ -5638,6 +5659,10 @@ function ManpowerView({ user }) {
           {canAdd && <div className="toolbar" style={{ marginTop: 10 }}>
             <button className="btn gold" onClick={() => setOfferFor({ emp: sel, kind: 'offer' })}>📝 Offer letter</button>
             <button className="btn gold" onClick={() => setOfferFor({ emp: sel, kind: 'agreement' })}>📄 Agreement letter</button>
+            <div style={{ flex: 1 }} />
+            {sel.id !== user.id && (sel.is_active === false
+              ? <button className="btn" style={{ borderColor: 'var(--good)', color: 'var(--good)' }} onClick={() => unblockEmp(sel)}>✓ Unblock / Restore</button>
+              : <button className="btn" style={{ borderColor: 'var(--bad)', color: 'var(--bad)' }} onClick={() => blockEmp(sel)}>⛔ Block / Remove</button>)}
           </div>}
         </div></div>}
       {offerFor && <LetterModal emp={offerFor.emp} kind={offerFor.kind} onClose={() => setOfferFor(null)} />}

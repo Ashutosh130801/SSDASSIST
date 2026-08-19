@@ -47,6 +47,8 @@ def _emp(u: models.User) -> dict:
         "bank_name": u.bank_name, "current_address": u.current_address,
         "aadhar_address": u.aadhar_address, "rent_own": u.rent_own, "ctc": u.ctc,
         "photo_url": resolve_photo(u.photo_url), "is_active": u.is_active,
+        "blocked_reason": u.blocked_reason,
+        "blocked_at": u.blocked_at.isoformat() if u.blocked_at else None,
         "profile_completed": bool(u.profile_completed),
         "also_team_lead": bool(u.also_team_lead), "tl_emp_code": u.tl_emp_code,
         "all_roles": _all_roles(u), "all_ids": _all_ids(u),
@@ -290,7 +292,18 @@ def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get
             from .users import generate_emp_code
             u.tl_emp_code = generate_emp_code(db, "teamlead")
     if "is_active" in body:
-        u.is_active = bool(body["is_active"])
+        active = bool(body["is_active"])
+        if active and not u.is_active:            # unblocking → clear the block record
+            u.blocked_reason = None
+            u.blocked_at = None
+            u.blocked_by = None
+        elif not active:                          # blocking / removing → stamp who + why + when
+            u.blocked_reason = (body.get("block_reason") or u.blocked_reason or "").strip()[:200] or None
+            u.blocked_at = _dt.utcnow()
+            u.blocked_by = user.id
+        u.is_active = active
+        # A blocked employee's cases stay assigned (history preserved) but they can no longer log in
+        # and are filtered out of the active FOS/caller pickers everywhere.
     for k in _ADD_FIELDS:
         if k in body:
             v = body.get(k)
