@@ -640,15 +640,31 @@ function MultiSelect({ label, icon, options, selected, onChange, width }) {
   );
 }
 
-/* ---------- Bank logo (Clearbit) with an initials-badge fallback so nothing renders broken ---------- */
+/* ---------- Bank logo with an initials-badge fallback so nothing renders broken ----------
+   Clearbit's free logo API was retired, so we fetch the favicon from Google's service (reliable
+   and CORS-friendly), then fall back to DuckDuckGo, then to a coloured initials tile. */
 function BankLogo({ bank, domain, size = 44 }) {
-  const [failed, setFailed] = useState(false);
+  const [step, setStep] = useState(0);   // 0 = google, 1 = duckduckgo, 2 = initials
   const ini = (bank || '—').trim().replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase() || '#';
-  if (!domain || failed) {
-    return <div style={{ width: size, height: size, borderRadius: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#1e3a8a,#2563eb)', color: '#fff', fontWeight: 700, fontSize: size * 0.36, flexShrink: 0 }}>{ini}</div>;
+  // Safety net: if the current logo source hasn't loaded within 4s (blocked / hanging), advance
+  // to the next source, then to initials — so a stuck image request can never keep the page loading.
+  useEffect(() => {
+    if (!domain || step >= 2) return;
+    const t = setTimeout(() => setStep(s => s + 1), 4000);
+    return () => clearTimeout(t);
+  }, [domain, step]);
+  const tile = (child) => (
+    <div style={{ width: size, height: size, borderRadius: size * 0.26, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff', border: '1px solid var(--line)', boxShadow: '0 2px 8px rgba(15,23,42,.08)', overflow: 'hidden', flexShrink: 0 }}>{child}</div>
+  );
+  if (!domain || step >= 2) {
+    return <div style={{ width: size, height: size, borderRadius: size * 0.26, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#1e3a8a,#3b82f6)', color: '#fff', fontWeight: 800, fontSize: size * 0.34, letterSpacing: .5, flexShrink: 0, boxShadow: '0 2px 8px rgba(30,58,138,.25)' }}>{ini}</div>;
   }
-  return <img src={`https://logo.clearbit.com/${domain}`} alt={bank} onError={() => setFailed(true)}
-    style={{ width: size, height: size, borderRadius: 11, objectFit: 'contain', background: '#fff', border: '1px solid var(--line)', flexShrink: 0 }} />;
+  const src = step === 0
+    ? `https://www.google.com/s2/favicons?sz=128&domain=${domain}`
+    : `https://icons.duckduckgo.com/ip3/${domain}.ico`;
+  return tile(<img key={step} src={src} alt={bank} loading="lazy" referrerPolicy="no-referrer"
+    onError={() => setStep(s => s + 1)}
+    style={{ width: '72%', height: '72%', objectFit: 'contain' }} />);
 }
 
 /* ---------- Clickable person name → opens their performance screen (everywhere except Manpower) ---------- */
@@ -1612,23 +1628,21 @@ function CasesView({ user }) {
               </div>}
           </div>
         ) : (
-          /* ---- top level: one card per bank (Clearbit logo) ---- */
+          /* ---- top level: one large card per bank, logo centered + name below ---- */
           banks.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No cases uploaded yet.{canUpload && ' Use ⬆ Upload to add a product file.'}</div> :
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(240px,1fr))', gap: 14 }}>
+            <><style>{`.bank-card{transition:transform .15s ease, box-shadow .15s ease}.bank-card:hover{transform:translateY(-3px);box-shadow:0 12px 28px rgba(15,23,42,.14)}`}</style>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 18 }}>
               {banks.map((b, i) => (
-                <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => setBankSel(b.bank)}>
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                    <BankLogo bank={b.bank} domain={b.logo_domain} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <b style={{ fontSize: 16 }}>{b.bank}</b>
-                      <div className="muted" style={{ fontSize: 12 }}>{b.product_count} product{b.product_count === 1 ? '' : 's'} · {b.count} cases</div>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
-                    <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(b.received)}</b></div>
-                    <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(b.pending)}</b></div></div>
+                <div key={i} className="glass card bank-card" style={{ padding: 22, cursor: 'pointer', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }} onClick={() => setBankSel(b.bank)}>
+                  <BankLogo bank={b.bank} domain={b.logo_domain} size={76} />
+                  <b style={{ fontSize: 19, marginTop: 12, letterSpacing: .2 }}>{b.bank}</b>
+                  <div className="muted" style={{ fontSize: 12.5, marginTop: 3 }}>{b.product_count} product{b.product_count === 1 ? '' : 's'} · {b.count} cases</div>
+                  <div style={{ width: '100%', height: 1, background: 'var(--line)', margin: '16px 0 12px' }} />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                    <div style={{ textAlign: 'left' }}><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)', fontSize: 15 }}>{INRc(b.received)}</b></div>
+                    <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)', fontSize: 15 }}>{INRc(b.pending)}</b></div></div>
                 </div>))}
-            </div>
+            </div></>
         )
       ) : (<>
         <div className="toolbar">

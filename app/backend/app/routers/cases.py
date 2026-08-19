@@ -484,6 +484,16 @@ _BANK_DOMAIN = {
     "HSBC": "hsbc.co.in", "STANDARD CHARTERED": "sc.com", "FEDERAL": "federalbank.co.in",
     "BOB": "bankofbaroda.in", "PNB": "pnbindia.in", "CANARA": "canarabank.com",
     "UNION": "unionbankofindia.co.in", "AU": "aubank.in", "DBS": "dbs.com",
+    "PIRAMAL": "piramalfinance.com", "TATA": "tatacapital.com", "TATA CAPITAL": "tatacapital.com",
+    "ADITYA BIRLA": "adityabirlacapital.com", "ABFL": "adityabirlacapital.com",
+    "L&T": "ltfinance.com", "LTFS": "ltfinance.com", "MAHINDRA": "mahindrafinance.com",
+    "MUTHOOT": "muthootfinance.com", "MANAPPURAM": "manappuram.com",
+    "SHRIRAM": "shriramfinance.in", "CHOLA": "cholamandalam.com", "CHOLAMANDALAM": "cholamandalam.com",
+    "FULLERTON": "grihashakti.com", "HERO": "herofincorp.com", "HERO FINCORP": "herofincorp.com",
+    "IIFL": "iifl.com", "POONAWALLA": "poonawallafincorp.com", "UGRO": "ugrocapital.com",
+    "BANDHAN": "bandhanbank.com", "EQUITAS": "equitasbank.com", "UJJIVAN": "ujjivansfb.in",
+    "INDIABULLS": "indiabullshomeloans.com", "DEUTSCHE": "deutschebank.co.in",
+    "SCB": "sc.com", "IDBI": "idbibank.in", "KVB": "kvb.co.in", "SARASWAT": "saraswatbank.com",
 }
 
 

@@ -118,8 +118,9 @@ private fun BankLogo(bank: String, domain: String?, size: Dp = 44.dp) {
         }
     }
     if (domain.isNullOrBlank()) { box(); return }
+    // Clearbit's free logo API was retired; Google's favicon service is reliable + CORS-free.
     SubcomposeAsyncImage(
-        model = "https://logo.clearbit.com/$domain",
+        model = "https://www.google.com/s2/favicons?sz=128&domain=$domain",
         contentDescription = bank,
         modifier = Modifier.size(size).clip(RoundedCornerShape(11.dp)).background(Color.White),
         contentScale = ContentScale.Fit,
