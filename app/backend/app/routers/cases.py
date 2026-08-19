@@ -269,6 +269,9 @@ def list_cases(
     caller_id: int | None = None,       # cases currently assigned to this telecaller (for transfers)
     fos_id: int | None = None,          # cases currently assigned to this FOS
     team_lead: str | None = None,       # cases currently under this team-lead (name or emp code)
+    cycles: str | None = None,          # multi-select cycle filter — CSV of cycle values (e.g. "2,3")
+    fos_ids: str | None = None,         # multi-select FOS filter — CSV of user ids
+    caller_ids: str | None = None,      # multi-select caller filter — CSV of user ids
     limit: int = Query(500, le=5000),
     offset: int = 0,
 ):
@@ -277,6 +280,17 @@ def list_cases(
         q = q.filter(models.Case.assigned_caller_id == caller_id)
     if fos_id:
         q = q.filter(models.Case.assigned_fos_id == fos_id)
+    # ---- multi-select filters (all AND-combined with everything else) ----
+    _cyc_list = [c.strip() for c in (cycles or "").split(",") if c.strip()]
+    if _cyc_list:
+        q = q.filter(func.lower(func.trim(func.coalesce(models.Case.cycle, ""))).in_(
+            [c.lower() for c in _cyc_list]))
+    _fos_list = [int(x) for x in (fos_ids or "").split(",") if x.strip().isdigit()]
+    if _fos_list:
+        q = q.filter(models.Case.assigned_fos_id.in_(_fos_list))
+    _caller_list = [int(x) for x in (caller_ids or "").split(",") if x.strip().isdigit()]
+    if _caller_list:
+        q = q.filter(models.Case.assigned_caller_id.in_(_caller_list))
     if team_lead:
         tl = team_lead.strip().lower()
         q = q.filter(func.lower(func.trim(models.Case.team_lead)) == tl)
@@ -411,42 +425,134 @@ def portfolio_areas(bank: str | None = None, product: str | None = None, branch:
     return sorted({(t or "").strip() for (t,) in q.all() if t and str(t).strip()})
 
 
+def _portfolio_rows(db, user):
+    """Every visible case reduced to the few fields the portfolio cards need. Recovered / Pending
+    are computed the SAME way the case detail does — real base (FUNDING → TOS → ENR) minus cash
+    received — NOT the stored pending_amount column (only filled once a payment/edit lands)."""
+    return _scope(db.query(
+        models.Case.bank, models.Case.product, models.Case.segment, models.Case.branch,
+        models.Case.branch_explicit, models.Case.period,
+        models.Case.funding_amount, models.Case.total_outstanding, models.Case.enr,
+        models.Case.received_amount,
+    ), user).all()
+
+
+def _blank(d):
+    return {"count": 0, "pending": 0.0, "received": 0.0, "count_current": 0, "count_next": 0, **d}
+
+
 @router.get("/product-summary")
 def product_summary(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    """Product cards: one row per bank + product + segment with case counts and money,
-    scoped to what the user may see (admin all, manager their branch)."""
+    """Portfolio cards, grouped by BANK + PRODUCT (no accidental branch split). A product is only
+    branch-split when at least one of its cases had a branch chosen EXPLICITLY at upload; those
+    carry a `branches` breakdown so the UI can offer location sub-cards. FOS-inherited branches do
+    NOT split a portfolio."""
     cur, nxt = _current_period(), _next_period()
-    # Recovered / Pending are computed the SAME way the case detail does — from the case's real
-    # base (FUNDING → TOS → ENR) minus cash received — NOT the stored pending_amount column, which
-    # is only filled in once a payment/edit lands. That's why fresh portfolios were showing ₹0.
-    rows = (
-        _scope(db.query(
-            models.Case.bank, models.Case.product, models.Case.segment, models.Case.branch,
-            models.Case.period,
-            models.Case.funding_amount, models.Case.total_outstanding, models.Case.enr,
-            models.Case.received_amount,
-        ), user).all()
-    )
-    # A portfolio is bank + product + segment + BRANCH — so the same product uploaded for two
-    # branches shows as two separate cards. Keep this-month vs next-month counts split.
     agg: dict = {}
-    for b, p, s, br, per, fund, tos, enr, recv in rows:
+    for b, p, s, br, bexp, per, fund, tos, enr, recv in _portfolio_rows(db, user):
         base = float(fund or 0) or float(tos or 0) or float(enr or 0)   # funding → TOS → ENR
         rc = float(recv or 0)
-        key = (b, p, s, br)
-        d = agg.setdefault(key, {"count": 0, "pending": 0.0, "received": 0.0,
-                                 "count_current": 0, "count_next": 0})
-        d["count"] += 1
-        d["received"] += rc
-        d["pending"] += max(0.0, base - rc)
-        if per == cur:
-            d["count_current"] += 1
-        elif per == nxt:
-            d["count_next"] += 1
-    out = [{"bank": b or "—", "product": p or "—", "segment": s, "branch": br or "", **d}
-           for (b, p, s, br), d in agg.items()]
-    out.sort(key=lambda x: (x["bank"], x["product"], x["branch"]))
+        pend = max(0.0, base - rc)
+        key = (b, p)
+        d = agg.setdefault(key, _blank({"segment": s, "branch_split": False, "branches": {}}))
+        d["count"] += 1; d["received"] += rc; d["pending"] += pend
+        if per == cur: d["count_current"] += 1
+        elif per == nxt: d["count_next"] += 1
+        if bexp:
+            d["branch_split"] = True
+        # per-branch breakdown (only meaningful for split products; cheap to always keep)
+        bk = (br or "").strip() or "— No location —"
+        bd = d["branches"].setdefault(bk, _blank({"branch": bk}))
+        bd["count"] += 1; bd["received"] += rc; bd["pending"] += pend
+        if per == cur: bd["count_current"] += 1
+        elif per == nxt: bd["count_next"] += 1
+    out = []
+    for (b, p), d in agg.items():
+        branches = sorted(d.pop("branches").values(), key=lambda x: x["branch"]) if d["branch_split"] else []
+        out.append({"bank": b or "—", "product": p or "—", "branch": "", **d, "branches": branches})
+    out.sort(key=lambda x: (x["bank"], x["product"]))
     return out
+
+
+# Bank name → primary domain, so the UI can pull a logo from logo.clearbit.com/<domain>.
+# Unknown banks fall back to an initials badge on the frontend.
+_BANK_DOMAIN = {
+    "ICICI": "icicibank.com", "AXIS": "axisbank.com", "HDFC": "hdfcbank.com",
+    "SBI": "sbi.co.in", "KOTAK": "kotak.com", "RBL": "rblbank.com",
+    "INDUSIND": "indusind.com", "YES": "yesbank.in", "IDFC": "idfcfirstbank.com",
+    "BAJAJ": "bajajfinserv.in", "AMEX": "americanexpress.com", "CITI": "citibank.com",
+    "HSBC": "hsbc.co.in", "STANDARD CHARTERED": "sc.com", "FEDERAL": "federalbank.co.in",
+    "BOB": "bankofbaroda.in", "PNB": "pnbindia.in", "CANARA": "canarabank.com",
+    "UNION": "unionbankofindia.co.in", "AU": "aubank.in", "DBS": "dbs.com",
+}
+
+
+def _bank_domain(name: str) -> str | None:
+    key = (name or "").strip().upper()
+    if key in _BANK_DOMAIN:
+        return _BANK_DOMAIN[key]
+    for k, v in _BANK_DOMAIN.items():          # loose contains match (e.g. "ICICI BANK")
+        if k in key:
+            return v
+    return None
+
+
+@router.get("/portfolio-banks")
+def portfolio_banks(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """One card per BANK that has uploaded products — the top level of portfolio navigation.
+    Carries a logo domain (for logo.clearbit.com) plus product/case counts and money totals."""
+    agg: dict = {}
+    prods: dict = {}
+    for b, p, s, br, bexp, per, fund, tos, enr, recv in _portfolio_rows(db, user):
+        base = float(fund or 0) or float(tos or 0) or float(enr or 0)
+        rc = float(recv or 0)
+        bank = b or "—"
+        d = agg.setdefault(bank, _blank({"bank": bank}))
+        d["count"] += 1; d["received"] += rc; d["pending"] += max(0.0, base - rc)
+        prods.setdefault(bank, set()).add(p or "—")
+    out = []
+    for bank, d in agg.items():
+        d["product_count"] = len(prods.get(bank, ()))
+        d["logo_domain"] = _bank_domain(bank)
+        out.append(d)
+    out.sort(key=lambda x: x["bank"])
+    return out
+
+
+@router.get("/filter-options")
+def filter_options(bank: str | None = None, product: str | None = None, branch: str | None = None,
+                   db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Distinct cycles + the FOS and callers actually present in a portfolio, so the case-list and
+    MIS filter dropdowns only offer values that exist. Names resolve to full name + emp code."""
+    q = _scope(db.query(
+        models.Case.cycle, models.Case.assigned_fos_id, models.Case.assigned_caller_id), user)
+    if bank:
+        q = q.filter(models.Case.bank == bank)
+    if product:
+        q = q.filter(models.Case.product == product)
+    if branch:
+        q = q.filter(models.Case.branch == branch)
+    cycles, fos_ids, caller_ids = set(), set(), set()
+    for cyc, fid, cid in q.all():
+        if cyc is not None and str(cyc).strip():
+            cycles.add(str(cyc).strip())
+        if fid:
+            fos_ids.add(fid)
+        if cid:
+            caller_ids.add(cid)
+    umap = {u.id: u for u in db.query(models.User).filter(
+        models.User.id.in_(fos_ids | caller_ids)).all()} if (fos_ids or caller_ids) else {}
+    def _people(ids):
+        out = [{"id": i, "name": umap[i].name if i in umap else f"#{i}",
+                "code": (umap[i].emp_code if i in umap else None)} for i in ids]
+        return sorted(out, key=lambda x: (x["name"] or "").lower())
+    def _cyc_sort(c):
+        try:
+            return (0, int(c))
+        except (TypeError, ValueError):
+            return (1, c)
+    return {"cycles": sorted(cycles, key=_cyc_sort),
+            "fos": _people(fos_ids), "callers": _people(caller_ids)}
 
 
 @router.get("/removed", response_model=list[schemas.CaseOut])

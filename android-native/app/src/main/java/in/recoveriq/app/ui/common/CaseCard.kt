@@ -72,12 +72,25 @@ fun TouchTag(text: String, color: Color) {
     }
 }
 
+/** A tappable person name that opens their performance screen (used for FOS/caller on a case). */
+@Composable
+fun PersonChip(text: String, onClick: () -> Unit) {
+    Surface(
+        color = BrandBlue.copy(alpha = 0.10f), shape = RoundedCornerShape(6.dp),
+        modifier = Modifier.clickable { onClick() },
+    ) {
+        Text(text, color = BrandBlue, style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
+    }
+}
+
 @Composable
 fun CaseCard(
     case: Case,
     onClick: () -> Unit,
     showQuickActions: Boolean = true,
     subtitle: String? = null,
+    onOpenPerf: ((Int, String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val state = case.workState
@@ -126,6 +139,17 @@ fun CaseCard(
                         style = MaterialTheme.typography.labelSmall, color = MutedDim)
                     if (case.receivedAmount > 0) Text("paid ₹${"%,.0f".format(case.receivedAmount)}",
                         style = MaterialTheme.typography.labelSmall, color = Good)
+                }
+            }
+            if (onOpenPerf != null && (case.assignedCallerId != null || case.assignedFosId != null)) {
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    case.assignedCallerId?.let { id ->
+                        PersonChip("📞 " + (case.assignedCallerName ?: case.callerName ?: "Caller")) { onOpenPerf(id, "caller") }
+                    }
+                    case.assignedFosId?.let { id ->
+                        PersonChip("🧍 " + (case.assignedFosName ?: case.fosName ?: "FOS")) { onOpenPerf(id, "fos") }
+                    }
                 }
             }
             Row(

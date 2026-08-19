@@ -45,11 +45,38 @@ interface ApiService {
     @GET("api/cases")
     suspend fun cases(
         @Query("bank") bank: String? = null,
+        @Query("product") product: String? = null,
+        @Query("branch") branch: String? = null,
         @Query("status") status: String? = null,
         @Query("paid_status") paidStatus: String? = null,
         @Query("search") search: String? = null,
+        @Query("cycles") cycles: String? = null,
+        @Query("fos_ids") fosIds: String? = null,
+        @Query("caller_ids") callerIds: String? = null,
         @Query("limit") limit: Int = 500,
     ): List<Case>
+
+    // Bank-first portfolio navigation + filter dropdown options.
+    @GET("api/cases/portfolio-banks")
+    suspend fun portfolioBanks(): List<PortfolioBank>
+
+    @GET("api/cases/product-summary")
+    suspend fun productSummary(): List<ProductSummary>
+
+    @GET("api/cases/filter-options")
+    suspend fun filterOptions(
+        @Query("bank") bank: String? = null,
+        @Query("product") product: String? = null,
+        @Query("branch") branch: String? = null,
+    ): FilterOptions
+
+    // Any FOS/caller's performance (clickable name → performance screen).
+    @GET("api/mis/performance")
+    suspend fun performance(
+        @Query("emp_id") empId: Int,
+        @Query("role") role: String? = null,
+        @Query("month_bucket") monthBucket: String = "current",
+    ): Performance
 
     @GET("api/cases/{id}")
     suspend fun case(@Path("id") id: Int): Case

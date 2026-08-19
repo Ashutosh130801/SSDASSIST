@@ -92,6 +92,10 @@ class Case(Base):
     # identity
     bank = Column(String(40), index=True)       # ICICI / RBL / AXIS
     branch = Column(String(80))
+    # True only when a branch/location was EXPLICITLY chosen at upload (drives portfolio
+    # branch-splitting). A branch inherited from the case's FOS leaves this False, so those
+    # cases stay merged in one bank→product portfolio.
+    branch_explicit = Column(Boolean, default=False)
     product = Column(String(80))                 # bank product, e.g. "2 BKT", "180+", "DR"
     segment = Column(String(30))                 # "Credit Card" or "PL/BL" (chosen at upload)
     account_no = Column(String(60), index=True)

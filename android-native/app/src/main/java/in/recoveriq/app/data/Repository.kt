@@ -66,6 +66,22 @@ class Repository(context: Context) {
         bank: String? = null, status: String? = null, search: String? = null,
     ): List<Case> = Api.service.cases(bank = bank, status = status, search = search?.ifBlank { null })
 
+    // ---- Bank-first portfolio navigation + filters + performance ----
+    suspend fun portfolioBanks(): List<PortfolioBank> = Api.service.portfolioBanks()
+    suspend fun productSummary(): List<ProductSummary> = Api.service.productSummary()
+    suspend fun filterOptions(bank: String? = null, product: String? = null, branch: String? = null): FilterOptions =
+        Api.service.filterOptions(bank = bank, product = product, branch = branch?.ifBlank { null })
+    suspend fun performance(empId: Int, role: String?, monthBucket: String = "current"): Performance =
+        Api.service.performance(empId = empId, role = role?.ifBlank { null }, monthBucket = monthBucket)
+    suspend fun portfolioCases(
+        bank: String?, product: String?, branch: String?, paid: String?,
+        cycles: String?, fosIds: String?, callerIds: String?,
+    ): List<Case> = Api.service.cases(
+        bank = bank, product = product, branch = branch?.ifBlank { null }, paidStatus = paid?.ifBlank { null },
+        cycles = cycles?.ifBlank { null }, fosIds = fosIds?.ifBlank { null }, callerIds = callerIds?.ifBlank { null },
+        limit = 1000,
+    )
+
     suspend fun case(id: Int): Case = Api.service.case(id)
     suspend fun updateCase(id: Int, update: CaseUpdate): Case = Api.service.updateCase(id, update)
     suspend fun recordPayment(id: Int, amount: Double, mode: String = "UPI", note: String? = null, normStab: String? = null): Case =

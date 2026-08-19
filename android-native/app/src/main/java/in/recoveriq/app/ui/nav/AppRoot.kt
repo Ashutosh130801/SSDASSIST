@@ -72,6 +72,7 @@ import `in`.recoveriq.app.ui.ai.AiAssistScreen
 import `in`.recoveriq.app.ui.caller.CallQueueScreen
 import `in`.recoveriq.app.ui.caller.PtpTrackerScreen
 import `in`.recoveriq.app.ui.common.CasesScreen
+import `in`.recoveriq.app.ui.common.PortfolioScreen
 import `in`.recoveriq.app.ui.common.GuidedTour
 import `in`.recoveriq.app.ui.common.LogoLoader
 import `in`.recoveriq.app.ui.common.TOUR_DESC
@@ -405,13 +406,13 @@ private fun navEntriesFor(
         )
         "teamlead" -> listOf(
             NavEntry("tldash", "My Team", Icons.Filled.Groups) { TeamLeadDashboardScreen(vm, onOpenCase) },
-            NavEntry("cases", "Team Accounts", Icons.Filled.Receipt) { CasesScreen(vm, onOpenCase) },
+            NavEntry("cases", "Team Accounts", Icons.Filled.Receipt) { PortfolioScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
             profile, leave, security,
         )
         "manager" -> listOf(
             dashboard,
-            NavEntry("cases", "Accounts", Icons.Filled.Receipt) { CasesScreen(vm, onOpenCase) },
+            NavEntry("cases", "Accounts", Icons.Filled.Receipt) { PortfolioScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
             NavEntry("legal", "Litigation", Icons.Filled.Gavel) { LitigationScreen(vm) },
             NavEntry("map", "Field Tracking", Icons.Filled.Map) { LiveMapScreen(vm) },
@@ -425,7 +426,7 @@ private fun navEntriesFor(
         "hr", "it", "staff" -> listOf(profile, leave, security)
         else -> listOf( // admin + head office
             dashboard,
-            NavEntry("cases", "Accounts", Icons.Filled.Receipt) { CasesScreen(vm, onOpenCase) },
+            NavEntry("cases", "Accounts", Icons.Filled.Receipt) { PortfolioScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
             NavEntry("legal", "Litigation", Icons.Filled.Gavel) { LitigationScreen(vm) },
             NavEntry("map", "Field Tracking", Icons.Filled.Map) { LiveMapScreen(vm) },

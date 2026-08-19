@@ -622,3 +622,76 @@ data class EmployeeTrends(
     val cases: Int = 0,
     val trends: Trends = Trends(),
 )
+
+// ---- Bank-first portfolio navigation (banks → products → cases) ----
+@JsonClass(generateAdapter = true)
+data class PortfolioBank(
+    val bank: String = "—",
+    @Json(name = "logo_domain") val logoDomain: String? = null,
+    @Json(name = "product_count") val productCount: Int = 0,
+    val count: Int = 0,
+    val received: Double = 0.0,
+    val pending: Double = 0.0,
+)
+
+@JsonClass(generateAdapter = true)
+data class BranchBucket(
+    val branch: String = "",
+    val count: Int = 0,
+    val received: Double = 0.0,
+    val pending: Double = 0.0,
+    @Json(name = "count_current") val countCurrent: Int = 0,
+    @Json(name = "count_next") val countNext: Int = 0,
+)
+
+@JsonClass(generateAdapter = true)
+data class ProductSummary(
+    val bank: String = "—",
+    val product: String = "—",
+    val segment: String? = null,
+    val branch: String = "",
+    @Json(name = "branch_split") val branchSplit: Boolean = false,
+    val count: Int = 0,
+    val received: Double = 0.0,
+    val pending: Double = 0.0,
+    @Json(name = "count_current") val countCurrent: Int = 0,
+    @Json(name = "count_next") val countNext: Int = 0,
+    val branches: List<BranchBucket> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class FilterPerson(val id: Int = 0, val name: String? = null, val code: String? = null)
+
+@JsonClass(generateAdapter = true)
+data class FilterOptions(
+    val cycles: List<String> = emptyList(),
+    val fos: List<FilterPerson> = emptyList(),
+    val callers: List<FilterPerson> = emptyList(),
+)
+
+// ---- Individual performance screen (opened from a clickable FOS/caller name) ----
+@JsonClass(generateAdapter = true)
+data class PerfTotals(
+    val count: Int = 0, val paid: Int = 0, val unpaid: Int = 0,
+    val enr: Double = 0.0, @Json(name = "paid_enr") val paidEnr: Double = 0.0,
+    val pending: Double = 0.0, val collected: Double = 0.0,
+    @Json(name = "achieved_pct") val achievedPct: Double = 0.0,
+)
+
+@JsonClass(generateAdapter = true)
+data class PerfPortfolio(
+    val label: String = "", val count: Int = 0, val paid: Int = 0,
+    val enr: Double = 0.0, val collected: Double = 0.0,
+    @Json(name = "achieved_pct") val achievedPct: Double = 0.0,
+    val rank: Int? = null, @Json(name = "field_size") val fieldSize: Int = 0,
+)
+
+@JsonClass(generateAdapter = true)
+data class Performance(
+    val name: String? = null,
+    @Json(name = "emp_code") val empCode: String? = null,
+    @Json(name = "as_fos") val asFos: Boolean = false,
+    val totals: PerfTotals = PerfTotals(),
+    val trends: Trends = Trends(),
+    val portfolios: List<PerfPortfolio> = emptyList(),
+)

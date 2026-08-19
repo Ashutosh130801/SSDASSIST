@@ -132,19 +132,27 @@ def collection_windows(db: Session, case_ids: list, overall_received=None) -> di
     return {k: round(v, 2) for k, v in res.items()}
 
 
-def _group(cases: list, keyfn) -> list:
+def _group(cases: list, keyfn, idfn=None) -> list:
     buckets: dict[str, list] = {}
+    ids: dict[str, int] = {}
     for c in cases:
         k = keyfn(c) or "—"
         buckets.setdefault(k, []).append(c)
-    out = [{"label": k, **_agg(v)} for k, v in buckets.items()]
+        if idfn and k not in ids:               # capture a clickable user id for the bucket
+            v = idfn(c)
+            if v:
+                ids[k] = v
+    out = [{"label": k, "emp_id": ids.get(k), **_agg(v)} for k, v in buckets.items()]
     out.sort(key=lambda r: r["enr"], reverse=True)
     return out
 
 
 def compute_mis(db: Session, user: models.User, bank: str, product: str,
-                period: str | None = None, area: str | None = None, branch: str | None = None) -> dict:
+                period: str | None = None, area: str | None = None, branch: str | None = None,
+                cycles: list | None = None, fos_ids: list | None = None,
+                caller_ids: list | None = None, paid: str | None = None) -> dict:
     from .cases import propensity as _prop
+    from sqlalchemy import func as _func
     q = _scope(db.query(models.Case), user).filter(models.Case.bank == bank, models.Case.product == product)
     if branch:                          # branch-specific MIS (same product, different branches)
         q = q.filter(models.Case.branch == branch)
@@ -152,6 +160,16 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
         q = q.filter(models.Case.period == period)
     if area:                            # full MIS scoped to a single AREA (team) code
         q = q.filter(models.Case.team == area)
+    # ---- multi-select filters (all AND-combined) — analytics recompute on the filtered set ----
+    if cycles:
+        q = q.filter(_func.lower(_func.trim(_func.coalesce(models.Case.cycle, ""))).in_(
+            [str(c).strip().lower() for c in cycles]))
+    if fos_ids:
+        q = q.filter(models.Case.assigned_fos_id.in_(fos_ids))
+    if caller_ids:
+        q = q.filter(models.Case.assigned_caller_id.in_(caller_ids))
+    if paid:
+        q = q.filter(models.Case.paid_status == paid)
     cases = q.all()
     for c in cases:                     # score is a transient attribute — set it for the insight tables
         c.propensity = _prop(c)
@@ -170,7 +188,7 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
             tenr = round(r["enr"] * tgt / 100.0, 2)
             to_tgt = _pct(r["paid_enr"], tenr) if tenr else 0.0
             lb.append({
-                "emp": r["label"], "count": r["count"], "unpaid": r["unpaid"], "paid": r["paid"],
+                "emp": r["label"], "emp_id": r.get("emp_id"), "count": r["count"], "unpaid": r["unpaid"], "paid": r["paid"],
                 "enr": r["enr"], "target_pct": tgt, "target_enr": tenr,
                 "achieved_pct": r["pct"], "achieved_enr": r["paid_enr"],
                 "gap_enr": round(max(tenr - r["paid_enr"], 0), 2), "to_target_pct": to_tgt,
@@ -202,8 +220,8 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
     def _caller_label(c):
         return _person_label(c.assigned_caller_id) or (c.caller_name or "").strip() or "— No caller —"
 
-    by_fos = _group(cases, _fos_label)
-    by_caller_g = _group(cases, _caller_label)
+    by_fos = _group(cases, _fos_label, lambda c: c.assigned_fos_id)
+    by_caller_g = _group(cases, _caller_label, lambda c: c.assigned_caller_id)
     leaderboard = _leaderboard(by_fos)                 # FOS performance vs the one target
     caller_leaderboard = _leaderboard(by_caller_g)     # caller performance vs the same target
 
@@ -392,14 +410,26 @@ def _period_for(month_bucket: str | None) -> str | None:
     return None
 
 
+def _csv_str(v):
+    return [x.strip() for x in (v or "").split(",") if x.strip()]
+
+
+def _csv_int(v):
+    return [int(x) for x in (v or "").split(",") if x.strip().isdigit()]
+
+
 @router.get("")
 def mis(bank: str = Query(...), product: str = Query(...), month_bucket: str | None = None,
         area: str | None = None, branch: str | None = None,
+        cycles: str | None = None, fos_ids: str | None = None, caller_ids: str | None = None,
+        paid: str | None = None,
         db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     if not bank or not product:
         raise HTTPException(status_code=400, detail="bank and product are required")
     out = compute_mis(db, user, bank, product, period=_period_for(month_bucket),
-                      area=area or None, branch=branch or None)
+                      area=area or None, branch=branch or None,
+                      cycles=_csv_str(cycles), fos_ids=_csv_int(fos_ids),
+                      caller_ids=_csv_int(caller_ids), paid=paid or None)
     out["table_names"] = TABLE_NAMES
     out["month_bucket"] = month_bucket or "all"
     out["area"] = area or ""
@@ -407,23 +437,28 @@ def mis(bank: str = Query(...), product: str = Query(...), month_bucket: str | N
     return out
 
 
-@router.get("/my-performance")
-def my_performance(month_bucket: str | None = "current",
-                   db: Session = Depends(get_db),
-                   user: models.User = Depends(get_current_user)):
-    """A caller's (or FOS's) OWN scorecard — per-portfolio achievement, plus where they rank
-    on each portfolio's leaderboard. Every portfolio is kept separate PER MONTH (each month is
-    its own book), so nothing is merged across months. Names on the leaderboard are the real
-    full name + employee id."""
-    is_fos = (user.role == "fos")
+def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | None,
+                  bank_f: str | None = None, product_f: str | None = None,
+                  cycles: list | None = None):
+    """Per-portfolio scorecard + leaderboard for ONE person (their own, or one a manager opens).
+    Honors optional bank / product / cycle filters so the dashboard re-syncs to the selection."""
+    from sqlalchemy import func as _func
     id_col = models.Case.assigned_fos_id if is_fos else models.Case.assigned_caller_id
     id_attr = "assigned_fos_id" if is_fos else "assigned_caller_id"
     period = _period_for(month_bucket)
 
-    myq = db.query(models.Case).filter(id_col == user.id, models.Case.removed.isnot(True))
+    myq = db.query(models.Case).filter(id_col == target.id, models.Case.removed.isnot(True))
     if period:
         myq = myq.filter(models.Case.period == period)
+    if bank_f:
+        myq = myq.filter(models.Case.bank == bank_f)
+    if product_f:
+        myq = myq.filter(models.Case.product == product_f)
+    if cycles:
+        myq = myq.filter(_func.lower(_func.trim(_func.coalesce(models.Case.cycle, ""))).in_(
+            [str(c).strip().lower() for c in cycles]))
     mine = myq.all()
+    user = target
 
     ppl = {u.id: (u.name, u.emp_code) for u in db.query(models.User).all()}
     def _lbl(uid):
@@ -453,6 +488,9 @@ def my_performance(month_bucket: str | None = "current",
              pq.filter((models.Case.branch.is_(None)) | (models.Case.branch == ""))
         if period:
             pq = pq.filter(models.Case.period == period)
+        if cycles:
+            pq = pq.filter(_func.lower(_func.trim(_func.coalesce(models.Case.cycle, ""))).in_(
+                [str(c).strip().lower() for c in cycles]))
         byp: dict[int, list] = {}
         for c in pq.all():
             byp.setdefault(getattr(c, id_attr), []).append(c)
@@ -487,12 +525,42 @@ def my_performance(month_bucket: str | None = "current",
     return {
         "month_bucket": month_bucket or "all",
         "as_fos": is_fos,
+        "name": target.name, "emp_code": target.emp_code, "user_id": target.id,
         "totals": {"count": tot["count"], "paid": tot["paid"], "unpaid": tot["unpaid"],
                    "enr": tot["enr"], "paid_enr": tot["paid_enr"], "pending": tot["pending"],
                    "collected": tot["amount"], "achieved_pct": tot["pct"]},
         "trends": collection_windows(db, [c.id for c in mine], overall_received=tot["amount"]),
         "portfolios": cards,
     }
+
+
+@router.get("/my-performance")
+def my_performance(month_bucket: str | None = "current",
+                   bank: str | None = None, product: str | None = None, cycles: str | None = None,
+                   db: Session = Depends(get_db),
+                   user: models.User = Depends(get_current_user)):
+    """The signed-in caller's/FOS's OWN scorecard — per-portfolio achievement + leaderboard rank,
+    each portfolio kept separate per month. Honors optional bank / product / cycle filters."""
+    return _perf_payload(db, user, (user.role == "fos"), month_bucket,
+                         bank_f=bank or None, product_f=product or None, cycles=_csv_str(cycles))
+
+
+@router.get("/performance")
+def performance(emp_id: int, role: str | None = None, month_bucket: str | None = "current",
+                bank: str | None = None, product: str | None = None, cycles: str | None = None,
+                db: Session = Depends(get_db),
+                actor: models.User = Depends(get_current_user)):
+    """Any FOS/caller's performance screen — opened by clicking their name on a case, MIS row, or
+    leaderboard. `role` = 'fos' or 'caller' picks which hat to score; defaults to the person's own
+    role. Viewable by the person themselves or by managers / HO / admin / team leads / HR / back-office."""
+    if actor.id != emp_id and actor.role not in ("admin", "manager", "headoffice", "teamlead", "hr", "backend"):
+        raise HTTPException(status_code=403, detail="Not allowed")
+    target = db.query(models.User).filter(models.User.id == emp_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    is_fos = (role == "fos") if role in ("fos", "caller") else (target.role == "fos")
+    return _perf_payload(db, target, is_fos, month_bucket,
+                         bank_f=bank or None, product_f=product or None, cycles=_csv_str(cycles))
 
 
 @router.get("/employee-trends")
@@ -649,6 +717,8 @@ TABLE_NAMES = {
 def download(bank: str = Query(...), product: str = Query(...),
              tables: str = Query(",".join(TABLE_NAMES.keys())), month_bucket: str | None = None,
              area: str | None = None, branch: str | None = None,
+             cycles: str | None = None, fos_ids: str | None = None, caller_ids: str | None = None,
+             paid: str | None = None,
              db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -689,7 +759,9 @@ def download(bank: str = Query(...), product: str = Query(...),
             ws.column_dimensions[col[0].column_letter].width = min(max(w + 2, 12), 42)
 
     data = compute_mis(db, user, bank, product, period=_period_for(month_bucket),
-                       area=area or None, branch=branch or None)
+                       area=area or None, branch=branch or None,
+                       cycles=_csv_str(cycles), fos_ids=_csv_int(fos_ids),
+                       caller_ids=_csv_int(caller_ids), paid=paid or None)
     wanted = [t.strip() for t in tables.split(",") if t.strip()]
     wb = openpyxl.Workbook()
     wb.remove(wb.active)

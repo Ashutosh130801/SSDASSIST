@@ -273,6 +273,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                 existing.segment = segment
             if branch:                       # allow a re-upload to (re)assign the branch
                 existing.branch = branch
+                existing.branch_explicit = True   # explicit upload branch → this portfolio splits
             _apply_period(existing, rec)      # re-stamp period + recompute close date
             skipped += 1
             continue
@@ -285,6 +286,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             kwargs["segment"] = segment
         if branch:
             kwargs["branch"] = branch
+            kwargs["branch_explicit"] = True     # explicit upload branch → this portfolio splits
         _rawc = kwargs.get("caller_name")
         cu, _cr = _match_caller(_rawc)
         if cu:

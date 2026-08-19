@@ -60,6 +60,7 @@ def _ensure_columns():
             "removed_by": "INTEGER",
             "flagged": "BOOLEAN",
             "flag_reason": "VARCHAR(160)",
+            "branch_explicit": "BOOLEAN",
         },
         "users": {
             "employment_type": "VARCHAR(30)",
@@ -181,6 +182,39 @@ def _fix_negative_pending():
             pend = _pay_base_total(c) - Decimal(c.received_amount or 0)
             c.pending_amount = pend if pend > 0 else Decimal(0)
         if rows:
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _backfill_pending():
+    """Fill the stored pending_amount on any case that still shows 0/NULL but actually has a
+    balance. Freshly-uploaded rows never had pending written (it was only set when a payment or
+    edit landed), so their portfolio cards read ₹0 even though TOS/ENR carry a real figure. Here
+    we recompute pending = base(FUNDING → TOS → ENR) − received, floored at 0, for exactly those
+    stale rows. Self-limiting: only touches pending 0/NULL rows whose real balance is > 0, so a
+    genuinely resolved case (received ≥ base → 0) and any already-correct row are left untouched,
+    making this a no-op on every restart after the first."""
+    from decimal import Decimal
+    from sqlalchemy import or_
+    from .database import SessionLocal
+    from . import models as _m
+    from .routers.cases import _pay_base_total
+    db = SessionLocal()
+    try:
+        rows = (db.query(_m.Case)
+                .filter(_m.Case.removed.isnot(True),
+                        or_(_m.Case.pending_amount.is_(None), _m.Case.pending_amount == 0))
+                .all())
+        changed = 0
+        for c in rows:
+            pend = _pay_base_total(c) - Decimal(c.received_amount or 0)
+            if pend > 0:
+                c.pending_amount = pend
+                changed += 1
+        if changed:
             db.commit()
     except Exception:
         db.rollback()
@@ -312,6 +346,7 @@ def _clear_random_allocations():
 _backfill_emp_codes()
 _backfill_norm_stab()
 _fix_negative_pending()
+_backfill_pending()
 _backfill_dual_role_flag()
 _reset_rtp_promises()
 _fix_dup_tl_codes()
