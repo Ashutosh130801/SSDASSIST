@@ -437,6 +437,23 @@ def mis(bank: str = Query(...), product: str = Query(...), month_bucket: str | N
     return out
 
 
+def _activity(db, uid, is_fos, ids):
+    """Field/calling activity for one person over a set of cases, straight from the logs they
+    submit. FOS → visits logged + how many of those visits recorded a payment + distinct cases
+    visited. Caller → calls logged + distinct cases contacted."""
+    if not ids:
+        return {"visits": 0, "visits_paid": 0, "visited": 0} if is_fos else {"calls": 0, "contacted": 0}
+    if is_fos:
+        rows = db.query(models.Visit.case_id, models.Visit.paid, models.Visit.amount_collected).filter(
+            models.Visit.officer_id == uid, models.Visit.case_id.in_(ids)).all()
+        visited = {r[0] for r in rows}
+        paid = sum(1 for r in rows if (r[1] or (float(r[2] or 0) > 0)))
+        return {"visits": len(rows), "visits_paid": paid, "visited": len(visited)}
+    rows = db.query(models.CallLog.case_id).filter(
+        models.CallLog.caller_id == uid, models.CallLog.case_id.in_(ids)).all()
+    return {"calls": len(rows), "contacted": len({r[0] for r in rows})}
+
+
 def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | None,
                   bank_f: str | None = None, product_f: str | None = None,
                   cycles: list | None = None):
@@ -517,6 +534,7 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
             "gap_enr": round(max(tenr - a["paid_enr"], 0), 2),
             "rank": my_rank, "field_size": len(lb),
             "trends": collection_windows(db, [c.id for c in rows], overall_received=a["amount"]),
+            "activity": _activity(db, user.id, is_fos, [c.id for c in rows]),
             "leaderboard": lb,
         })
     cards.sort(key=lambda x: x["enr"], reverse=True)
@@ -529,6 +547,7 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
         "totals": {"count": tot["count"], "paid": tot["paid"], "unpaid": tot["unpaid"],
                    "enr": tot["enr"], "paid_enr": tot["paid_enr"], "pending": tot["pending"],
                    "collected": tot["amount"], "achieved_pct": tot["pct"]},
+        "activity": _activity(db, target.id, is_fos, [c.id for c in mine]),
         "trends": collection_windows(db, [c.id for c in mine], overall_received=tot["amount"]),
         "portfolios": cards,
     }

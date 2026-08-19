@@ -700,23 +700,93 @@ function PerfModal({ empId, role, name, onClose }) {
             <StatCard icon="🎯" label="Achieved %" value={(d.totals.achieved_pct || 0) + '%'} valueColor="var(--info)" />
             <StatCard icon="⏳" label="Pending" value={money(d.totals.pending)} valueColor="var(--warn)" />
           </div>
+          {/* Field / calling activity straight from the logs they submit. */}
+          {d.activity && <div className="glass card" style={{ padding: 10, marginTop: 10, display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 13, alignItems: 'center' }}>
+            {d.as_fos ? <>
+              <span>🧍 Visited <b>{d.activity.visited || 0}</b> case{(d.activity.visited || 0) === 1 ? '' : 's'}</span>
+              <span>📋 Visits logged <b>{d.activity.visits || 0}</b></span>
+              <span>💰 Visits w/ payment <b style={{ color: 'var(--good)' }}>{d.activity.visits_paid || 0}</b></span>
+            </> : <>
+              <span>📞 Contacted <b>{d.activity.contacted || 0}</b> case{(d.activity.contacted || 0) === 1 ? '' : 's'}</span>
+              <span>☎️ Calls logged <b>{d.activity.calls || 0}</b></span>
+            </>}
+          </div>}
           <TrendStrip trends={d.trends} title="Cash collected — FTD / MTD / LMTD / Overall" />
+          <div className="muted" style={{ fontSize: 11.5, margin: '10px 2px 2px' }}>Tap a portfolio to expand its cases &amp; analytics ↓</div>
           {(d.portfolios || []).map((p, i) => (
-            <div key={i} className="glass card" style={{ padding: 12, marginTop: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <b>{p.label}</b><span className="badge allocated">{p.count}</span></div>
-              <div style={{ display: 'flex', gap: 14, marginTop: 6, flexWrap: 'wrap', fontSize: 13 }}>
-                <span>Paid <b>{p.paid}</b>/{p.count}</span>
-                <span>ENR <b>{money(p.enr)}</b></span>
-                <span>Collected <b style={{ color: 'var(--good)' }}>{money(p.collected)}</b></span>
-                <span>Achieved <b style={{ color: 'var(--info)' }}>{p.achieved_pct}%</b></span>
-                {p.rank && <span>Rank <b>#{p.rank}</b>/{p.field_size}</span>}
-              </div>
-            </div>
+            <PerfPortfolioCard key={i} p={p} empId={empId} asFos={d.as_fos} mb={mb} money={money} />
           ))}
           {(!d.portfolios || d.portfolios.length === 0) && <div className="muted" style={{ padding: 12 }}>No cases in this period.</div>}
         </>}
       </div>
+    </div>
+  );
+}
+
+/* One portfolio row inside the performance screen — expands on click to show that person's cases
+   in the portfolio, with paid/cycle/search filters and a live summary that re-syncs to the filter. */
+function PerfPortfolioCard({ p, empId, asFos, mb, money }) {
+  const [open, setOpen] = useState(false);
+  const [all, setAll] = useState(null);
+  const [paid, setPaid] = useState(''); const [cyclesSel, setCyclesSel] = useState([]); const [q, setQ] = useState('');
+  const act = p.activity || {};
+  useEffect(() => {
+    if (!open) return;
+    setAll(null);
+    const s = new URLSearchParams();
+    s.set('bank', p.bank); s.set('product', p.product); if (p.branch) s.set('branch', p.branch);
+    s.set(asFos ? 'fos_ids' : 'caller_ids', String(empId));
+    if (mb) s.set('month_bucket', mb); s.set('limit', '2000');
+    api('/api/cases?' + s).then(setAll).catch(() => setAll([]));
+  }, [open, mb]);
+  const cycleOpts = [...new Set((all || []).map(c => c.cycle).filter(Boolean))];
+  const gq = q.trim().toLowerCase();
+  const shown = (all || []).filter(c =>
+    (!paid || (c.paid_status || (asFos ? '' : 'UNPAID')) === paid) &&
+    (!cyclesSel.length || cyclesSel.includes(c.cycle)) &&
+    (!gq || [c.customer_name, c.account_no, c.phone].some(v => (v || '').toString().toLowerCase().includes(gq))));
+  const sum = shown.reduce((a, c) => {
+    a.recv += Number(c.received_amount || 0); a.pend += Number(c.pending_amount || 0);
+    if ((c.paid_status || '') === 'PAID' || c.status === 'paid') a.paid += 1;
+    return a;
+  }, { recv: 0, pend: 0, paid: 0 });
+  return (
+    <div className="glass card" style={{ padding: 12, marginTop: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
+        <b>{open ? '▾' : '▸'} {p.label}</b><span className="badge allocated">{p.count}</span></div>
+      <div style={{ display: 'flex', gap: 14, marginTop: 6, flexWrap: 'wrap', fontSize: 13 }}>
+        <span>Paid <b>{p.paid}</b>/{p.count}</span>
+        <span>ENR <b>{money(p.enr)}</b></span>
+        <span>Collected <b style={{ color: 'var(--good)' }}>{money(p.collected)}</b></span>
+        <span>Achieved <b style={{ color: 'var(--info)' }}>{p.achieved_pct}%</b></span>
+        {p.rank && <span>Rank <b>#{p.rank}</b>/{p.field_size}</span>}
+        {asFos ? <span>🧍 Visited <b>{act.visited || 0}</b> · 💰 paid <b style={{ color: 'var(--good)' }}>{act.visits_paid || 0}</b></span>
+          : <span>📞 Contacted <b>{act.contacted || 0}</b> · calls <b>{act.calls || 0}</b></span>}
+      </div>
+      {open && <div style={{ marginTop: 10, borderTop: '1px solid var(--line)', paddingTop: 10 }}>
+        <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          <input className="input" style={{ maxWidth: 200, height: 32 }} placeholder="🔍 name / account / phone" value={q} onChange={e => setQ(e.target.value)} />
+          {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s => <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(s)}>{s || 'All'}</div>)}
+          {cycleOpts.length > 0 && <MultiSelect label="Cycle" icon="🔄" width={140} selected={cyclesSel} onChange={setCyclesSel} options={cycleOpts.map(c => ({ value: c, label: 'Cycle ' + c }))} />}
+        </div>
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 12.5, marginBottom: 8 }}>
+          <span className="muted">Showing <b>{shown.length}</b></span>
+          <span>Paid <b>{sum.paid}</b></span>
+          <span>Collected <b style={{ color: 'var(--good)' }}>{money(sum.recv)}</b></span>
+          <span>Pending <b style={{ color: 'var(--warn)' }}>{money(sum.pend)}</b></span>
+        </div>
+        {!all ? <Loader size="sm" /> : shown.length === 0 ? <div className="muted" style={{ padding: 8 }}>No cases match.</div> :
+          <div className="tablewrap" style={{ maxHeight: 300, overflow: 'auto' }}><table>
+            <thead><tr><th>Customer</th><th>Account</th><th>Cycle</th><th>Received</th><th>Pending</th><th>Status</th><th>Paid</th><th>Dispo</th></tr></thead>
+            <tbody>{shown.map(c => <tr key={c.id}>
+              <td><b>{c.customer_name || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{c.phone}</div></td>
+              <td className="mono">{c.account_no || '—'}</td><td>{c.cycle || '—'}</td>
+              <td className="mono" style={{ color: 'var(--good)' }}>{INR(c.received_amount)}</td>
+              <td className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</td>
+              <td><StatusBadge s={c.status} /></td><td><PaidBadge s={c.paid_status} /></td>
+              <td className="muted" style={{ fontSize: 12 }}>{c.disposition || '—'}</td></tr>)}
+            </tbody></table></div>}
+      </div>}
     </div>
   );
 }

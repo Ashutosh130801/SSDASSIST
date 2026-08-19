@@ -307,8 +307,15 @@ private fun PerformanceDialog(vm: AuthViewModel, empId: Int, role: String, onDis
                             Metric("Achieved", "${"%.0f".format(d.totals.achievedPct)}%", Modifier.weight(1f), BrandBlue)
                             Metric("Pending", money(d.totals.pending), Modifier.weight(1f), Warn)
                         }
+                        // Activity from the logs they submit.
+                        Text(
+                            if (d.asFos)
+                                "🧍 Visited ${d.activity.visited} cases · 📋 ${d.activity.visits} visits · 💰 ${d.activity.visitsPaid} with payment"
+                            else "📞 Contacted ${d.activity.contacted} cases · ☎️ ${d.activity.calls} calls logged",
+                            style = MaterialTheme.typography.bodySmall, color = Muted,
+                        )
                         TrendStrip(d.trends, "Cash collected — FTD / MTD / LMTD / Overall")
-                        d.portfolios.forEach { PerfPortfolioRow(it) }
+                        d.portfolios.forEach { PerfPortfolioRow(it, d.asFos) }
                         if (d.portfolios.isEmpty()) Text("No cases in this period.", color = Muted)
                     }
                 }
@@ -329,7 +336,7 @@ private fun Metric(label: String, value: String, modifier: Modifier = Modifier, 
 }
 
 @Composable
-private fun PerfPortfolioRow(p: PerfPortfolio) {
+private fun PerfPortfolioRow(p: PerfPortfolio, asFos: Boolean) {
     Surface(shape = RoundedCornerShape(12.dp), color = CardWhite, contentColor = TextDark,
         border = BorderStroke(1.dp, GlassStroke), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
@@ -340,6 +347,10 @@ private fun PerfPortfolioRow(p: PerfPortfolio) {
             Text("Paid ${p.paid}/${p.count} · ENR ${money(p.enr)} · Collected ${money(p.collected)} · ${"%.0f".format(p.achievedPct)}%" +
                 (p.rank?.let { " · Rank #$it/${p.fieldSize}" } ?: ""),
                 color = Muted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
+            Text(
+                if (asFos) "🧍 Visited ${p.activity.visited} · 💰 ${p.activity.visitsPaid} with payment"
+                else "📞 Contacted ${p.activity.contacted} · ☎️ ${p.activity.calls} calls",
+                color = Muted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 2.dp))
         }
     }
 }

@@ -679,11 +679,18 @@ data class PerfTotals(
 )
 
 @JsonClass(generateAdapter = true)
+data class PerfActivity(
+    val calls: Int = 0, val contacted: Int = 0,
+    val visits: Int = 0, @Json(name = "visits_paid") val visitsPaid: Int = 0, val visited: Int = 0,
+)
+
+@JsonClass(generateAdapter = true)
 data class PerfPortfolio(
     val label: String = "", val count: Int = 0, val paid: Int = 0,
     val enr: Double = 0.0, val collected: Double = 0.0,
     @Json(name = "achieved_pct") val achievedPct: Double = 0.0,
     val rank: Int? = null, @Json(name = "field_size") val fieldSize: Int = 0,
+    val activity: PerfActivity = PerfActivity(),
 )
 
 @JsonClass(generateAdapter = true)
@@ -692,6 +699,7 @@ data class Performance(
     @Json(name = "emp_code") val empCode: String? = null,
     @Json(name = "as_fos") val asFos: Boolean = false,
     val totals: PerfTotals = PerfTotals(),
+    val activity: PerfActivity = PerfActivity(),
     val trends: Trends = Trends(),
     val portfolios: List<PerfPortfolio> = emptyList(),
 )
