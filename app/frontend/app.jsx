@@ -5116,6 +5116,7 @@ function SheetView({ user, config }) {
   const [calcRes, setCalcRes] = React.useState('');
   const [live, setLive] = React.useState(false);
   const [search, setSearch] = React.useState('');
+  const [paidF, setPaidF] = React.useState('');   // '' | 'PAID' | 'PARTIAL' | 'UNPAID'
   const [bankF, setBankF] = React.useState(''); const [prodF, setProdF] = React.useState('');
   const [monthB, setMonthB] = React.useState('current');   // default THIS month so months aren't merged
   const [payModal, setPayModal] = React.useState(null);   // {row, mode:'paid'|'unpaid'}
@@ -5240,6 +5241,7 @@ function SheetView({ user, config }) {
 
   const viewRows = () => {
     let out = rows.slice();
+    if (paidF) out = out.filter(r => (r.paid_status || '').toUpperCase() === paidF);
     if (bankF) out = out.filter(r => (r.bank || '') === bankF);
     if (prodF) out = out.filter(r => (r.product || '') === prodF);
     if (search) { const q = search.toLowerCase(); out = out.filter(r =>
@@ -5384,8 +5386,10 @@ function SheetView({ user, config }) {
           style={{ width: 220, border: '1px solid var(--stroke-soft)', borderRadius: 10, padding: '7px 10px', fontSize: 13 }} />
         <button className="sv-btn" onClick={runCalc}>ƒx</button>
         {calcRes !== '' && <span style={{ fontWeight: 600, color: 'var(--gold)' }}>= {calcRes}</span>}
-        <button className="sv-btn" onClick={exportCSV}>⬇ CSV</button>
-        <button className="sv-btn" onClick={exportXLSX}>⬇ Excel</button>
+        <button className="sv-btn" onClick={exportCSV}>⬇ CSV</button> <span className="muted" style={{ fontSize: 12 }}>Paid:</span>
+        {[['', 'All'], ['PAID', 'Paid'], ['PARTIAL', 'Partial'], ['UNPAID', 'Unpaid']].map(([v, lbl]) =>
+          <div key={v || 'all'} className={cx('chip', paidF === v && 'on')} onClick={() => setPaidF(v)}>{lbl}</div>)}
+        <button className="sv-btn" onClick={() => { setPaidF(''); setBankF(''); setProdF(''); setSearch(''); }} title="Clear filters">✕ Clear</button>
         <button className="sv-btn" onClick={() => setColMenu(v => !v)}>⚙ Columns</button>
         {colMenu && (
           <div className="sv-menu">
