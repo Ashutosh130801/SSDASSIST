@@ -3796,17 +3796,18 @@ function AuditLogView({ user }) {
   const [data, setData] = useState(null);
   const [f, setF] = useState({ role: '', emp: '', action: '', branch: '', bank: '', product: '', days: '', q: '' });
   const [busy, setBusy] = useState(false); const [logSel, setLogSel] = useState(null);
+  const [page, setPage] = useState(0); const PAGE = 300;
   useEffect(() => { api('/api/audit/filters').then(setOpts).catch(() => {}); }, []);
   const load = useCallback(() => {
     setBusy(true);
-    const qs = new URLSearchParams({ limit: '300' });
+    const qs = new URLSearchParams({ limit: String(PAGE), offset: String(page * PAGE) });
     Object.entries(f).forEach(([k, v]) => { if (v) qs.set(k, v); });
     api('/api/audit?' + qs.toString()).then(setData).catch(() => setData({ items: [], total: 0 })).finally(() => setBusy(false));
-  }, [f]);
+  }, [f, page]);
   useEffect(() => { const t = setTimeout(load, 200); return () => clearTimeout(t); }, [load]);
   useDataChanged(load);
-  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
-  const reset = () => setF({ role: '', emp: '', action: '', branch: '', bank: '', product: '', days: '', q: '' });
+  const set = (k, v) => { setPage(0); setF(p => ({ ...p, [k]: v })); };
+  const reset = () => { setPage(0); setF({ role: '', emp: '', action: '', branch: '', bank: '', product: '', days: '', q: '' }); };
   const active = Object.values(f).filter(Boolean).length;
   const sel = { minWidth: 120, maxWidth: 190, height: 34, padding: '0 8px', fontSize: 13 };
   const when = (t) => fmtDT(t);
@@ -3850,7 +3851,14 @@ function AuditLogView({ user }) {
               <td style={{ fontSize: 12 }}>{r.detail || '—'}</td>
               <td className="muted" style={{ fontSize: 12 }}>{r.branch || '—'}</td></tr>)}
             </tbody></table></div>
-          {data.total > items.length && <p className="muted" style={{ padding: '8px 12px', fontSize: 12 }}>Showing latest {items.length} of {data.total}. Narrow with filters to see older entries.</p>}
+          {data.total > items.length && <div className="toolbar" style={{ justifyContent: 'center', gap: 10, padding: '10px 12px' }}>
+            <span className="muted" style={{ fontSize: 11.5 }}>Page {page + 1} — showing {items.length} of {data.total}</span>
+            {page > 0 && <button className="btn sm" onClick={() => setPage(0)} title="First page">«</button>}
+            {page > 0 && <button className="btn sm" onClick={() => setPage(p => p - 1)}>‹ Prev</button>}
+            {(page + 1) * PAGE < data.total && <button className="btn sm" onClick={() => setPage(p => p + 1)}>Next {PAGE} ›</button>}
+          </div>}
+        </div>
+      )}
         </div>
       )}
       {logSel && <AuditDetailModal row={logSel} onClose={() => setLogSel(null)} />}
