@@ -84,7 +84,7 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
 
 
 @router.get("/queue")
-def queue(bank: str | None = None, db: Session = Depends(get_db),
+def queue(bank: str | None = None, product: str | None = None, db: Session = Depends(get_db),
           user: models.User = Depends(require_roles("telecaller", "admin"))):
     """Telecaller work queue split into three clear sections so nothing is called
     twice or missed: due now, already contacted today, and scheduled for later."""
@@ -100,6 +100,8 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
     q = q.filter(models.Case.status.notin_(["paid", "closed"]))
     if bank:
         q = q.filter(models.Case.bank == bank)
+    if product:
+        q = q.filter(models.Case.product == product)
     cases = q.all()
 
     from .cases import propensity
@@ -127,6 +129,8 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
         pq = pq.filter(models.Case.assigned_caller_id == user.id)
     if bank:
         pq = pq.filter(models.Case.bank == bank)
+    if product:
+        pq = pq.filter(models.Case.product == product)
     paid_today = [c for c in pq.all() if _contacted_today(c)]
     paid_today.sort(key=lambda c: c.last_contacted_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
@@ -146,7 +150,7 @@ def queue(bank: str | None = None, db: Session = Depends(get_db),
 
 
 @router.get("/ptp-tracker")
-def ptp_tracker(bank: str | None = None, db: Session = Depends(get_db),
+def ptp_tracker(bank: str | None = None, product: str | None = None, db: Session = Depends(get_db),
                 user: models.User = Depends(require_roles("telecaller", "admin", "manager",
                                                           "teamlead", "headoffice", "backend"))):
     """All active promise-to-pay cases with promised amount + date, split into
@@ -174,6 +178,8 @@ def ptp_tracker(bank: str | None = None, db: Session = Depends(get_db),
                          models.Case.assigned_caller_id.in_(ids), models.Case.assigned_fos_id.in_(ids)))
     if bank:
         q = q.filter(models.Case.bank == bank)
+    if product:
+        q = q.filter(models.Case.product == product)
     cases = q.all()
 
     rows = []

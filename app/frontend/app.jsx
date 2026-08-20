@@ -3526,15 +3526,25 @@ function CaseDrawer({ c, onClose, onChanged }) {
 const QUEUE_SEG = [['due', '⏰ Due now', 'due'], ['today', '✓ Contacted today', 'contacted_today'], ['upcoming', '📅 Upcoming', 'upcoming'], ['paid', '💰 Paid today', 'paid_today'], ['closed', '🔒 Closed', 'closed'], ['next', '🔜 Next month', 'next']];
 function CallQueue() {
   const [data, setData] = useState(null); const [active, setActive] = useState(null); const [err, setErr] = useState('');
-  const [seg, setSeg] = useState('due'); const [bank, setBank] = useState(''); const [bucket, setBucket] = useState(''); const [q, setQ] = useState(''); const [paidF, setPaidF] = useState('');
+  const [seg, setSeg] = useState('due'); const [bank, setBank] = useState(''); const [product, setProduct] = useState(''); const [bucket, setBucket] = useState(''); const [q, setQ] = useState(''); const [paidF, setPaidF] = useState('');
+  const [opts, setOpts] = useState({ banks: [], products: [] });
   const EMPTY = { due: [], contacted_today: [], upcoming: [], paid_today: [], closed: [], next: [], counts: { due: 0, contacted_today: 0, upcoming: 0, paid_today: 0, closed: 0, next: 0 } };
   const load = () => {
-    const p = new URLSearchParams(); if (bank) p.set('bank', bank);
+    const p = new URLSearchParams(); if (bank) p.set('bank', bank); if (product) p.set('product', product);
     api('/api/calls/queue' + (p.toString() ? '?' + p : ''))
       .then(d => { setData(d); setErr(''); })
       .catch(e => { setErr(e.message || 'Could not load queue'); setData(EMPTY); });
   };
-  useEffect(() => { load(); }, [bank]);
+  // Derive the bank/product dropdowns from the caller's own scoped queue (unfiltered call),
+  // so every assigned portfolio appears even if it isn't in a hardcoded bank list. The list
+  // still refreshes when the bank filter changes so the product options stay in sync.
+  const loadMeta = () => api('/api/calls/queue').then(d => {
+    const all = [...(d.due || []), ...(d.contacted_today || []), ...(d.upcoming || []), ...(d.paid_today || []), ...(d.closed || []), ...(d.next || [])];
+    const banks = [...new Set(all.map(c => c.bank).filter(Boolean))].sort();
+    const products = [...new Set(all.filter(c => !bank || c.bank === bank).map(c => c.product).filter(Boolean))].sort();
+    setOpts({ banks, products });
+  }).catch(() => setOpts({ banks: [], products: [] }));
+  useEffect(() => { load(); loadMeta(); }, [bank, product]);
   useDataChanged(load);
   if (!data) return <Loader />;
   if (err) return <div className="glass card" style={{ color: 'var(--warn)' }}>
@@ -3558,7 +3568,9 @@ function CallQueue() {
       </div>
       <div className="toolbar" style={{ marginTop: -2 }}>
         <select className="input" style={{ maxWidth: 130 }} value={bank} onChange={e => setBank(e.target.value)}>
-          <option value="">All banks</option><option>ICICI</option><option>RBL</option><option>AXIS</option><option>BRBL</option></select>
+          <option value="">All banks</option>{opts.banks.map(b => <option key={b}>{b}</option>)}</select>
+        <select className="input" style={{ maxWidth: 150 }} value={product} onChange={e => setProduct(e.target.value)}>
+          <option value="">All products</option>{opts.products.map(p => <option key={p}>{p}</option>)}</select>
         <span className="muted" style={{ fontSize: 12.5 }}>Status:</span>
         {[['', 'All'], ['PAID', 'Paid'], ['UNPAID', 'Unpaid'], ['PARTIAL', 'Partial']].map(([v, lbl]) =>
           <div key={v || 'all'} className={cx('chip', paidF === v && 'on')} onClick={() => setPaidF(v)}>{lbl}</div>)}
@@ -3618,13 +3630,22 @@ function AIAssist({ user }) {
 
 /* ============================== PTP Tracker ============================== */
 function PTPTracker() {
-  const [data, setData] = useState(null); const [bank, setBank] = useState(''); const [drawer, setDrawer] = useState(null);
+  const [data, setData] = useState(null); const [bank, setBank] = useState(''); const [product, setProduct] = useState(''); const [drawer, setDrawer] = useState(null);
   const [err, setErr] = useState(''); const [search, setSearch] = useState('');
-  const load = () => { const p = new URLSearchParams(); if (bank) p.set('bank', bank);
+  const [opts, setOpts] = useState({ banks: [], products: [] });
+  const load = () => { const p = new URLSearchParams(); if (bank) p.set('bank', bank); if (product) p.set('product', product);
     setErr('');
     api('/api/calls/ptp-tracker' + (p.toString() ? '?' + p : '')).then(d => setData(d))
       .catch(e => { setErr(e.message || 'Could not load promises'); setData({ rows: [], counts: { overdue: 0, today: 0, upcoming: 0 } }); }); };
-  useEffect(() => { load(); }, [bank]);
+  // Bank/product choice lists are taken from the caller's own promise rows (unfiltered), so no
+  // assignment is hidden behind a hardcoded bank list.
+  const loadMeta = () => api('/api/calls/ptp-tracker').then(d => {
+    const all = (d.rows || []).map(r => r.case);
+    const banks = [...new Set(all.map(c => c.bank).filter(Boolean))].sort();
+    const products = [...new Set(all.filter(c => !bank || c.bank === bank).map(c => c.product).filter(Boolean))].sort();
+    setOpts({ banks, products });
+  }).catch(() => setOpts({ banks: [], products: [] }));
+  useEffect(() => { load(); loadMeta(); }, [bank, product]);
   if (!data) return <Loader />;
   if (err) return <div className="glass card" style={{ color: 'var(--bad)' }}>Couldn’t load the PTP tracker: {err}
     <button className="btn sm" style={{ marginLeft: 10 }} onClick={load}>Retry</button></div>;
@@ -3645,7 +3666,9 @@ function PTPTracker() {
         {search && <button className="btn ghost sm" onClick={() => setSearch('')}>✕</button>}
         <div style={{ flex: 1 }} />
         <select className="input" style={{ maxWidth: 130 }} value={bank} onChange={e => setBank(e.target.value)}>
-          <option value="">All banks</option><option>ICICI</option><option>RBL</option><option>AXIS</option><option>BRBL</option></select>
+          <option value="">All banks</option>{opts.banks.map(b => <option key={b}>{b}</option>)}</select>
+        <select className="input" style={{ maxWidth: 150 }} value={product} onChange={e => setProduct(e.target.value)}>
+          <option value="">All products</option>{opts.products.map(p => <option key={p}>{p}</option>)}</select>
         <button className="btn sm" onClick={load}>↻</button>
       </div>
       {visible.length === 0 ? <p className="muted">{search ? `No promises match "${search}".` : 'No active promises to pay right now.'}</p> :
@@ -4976,7 +4999,7 @@ function MyPerformance({ user }) {
           {p.leaderboard && p.leaderboard.length > 0 && <div style={{ marginTop: 12 }}>
             <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Leaderboard — {roleWord} on this portfolio (you are highlighted)</div>
             <div className="tablewrap"><table><thead><tr>
-              <th>#</th><th>Agent</th><th>Cases</th><th>ENR</th><th>Achieved %</th><th>Paid ENR</th><th>Cash coll</th></tr></thead>
+              <th>#</th><th>Agent</th><th>Cases</th><th>ENR</th><th>Paid %</th><th>Paid ENR</th><th>Cash coll</th></tr></thead>
               <tbody>{p.leaderboard.map((r, j) => <tr key={j} style={r.you ? { background: 'rgba(37,99,235,.12)', fontWeight: 700 } : null}>
                 <td>{r.rank}</td><td>{r.name}{r.you ? ' (you)' : ''}</td><td>{r.count}</td>
                 <td className="mono">{money(r.enr)}</td><td><b>{r.achieved_pct}%</b></td>
