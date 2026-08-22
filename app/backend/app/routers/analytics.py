@@ -18,7 +18,7 @@ def _d(v) -> float:
     return float(Decimal(str(v or 0)))
 
 
-def _scope(q, user, branch=None):
+def _scope(q, user, branch=None, period=None):
     q = q.filter(models.Case.removed.isnot(True))     # soft-deleted cases never count
     if user.role == "fos":
         q = q.filter(models.Case.assigned_fos_id == user.id)
@@ -32,26 +32,34 @@ def _scope(q, user, branch=None):
     # Admin (or manager) drilling into a specific branch card.
     if branch:
         q = q.filter(models.Case.branch == branch)
+    # Month-wise separation (This month / Next month) so a person's stats aren't merged across months.
+    if period:
+        q = q.filter(models.Case.period == period)
     return q
 
 
 @router.get("/dashboard")
-def dashboard(branch: str | None = None, db: Session = Depends(get_db),
-              user: models.User = Depends(get_current_user)):
-    base = _scope(db.query(models.Case), user, branch)
+def dashboard(branch: str | None = None, month_bucket: str | None = None,
+              db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    # Month-wise separation so a person's stats/analytics aren't merged across months.
+    from .cases import _current_period, _next_period
+    period = _current_period() if month_bucket == "current" else _next_period() if month_bucket == "next" else None
+    def sc(q):
+        return _scope(q, user, branch, period=period)
+    base = sc(db.query(models.Case))
 
     total_cases = base.count()
     cash = _d(base.with_entities(func.coalesce(func.sum(models.Case.received_amount), 0)).scalar())
     # ENR is the recovery base for credit-card/PL-BL data; fall back to funding for older loads.
     total_enr = _d(base.with_entities(func.coalesce(func.sum(models.Case.enr), 0)).scalar())
-    paid_enr = _d(_scope(db.query(models.Case), user, branch)
+    paid_enr = _d(sc(db.query(models.Case))
                   .filter(models.Case.paid_status == "PAID")
                   .with_entities(func.coalesce(func.sum(models.Case.enr), 0)).scalar())
     funding = _d(base.with_entities(func.coalesce(func.sum(models.Case.funding_amount), 0)).scalar())
 
-    paid = _scope(db.query(models.Case), user, branch).filter(models.Case.paid_status == "PAID").count()
-    unpaid = _scope(db.query(models.Case), user, branch).filter(models.Case.paid_status == "UNPAID").count()
-    partial = _scope(db.query(models.Case), user, branch).filter(models.Case.paid_status == "PARTIAL").count()
+    paid = sc(db.query(models.Case)).filter(models.Case.paid_status == "PAID").count()
+    unpaid = sc(db.query(models.Case)).filter(models.Case.paid_status == "UNPAID").count()
+    partial = sc(db.query(models.Case)).filter(models.Case.paid_status == "PARTIAL").count()
 
     if total_enr > 0:                       # ENR-based (matches the MIS sheet)
         target_f = round(total_enr, 2)
@@ -66,10 +74,10 @@ def dashboard(branch: str | None = None, db: Session = Depends(get_db),
 
     # by bank
     bank_rows = (
-        _scope(db.query(models.Case.bank,
-                        func.count(models.Case.id),
-                        func.coalesce(func.sum(models.Case.received_amount), 0),
-                        func.coalesce(func.sum(models.Case.pending_amount), 0)), user, branch)
+        sc(db.query(models.Case.bank,
+                    func.count(models.Case.id),
+                    func.coalesce(func.sum(models.Case.received_amount), 0),
+                    func.coalesce(func.sum(models.Case.pending_amount), 0)))
         .group_by(models.Case.bank).all()
     )
     by_bank = [
@@ -79,14 +87,14 @@ def dashboard(branch: str | None = None, db: Session = Depends(get_db),
 
     # by status
     status_rows = (
-        _scope(db.query(models.Case.status, func.count(models.Case.id)), user, branch)
+        sc(db.query(models.Case.status, func.count(models.Case.id)))
         .group_by(models.Case.status).all()
     )
     by_status = [{"status": s or "—", "count": c} for s, c in status_rows]
 
     # by disposition
     disp_rows = (
-        _scope(db.query(models.Case.disposition, func.count(models.Case.id)), user, branch)
+        sc(db.query(models.Case.disposition, func.count(models.Case.id)))
         .filter(models.Case.disposition.isnot(None))
         .group_by(models.Case.disposition).order_by(func.count(models.Case.id).desc()).limit(8).all()
     )

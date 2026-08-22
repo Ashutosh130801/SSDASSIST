@@ -886,13 +886,16 @@ const STAGE_META = {
 
 function Dashboard({ user, branch }) {
   const [d, setD] = useState(null); const [err, setErr] = useState(''); const [hl, setHl] = useState(null);
+  // Month-wise separation so stats/analytics aren't merged across months. Field/calling staff default to THIS month.
+  const [monthB, setMonthB] = useState((user.role === 'fos' || user.role === 'telecaller') ? 'current' : '');
   const isMgr = (user.role === 'admin' || user.role === 'manager' || user.role === 'headoffice') && !branch;
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const loadDash = () => {
-    api('/api/analytics/dashboard' + (branch ? '?branch=' + encodeURIComponent(branch) : '')).then(setD).catch(e => setErr(e.message));
+    const p = new URLSearchParams(); if (branch) p.set('branch', branch); if (monthB) p.set('month_bucket', monthB);
+    api('/api/analytics/dashboard' + (p.toString() ? '?' + p : '')).then(setD).catch(e => setErr(e.message));
     if (isMgr) api('/api/mis/highlights').then(setHl).catch(() => {});
   };
-  useEffect(() => { loadDash(); }, [branch]);
+  useEffect(() => { loadDash(); }, [branch, monthB]);
   useDataChanged(loadDash);   // live: refresh dashboard on any log/payment/edit
   if (err) return <div className="glass card" style={{ color: 'var(--bad)' }}>{err}</div>;
   if (!d) return <Loader />;
@@ -908,6 +911,10 @@ function Dashboard({ user, branch }) {
 
   return (
     <div>
+      <div className="toolbar" style={{ marginBottom: 10 }}>
+        {[['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, lbl]) =>
+          <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
+      </div>
       <div className="kpis">
         <StatCard icon="📁" label="Total Cases" accent="blue" value={k.total_cases.toLocaleString('en-IN')}
           sub={<span>{k.paid} resolved · {k.unpaid} open · {k.partial} partial</span>} />
@@ -4530,7 +4537,7 @@ function MISView({ user }) {
   useEffect(() => {
     api('/api/cases/product-summary').then(rows => {
       const seen = {}, list = [];
-      (rows || []).forEach(r => { const k = r.bank + '||' + r.product + '||' + (r.branch || ''); if (!seen[k] && r.product !== '—') { seen[k] = 1; list.push({ bank: r.bank, product: r.product, branch: r.branch || '' }); } });
+      (rows || []).forEach(r => { const k = r.bank + '||' + r.product; if (!seen[k] && r.product !== '—') { seen[k] = 1; list.push({ bank: r.bank, product: r.product, branch: '', branch_split: !!r.branch_split, branches: (r.branches || []).map(b => b.branch) }); } });
       setProds(list); if (list[0]) setSel(list[0]);
     }).catch(() => setProds([]));
     api('/api/mis/overview').then(setOv).catch(() => {});
@@ -4636,9 +4643,16 @@ function MISView({ user }) {
           {[...new Set(prods.map(p => p.bank))].map(b => <option key={b} value={b}>🏦 {b}</option>)}
         </select>
         <select className="input" style={{ maxWidth: 200 }} value={sel ? sel.product : ''}
-          onChange={e => { const pr = e.target.value; const f = prods.find(p => p.bank === sel.bank && p.product === pr); setSel({ bank: sel.bank, product: pr, branch: (f && f.branch) || '' }); setEmp(''); }}>
-          {(sel ? prods.filter(p => p.bank === sel.bank) : []).map(p => <option key={p.product} value={p.product}>{p.product}{p.branch ? ' · 📍 ' + p.branch : ''}</option>)}
+          onChange={e => { const pr = e.target.value; const f = prods.find(p => p.bank === sel.bank && p.product === pr); setSel({ bank: sel.bank, product: pr, branch: '', branch_split: !!(f && f.branch_split), branches: (f && f.branches) || [] }); setEmp(''); }}>
+          {(sel ? prods.filter(p => p.bank === sel.bank) : []).map(p => <option key={p.product} value={p.product}>{p.product}{p.branch_split ? ' · 📍' : ''}</option>)}
         </select>
+        {/* Branch step — for portfolios uploaded with an explicit location (mirrors Accounts). */}
+        {sel && sel.branch_split && (sel.branches || []).length > 0 &&
+          <select className="input" style={{ maxWidth: 180 }} value={sel.branch || ''}
+            onChange={e => setSel({ ...sel, branch: e.target.value })} title="Location / branch">
+            <option value="">📍 All locations</option>
+            {sel.branches.map(b => <option key={b} value={b}>📍 {b}</option>)}
+          </select>}
         {/* Month-wise MIS — keep this-month and next-month figures cleanly separate. */}
         {[['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, lbl]) =>
           <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
