@@ -3912,8 +3912,6 @@ function AuditLogView({ user }) {
           </div>}
         </div>
       )}
-        </div>
-      )}
       {logSel && <AuditDetailModal row={logSel} onClose={() => setLogSel(null)} />}
     </div>
   );
