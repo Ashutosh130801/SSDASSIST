@@ -496,7 +496,7 @@ const GOLD = '#2563EB', GOLD2 = '#1D4ED8';
 const PALETTE = ['#2563EB', '#0EA5E9', '#16A34A', '#F97316', '#8B5CF6', '#14B8A6', '#EAB308'];
 
 /* Role display labels (internal keys stay admin/manager/fos/telecaller for RBAC) */
-const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', teamlead: 'Team Lead', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office', hr: 'HR', it: 'IT', staff: 'Staff' };
+const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', teamlead: 'Team Lead', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office', hr: 'HR', it: 'IT', staff: 'Staff', techsupport: 'Tech Support' };
 const roleName = (r) => ROLE_LABEL[r] || r;
 
 /* ============================== Login ============================== */
@@ -699,6 +699,7 @@ function PerfModal({ empId, role, name, onClose }) {
             <StatCard icon="✅" label="Collected" value={money(d.totals.collected)} valueColor="var(--good)" />
             <StatCard icon="🎯" label="Achieved %" value={(d.totals.achieved_pct || 0) + '%'} valueColor="var(--info)" />
             <StatCard icon="⏳" label="Pending" value={money(d.totals.pending)} valueColor="var(--warn)" />
+            <StatCard icon="🏦" label="Total POS" value={money(d.totals.pos)} sub="principal outstanding" />
           </div>
           {/* Field / calling activity straight from the logs they submit. */}
           {d.activity && <div className="glass card" style={{ padding: 10, marginTop: 10, display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 13, alignItems: 'center' }}>
@@ -760,13 +761,25 @@ function PerfPortfolioCard({ p, empId, asFos, mb, money }) {
         <span>Collected <b style={{ color: 'var(--good)' }}>{money(p.collected)}</b></span>
         <span>Achieved <b style={{ color: 'var(--info)' }}>{p.achieved_pct}%</b></span>
         {p.rank && <span>Rank <b>#{p.rank}</b>/{p.field_size}</span>}
+        <span>🏦 POS <b>{money(p.pos)}</b></span>
         {asFos ? <span>🧍 Visited <b>{act.visited || 0}</b> · 💰 paid <b style={{ color: 'var(--good)' }}>{act.visits_paid || 0}</b></span>
           : <span>📞 Contacted <b>{act.contacted || 0}</b> · calls <b>{act.calls || 0}</b></span>}
       </div>
+      {/* Everyone working this portfolio, ranked by paid % — so a caller sees how peers are doing. */}
+      {(p.leaderboard || []).length > 1 && <div style={{ marginTop: 8 }}>
+        <div className="muted" style={{ fontSize: 11.5, marginBottom: 4 }}>{asFos ? 'Field agents' : 'Callers'} on this portfolio — resolved (paid) %</div>
+        <div className="tablewrap"><table style={{ fontSize: 12.5 }}>
+          <thead><tr><th>#</th><th>{asFos ? 'FOS' : 'Caller'}</th><th>Cases</th><th>Paid %</th><th>Collected</th></tr></thead>
+          <tbody>{p.leaderboard.map((r, j) => <tr key={j} style={r.you ? { background: 'rgba(59,130,246,.10)', fontWeight: 600 } : null}>
+            <td>{r.rank}</td><td>{r.name}{r.you ? ' (you)' : ''}</td><td>{r.count}</td>
+            <td><b style={{ color: r.achieved_pct >= 60 ? 'var(--good)' : r.achieved_pct >= 30 ? 'var(--warn)' : 'var(--bad)' }}>{r.achieved_pct}%</b></td>
+            <td className="mono" style={{ color: 'var(--good)' }}>{money(r.collected)}</td></tr>)}
+          </tbody></table></div>
+      </div>}
       {open && <div style={{ marginTop: 10, borderTop: '1px solid var(--line)', paddingTop: 10 }}>
         <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
           <input className="input" style={{ maxWidth: 200, height: 32 }} placeholder="🔍 name / account / phone" value={q} onChange={e => setQ(e.target.value)} />
-          {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s => <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(s)}>{s || 'All'}</div>)}
+          {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s => <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(paid === s ? '' : s)}>{s || 'All'}</div>)}
           {cycleOpts.length > 0 && <MultiSelect label="Cycle" icon="🔄" width={140} selected={cyclesSel} onChange={setCyclesSel} options={cycleOpts.map(c => ({ value: c, label: 'Cycle ' + c }))} />}
         </div>
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 12.5, marginBottom: 8 }}>
@@ -787,6 +800,37 @@ function PerfPortfolioCard({ p, empId, asFos, mb, money }) {
               <td className="muted" style={{ fontSize: 12 }}>{c.disposition || '—'}</td></tr>)}
             </tbody></table></div>}
       </div>}
+    </div>
+  );
+}
+
+/* Bank & product-wise performance split for one employee — embeddable (used inside the employee's
+   full performance page, above their case list). Each portfolio expands to its cases + peer board. */
+function PerfPortfolios({ empId, role }) {
+  const [mb, setMb] = useState('current');
+  const [d, setD] = useState(null); const [err, setErr] = useState('');
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  useEffect(() => {
+    setD(null); setErr('');
+    api(`/api/mis/performance?emp_id=${empId}&role=${role || ''}&month_bucket=${mb}`).then(setD).catch(e => setErr(e.message || 'Could not load'));
+  }, [empId, role, mb]);
+  return (
+    <div className="glass card" style={{ padding: 12, marginTop: 12 }}>
+      <div className="section-h" style={{ marginBottom: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>📊 Portfolio-wise performance</h3>
+        <div className="toolbar">
+          {[['current', '📅 This month'], ['next', '🔜 Next'], ['', 'All']].map(([v, l]) =>
+            <div key={v} className={cx('chip', mb === v && 'on')} onClick={() => setMb(v)}>{l}</div>)}
+        </div>
+      </div>
+      {err ? <div className="muted" style={{ color: 'var(--bad)', fontSize: 12.5 }}>{err}</div> : !d ? <Loader /> : <>
+        {d.activity && <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+          {d.as_fos
+            ? `🧍 Visited ${d.activity.visited || 0} cases · 📋 ${d.activity.visits || 0} visits · 💰 ${d.activity.visits_paid || 0} with payment`
+            : `📞 Contacted ${d.activity.contacted || 0} cases · ☎️ ${d.activity.calls || 0} calls`}</div>}
+        {(d.portfolios || []).map((p, i) => <PerfPortfolioCard key={i} p={p} empId={empId} asFos={d.as_fos} mb={mb} money={money} />)}
+        {(!d.portfolios || d.portfolios.length === 0) && <div className="muted" style={{ padding: 8 }}>No portfolios in this period.</div>}
+      </>}
     </div>
   );
 }
@@ -1040,7 +1084,7 @@ function DprModal({ onClose, onDone }) {
   useEffect(() => { api('/api/config').then(c => setCat(c.bank_products)).catch(() => {}); }, []);
   const products = (cat && bank && cat.products[bank]) || [];
   const form = () => { const f = new FormData(); f.append('file', file); f.append('default_bank', bank); f.append('product', product); return f; };
-  const changes = prev ? (prev.counts.mark_paid + prev.counts.mark_unpaid + (prev.counts.field_updates || 0)) : 0;
+  const changes = prev ? (prev.counts.mark_paid + (prev.counts.extra_paid || 0) + prev.counts.mark_unpaid + (prev.counts.field_updates || 0)) : 0;
   const doPreview = async () => {
     if (!file || !bank || !product) return; setErr(''); setBusy(true); setRes(null);
     try { setPrev(await api('/api/dpr/preview', { method: 'POST', form: form() })); }
@@ -1052,7 +1096,7 @@ function DprModal({ onClose, onDone }) {
       toast(`DPR applied — ${r.paid} paid, ${r.unpaid} reversed.`); onDone && onDone();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
-  const badge = (a) => ({ mark_paid: ['✓ Mark paid', 'var(--good)'], mark_unpaid: ['↩ Reverse (unpaid)', 'var(--warn)'], already_paid: ['• Already paid', 'var(--ink-dim)'], unmatched: ['⚠ Unmatched', 'var(--bad)'] }[a] || [a, '']);
+  const badge = (a) => ({ mark_paid: ['✓ Mark paid', 'var(--good)'], extra_paid: ['➕ Extra collection', 'var(--info)'], mark_unpaid: ['↩ Reverse (unpaid)', 'var(--warn)'], no_change: ['• No change', 'var(--ink-dim)'], unmatched: ['⚠ Unmatched', 'var(--bad)'] }[a] || [a, '']);
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 720 }}>
@@ -1076,10 +1120,12 @@ function DprModal({ onClose, onDone }) {
         {prev && !res && <div className="glass card" style={{ marginTop: 8 }}>
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 13, marginBottom: 6 }}>
             <span><b style={{ color: 'var(--good)' }}>{prev.counts.mark_paid}</b> to mark paid</span>
+            <span><b style={{ color: 'var(--info)' }}>{prev.counts.extra_paid || 0}</b> extra collection</span>
             <span><b style={{ color: 'var(--warn)' }}>{prev.counts.mark_unpaid}</b> to reverse</span>
-            <span><b style={{ color: 'var(--ink-dim)' }}>{prev.counts.already_paid}</b> already paid</span>
+            <span><b style={{ color: 'var(--ink-dim)' }}>{prev.counts.no_change || 0}</b> no change</span>
             <span><b style={{ color: 'var(--bad)' }}>{prev.counts.unmatched}</b> unmatched</span>
             <span><b style={{ color: 'var(--info)' }}>{prev.counts.field_updates || 0}</b> field updates{prev.counts.rows_with_updates ? ` (${prev.counts.rows_with_updates} rows)` : ''}</span>
+            {prev.counts.collected_preview ? <span>net cash <b style={{ color: 'var(--good)' }}>{INR2(prev.counts.collected_preview)}</b></span> : null}
           </div>
           <div className="muted" style={{ fontSize: 11.5, marginBottom: 4 }}>Match/pay → key: {prev.detected.keys.join(', ') || '—'} · amount: {prev.detected.amount || '—'} · status: {prev.detected.status || '—'} · norm/stab: {prev.detected.ns || '—'}</div>
           {prev.detected.fields && Object.keys(prev.detected.fields).length > 0 &&
@@ -1094,7 +1140,7 @@ function DprModal({ onClose, onDone }) {
           {prev.capped && <div className="muted" style={{ fontSize: 11 }}>Showing the first 500 rows.</div>}
         </div>}
         {res && <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid var(--good)' }}>
-          <b>Done.</b> <span className="muted" style={{ fontSize: 13 }}>{res.paid} marked paid · {res.unpaid} reversed · {res.already_paid} already paid · {res.field_updates || 0} field updates · {res.unmatched} unmatched (of {res.total} rows).</span>
+          <b>Done.</b> <span className="muted" style={{ fontSize: 13 }}>{res.paid} marked paid · {res.extra_paid || 0} extra collection · {res.unpaid} reversed · {res.field_updates || 0} field updates · {res.unmatched} unmatched (of {res.total} rows). Net cash {INR2(res.collected || 0)}.</span>
           <div className="toolbar" style={{ marginTop: 8 }}><button className="btn" onClick={onClose}>Close</button></div></div>}
       </div>
     </div>
@@ -1718,7 +1764,7 @@ function CasesView({ user }) {
           <input className="input" style={{ maxWidth: 240 }} placeholder="Search name / account / phone / pincode"
             value={q} onChange={e => setQ(e.target.value)} />
           {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>
-            <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(s)}>{s || 'All'}</div>)}
+            <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(paid === s ? '' : s)}>{s || 'All'}</div>)}
           <MultiSelect label="Cycle" icon="🔄" width={150} selected={cyclesSel} onChange={setCyclesSel}
             options={(filterOpts.cycles || []).map(c => ({ value: c, label: 'Cycle ' + c }))} />
           <MultiSelect label="FOS" icon="🧍" width={220} selected={fosSel} onChange={setFosSel}
@@ -1736,7 +1782,7 @@ function CasesView({ user }) {
             title="Cases flagged for review (e.g. old RTP)">⚠️ Flagged ({(cases || []).filter(c => c.flagged).length})</div>}
           <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
           {[['', 'All'], ['open', '🟢 Open'], ['closed', '🔒 Closed']].map(([v, lbl]) =>
-            <div key={v} className={cx('chip', openState === v && 'on')} onClick={() => setOpenState(v)}>{lbl}</div>)}
+            <div key={v} className={cx('chip', openState === v && 'on')} onClick={() => setOpenState(openState === v ? '' : v)}>{lbl}</div>)}
           {openState === 'closed' && <input className="input" style={{ maxWidth: 96 }} type="number" min="1" max="31"
             placeholder="Cycle day" value={cyc} onChange={e => setCyc(e.target.value)} />}
           {(isHO || canReassign) && <><div style={{ flex: 1 }} />
@@ -1752,7 +1798,7 @@ function CasesView({ user }) {
               <thead><tr>{(isHO || canReassign) && <th style={{ width: 28 }}><input type="checkbox"
                   checked={cases.length > 0 && pickedIds.length === cases.length}
                   onChange={e => setPicked(e.target.checked ? Object.fromEntries(cases.map(c => [c.id, true])) : {})} /></th>}
-                <th>Customer</th><th>Bank</th><th>Product</th><th>Cycle</th><th>Caller</th><th>FOS</th><th>Account</th><th>Target</th><th>Received</th>
+                <th>Customer</th><th>Bank</th><th>Product</th><th>Cycle</th><th>Caller</th><th>FOS</th><th>Account</th><th>Received</th>
                 <th>Pending</th><th>Status</th><th>Paid</th><th>Pincode</th><th>Dispo</th></tr></thead>
               <tbody>{(flaggedOnly ? cases.filter(c => c.flagged) : cases).map(c => <tr key={c.id} style={{ cursor: 'pointer', ...(c.flagged ? { boxShadow: 'inset 3px 0 0 var(--bad)' } : {}) }} onClick={() => setDrawer(c)}>
                 {(isHO || canReassign) && <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={!!picked[c.id]} onChange={() => togglePick(c.id)} /></td>}
@@ -1762,7 +1808,6 @@ function CasesView({ user }) {
                 <td className="muted"><PersonLink id={c.assigned_caller_id} role="caller" name={staff[c.assigned_caller_id] || c.caller_name} muted /></td>
                 <td className="muted"><PersonLink id={c.assigned_fos_id} role="fos" name={staff[c.assigned_fos_id] || c.fos_name} muted /></td>
                 <td className="mono">{c.account_no}</td>
-                <td className="mono">{INR(c.funding_amount)}</td>
                 <td className="mono" style={{ color: 'var(--good)' }}>{INR(c.received_amount)}</td>
                 <td className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</td>
                 <td><StatusBadge s={c.status} /></td><td><PaidBadge s={c.paid_status} /></td>
@@ -2807,6 +2852,7 @@ function EmployeeDashboard({ u, config, onClose }) {
               <span>PTP <b>{d.field.ptp_total}</b></span><span>Kept <b style={{ color: 'var(--good)' }}>{d.field.ptp_kept}</b></span><span>Broken <b style={{ color: 'var(--bad)' }}>{d.field.ptp_broken}</b></span>
             </div>}
           </div>
+          <PerfPortfolios empId={u.id} role={isFos ? 'fos' : 'caller'} />
           <div className="glass card" style={{ padding: 6, marginTop: 12 }}>
             <div className="section-h" style={{ padding: '6px 8px' }}><h3 style={{ margin: 0, fontSize: 15 }}>Cases {cases ? `· ${clCases.length}` : ''}</h3>
               <span className="muted" style={{ fontSize: 11.5 }}>Click a count to filter · click a row for details &amp; log</span></div>
@@ -3573,7 +3619,7 @@ function CallQueue() {
           <option value="">All products</option>{opts.products.map(p => <option key={p}>{p}</option>)}</select>
         <span className="muted" style={{ fontSize: 12.5 }}>Status:</span>
         {[['', 'All'], ['PAID', 'Paid'], ['UNPAID', 'Unpaid'], ['PARTIAL', 'Partial']].map(([v, lbl]) =>
-          <div key={v || 'all'} className={cx('chip', paidF === v && 'on')} onClick={() => setPaidF(v)}>{lbl}</div>)}
+          <div key={v || 'all'} className={cx('chip', paidF === v && 'on')} onClick={() => setPaidF(paidF === v ? '' : v)}>{lbl}</div>)}
         <span className="muted" style={{ fontSize: 12.5 }}>Bucket:</span>
         <div className={cx('chip', !bucket && 'on')} onClick={() => setBucket('')}>All</div>
         {buckets.map(b => <div key={b} className={cx('chip', bucket === b && 'on')} onClick={() => setBucket(b)}>{b}</div>)}
@@ -3892,6 +3938,24 @@ function AuditDetailModal({ row, onClose }) {
           {row.branch && line('Branch', row.branch)}
           {(row.bank || row.product) && line('Portfolio', [row.bank, row.product].filter(Boolean).join(' · '))}
         </div>
+        {row.meta && row.meta.dpr && Array.isArray(row.meta.changes) && <div className="glass card" style={{ padding: 12, marginBottom: 10 }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>🏦 DPR changes — {[row.meta.bank, row.meta.product].filter(Boolean).join(' · ')}</div>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12.5, marginBottom: 8 }}>
+            <span>✓ <b style={{ color: 'var(--good)' }}>{row.meta.paid || 0}</b> paid</span>
+            <span>➕ <b style={{ color: 'var(--info)' }}>{row.meta.extra_paid || 0}</b> extra</span>
+            <span>↩ <b style={{ color: 'var(--warn)' }}>{row.meta.unpaid || 0}</b> reversed</span>
+            <span><b>{row.meta.field_updates || 0}</b> field updates</span>
+            <span>net cash <b style={{ color: 'var(--good)' }}>{money(row.meta.collected)}</b></span>
+          </div>
+          <div className="tablewrap" style={{ maxHeight: 340, overflow: 'auto' }}><table style={{ fontSize: 12.5 }}>
+            <thead><tr><th>Case</th><th>Key</th><th>Customer</th><th>Change</th><th>Δ Amount</th><th>Fields</th></tr></thead>
+            <tbody>{row.meta.changes.map((ch, i) => <tr key={i}>
+              <td className="mono">#{ch.case_id}</td><td className="mono">{ch.key || '—'}</td><td>{ch.customer || '—'}</td>
+              <td style={{ whiteSpace: 'nowrap' }}>{(ch.old_status || '—')} → <b>{ch.new_status || ch.old_status || '—'}</b>{ch.extra ? ' (extra)' : ''}</td>
+              <td className="mono" style={{ color: (ch.delta || 0) >= 0 ? 'var(--good)' : 'var(--bad)' }}>{ch.delta ? ((ch.delta >= 0 ? '+' : '−') + money(Math.abs(ch.delta))) : '—'}</td>
+              <td style={{ fontSize: 11.5 }} title={ch.fields ? Object.entries(ch.fields).map(([k, v]) => `${k}: ${v}`).join('\n') : ''}>{ch.fields ? `${Object.keys(ch.fields).length} field${Object.keys(ch.fields).length === 1 ? '' : 's'}` : '—'}</td>
+            </tr>)}</tbody></table></div>
+        </div>}
         {row.case_id && <div className="glass card" style={{ padding: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Case #{row.case_id}</div>
           {err ? <div className="muted" style={{ fontSize: 12.5 }}>{err}</div> : !c ? <Loader /> : <>
@@ -4617,6 +4681,8 @@ function MISView({ user }) {
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total cases</div><b style={{ fontSize: 20 }}>{d.overall.count}</b></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total {d.base_label || 'ENR'}</div><b style={{ fontSize: 20 }}>{money(d.overall.enr)}</b></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Paid {d.base_label || 'ENR'}</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(d.overall.paid_enr)}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total POS</div><b style={{ fontSize: 20 }}>{money(d.overall.pos)}</b><div className="muted" style={{ fontSize: 11 }}>principal outstanding</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Pending</div><b style={{ fontSize: 20, color: 'var(--warn)' }}>{money(d.overall.pending)}</b><div className="muted" style={{ fontSize: 11 }}>still to collect</div></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Achieved %</div><b style={{ fontSize: 20, color: 'var(--gold)' }}>{d.overall.pct}%</b></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Collected (MTD)</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(proj.collected_mtd)}</b></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Projected month-end</div><b style={{ fontSize: 20 }}>{money(proj.projected_month_end)}</b><div className="muted" style={{ fontSize: 11 }}>{proj.projected_pct}% of target</div></div>
@@ -5126,6 +5192,7 @@ function SheetView({ user, config }) {
   const [search, setSearch] = React.useState('');
   const [paidF, setPaidF] = React.useState('');   // '' | 'PAID' | 'PARTIAL' | 'UNPAID'
   const [bankF, setBankF] = React.useState(''); const [prodF, setProdF] = React.useState('');
+  const [cyclesSel, setCyclesSel] = React.useState([]);   // cycle multi-select filter
   const [monthB, setMonthB] = React.useState('current');   // default THIS month so months aren't merged
   const [payModal, setPayModal] = React.useState(null);   // {row, mode:'paid'|'unpaid'}
   const [presence, setPresence] = React.useState({});      // case_id -> [{id,name,role,field}]
@@ -5252,6 +5319,7 @@ function SheetView({ user, config }) {
     if (paidF) out = out.filter(r => (r.paid_status || '').toUpperCase() === paidF);
     if (bankF) out = out.filter(r => (r.bank || '') === bankF);
     if (prodF) out = out.filter(r => (r.product || '') === prodF);
+    if (cyclesSel.length) out = out.filter(r => cyclesSel.includes(r.cycle));
     if (search) { const q = search.toLowerCase(); out = out.filter(r =>
       String(r.customer_name || '').toLowerCase().includes(q) ||
       String(r.card_no || '').toLowerCase().includes(q) ||
@@ -5384,6 +5452,8 @@ function SheetView({ user, config }) {
           <option value="">All products</option>
           {[...new Set(rows.filter(r => !bankF || r.bank === bankF).map(r => r.product).filter(Boolean))].sort().map(p => <option key={p} value={p}>{p}</option>)}
         </select>
+        <MultiSelect label="Cycle" icon="🔄" width={150} selected={cyclesSel} onChange={setCyclesSel}
+          options={[...new Set(rows.map(r => r.cycle).filter(Boolean))].sort().map(c => ({ value: c, label: 'Cycle ' + c }))} />
         <select className="sv-btn" value={monthB} onChange={e => setMonthB(e.target.value)} title="Each month is a separate book">
           <option value="current">This month</option>
           <option value="next">Next month</option>
@@ -5396,7 +5466,7 @@ function SheetView({ user, config }) {
         {calcRes !== '' && <span style={{ fontWeight: 600, color: 'var(--gold)' }}>= {calcRes}</span>}
         <button className="sv-btn" onClick={exportCSV}>⬇ CSV</button> <span className="muted" style={{ fontSize: 12 }}>Paid:</span>
         {[['', 'All'], ['PAID', 'Paid'], ['PARTIAL', 'Partial'], ['UNPAID', 'Unpaid']].map(([v, lbl]) =>
-          <div key={v || 'all'} className={cx('chip', paidF === v && 'on')} onClick={() => setPaidF(v)}>{lbl}</div>)}
+          <div key={v || 'all'} className={cx('chip', paidF === v && 'on')} onClick={() => setPaidF(paidF === v ? '' : v)}>{lbl}</div>)}
         <button className="sv-btn" onClick={() => { setPaidF(''); setBankF(''); setProdF(''); setSearch(''); }} title="Clear filters">✕ Clear</button>
         <button className="sv-btn" onClick={() => setColMenu(v => !v)}>⚙ Columns</button>
         {colMenu && (
@@ -6149,6 +6219,97 @@ function ProfileView({ user }) {
   );
 }
 
+/* ============================== Help & Support ============================== */
+function SupportView({ user }) {
+  const [d, setD] = useState(null); const [err, setErr] = useState('');
+  const [sel, setSel] = useState(null);
+  const [statusF, setStatusF] = useState('');
+  const [cats, setCats] = useState(['login', 'data', 'bug', 'feature', 'performance', 'other']);
+  const [form, setForm] = useState({ subject: '', category: 'other', message: '' });
+  const [reply, setReply] = useState(''); const [remark, setRemark] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = () => api('/api/support/tickets' + (statusF ? '?status=' + statusF : '')).then(setD).catch(e => setErr(e.message || 'Could not load'));
+  useEffect(() => { load(); }, [statusF]);
+  useEffect(() => { api('/api/support/meta').then(m => setCats(m.categories || cats)).catch(() => {}); }, []);
+  useDataChanged(load);
+  const isSupport = d && d.is_support;
+  const badge = (s) => ({ open: ['🟠 Open', 'var(--warn)'], in_progress: ['🔵 In progress', 'var(--info)'], resolved: ['🟢 Resolved', 'var(--good)'] }[s] || [s, '']);
+  const openTicket = (t) => api('/api/support/tickets/' + t.id).then(setSel).catch(() => setSel(t));
+  const submit = async () => {
+    if (!form.subject.trim() || !form.message.trim()) { toast('Add a subject and describe the issue.', 'err'); return; }
+    setBusy(true);
+    try { await api('/api/support/tickets', { method: 'POST', body: form }); setForm({ subject: '', category: 'other', message: '' }); toast('Query raised — tech support will respond. Track it below.'); load(); }
+    catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  const sendReply = async () => {
+    if (!reply.trim()) return; setBusy(true);
+    try { const t = await api('/api/support/tickets/' + sel.id + '/reply', { method: 'POST', body: { text: reply } }); setSel(t); setReply(''); load(); }
+    catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  const setStatus = async (status) => {
+    setBusy(true);
+    try { const t = await api('/api/support/tickets/' + sel.id + '/status', { method: 'POST', body: { status, remark } }); setSel(t); setRemark(''); toast('Ticket ' + status.replace('_', ' ')); load(); }
+    catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  return (
+    <div>
+      <div className="section-h"><h2 style={{ margin: 0 }}>{isSupport ? '🛠️ Support Inbox' : '🆘 Help & Support'}</h2>
+        {d && <span className="muted" style={{ fontSize: 13 }}>{isSupport ? `${d.counts.open || 0} open · ${d.counts.in_progress || 0} in progress · ${d.counts.resolved || 0} resolved` : 'Raise a query and track its status here.'}</span>}</div>
+
+      {!isSupport && <div className="glass card" style={{ padding: 16, marginBottom: 14 }}>
+        <b>Raise a new query / issue</b>
+        <div className="grid2" style={{ gridTemplateColumns: '2fr 1fr', gap: 10, marginTop: 8 }}>
+          <div className="field"><label>Subject</label><input className="input" value={form.subject} maxLength={200} onChange={e => setForm({ ...form, subject: e.target.value })} placeholder="Short summary of the problem" /></div>
+          <div className="field"><label>Category</label><select className="input" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>{cats.map(c => <option key={c} value={c}>{c[0].toUpperCase() + c.slice(1)}</option>)}</select></div>
+        </div>
+        <div className="field"><label>Describe the issue</label><textarea className="input" rows={4} value={form.message} onChange={e => setForm({ ...form, message: e.target.value })} placeholder="What happened, what you expected, which screen…" /></div>
+        <div className="toolbar"><div style={{ flex: 1 }} /><button className="btn gold" disabled={busy} onClick={submit}>{busy ? 'Sending…' : '📨 Raise ticket'}</button></div>
+      </div>}
+
+      {isSupport && <div className="toolbar" style={{ marginBottom: 10 }}>
+        {[['', 'All'], ['open', '🟠 Open'], ['in_progress', '🔵 In progress'], ['resolved', '🟢 Resolved']].map(([v, l]) =>
+          <div key={v} className={cx('chip', statusF === v && 'on')} onClick={() => setStatusF(v)}>{l}</div>)}
+      </div>}
+
+      {err ? <div className="glass card" style={{ color: 'var(--bad)', padding: 12 }}>{err}</div> : !d ? <Loader /> :
+        d.tickets.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>{isSupport ? 'No tickets.' : 'No queries yet. Raise one above.'}</div> :
+          <div style={{ display: 'grid', gap: 10 }}>
+            {d.tickets.map(t => { const [lbl, col] = badge(t.status); const last = (t.messages || [])[t.messages.length - 1]; return (
+              <div key={t.id} className="glass card" style={{ padding: 14, cursor: 'pointer' }} onClick={() => openTicket(t)}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                  <b>#{t.id} · {t.subject}</b><span className="badge" style={{ background: col + '22', color: col }}>{lbl}</span></div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 3 }}>{t.category} · {isSupport ? `${t.user_name} (${roleName(t.user_role)})${t.branch ? ' · ' + t.branch : ''} · ` : ''}{fmtDT(t.updated_at)}</div>
+                {last && <div className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>{last.role === 'techsupport' || last.role === 'admin' ? '🛠️ ' : '🧑 '}{(last.text || '').slice(0, 120)}</div>}
+              </div>); })}
+          </div>}
+
+      {sel && <div className="modal-bg" onClick={() => setSel(null)}>
+        <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 640, width: '95%', maxHeight: '90vh', overflow: 'auto' }}>
+          <div className="section-h"><h3 style={{ margin: 0 }}>#{sel.id} · {sel.subject}</h3><button className="btn ghost sm" onClick={() => setSel(null)}>✕</button></div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>{sel.category} · {sel.user_name} ({roleName(sel.user_role)}){sel.branch ? ' · ' + sel.branch : ''} · {badge(sel.status)[0]}</div>
+          <div style={{ display: 'grid', gap: 8, maxHeight: 340, overflow: 'auto', marginBottom: 10 }}>
+            {(sel.messages || []).map((m, i) => { const support = m.role === 'techsupport' || m.role === 'admin'; return (
+              <div key={i} style={{ alignSelf: support ? 'flex-start' : 'flex-end', maxWidth: '85%', background: support ? 'rgba(37,99,235,.10)' : 'var(--glass-2)', border: '1px solid var(--stroke-soft)', borderRadius: 10, padding: '8px 10px' }}>
+                <div className="muted" style={{ fontSize: 11 }}>{support ? '🛠️ ' + (m.name || 'Support') : '🧑 ' + (m.name || 'You')} · {fmtDT(m.at)}{m.kind && m.kind.startsWith('status:') ? ` · marked ${m.kind.split(':')[1].replace('_', ' ')}` : ''}</div>
+                <div style={{ fontSize: 13.5, whiteSpace: 'pre-wrap', marginTop: 2 }}>{m.text}</div>
+              </div>); })}
+          </div>
+          {sel.status !== 'resolved' || isSupport ? <>
+            <div className="field"><textarea className="input" rows={2} value={reply} onChange={e => setReply(e.target.value)} placeholder={isSupport ? 'Reply to the user…' : 'Add more details / reply…'} /></div>
+            <div className="toolbar">
+              <button className="btn" disabled={busy || !reply.trim()} onClick={sendReply}>💬 Send reply</button>
+              {isSupport && <><div style={{ flex: 1 }} />
+                <input className="input" style={{ maxWidth: 220 }} value={remark} onChange={e => setRemark(e.target.value)} placeholder="Resolution remark (optional)" />
+                {sel.status !== 'in_progress' && <button className="btn" onClick={() => setStatus('in_progress')} disabled={busy}>🔵 In progress</button>}
+                <button className="btn gold" onClick={() => setStatus('resolved')} disabled={busy}>✓ Resolve</button>
+                {sel.status === 'resolved' && <button className="btn" onClick={() => setStatus('open')} disabled={busy}>↩ Reopen</button>}</>}
+            </div>
+          </> : <div className="muted" style={{ fontSize: 12.5 }}>This ticket is resolved. Raise a new query if you still need help.</div>}
+        </div></div>}
+    </div>
+  );
+}
+
 const NAV = {
   admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
@@ -6161,6 +6322,19 @@ const NAV = {
   it: [['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
   staff: [['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
 };
+// Everyone gets a Help & Support entry (raise a query, track it).
+Object.keys(NAV).forEach(r => { if (!NAV[r].some(n => n[0] === 'help')) NAV[r].push(['help', '🆘', 'Help & Support']); });
+// Hidden tech-support role: a Support inbox + every screen, so they can reproduce any role's issue.
+NAV.techsupport = [
+  ['support', '🛠️', 'Support Inbox'], ['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'],
+  ['sheet', '📊', 'Live Sheet'], ['queue', '📞', 'Calling'], ['myperf', '🏆', 'Performance'],
+  ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'],
+  ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'],
+  ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'],
+  ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'],
+  ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['profile', '🪪', 'My E-ID'],
+  ['security', '🔒', 'Security'],
+];
 function NativeTrackingOnboard({ onDone }) {
   const openSettings = () => { try { const BG = window.Capacitor.registerPlugin('BackgroundGeolocation'); if (BG.openSettings) BG.openSettings(); } catch (e) {} };
   return (
@@ -6356,6 +6530,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'ptp': return <PTPTracker />;
       case 'ai': return <AIAssist user={user} />;
       case 'security': return <SecurityView user={user} />;
+      case 'help': case 'support': return <SupportView user={user} />;
       default: return null;
     }
   };

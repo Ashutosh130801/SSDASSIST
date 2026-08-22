@@ -55,6 +55,10 @@ def allowed_views(user: "models.User") -> list[str]:
 
 def require_roles(*roles: str):
     def checker(user: models.User = Depends(get_current_user)) -> models.User:
+        # 'techsupport' is a hidden diagnostic super-role — it may open every screen/endpoint so
+        # support can reproduce and understand any user's problem. It is never listed in Manpower.
+        if user.role == "techsupport":
+            return user
         if user.role not in roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

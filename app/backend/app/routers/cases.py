@@ -157,7 +157,7 @@ def _scope(q, user: models.User, include_removed: bool = False):
     # data uploaded early (so it can be allocated & started ahead of time). This month's
     # cases stay visible even after they close (cycle date / month-end) but closed ones are
     # locked. Past months become admin-only history. Cases with no period (legacy) stay on.
-    if user.role != "admin":
+    if user.role not in ("admin", "techsupport"):
         q = q.filter(or_(models.Case.period.is_(None),
                          models.Case.period.in_([_current_period(), _next_period()])))
     if user.role == "fos":
@@ -433,7 +433,7 @@ def _portfolio_rows(db, user):
         models.Case.bank, models.Case.product, models.Case.segment, models.Case.branch,
         models.Case.branch_explicit, models.Case.period,
         models.Case.funding_amount, models.Case.total_outstanding, models.Case.enr,
-        models.Case.received_amount,
+        models.Case.principal_outstanding, models.Case.received_amount,
     ), user).all()
 
 
@@ -449,8 +449,8 @@ def product_summary(db: Session = Depends(get_db), user: models.User = Depends(g
     NOT split a portfolio."""
     cur, nxt = _current_period(), _next_period()
     agg: dict = {}
-    for b, p, s, br, bexp, per, fund, tos, enr, recv in _portfolio_rows(db, user):
-        base = float(fund or 0) or float(tos or 0) or float(enr or 0)   # funding → TOS → ENR
+    for b, p, s, br, bexp, per, fund, tos, enr, pos, recv in _portfolio_rows(db, user):
+        base = float(fund or 0) or float(tos or 0) or float(enr or 0) or float(pos or 0)   # funding → TOS → ENR → POS
         rc = float(recv or 0)
         pend = max(0.0, base - rc)
         key = (b, p)
@@ -513,8 +513,8 @@ def portfolio_banks(db: Session = Depends(get_db), user: models.User = Depends(g
     Carries a logo domain (for logo.clearbit.com) plus product/case counts and money totals."""
     agg: dict = {}
     prods: dict = {}
-    for b, p, s, br, bexp, per, fund, tos, enr, recv in _portfolio_rows(db, user):
-        base = float(fund or 0) or float(tos or 0) or float(enr or 0)
+    for b, p, s, br, bexp, per, fund, tos, enr, pos, recv in _portfolio_rows(db, user):
+        base = float(fund or 0) or float(tos or 0) or float(enr or 0) or float(pos or 0)
         rc = float(recv or 0)
         bank = b or "—"
         d = agg.setdefault(bank, _blank({"bank": bank}))
@@ -786,15 +786,16 @@ class MarkPaidIn(BaseModel):
 
 
 def _pay_base_total(case) -> Decimal:
-    """The full amount the case is worth. Funding-load sheets carry a FUNDING AMOUNT; the CC
-    and PL/BL sheets don't, so fall back to Total Outstanding (TOS), then ENR."""
-    f = Decimal(case.funding_amount or 0)
-    if f > 0:
-        return f
-    tos = Decimal(case.total_outstanding or 0)
-    if tos > 0:
-        return tos
-    return Decimal(case.enr or 0)
+    """The full amount the case is worth — the base for PENDING (= base − received). Funding-load
+    sheets carry a FUNDING AMOUNT; CC/PL-BL fall back to Total Outstanding (TOS), then ENR, and
+    finally Principal Outstanding (POS) for products like 180+ that only carry a POS figure. This
+    order guarantees pending reflects the real outstanding instead of showing 0."""
+    for v in (case.funding_amount, case.total_outstanding, case.enr,
+              getattr(case, "principal_outstanding", 0)):
+        d = Decimal(v or 0)
+        if d > 0:
+            return d
+    return Decimal(0)
 
 
 @router.get("/{case_id}/pay-state")

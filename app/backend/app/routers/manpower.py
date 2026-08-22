@@ -88,7 +88,7 @@ def filters(db: Session = Depends(get_db), user: models.User = Depends(require_r
 def list_manpower(role: str | None = None, location: str | None = None, q: str | None = None,
                   db: Session = Depends(get_db), user: models.User = Depends(require_roles(*HR_ROLES))):
     """The full employee directory with role / location / text filters."""
-    query = db.query(models.User)
+    query = db.query(models.User).filter(models.User.role != "techsupport")   # hidden support role
     if role:
         query = query.filter(models.User.role == role)
     if location:

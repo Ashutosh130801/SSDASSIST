@@ -276,9 +276,13 @@ def record_to_case_kwargs(rec: dict) -> dict:
 
     pending = rec.get("pending_amount")
     if pending is None:
-        # unpaid STAB (settlement) target outstanding, else funding - received
+        # Pending = base − received, where base falls back FUNDING → TOS → ENR → POS so it's never
+        # a stale 0 for products (e.g. 180+) that only carry an outstanding in POS/TOS. Floored at 0.
         stab = rec.get("stab_amount")
-        pending = ((Decimal(stab) - received) if stab else (funding - received)).quantize(TWO)
+        base = Decimal(stab or 0) or funding or Decimal(rec.get("total_outstanding") or 0) \
+            or Decimal(kwargs.get("enr") or 0) or Decimal(rec.get("principal_outstanding") or 0)
+        pend = (Decimal(base) - received).quantize(TWO)
+        pending = pend if pend > 0 else Decimal("0.00")
     kwargs["pending_amount"] = pending
 
     # MIS text dimensions

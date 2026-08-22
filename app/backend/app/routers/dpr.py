@@ -264,11 +264,13 @@ def _prepare(content, default_bank, product, user, db):
             continue
         already = (match.paid_status or "").upper() == "PAID"
         if paid and already:
-            act = "already_paid"
+            act = "extra_paid"      # already paid + DPR paid again → NEW extra collection, added on top
         elif paid:
-            act = "mark_paid"
+            act = "mark_paid"       # unpaid → paid: collect the DPR amount
+        elif already:
+            act = "mark_unpaid"     # paid → unpaid/fail/reversed: revert with the amount change
         else:
-            act = "mark_unpaid"
+            act = "no_change"       # unpaid → unpaid: nothing to pay (only field sync, if any)
         field_ups = _proposed_fields(match, r, field_cols)
         items.append({"action": act, "case_id": match.id, "key": keyshow,
                       "customer": match.customer_name, "amount": float(amount or 0),
@@ -284,11 +286,23 @@ async def dpr_preview(file: UploadFile = File(...), default_bank: str = Form(...
                       user: models.User = Depends(require_roles(*DPR_ROLES))):
     content = await file.read()
     cols, items = _prepare(content, default_bank, product, user, db)
-    counts = {"mark_paid": 0, "mark_unpaid": 0, "already_paid": 0, "unmatched": 0}
+    counts = {"mark_paid": 0, "extra_paid": 0, "mark_unpaid": 0, "no_change": 0, "unmatched": 0}
     for it in items:
         counts[it["action"]] = counts.get(it["action"], 0) + 1
     counts["field_updates"] = sum(len(it.get("_fields") or {}) for it in items)
     counts["rows_with_updates"] = sum(1 for it in items if it.get("_fields"))
+    # Net cash this DPR will move: + collections / extra, − reversals (a reversal backs out the
+    # case's current received amount).
+    net = 0.0
+    for it in items:
+        a, amt, c = it["action"], float(it.get("amount") or 0), it.get("_case")
+        if a == "mark_paid":
+            net += amt if amt > 0 else float(_pay_base_total(c) or 0)
+        elif a == "extra_paid":
+            net += amt
+        elif a == "mark_unpaid" and c is not None:
+            net -= float(c.received_amount or 0)
+    counts["collected_preview"] = round(net, 2)
     public = [{k: v for k, v in it.items() if not k.startswith("_")} for it in items]
     return {"bank": default_bank, "product": product, "detected": cols,
             "total": len(items), "counts": counts,
@@ -299,14 +313,24 @@ async def dpr_preview(file: UploadFile = File(...), default_bank: str = Form(...
 async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...),
                      product: str = Form(...), db: Session = Depends(get_db),
                      user: models.User = Depends(require_roles(*DPR_ROLES))):
+    import datetime as _dt
     content = await file.read()
     cols, items = _prepare(content, default_bank, product, user, db)
-    paid_n = unpaid_n = already_n = unmatched_n = fields_n = 0
-    touched = []
+    paid_n = unpaid_n = extra_n = unmatched_n = fields_n = nochange_n = 0
+    collected_total = Decimal(0)      # net cash moved by this DPR (positive collections − reversals)
+    touched, changes = [], []          # `changes` → stored on the ONE audit entry for the full drill-down
 
     def _touch(c):
         if c not in touched:
             touched.append(c)
+
+    def _log_payment(case, amt, note):
+        """Record the cash movement as a PAYMENT event (what FTD/MTD/Overall + feedback read),
+        credited to the case's caller (else FOS, else the uploader) — so it lands on the right
+        person's numbers everywhere."""
+        credit = case.assigned_caller_id or case.assigned_fos_id or user.id
+        db.add(models.CallLog(case_id=case.id, caller_id=credit, disposition="PAYMENT",
+                              ptp_amount=amt, note=note))
 
     for it in items:
         act = it["action"]
@@ -317,69 +341,84 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
         # Snapshot the collection base BEFORE any full-sync field overwrite, so a balance/TOS
         # column in the DPR can't corrupt how much is treated as paid / still pending.
         base = _pay_base_total(case)
+        old_status = case.paid_status or "UNPAID"
+        prev_recv = Decimal(case.received_amount or 0)
+        amt = it["_amount"] if (it["_amount"] and it["_amount"] > 0) else None
+        ns = it["_ns"]
+        change = {"case_id": case.id, "key": it["key"], "customer": case.customer_name,
+                  "action": act, "old_status": old_status, "amount": float(it["_amount"] or 0),
+                  "norm_stab": ns}
 
-        # Full-sync: apply any other recognised columns present (contact, bucket, etc.).
+        # Full-sync of any other recognised columns (contact, bucket, TOS, etc.) — value-only.
         ups = it.get("_fields") or {}
         if ups:
             for attr, val in ups.items():
                 setattr(case, attr, val)
             if "new_phone" in ups or "new_address" in ups:
-                import datetime as _dt
                 case.new_contact_by = user.name
                 case.new_contact_at = _dt.datetime.utcnow()
-            audit.record(db, user, "edit", case,
-                         detail="DPR sync: " + ", ".join(sorted(ups.keys())),
-                         meta={"fields": {k: str(v) for k, v in ups.items()}})
-            audit.stamp_case(case, user)
             fields_n += len(ups)
-            _touch(case)
+            change["fields"] = {k: str(v) for k, v in ups.items()}
 
-        if act == "already_paid":
-            already_n += 1
-            continue
         if act == "mark_paid":
-            # The DPR is the case's CURRENT state, not an increment — so SET the received
-            # amount to what the report says (fall back to paid-in-full when no amount given),
-            # never add on top (which double-counted).
-            amt = it["_amount"] if (it["_amount"] and it["_amount"] > 0) else base
-            if amt < 0:
-                amt = Decimal(0)
-            case.received_amount = amt
-            pend = base - amt
-            case.pending_amount = pend if pend > 0 else Decimal(0)
+            # Unpaid → paid: ADD the DPR amount (in-full when no amount given) as collection.
+            add = amt if amt is not None else base
+            new_recv = prev_recv + add
+            case.received_amount = new_recv
+            case.pending_amount = max(Decimal(0), base - new_recv)
             case.paid_status, case.status, case.follow_up_date = "PAID", "paid", None
-            if it["_ns"]:
-                case.norm_stab = it["_ns"]
-            credit = case.assigned_caller_id or case.assigned_fos_id or user.id
-            tag = f" ({it['_ns']})" if it["_ns"] else ""
-            db.add(models.CallLog(case_id=case.id, caller_id=credit, disposition="PAID",
-                                  ptp_amount=amt, note=f"DPR: paid ₹{amt}{tag}"))
-            audit.record(db, user, "paid", case, old="UNPAID", new="PAID",
-                         detail=f"DPR bulk paid ₹{amt}{tag}")
-            audit.stamp_case(case, user)
-            paid_n += 1
-            _touch(case)
-        else:  # mark_unpaid (reversal)
-            prev = Decimal(case.received_amount or 0)
+            if ns:
+                case.norm_stab = ns
+            _log_payment(case, add, f"DPR: paid ₹{add}" + (f" ({ns})" if ns else ""))
+            collected_total += add
+            change.update({"new_status": "PAID", "delta": float(add), "new_received": float(new_recv)})
+            paid_n += 1; _touch(case)
+
+        elif act == "extra_paid" and amt is not None:
+            # Already paid + DPR paid again with an amount → a NEW extra collection ADDED on top
+            # (customer paid more on their own). Stays paid; collected amount rises everywhere.
+            new_recv = prev_recv + amt
+            case.received_amount = new_recv
+            case.pending_amount = max(Decimal(0), base - new_recv)
+            if ns:
+                case.norm_stab = ns
+            _log_payment(case, amt, f"DPR updated collection: extra ₹{amt}" + (f" ({ns})" if ns else ""))
+            collected_total += amt
+            change.update({"new_status": "PAID", "delta": float(amt), "new_received": float(new_recv),
+                           "extra": True})
+            extra_n += 1; _touch(case)
+
+        elif act == "mark_unpaid":
+            # Paid → unpaid / fail / reversed: revert status and back out the collected amount.
             case.received_amount = Decimal(0)
             case.pending_amount = base
             case.paid_status, case.status, case.norm_stab = "UNPAID", "allocated", None
-            if prev > 0:
-                credit = case.assigned_caller_id or case.assigned_fos_id or user.id
-                db.add(models.CallLog(case_id=case.id, caller_id=credit, disposition="PAID",
-                                      ptp_amount=(-prev), note="DPR: reversed (marked unpaid)"))
-            audit.record(db, user, "unpaid", case, old="PAID", new="UNPAID",
-                         detail="DPR bulk reversal")
-            audit.stamp_case(case, user)
-            unpaid_n += 1
-            _touch(case)
+            if prev_recv > 0:
+                _log_payment(case, (-prev_recv), "DPR: reversed (marked unpaid)")
+                collected_total -= prev_recv
+            change.update({"new_status": "UNPAID", "delta": float(-prev_recv), "new_received": 0.0})
+            unpaid_n += 1; _touch(case)
 
+        else:
+            # no_change (unpaid→unpaid) or extra_paid with no amount → only the field sync, if any.
+            if ups:
+                nochange_n += 1; _touch(case); change["new_status"] = old_status
+            else:
+                continue
+
+        audit.stamp_case(case, user)
+        changes.append(change)
+
+    # ONE audit entry per DPR upload — the full per-case change list lives in its meta so the
+    # activity screen can open the same detail you saw in the preview.
     audit.record(db, user, "import", None, entity_type="import",
-                 detail=f"DPR update {default_bank}/{product}: {paid_n} paid, {unpaid_n} reversed, "
-                        f"{fields_n} field updates",
-                 meta={"bank": default_bank, "product": product, "paid": paid_n,
-                       "unpaid": unpaid_n, "already": already_n, "unmatched": unmatched_n,
-                       "field_updates": fields_n})
+                 detail=f"DPR update {default_bank}/{product}: {paid_n} paid, {extra_n} extra, "
+                        f"{unpaid_n} reversed, {fields_n} field updates · net ₹{collected_total}",
+                 meta={"dpr": True, "bank": default_bank, "product": product,
+                       "paid": paid_n, "extra_paid": extra_n, "unpaid": unpaid_n,
+                       "no_change": nochange_n, "unmatched": unmatched_n,
+                       "field_updates": fields_n, "collected": float(collected_total),
+                       "changes": changes})
     db.commit()
     for c in touched:
         db.refresh(c)
@@ -387,5 +426,6 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
     notify_data_changed(default_bank, product)
     _mark_today(db, touched)
     return {"bank": default_bank, "product": product, "total": len(items),
-            "paid": paid_n, "unpaid": unpaid_n, "already_paid": already_n,
-            "unmatched": unmatched_n, "field_updates": fields_n}
+            "paid": paid_n, "extra_paid": extra_n, "unpaid": unpaid_n,
+            "no_change": nochange_n, "unmatched": unmatched_n,
+            "field_updates": fields_n, "collected": float(collected_total)}

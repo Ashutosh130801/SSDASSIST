@@ -42,6 +42,16 @@ def _is_paid(c) -> bool:
     return (c.paid_status or "").upper() == "PAID"
 
 
+def _base(c) -> float:
+    """Base amount a case is worth for PENDING: FUNDING → TOS → ENR → POS (principal outstanding).
+    Guarantees pending is never a stale 0 when the case still carries an outstanding figure."""
+    for v in (c.funding_amount, c.total_outstanding, c.enr, getattr(c, "principal_outstanding", 0)):
+        d = _f(v)
+        if d > 0:
+            return d
+    return 0.0
+
+
 def _agg(rows: list) -> dict:
     """Core aggregation for a group of cases (ENR-based percentages)."""
     total_enr = sum(_f(c.enr) for c in rows)
@@ -77,7 +87,9 @@ def _agg(rows: list) -> dict:
         "rollback_target": round(rollback_target, 2),         # sum of rollback amounts on file
         "rollback_count": len(rb_paid),
         "amount": round(sum(_f(c.received_amount) for c in rows), 2),   # CASH COLL
-        "pending": round(sum(_f(c.pending_amount) for c in rows), 2),   # outstanding still to collect
+        # PENDING computed live from the real base (never a stale 0): base − received, floored at 0.
+        "pending": round(sum(max(0.0, _base(c) - _f(c.received_amount)) for c in rows), 2),
+        "pos": round(sum(_f(c.principal_outstanding) for c in rows), 2),   # Total POS (principal outstanding)
         "recovery_pct": _pct(sum(_f(c.received_amount) for c in rows), total_enr),  # cash collected / ENR
         "visited": sum(1 for c in rows if c.visited),
         "not_visited": sum(1 for c in rows if not c.visited),
@@ -526,7 +538,7 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
             "bank": bank, "product": product, "branch": branch,
             "label": f"{bank} {product}" + (f" · {branch}" if branch else ""),
             "count": a["count"], "paid": a["paid"], "unpaid": a["unpaid"],
-            "enr": a["enr"], "paid_enr": a["paid_enr"], "pending": a["pending"],
+            "enr": a["enr"], "paid_enr": a["paid_enr"], "pending": a["pending"], "pos": a["pos"],
             "collected": a["amount"], "achieved_pct": a["pct"],
             "norm_pct": a["norm_pct"], "stab_pct": a["stab_pct"],
             "target_pct": tgt, "target_enr": tenr,
@@ -546,7 +558,7 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
         "name": target.name, "emp_code": target.emp_code, "user_id": target.id,
         "totals": {"count": tot["count"], "paid": tot["paid"], "unpaid": tot["unpaid"],
                    "enr": tot["enr"], "paid_enr": tot["paid_enr"], "pending": tot["pending"],
-                   "collected": tot["amount"], "achieved_pct": tot["pct"]},
+                   "pos": tot["pos"], "collected": tot["amount"], "achieved_pct": tot["pct"]},
         "activity": _activity(db, target.id, is_fos, [c.id for c in mine]),
         "trends": collection_windows(db, [c.id for c in mine], overall_received=tot["amount"]),
         "portfolios": cards,

