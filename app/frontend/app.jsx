@@ -726,7 +726,7 @@ function PerfModal({ empId, role, name, onClose }) {
 
 /* One portfolio row inside the performance screen — expands on click to show that person's cases
    in the portfolio, with paid/cycle/search filters and a live summary that re-syncs to the filter. */
-function PerfPortfolioCard({ p, empId, asFos, mb, money }) {
+function PerfPortfolioCard({ p, empId, asFos, mb, money, hidePeers }) {
   const [open, setOpen] = useState(false);
   const [all, setAll] = useState(null);
   const [paid, setPaid] = useState(''); const [cyclesSel, setCyclesSel] = useState([]); const [q, setQ] = useState('');
@@ -765,8 +765,10 @@ function PerfPortfolioCard({ p, empId, asFos, mb, money }) {
         {asFos ? <span>🧍 Visited <b>{act.visited || 0}</b> · 💰 paid <b style={{ color: 'var(--good)' }}>{act.visits_paid || 0}</b></span>
           : <span>📞 Contacted <b>{act.contacted || 0}</b> · calls <b>{act.calls || 0}</b></span>}
       </div>
-      {/* Everyone working this portfolio, ranked by paid % — so a caller sees how peers are doing. */}
-      {(p.leaderboard || []).length > 1 && <div style={{ marginTop: 8 }}>
+      {/* Everyone working this portfolio, ranked by paid % — so a manager sees how the team stacks up.
+         Hidden in the Team → employee performance view (hidePeers), AND hidden entirely for front-line
+         FOS/telecallers (they get their own highlighted leaderboard elsewhere; no peer line here). */}
+      {!hidePeers && !['fos', 'telecaller'].includes(window.__ssdRole) && (p.leaderboard || []).length > 1 && <div style={{ marginTop: 8 }}>
         <div className="muted" style={{ fontSize: 11.5, marginBottom: 4 }}>{asFos ? 'Field agents' : 'Callers'} on this portfolio — resolved (paid) %</div>
         <div className="tablewrap"><table style={{ fontSize: 12.5 }}>
           <thead><tr><th>#</th><th>{asFos ? 'FOS' : 'Caller'}</th><th>Cases</th><th>Paid %</th><th>Collected</th></tr></thead>
@@ -828,7 +830,7 @@ function PerfPortfolios({ empId, role }) {
           {d.as_fos
             ? `🧍 Visited ${d.activity.visited || 0} cases · 📋 ${d.activity.visits || 0} visits · 💰 ${d.activity.visits_paid || 0} with payment`
             : `📞 Contacted ${d.activity.contacted || 0} cases · ☎️ ${d.activity.calls || 0} calls`}</div>}
-        {(d.portfolios || []).map((p, i) => <PerfPortfolioCard key={i} p={p} empId={empId} asFos={d.as_fos} mb={mb} money={money} />)}
+        {(d.portfolios || []).map((p, i) => <PerfPortfolioCard key={i} p={p} empId={empId} asFos={d.as_fos} mb={mb} money={money} hidePeers />)}
         {(!d.portfolios || d.portfolios.length === 0) && <div className="muted" style={{ padding: 8 }}>No portfolios in this period.</div>}
       </>}
     </div>
@@ -1548,8 +1550,10 @@ function CasesView({ user }) {
   const nextPeriod = (window.__ssdCfg || {}).next_period;
   const [upload, setUpload] = useState(false); const [busy, setBusy] = useState(false); const [drawer, setDrawer] = useState(null); const [campaign, setCampaign] = useState(false);
   const [resetOpen, setResetOpen] = useState(false); const [resetTxt, setResetTxt] = useState('');
-  const loadSummary = () => api('/api/cases/product-summary').then(setSummary).catch(() => setSummary([]));
-  const loadBanks = () => api('/api/cases/portfolio-banks').then(setBanks).catch(() => setBanks([]));
+  // One month context for the WHOLE Accounts section (banks → products → locations → cases).
+  const mq = () => (monthB ? '?month_bucket=' + monthB : '');
+  const loadSummary = () => api('/api/cases/product-summary' + mq()).then(setSummary).catch(() => setSummary([]));
+  const loadBanks = () => api('/api/cases/portfolio-banks' + mq()).then(setBanks).catch(() => setBanks([]));
   const load = useCallback(() => {
     const p = new URLSearchParams();
     if (bank) p.set('bank', bank); if (product) p.set('product', product); if (segment) p.set('segment', segment);
@@ -1564,7 +1568,11 @@ function CasesView({ user }) {
     if (callerSel.length) p.set('caller_ids', callerSel.join(','));
     api('/api/cases?' + p).then(setCases);
   }, [bank, product, segment, branchF, paid, q, openState, cyc, monthB, area, cyclesSel, fosSel, callerSel]);
-  useEffect(() => { loadSummary(); loadBanks(); api('/api/users').then(us => { const m = {}; (us || []).forEach(u => { m[u.id] = u.name; }); setStaff(m); }).catch(() => {}); }, []);
+  useEffect(() => { api('/api/users').then(us => { const m = {}; (us || []).forEach(u => { m[u.id] = u.name; }); setStaff(m); }).catch(() => {}); }, []);
+  // Section-wide month: reload bank + product cards whenever the month changes.
+  useEffect(() => { loadSummary(); loadBanks(); }, [monthB]);
+  // Keep the open location (branch) view in sync with the freshly-loaded, month-scoped summary.
+  useEffect(() => { if (!branchProduct) return; const fresh = (summary || []).find(p => p.bank === branchProduct.bank && p.product === branchProduct.product); if (fresh) setBranchProduct({ ...fresh, _mb: branchProduct._mb }); }, [summary]);
   // Load the cycle / FOS / caller options for whichever portfolio is open (drives the filter dropdowns).
   useEffect(() => {
     if (mode !== 'list' || !(bank || product)) return;
@@ -1577,12 +1585,13 @@ function CasesView({ user }) {
   useEffect(() => { if (mode !== 'list') return; const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load, mode]);
   useDataChanged(() => { loadSummary(); loadBanks(); if (mode === 'list') load(); });   // live product cards / list
   const clearFilters = () => { setCyclesSel([]); setFosSel([]); setCallerSel([]); setPaid(''); setArea(''); setFlaggedOnly(false); };
-  const openProduct = (c, mb = 'current', branchVal = '') => {
+  // Month stays the section-wide context (not reset per product) — clean month-wise separation.
+  const openProduct = (c, branchVal = '') => {
     setBank(c.bank === '—' ? '' : c.bank); setProduct(c.product === '—' ? '' : c.product);
-    setSegment(c.segment || ''); setBranchF(branchVal || ''); setMonthB(mb); clearFilters(); setMode('list');
+    setSegment(c.segment || ''); setBranchF(branchVal || ''); clearFilters(); setMode('list');
   };
   // Click a product card: split (explicit-branch) products open their location cards first; others go straight to cases.
-  const openProductCard = (c, mb = 'current') => { if (c.branch_split && (c.branches || []).length) setBranchProduct({ ...c, _mb: mb }); else openProduct(c, mb); };
+  const openProductCard = (c) => { if (c.branch_split && (c.branches || []).length) setBranchProduct({ ...c }); else openProduct(c); };
   const backToProducts = () => {
     setProduct(''); setSegment(''); setBranchF(''); setArea(''); setAreas([]); clearFilters();
     setBranchProduct(null); setMode('products');
@@ -1647,6 +1656,10 @@ function CasesView({ user }) {
         <div className={cx('chip', mode === 'products' && 'on')} onClick={() => setMode('products')}>🧩 Products</div>
         <div className={cx('chip', mode === 'list' && 'on')} onClick={() => setMode('list')}>📋 All cases (Excel)</div>
         {isHO && <div className={cx('chip', mode === 'removed' && 'on')} onClick={() => setMode('removed')}>🗑 Removed cases</div>}
+        {mode !== 'removed' && <><span style={{ width: 1, height: 20, background: 'var(--line)' }} />
+          <span className="muted" style={{ fontSize: 12 }}>Month:</span>
+          {[['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, lbl]) =>
+            <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}</>}
         <div style={{ flex: 1 }} />
         {canDpr && <button className="btn" onClick={() => setDprOpen(true)} title="Bulk mark paid/unpaid from a bank DPR file">🏦 DPR update</button>}
         {canUploads && <button className="btn" onClick={() => setUploadsOpen(true)} title="Undo a wrong portfolio upload">↩ Undo upload</button>}
@@ -1704,17 +1717,11 @@ function CasesView({ user }) {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: 14 }}>
               {(branchProduct.branches || []).map((br, i) => (
-                <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => openProduct(branchProduct, branchProduct._mb || 'current', br.branch)}>
+                <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => openProduct(branchProduct, br.branch)}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <b style={{ fontSize: 15 }}>📍 {br.branch}</b><span className="badge allocated">{br.count}</span></div>
                   <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{branchProduct.product}</div>
-                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                    <div onClick={e => { e.stopPropagation(); openProduct(branchProduct, 'current', br.branch); }} style={{ flex: 1, textAlign: 'center', padding: '7px 4px', borderRadius: 10, background: 'rgba(59,130,246,.10)' }}>
-                      <div className="muted" style={{ fontSize: 10.5 }}>📅 This month</div><b style={{ fontSize: 17, color: 'var(--info)' }}>{br.count_current ?? 0}</b></div>
-                    <div onClick={e => { e.stopPropagation(); openProduct(branchProduct, 'next', br.branch); }} style={{ flex: 1, textAlign: 'center', padding: '7px 4px', borderRadius: 10, background: 'rgba(120,120,120,.08)' }}>
-                      <div className="muted" style={{ fontSize: 10.5 }}>🔜 Next month</div><b style={{ fontSize: 17 }}>{br.count_next ?? 0}</b></div>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 14 }}>
                     <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(br.received)}</b></div>
                     <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(br.pending)}</b></div></div>
                 </div>))}
@@ -1730,16 +1737,10 @@ function CasesView({ user }) {
             {bankProducts.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No products for this bank.</div> :
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: 14 }}>
                 {bankProducts.map((c, i) => (
-                  <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => openProductCard(c, 'current')}>
+                  <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => openProductCard(c)}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <b style={{ fontSize: 15 }}>{c.product}</b><span className="badge allocated">{c.count}</span></div>
                     <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{[c.segment, c.branch_split && `📍 ${(c.branches || []).length} locations`].filter(Boolean).join(' · ') || ' '}</div>
-                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                      <div onClick={e => { e.stopPropagation(); c.branch_split ? openProductCard(c, 'current') : openProduct(c, 'current'); }} style={{ flex: 1, textAlign: 'center', padding: '7px 4px', borderRadius: 10, background: 'rgba(59,130,246,.10)' }}>
-                        <div className="muted" style={{ fontSize: 10.5 }}>📅 This month</div><b style={{ fontSize: 17, color: 'var(--info)' }}>{c.count_current ?? 0}</b></div>
-                      <div onClick={e => { e.stopPropagation(); c.branch_split ? openProductCard(c, 'next') : openProduct(c, 'next'); }} style={{ flex: 1, textAlign: 'center', padding: '7px 4px', borderRadius: 10, background: 'rgba(120,120,120,.08)' }}>
-                        <div className="muted" style={{ fontSize: 10.5 }}>🔜 Next month</div><b style={{ fontSize: 17 }}>{c.count_next ?? 0}</b></div>
-                    </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
                       <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(c.received)}</b></div>
                       <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(c.pending)}</b></div></div>
@@ -1780,8 +1781,6 @@ function CasesView({ user }) {
             options={(filterOpts.callers || []).map(f => ({ value: f.id, label: f.name + (f.code ? ` (${f.code})` : '') }))} />
           {(cyclesSel.length + fosSel.length + callerSel.length > 0 || paid) && <div className="chip" onClick={clearFilters} title="Clear all filters" style={{ color: 'var(--bad)' }}>✕ Clear</div>}
           <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
-          {[['', 'All months'], ['current', '📅 This month'], ['next', '🔜 Next month']].map(([v, lbl]) =>
-            <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
           {areas.length > 0 && <select className="input" style={{ maxWidth: 150 }} value={area} onChange={e => setArea(e.target.value)} title="Filter by area">
             <option value="">📍 All areas</option>{areas.map(a => <option key={a} value={a}>{a}</option>)}</select>}
           {(cases || []).some(c => c.flagged) && <div className={cx('chip', flaggedOnly && 'on')} onClick={() => setFlaggedOnly(v => !v)}
@@ -6491,6 +6490,8 @@ function TourOverlay({ steps, go, onClose }) {
 }
 
 function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, onSwitchView }) {
+  // Expose the viewer's role so shared perf components can hide peer comparisons from front-line staff.
+  try { window.__ssdRole = user.role; } catch (e) {}
   const baseNav = NAV[user.role] || NAV.telecaller;
   // Everyone gets a personal E-ID / profile entry.
   const nav = baseNav.some(n => n[0] === 'profile') ? baseNav : [...baseNav, ['profile', '🪪', 'My E-ID']];

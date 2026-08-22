@@ -674,7 +674,7 @@ data class FilterOptions(
 data class PerfTotals(
     val count: Int = 0, val paid: Int = 0, val unpaid: Int = 0,
     val enr: Double = 0.0, @Json(name = "paid_enr") val paidEnr: Double = 0.0,
-    val pending: Double = 0.0, val collected: Double = 0.0,
+    val pending: Double = 0.0, val collected: Double = 0.0, val pos: Double = 0.0,
     @Json(name = "achieved_pct") val achievedPct: Double = 0.0,
 )
 
@@ -684,13 +684,28 @@ data class PerfActivity(
     val visits: Int = 0, @Json(name = "visits_paid") val visitsPaid: Int = 0, val visited: Int = 0,
 )
 
+// One row in the portfolio-wise leaderboard (peers on the same portfolio, ranked by paid ENR).
+@JsonClass(generateAdapter = true)
+data class PerfLeaderRow(
+    val rank: Int = 0, val name: String = "", val you: Boolean = false,
+    val count: Int = 0, val enr: Double = 0.0,
+    @Json(name = "paid_enr") val paidEnr: Double = 0.0,
+    @Json(name = "achieved_pct") val achievedPct: Double = 0.0,
+    val collected: Double = 0.0,
+)
+
 @JsonClass(generateAdapter = true)
 data class PerfPortfolio(
-    val label: String = "", val count: Int = 0, val paid: Int = 0,
-    val enr: Double = 0.0, val collected: Double = 0.0,
+    val label: String = "", val count: Int = 0, val paid: Int = 0, val unpaid: Int = 0,
+    val enr: Double = 0.0, @Json(name = "paid_enr") val paidEnr: Double = 0.0,
+    val pending: Double = 0.0, val pos: Double = 0.0, val collected: Double = 0.0,
     @Json(name = "achieved_pct") val achievedPct: Double = 0.0,
+    @Json(name = "target_pct") val targetPct: Double = 0.0,
+    @Json(name = "to_target_pct") val toTargetPct: Double = 0.0,
     val rank: Int? = null, @Json(name = "field_size") val fieldSize: Int = 0,
     val activity: PerfActivity = PerfActivity(),
+    val trends: Trends = Trends(),
+    val leaderboard: List<PerfLeaderRow> = emptyList(),
 )
 
 @JsonClass(generateAdapter = true)

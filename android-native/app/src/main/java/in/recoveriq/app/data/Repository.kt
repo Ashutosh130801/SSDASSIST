@@ -67,12 +67,17 @@ class Repository(context: Context) {
     ): List<Case> = Api.service.cases(bank = bank, status = status, search = search?.ifBlank { null })
 
     // ---- Bank-first portfolio navigation + filters + performance ----
-    suspend fun portfolioBanks(): List<PortfolioBank> = Api.service.portfolioBanks()
-    suspend fun productSummary(): List<ProductSummary> = Api.service.productSummary()
+    suspend fun portfolioBanks(monthBucket: String? = null): List<PortfolioBank> =
+        Api.service.portfolioBanks(monthBucket?.ifBlank { null })
+    suspend fun productSummary(monthBucket: String? = null): List<ProductSummary> =
+        Api.service.productSummary(monthBucket?.ifBlank { null })
     suspend fun filterOptions(bank: String? = null, product: String? = null, branch: String? = null): FilterOptions =
         Api.service.filterOptions(bank = bank, product = product, branch = branch?.ifBlank { null })
     suspend fun performance(empId: Int, role: String?, monthBucket: String = "current"): Performance =
         Api.service.performance(empId = empId, role = role?.ifBlank { null }, monthBucket = monthBucket)
+
+    suspend fun myPerformance(monthBucket: String = "current", bank: String? = null, product: String? = null): Performance =
+        Api.service.myPerformance(monthBucket = monthBucket, bank = bank?.ifBlank { null }, product = product?.ifBlank { null })
     suspend fun portfolioCases(
         bank: String?, product: String?, branch: String?, paid: String?,
         cycles: String?, fosIds: String?, callerIds: String?,

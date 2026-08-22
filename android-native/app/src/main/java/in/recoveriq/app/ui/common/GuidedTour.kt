@@ -71,6 +71,7 @@ val TOUR_DESC: Map<String, String> = mapOf(
     "leave" to "Leave — apply for leave and track approvals.",
     "security" to "Security — change your password and set up 2-factor authentication.",
     "profile" to "My E-ID — your profile, ID card, personal details and your achievement trends.",
+    "myperf" to "My Performance — your scorecard per portfolio: achievement %, cash, POS, and the portfolio leaderboard with your rank against peers.",
 )
 
 /**

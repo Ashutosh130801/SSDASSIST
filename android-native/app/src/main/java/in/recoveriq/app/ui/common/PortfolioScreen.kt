@@ -68,6 +68,8 @@ fun PortfolioScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     var productSel by remember { mutableStateOf<ProductSummary?>(null) }
     var branchSel by remember { mutableStateOf<String?>(null) }
     var perfTarget by remember { mutableStateOf<Pair<Int, String>?>(null) }
+    // Persistent, top-of-section month filter — each month is a separate book (nothing merged).
+    var monthB by remember { mutableStateOf("current") }
 
     val prod = productSel
     val showCases = prod != null && (!prod.branchSplit || branchSel != null)
@@ -75,6 +77,13 @@ fun PortfolioScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     perfTarget?.let { (id, role) -> PerformanceDialog(vm, id, role) { perfTarget = null } }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 8.dp)) {
+            Text("Month:", color = Muted, style = MaterialTheme.typography.labelSmall)
+            listOf("current" to "This month", "next" to "Next", "" to "All").forEach { (v, l) ->
+                FilterChip(selected = monthB == v, onClick = { monthB = v }, label = { Text(l) })
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
             if (bankSel != null) {
                 TextButton(onClick = {
@@ -101,10 +110,10 @@ fun PortfolioScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
         when {
             showCases -> PortfolioCases(vm, prod!!, branchSel, onOpenCase) { id, role -> perfTarget = id to role }
             productSel != null -> BranchCards(prod!!) { branchSel = it }
-            bankSel != null -> ProductCards(vm, bankSel!!) { p ->
+            bankSel != null -> ProductCards(vm, bankSel!!, monthB) { p ->
                 productSel = p; branchSel = if (p.branchSplit && p.branches.isNotEmpty()) null else ""
             }
-            else -> BankCards(vm) { bankSel = it }
+            else -> BankCards(vm, monthB) { bankSel = it }
         }
     }
 }
@@ -148,8 +157,8 @@ private fun PortfolioCard(content: @Composable () -> Unit, onClick: () -> Unit) 
 }
 
 @Composable
-private fun BankCards(vm: AuthViewModel, onPick: (String) -> Unit) {
-    AsyncContent(key = "banks", block = { vm.repo.portfolioBanks() }) { banks, _ ->
+private fun BankCards(vm: AuthViewModel, monthB: String, onPick: (String) -> Unit) {
+    AsyncContent(key = "banks|$monthB", block = { vm.repo.portfolioBanks(monthB) }) { banks, _ ->
         if (banks.isEmpty()) EmptyState("No cases uploaded yet.")
         else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp)) {
@@ -172,8 +181,8 @@ private fun BankCards(vm: AuthViewModel, onPick: (String) -> Unit) {
 }
 
 @Composable
-private fun ProductCards(vm: AuthViewModel, bank: String, onPick: (ProductSummary) -> Unit) {
-    AsyncContent(key = "prod|$bank", block = { vm.repo.productSummary().filter { it.bank == bank } }) { prods, _ ->
+private fun ProductCards(vm: AuthViewModel, bank: String, monthB: String, onPick: (ProductSummary) -> Unit) {
+    AsyncContent(key = "prod|$bank|$monthB", block = { vm.repo.productSummary(monthB).filter { it.bank == bank } }) { prods, _ ->
         if (prods.isEmpty()) EmptyState("No products for this bank.")
         else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp)) {
@@ -305,7 +314,11 @@ private fun PerformanceDialog(vm: AuthViewModel, empId: Int, role: String, onDis
                             Metric("Cases", d.totals.count.toString(), Modifier.weight(1f))
                             Metric("Collected", money(d.totals.collected), Modifier.weight(1f), Good)
                             Metric("Achieved", "${"%.0f".format(d.totals.achievedPct)}%", Modifier.weight(1f), BrandBlue)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Metric("Pending", money(d.totals.pending), Modifier.weight(1f), Warn)
+                            Metric("Total POS", money(d.totals.pos), Modifier.weight(1f))
+                            Spacer(Modifier.weight(1f))
                         }
                         // Activity from the logs they submit.
                         Text(
@@ -344,7 +357,7 @@ private fun PerfPortfolioRow(p: PerfPortfolio, asFos: Boolean) {
                 Text(p.label, fontWeight = FontWeight.SemiBold)
                 Text("${p.count}", color = Muted)
             }
-            Text("Paid ${p.paid}/${p.count} · ENR ${money(p.enr)} · Collected ${money(p.collected)} · ${"%.0f".format(p.achievedPct)}%" +
+            Text("Paid ${p.paid}/${p.count} · ENR ${money(p.enr)} · Collected ${money(p.collected)} · ${"%.0f".format(p.achievedPct)}% · POS ${money(p.pos)}" +
                 (p.rank?.let { " · Rank #$it/${p.fieldSize}" } ?: ""),
                 color = Muted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
             Text(

@@ -425,16 +425,29 @@ def portfolio_areas(bank: str | None = None, product: str | None = None, branch:
     return sorted({(t or "").strip() for (t,) in q.all() if t and str(t).strip()})
 
 
-def _portfolio_rows(db, user):
+def _period_bucket(month_bucket):
+    """'current' → this month, 'next' → next month, else None (all months)."""
+    if month_bucket == "current":
+        return _current_period()
+    if month_bucket == "next":
+        return _next_period()
+    return None
+
+
+def _portfolio_rows(db, user, period=None):
     """Every visible case reduced to the few fields the portfolio cards need. Recovered / Pending
     are computed the SAME way the case detail does — real base (FUNDING → TOS → ENR) minus cash
-    received — NOT the stored pending_amount column (only filled once a payment/edit lands)."""
-    return _scope(db.query(
+    received — NOT the stored pending_amount column (only filled once a payment/edit lands).
+    When `period` is given, only that month's book is counted (clean month-wise separation)."""
+    q = _scope(db.query(
         models.Case.bank, models.Case.product, models.Case.segment, models.Case.branch,
         models.Case.branch_explicit, models.Case.period,
         models.Case.funding_amount, models.Case.total_outstanding, models.Case.enr,
         models.Case.principal_outstanding, models.Case.received_amount,
-    ), user).all()
+    ), user)
+    if period:
+        q = q.filter(models.Case.period == period)
+    return q.all()
 
 
 def _blank(d):
@@ -442,14 +455,15 @@ def _blank(d):
 
 
 @router.get("/product-summary")
-def product_summary(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def product_summary(month_bucket: str | None = None, db: Session = Depends(get_db),
+                    user: models.User = Depends(get_current_user)):
     """Portfolio cards, grouped by BANK + PRODUCT (no accidental branch split). A product is only
     branch-split when at least one of its cases had a branch chosen EXPLICITLY at upload; those
     carry a `branches` breakdown so the UI can offer location sub-cards. FOS-inherited branches do
-    NOT split a portfolio."""
+    NOT split a portfolio. `month_bucket` (current/next/all) scopes the whole section to one month."""
     cur, nxt = _current_period(), _next_period()
     agg: dict = {}
-    for b, p, s, br, bexp, per, fund, tos, enr, pos, recv in _portfolio_rows(db, user):
+    for b, p, s, br, bexp, per, fund, tos, enr, pos, recv in _portfolio_rows(db, user, _period_bucket(month_bucket)):
         base = float(fund or 0) or float(tos or 0) or float(enr or 0) or float(pos or 0)   # funding → TOS → ENR → POS
         rc = float(recv or 0)
         pend = max(0.0, base - rc)
@@ -508,12 +522,14 @@ def _bank_domain(name: str) -> str | None:
 
 
 @router.get("/portfolio-banks")
-def portfolio_banks(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def portfolio_banks(month_bucket: str | None = None, db: Session = Depends(get_db),
+                    user: models.User = Depends(get_current_user)):
     """One card per BANK that has uploaded products — the top level of portfolio navigation.
-    Carries a logo domain (for logo.clearbit.com) plus product/case counts and money totals."""
+    Carries a logo domain (for logo.clearbit.com) plus product/case counts and money totals,
+    scoped to `month_bucket` (current/next/all) so the whole section is one month at a time."""
     agg: dict = {}
     prods: dict = {}
-    for b, p, s, br, bexp, per, fund, tos, enr, pos, recv in _portfolio_rows(db, user):
+    for b, p, s, br, bexp, per, fund, tos, enr, pos, recv in _portfolio_rows(db, user, _period_bucket(month_bucket)):
         base = float(fund or 0) or float(tos or 0) or float(enr or 0) or float(pos or 0)
         rc = float(recv or 0)
         bank = b or "—"

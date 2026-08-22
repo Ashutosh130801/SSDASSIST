@@ -11,6 +11,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.BeachAccess
+import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Handshake
@@ -72,6 +73,7 @@ import `in`.recoveriq.app.ui.ai.AiAssistScreen
 import `in`.recoveriq.app.ui.caller.CallQueueScreen
 import `in`.recoveriq.app.ui.caller.PtpTrackerScreen
 import `in`.recoveriq.app.ui.common.CasesScreen
+import `in`.recoveriq.app.ui.common.MyPerformanceScreen
 import `in`.recoveriq.app.ui.common.PortfolioScreen
 import `in`.recoveriq.app.ui.common.GuidedTour
 import `in`.recoveriq.app.ui.common.LogoLoader
@@ -396,12 +398,14 @@ private fun navEntriesFor(
             },
             NavEntry("fcases", "My Accounts", Icons.Filled.Receipt) { MyCasesScreen(vm, onOpenCase) },
             NavEntry("fmap", "Field Tracking", Icons.Filled.Map) { FieldTrackingScreen(vm) },
+            NavEntry("myperf", "My Performance", Icons.Filled.EmojiEvents) { MyPerformanceScreen(vm, user) },
             profile, leave, security,
         )
         "telecaller" -> listOf(
             dashboard,
             NavEntry("queue", "Calling", Icons.Filled.Phone) { CallQueueScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
+            NavEntry("myperf", "My Performance", Icons.Filled.EmojiEvents) { MyPerformanceScreen(vm, user) },
             profile, leave, security,
         )
         "teamlead" -> listOf(

@@ -58,10 +58,10 @@ interface ApiService {
 
     // Bank-first portfolio navigation + filter dropdown options.
     @GET("api/cases/portfolio-banks")
-    suspend fun portfolioBanks(): List<PortfolioBank>
+    suspend fun portfolioBanks(@Query("month_bucket") monthBucket: String? = null): List<PortfolioBank>
 
     @GET("api/cases/product-summary")
-    suspend fun productSummary(): List<ProductSummary>
+    suspend fun productSummary(@Query("month_bucket") monthBucket: String? = null): List<ProductSummary>
 
     @GET("api/cases/filter-options")
     suspend fun filterOptions(
@@ -76,6 +76,14 @@ interface ApiService {
         @Query("emp_id") empId: Int,
         @Query("role") role: String? = null,
         @Query("month_bucket") monthBucket: String = "current",
+    ): Performance
+
+    // The signed-in caller's/FOS's OWN scorecard + per-portfolio leaderboard.
+    @GET("api/mis/my-performance")
+    suspend fun myPerformance(
+        @Query("month_bucket") monthBucket: String = "current",
+        @Query("bank") bank: String? = null,
+        @Query("product") product: String? = null,
     ): Performance
 
     @GET("api/cases/{id}")
