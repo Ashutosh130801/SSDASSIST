@@ -6683,10 +6683,15 @@ function App() {
   const [pendingPick, setPendingPick] = useState(false);
   // After a fresh login (or password change), a dual-role user must choose a view.
   const handleLogin = (u) => { setUser(u); setPendingPick(!!(u && (u.available_views || []).length > 1)); };
+  const [bootSlow, setBootSlow] = useState(false);
   useEffect(() => {
     api('/api/config', { auth: false }).then(cfg => { setConfig(cfg); window.__ssdCfg = cfg; }).catch(() => setConfig({}));
     if (store.t) api('/api/auth/me').then(u => { setUser(u); store.u = u; }).catch(() => { store.t = null; setUser(null); }).finally(() => setReady(true));
     else setReady(true);
+    // Safety net: never hang on the loader. If the server hasn't answered in 12s (e.g. it's still
+    // starting or a previous instance is holding the DB), fall through to the login screen.
+    const t = setTimeout(() => { setBootSlow(true); setConfig(c => c || {}); setReady(true); }, 12000);
+    return () => clearTimeout(t);
     const h = (e) => { e.preventDefault(); setInstallEvt(e); };
     window.addEventListener('beforeinstallprompt', h);
     return () => window.removeEventListener('beforeinstallprompt', h);
@@ -6697,6 +6702,8 @@ function App() {
   const multiView = user && (user.available_views || []).length > 1;
   return (<>
     <Toaster />
+    {bootSlow && !user && <div style={{ background: '#FEF3C7', color: '#92400e', textAlign: 'center', padding: '8px 12px', fontSize: 13 }}>
+      ⚠️ The server is slow or unreachable. If you just restarted it, make sure the previous instance is fully stopped, then reload.</div>}
     {user ? (user.must_change_password
         ? <ForcePasswordChange user={user} onDone={handleLogin} onLogout={logout} />
         : (pendingPick && multiView)
