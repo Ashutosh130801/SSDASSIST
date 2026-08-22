@@ -4637,7 +4637,7 @@ function MISView({ user }) {
       <div className="toolbar">
         {/* Bank-first selection: pick a bank, then a product of that bank (mirrors the Products screen). */}
         <select className="input" style={{ maxWidth: 170 }} value={sel ? sel.bank : ''}
-          onChange={e => { const bk = e.target.value; const first = prods.find(p => p.bank === bk); setSel(first ? { bank: bk, product: first.product, branch: first.branch || '' } : null); setEmp(''); }}>
+          onChange={e => { const bk = e.target.value; const first = prods.find(p => p.bank === bk); setSel(first ? { bank: bk, product: first.product, branch: '', branch_split: !!first.branch_split, branches: first.branches || [] } : null); setEmp(''); }}>
           {[...new Set(prods.map(p => p.bank))].map(b => <option key={b} value={b}>🏦 {b}</option>)}
         </select>
         <select className="input" style={{ maxWidth: 200 }} value={sel ? sel.product : ''}
