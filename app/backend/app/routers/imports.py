@@ -230,9 +230,21 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     for rec in records:
         kwargs = record_to_case_kwargs(rec)
         acct = kwargs.get("account_no")
+        # A case is unique per ACCOUNT + BANK + PRODUCT + MONTH(period). The same loan number can
+        # therefore exist as a separate case under a different bucket/product or a different month —
+        # re-uploading the SAME product+month updates in place; a new bucket/month adds fresh cases.
         existing = None
         if acct:
-            existing = db.query(models.Case).filter(models.Case.account_no == acct).first()
+            _mb = default_bank or kwargs.get("bank")
+            _mp = product or kwargs.get("product")
+            eq = db.query(models.Case).filter(models.Case.account_no == acct,
+                                              models.Case.period == period,
+                                              models.Case.removed.isnot(True))
+            if _mb:
+                eq = eq.filter(models.Case.bank == _mb)
+            if _mp:
+                eq = eq.filter(models.Case.product == _mp)
+            existing = eq.first()
         if existing:
             # update amounts / status, don't duplicate
             for k in ("funding_amount", "received_amount", "pending_amount", "paid_status",
