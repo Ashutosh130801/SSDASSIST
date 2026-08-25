@@ -150,7 +150,9 @@ def queue(bank: str | None = None, product: str | None = None, db: Session = Dep
 
 
 @router.get("/ptp-tracker")
-def ptp_tracker(bank: str | None = None, product: str | None = None, db: Session = Depends(get_db),
+def ptp_tracker(bank: str | None = None, product: str | None = None,
+                date_from: str | None = None, date_to: str | None = None,
+                db: Session = Depends(get_db),
                 user: models.User = Depends(require_roles("telecaller", "admin", "manager",
                                                           "teamlead", "headoffice", "backend"))):
     """All active promise-to-pay cases with promised amount + date, split into
@@ -180,7 +182,24 @@ def ptp_tracker(bank: str | None = None, product: str | None = None, db: Session
         q = q.filter(models.Case.bank == bank)
     if product:
         q = q.filter(models.Case.product == product)
+    # Optional promised-date range (calendar filter) — inclusive YYYY-MM-DD.
+    from datetime import date as _date
+    def _parse(d):
+        try:
+            y, m, dd = (int(x) for x in d.split("-")); return _date(y, m, dd)
+        except Exception:
+            return None
+    d_from = _parse(date_from) if date_from else None
+    d_to = _parse(date_to) if date_to else None
+    if d_from:
+        q = q.filter(models.Case.follow_up_date >= d_from)
+    if d_to:
+        q = q.filter(models.Case.follow_up_date <= d_to)
     cases = q.all()
+
+    # Last-5 merged notes (calls + visits) per case, in two queries.
+    from ..notes import case_notes_map
+    notes_by_case = case_notes_map(db, [c.id for c in cases], limit=5)
 
     rows = []
     for c in cases:
@@ -196,6 +215,7 @@ def ptp_tracker(bank: str | None = None, product: str | None = None, db: Session
             "ptp_amount": float(last_ptp.ptp_amount) if last_ptp and last_ptp.ptp_amount else None,
             "promised_date": promised.isoformat() if promised else None,
             "bucket": bucket,
+            "notes": notes_by_case.get(c.id, []),
         })
     order = {"overdue": 0, "today": 1, "upcoming": 2}
     rows.sort(key=lambda r: (order[r["bucket"]], r["promised_date"] or "9999-12-31"))

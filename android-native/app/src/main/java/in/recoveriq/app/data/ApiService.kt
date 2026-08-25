@@ -109,7 +109,11 @@ interface ApiService {
     suspend fun reminders(): RemindersResponse
 
     @GET("api/calls/ptp-tracker")
-    suspend fun ptpTracker(@Query("bank") bank: String? = null): PtpResponse
+    suspend fun ptpTracker(
+        @Query("bank") bank: String? = null,
+        @Query("date_from") dateFrom: String? = null,
+        @Query("date_to") dateTo: String? = null,
+    ): PtpResponse
 
     @GET("api/calls/case/{id}")
     suspend fun callsForCase(@Path("id") id: Int): List<CallOut>

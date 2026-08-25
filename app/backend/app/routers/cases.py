@@ -272,6 +272,7 @@ def list_cases(
     cycles: str | None = None,          # multi-select cycle filter — CSV of cycle values (e.g. "2,3")
     fos_ids: str | None = None,         # multi-select FOS filter — CSV of user ids
     caller_ids: str | None = None,      # multi-select caller filter — CSV of user ids
+    with_notes: bool = False,           # attach merged notes/remarks history (live sheet)
     limit: int = Query(500, le=5000),
     offset: int = 0,
 ):
@@ -330,7 +331,15 @@ def list_cases(
             models.Case.phone.ilike(like),
             models.Case.pincode.ilike(like),
         ))
-    return _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).offset(offset).limit(limit).all()))
+    rows = _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).offset(offset).limit(limit).all()))
+    if with_notes:
+        from ..notes import case_notes_map, join_notes
+        nmap = case_notes_map(db, [c.id for c in rows], limit=5)
+        for c in rows:
+            ns = nmap.get(c.id, [])
+            c.notes = ns
+            c.notes_text = join_notes(ns)
+    return rows
 
 
 class EscalateIn(BaseModel):

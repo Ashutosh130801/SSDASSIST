@@ -103,7 +103,8 @@ class Repository(context: Context) {
         Api.service.officerRoute(id, date)
 
     suspend fun callQueue(bank: String? = null): QueueResponse = Api.service.callQueue(bank)
-    suspend fun ptpTracker(bank: String? = null): PtpResponse = Api.service.ptpTracker(bank)
+    suspend fun ptpTracker(bank: String? = null, dateFrom: String? = null, dateTo: String? = null): PtpResponse =
+        Api.service.ptpTracker(bank, dateFrom?.ifBlank { null }, dateTo?.ifBlank { null })
     suspend fun reminders(): RemindersResponse = Api.service.reminders()
 
     suspend fun templates(): List<Template> = Api.service.templates()

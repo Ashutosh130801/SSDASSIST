@@ -38,9 +38,11 @@ COLUMNS = [
     {"key": "tc_remarks", "label": "Tc Remarks", "type": "text"},
     {"key": "fe_remark", "label": "Fe Remark", "type": "text"},
     {"key": "ptp_date", "label": "PTP Date", "type": "date"},
+    # Full merged notes/remarks history (all calls + visits, newest first) — read-only reference.
+    {"key": "history", "label": "Remarks History", "type": "text", "readonly": True},
 ]
-# columns actually stored/editable on the FeedbackEntry row (loan_no comes from the case)
-STORED = {c["key"] for c in COLUMNS} - {"loan_no"}
+# columns actually stored/editable on the FeedbackEntry row (loan_no from the case; history is derived)
+STORED = {c["key"] for c in COLUMNS} - {"loan_no", "history"}
 # fields kept live from the call / visit logs unless a human has overridden them
 LOG_FIELDS = {"visited", "dispo_code", "visit_date", "tc_code", "fe_code", "tc_remarks", "fe_remark", "ptp_date"}
 
@@ -187,8 +189,16 @@ def get_feedback(bank: str, product: str, day: str | None = None, branch: str | 
         rows.append((e, c))
     if dirty:
         db.commit()
+    # Full merged notes/remarks history (all time, newest first) per case for the History column.
+    from ..notes import case_notes_map, join_notes
+    nmap = case_notes_map(db, ids)
+    out_rows = []
+    for e, c in rows:
+        r = _row(e, c)
+        r["history"] = join_notes(nmap.get(c.id, []))
+        out_rows.append(r)
     return {"day": d.isoformat(), "bank": bank, "product": product,
-            "count": len(rows), "rows": [_row(e, c) for e, c in rows]}
+            "count": len(rows), "rows": out_rows}
 
 
 @router.patch("/{entry_id}")

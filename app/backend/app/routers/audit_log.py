@@ -15,13 +15,24 @@ from ..deps import require_roles
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
 
-VIEW_ROLES = ("admin", "manager", "headoffice")
+VIEW_ROLES = ("admin", "manager", "headoffice", "teamlead")
 
 
-def _scope(q, viewer: models.User):
-    """Managers are limited to their own branch's activity."""
+def _scope(q, viewer: models.User, db: Session = None):
+    """Managers see only their branch. Team leads see only their team's activity —
+    actions done BY their team members or ON cases that carry the lead's name."""
     if viewer.role == "manager" and viewer.branch:
         q = q.filter(models.AuditLog.branch == viewer.branch)
+    elif viewer.role == "teamlead" and db is not None:
+        from .cases import _scope_user_ids, teamlead_case_filter
+        member_ids = set(_scope_user_ids(db, viewer)) | {viewer.id}
+        case_ids = [cid for (cid,) in db.query(models.Case.id).filter(teamlead_case_filter(viewer)).all()]
+        conds = []
+        if member_ids:
+            conds.append(models.AuditLog.actor_id.in_(member_ids))
+        if case_ids:
+            conds.append(models.AuditLog.case_id.in_(case_ids))
+        q = q.filter(or_(*conds)) if conds else q.filter(models.AuditLog.id == -1)
     return q
 
 
@@ -29,7 +40,7 @@ def _scope(q, viewer: models.User):
 def audit_filters(db: Session = Depends(get_db),
                   viewer: models.User = Depends(require_roles(*VIEW_ROLES))):
     """Distinct values to populate the log's filter dropdowns (branch-scoped for managers)."""
-    q = _scope(db.query(models.AuditLog), viewer)
+    q = _scope(db.query(models.AuditLog), viewer, db)
     branches = sorted({b for (b,) in q.with_entities(models.AuditLog.branch).distinct() if b})
     banks = sorted({b for (b,) in q.with_entities(models.AuditLog.bank).distinct() if b})
     products = sorted({p for (p,) in q.with_entities(models.AuditLog.product).distinct() if p})
@@ -66,7 +77,7 @@ def audit_list(
     offset: int = 0,
 ):
     """Filtered, paginated activity feed — newest first."""
-    query = _scope(db.query(models.AuditLog), viewer)
+    query = _scope(db.query(models.AuditLog), viewer, db)
     if branch:
         query = query.filter(models.AuditLog.branch == branch)
     if role:

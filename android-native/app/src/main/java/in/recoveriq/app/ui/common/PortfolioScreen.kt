@@ -23,6 +23,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -231,6 +235,7 @@ private fun PortfolioCases(
     var cycles by remember { mutableStateOf(setOf<String>()) }
     var fos by remember { mutableStateOf(setOf<Int>()) }
     var callers by remember { mutableStateOf(setOf<Int>()) }
+    var q by remember { mutableStateOf("") }
     var opts by remember { mutableStateOf(FilterOptions()) }
 
     LaunchedEffect(p.bank, p.product, branch) {
@@ -238,6 +243,14 @@ private fun PortfolioCases(
     }
 
     Column(Modifier.fillMaxSize()) {
+        // ---- search ----
+        OutlinedTextField(
+            value = q, onValueChange = { q = it },
+            placeholder = { Text("Search name / account / phone") },
+            leadingIcon = { Icon(Icons.Filled.Search, null) },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
         // ---- filter bar ----
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -274,10 +287,14 @@ private fun PortfolioCases(
                 cycles = cycles.joinToString(","), fosIds = fos.joinToString(","), callerIds = callers.joinToString(","),
             )
         }) { cases, _ ->
-            if (cases.isEmpty()) EmptyState("No cases match these filters.")
+            val gq = q.trim().lowercase()
+            val shown = if (gq.isBlank()) cases else cases.filter { c ->
+                listOfNotNull(c.customerName, c.accountNo, c.phone).any { it.lowercase().contains(gq) }
+            }
+            if (shown.isEmpty()) EmptyState(if (gq.isBlank()) "No cases match these filters." else "No cases match \"$q\".")
             else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp)) {
-                items(cases.size) { i -> CaseCard(cases[i], onClick = { onOpenCase(cases[i].id) }, onOpenPerf = onOpenPerf) }
+                items(shown.size) { i -> CaseCard(shown[i], onClick = { onOpenCase(shown[i].id) }, onOpenPerf = onOpenPerf) }
             }
         }
     }

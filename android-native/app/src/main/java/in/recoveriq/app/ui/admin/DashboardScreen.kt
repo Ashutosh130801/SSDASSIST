@@ -69,6 +69,15 @@ fun DashboardScreen(
                     Kpi(Modifier.weight(1f), "Pending", money(d.kpis.pending), BrandBlue)
                 }
             }
+            // Callers / field agents: actual cash collected (₹) front and centre on My Stats.
+            if (user.isTelecaller || user.isFieldAgent) {
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Kpi(Modifier.weight(1f), "Cash collected", money(d.kpis.cashCollected), Good)
+                        Kpi(Modifier.weight(1f), "Resolved", d.kpis.paid.toString(), Good)
+                    }
+                }
+            }
             item {
                 InfoCard {
                     Text("Collection progress", fontWeight = FontWeight.SemiBold)

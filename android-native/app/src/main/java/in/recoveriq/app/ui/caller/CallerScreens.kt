@@ -23,10 +23,14 @@ import `in`.recoveriq.app.data.PtpRow
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.common.AsyncContent
 import `in`.recoveriq.app.ui.common.CaseCard
+import `in`.recoveriq.app.ui.common.DatePickerField
 import `in`.recoveriq.app.ui.common.DateUtil
 import `in`.recoveriq.app.ui.common.EmptyState
 import `in`.recoveriq.app.ui.common.SectionTitle
 import `in`.recoveriq.app.ui.common.rememberLiveKey
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.Alignment
+import androidx.compose.material3.TextButton
 import `in`.recoveriq.app.ui.theme.Bad
 import `in`.recoveriq.app.ui.theme.Good
 import `in`.recoveriq.app.ui.theme.Muted
@@ -72,10 +76,20 @@ fun CallQueueScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
 @Composable
 fun PtpTrackerScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     var bucket by remember { mutableStateOf("overdue") }
+    var dFrom by remember { mutableStateOf("") }
+    var dTo by remember { mutableStateOf("") }
     val buckets = listOf("overdue", "today", "upcoming")
     Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         SectionTitle("Promise-to-pay tracker", Modifier.padding(top = 12.dp, start = 4.dp))
-        AsyncContent(block = { vm.repo.ptpTracker() }) { resp, _ ->
+        // Promise-date calendar range.
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+            Box(Modifier.weight(1f)) { DatePickerField("From", dFrom) { dFrom = it } }
+            Box(Modifier.weight(1f)) { DatePickerField("To", dTo) { dTo = it } }
+            if (dFrom.isNotBlank() || dTo.isNotBlank())
+                TextButton(onClick = { dFrom = ""; dTo = "" }) { Text("Clear") }
+        }
+        AsyncContent(key = "$dFrom|$dTo", block = { vm.repo.ptpTracker(dateFrom = dFrom, dateTo = dTo) }) { resp, _ ->
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 buckets.forEach { b ->
                     val n = resp.counts[b] ?: 0
@@ -111,5 +125,21 @@ private fun PtpCard(row: PtpRow, onOpenCase: (Int) -> Unit) {
             append("by ${DateUtil.humanDate(it)}")
         }
     }.ifBlank { "Promise to pay" }
-    CaseCard(row.case, onClick = { onOpenCase(row.case.id) }, subtitle = promise)
+    Column {
+        CaseCard(row.case, onClick = { onOpenCase(row.case.id) }, subtitle = promise)
+        if (row.notes.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().padding(start = 12.dp, top = 2.dp, bottom = 2.dp)) {
+                Text("Recent notes", color = Muted, style = MaterialTheme.typography.labelSmall)
+                row.notes.take(5).forEach { n ->
+                    val head = listOfNotNull(n.disposition?.ifBlank { null }, n.text?.ifBlank { null }).joinToString(": ")
+                    val tail = listOfNotNull(n.by?.ifBlank { null }, n.at?.ifBlank { null }).joinToString(", ")
+                    Text(
+                        (if (n.source == "visit") "🧍 " else "📞 ") + head + (if (tail.isNotBlank()) "  — $tail" else ""),
+                        color = Muted, style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(top = 1.dp),
+                    )
+                }
+            }
+        }
+    }
 }

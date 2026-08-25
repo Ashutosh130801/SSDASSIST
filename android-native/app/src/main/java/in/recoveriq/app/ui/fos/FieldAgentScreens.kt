@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -191,12 +192,20 @@ private val CASE_FILTERS: List<Pair<String, (Case) -> Boolean>> = listOf(
     "PTP" to { c -> (c.disposition ?: "").uppercase() in listOf("PTP", "RTP") },
 )
 
+// Sort criteria for the field agent's case list — pending amount only, ascending (default) or descending.
+private val CASE_SORTS: List<Pair<String, Comparator<Case>>> = listOf(
+    "Pending ↑" to compareBy { it.pendingAmount },
+    "Pending ↓" to compareByDescending { it.pendingAmount },
+)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     val liveKey = rememberLiveKey()
     var sel by remember { mutableStateOf("All") }
     var query by remember { mutableStateOf("") }
+    // Default order for field agents: smallest pending first (quick wins), with other criteria available.
+    var sort by remember { mutableStateOf("Pending ↑") }
     Column(Modifier.fillMaxSize()) {
         SectionTitle("My accounts", Modifier.padding(start = 16.dp, top = 12.dp))
         OutlinedTextField(
@@ -228,15 +237,27 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
                     }
                 }
             }
-            // Filter chips with live counts (doubles as a performance snapshot).
-            FlowRow(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            // Filter chips with live counts — single scrollable line (Flipkart-style) to keep the list roomy.
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 CASE_FILTERS.forEach { (label, pred) ->
                     val n = cases.count(pred)
                     FilterChip(selected = sel == label, onClick = { sel = label },
                         label = { Text("$label ($n)") })
+                }
+            }
+            // Sort selector — pending ascending is the default; single scrollable line.
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Sort:", color = Muted, modifier = Modifier.padding(end = 2.dp))
+                CASE_SORTS.forEach { (label, _) ->
+                    FilterChip(selected = sort == label, onClick = { sort = label }, label = { Text(label) })
                 }
             }
             val pred = CASE_FILTERS.first { it.first == sel }.second
@@ -249,10 +270,8 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
                     (digits.isNotEmpty() && listOf(c.accountNo, c.cardNo, c.phone, c.altPhone)
                         .any { it != null && it.filter { ch -> ch.isDigit() }.contains(digits) })
             }
-            // Untouched & highest-priority on top; visited/contacted below; paid last.
-            val ordered = cases.filter { pred(it) && matches(it) }.sortedWith(
-                compareBy({ stateRank(it.workState) }, { -(it.propensity ?: 0) }, { -it.pendingAmount }),
-            )
+            val comparator = (CASE_SORTS.firstOrNull { it.first == sort } ?: CASE_SORTS.first()).second
+            val ordered = cases.filter { pred(it) && matches(it) }.sortedWith(comparator)
             if (ordered.isEmpty()) {
                 EmptyState(if (q.isEmpty()) "No cases in this filter." else "No cases match \"$query\".")
             } else {

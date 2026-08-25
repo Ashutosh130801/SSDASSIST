@@ -300,6 +300,9 @@ class CaseOut(CaseBase):
     rollback_amount: Optional[Decimal] = None
     updated_by: Optional[int] = None
     updated_by_name: Optional[str] = None
+    # Merged notes/remarks history (calls + visits), newest first — populated on demand.
+    notes: Optional[list] = None
+    notes_text: Optional[str] = None      # same, flattened to one // -separated cell for sheets
     created_at: datetime
     updated_at: Optional[datetime]
 

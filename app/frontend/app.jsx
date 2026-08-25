@@ -924,6 +924,9 @@ function Dashboard({ user, branch }) {
           valueColor="var(--info)" sub={<span>{k.paid} of {k.total_cases} cases settled</span>} />
         <StatCard icon="✅" label="Recovered" accent="green" value={INR(k.received)} valueColor="var(--good)"
           sub={<span><b style={{ color: 'var(--good)' }}>{k.recovery_rate}%</b> recovery rate (₹)</span>} />
+        {(user.role === 'telecaller' || user.role === 'fos') &&
+          <StatCard icon="💰" label="Cash collected" accent="green" value={INR(k.cash_collected)} valueColor="var(--good)"
+            sub={<span>{INR(collectedToday)} collected today</span>} />}
         <StatCard icon="⏳" label="Pending" accent="amber" value={INR(k.pending)} valueColor="var(--warn)"
           sub={<span>{INR(collectedToday)} collected today</span>} />
         <StatCard icon="🎯" label="Portfolio Target" accent="" value={INR(k.target)}
@@ -3684,8 +3687,10 @@ function AIAssist({ user }) {
 function PTPTracker() {
   const [data, setData] = useState(null); const [bank, setBank] = useState(''); const [product, setProduct] = useState(''); const [drawer, setDrawer] = useState(null);
   const [err, setErr] = useState(''); const [search, setSearch] = useState('');
+  const [dFrom, setDFrom] = useState(''); const [dTo, setDTo] = useState('');   // promise-date calendar range
   const [opts, setOpts] = useState({ banks: [], products: [] });
   const load = () => { const p = new URLSearchParams(); if (bank) p.set('bank', bank); if (product) p.set('product', product);
+    if (dFrom) p.set('date_from', dFrom); if (dTo) p.set('date_to', dTo);
     setErr('');
     api('/api/calls/ptp-tracker' + (p.toString() ? '?' + p : '')).then(d => setData(d))
       .catch(e => { setErr(e.message || 'Could not load promises'); setData({ rows: [], counts: { overdue: 0, today: 0, upcoming: 0 } }); }); };
@@ -3697,7 +3702,7 @@ function PTPTracker() {
     const products = [...new Set(all.filter(c => !bank || c.bank === bank).map(c => c.product).filter(Boolean))].sort();
     setOpts({ banks, products });
   }).catch(() => setOpts({ banks: [], products: [] }));
-  useEffect(() => { load(); loadMeta(); }, [bank, product]);
+  useEffect(() => { load(); loadMeta(); }, [bank, product, dFrom, dTo]);
   if (!data) return <Loader />;
   if (err) return <div className="glass card" style={{ color: 'var(--bad)' }}>Couldn’t load the PTP tracker: {err}
     <button className="btn sm" style={{ marginLeft: 10 }} onClick={load}>Retry</button></div>;
@@ -3716,6 +3721,10 @@ function PTPTracker() {
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search name / account / card / phone"
           style={{ minWidth: 230, border: '1px solid var(--stroke-soft)', borderRadius: 10, padding: '7px 10px', fontSize: 13 }} />
         {search && <button className="btn ghost sm" onClick={() => setSearch('')}>✕</button>}
+        <span className="muted" style={{ fontSize: 12 }}>Promise date:</span>
+        <input type="date" className="input" style={{ maxWidth: 150 }} value={dFrom} onChange={e => setDFrom(e.target.value)} title="From (promise date)" />
+        <input type="date" className="input" style={{ maxWidth: 150 }} value={dTo} onChange={e => setDTo(e.target.value)} title="To (promise date)" />
+        {(dFrom || dTo) && <button className="btn ghost sm" onClick={() => { setDFrom(''); setDTo(''); }}>✕ dates</button>}
         <div style={{ flex: 1 }} />
         <select className="input" style={{ maxWidth: 130 }} value={bank} onChange={e => setBank(e.target.value)}>
           <option value="">All banks</option>{opts.banks.map(b => <option key={b}>{b}</option>)}</select>
@@ -3733,7 +3742,7 @@ function PTPTracker() {
             <div className="tablewrap"><table>
               <thead><tr>
                 <th>Customer</th><th>Bank · Product</th><th>Bucket</th><th>Cycle</th><th>Card / A/C</th>
-                <th>Outstanding</th><th>Collected</th><th>Promised (PTP)</th><th>Promise date</th><th>Pending</th><th>Caller / FOS</th><th></th>
+                <th>Outstanding</th><th>Collected</th><th>Promised (PTP)</th><th>Promise date</th><th>Pending</th><th>Caller / FOS</th><th>Recent notes</th><th></th>
               </tr></thead>
               <tbody>{rows.map(r => { const c = r.case; return <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
                 <td><b>{c.customer_name}</b><div className="muted" style={{ fontSize: 12 }}>{c.phone || '—'}</div></td>
@@ -3747,6 +3756,15 @@ function PTPTracker() {
                 <td style={{ color: key === 'overdue' ? 'var(--bad)' : 'var(--ink)', whiteSpace: 'nowrap' }}>{r.promised_date || '—'}</td>
                 <td className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</td>
                 <td style={{ fontSize: 12 }}>{c.caller_name || c.fos_name || '—'}</td>
+                <td style={{ fontSize: 11.5, minWidth: 220, maxWidth: 320 }}>
+                  {(r.notes && r.notes.length) ? <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {r.notes.slice(0, 5).map((n, i) => <div key={i} style={{ lineHeight: 1.3 }}>
+                      <span style={{ color: n.source === 'visit' ? 'var(--info)' : 'var(--ink-soft)' }}>{n.source === 'visit' ? '🧍' : '📞'}</span>{' '}
+                      {n.disposition ? <b>{n.disposition}</b> : null}{n.disposition && n.text ? ': ' : ''}{n.text}
+                      <span className="muted"> — {n.by}{n.when ? `, ${n.when}` : ''}</span>
+                    </div>)}
+                  </div> : <span className="muted">—</span>}
+                </td>
                 <td><button className="btn sm gold" onClick={e => { e.stopPropagation(); setDrawer(c); }}>Open ›</button></td>
               </tr>; })}</tbody></table></div>
           </div>;
@@ -5128,6 +5146,7 @@ const SHEET_COLS = [
   { k: 'disposition', t: 'Disposition', type: 'sel', edit: true, opts: ['', 'PTP', 'RTP', 'PAID', 'CALLBACK', 'NO_CONTACT', 'WRONG_NUMBER', 'REFUSED'] },
   { k: 'follow_up_date', t: 'Follow-up', type: 'date', edit: true },
   { k: 'remarks', t: 'Remarks', type: 'text', edit: true },
+  { k: 'notes_text', t: 'Remarks history', type: 'text' },     // all call+visit notes, // -separated
   { k: 'caller_name', t: 'Caller', type: 'text', edit: true },
   { k: 'fos_name', t: 'FOS', type: 'text', edit: true },
   { k: 'team', t: 'Area', type: 'text', edit: true },
@@ -5239,7 +5258,7 @@ function SheetView({ user, config }) {
   React.useEffect(() => { monthBRef.current = monthB; }, [monthB]);
   const load = () => {
     const mb = monthBRef.current;
-    return api('/api/cases?limit=2000' + (mb ? '&month_bucket=' + encodeURIComponent(mb) : ''))
+    return api('/api/cases?limit=2000&with_notes=true' + (mb ? '&month_bucket=' + encodeURIComponent(mb) : ''))
       .then(d => setRows(Array.isArray(d) ? d : [])).catch(e => setErr(e.message || 'Could not load'));
   };
 
@@ -6326,7 +6345,7 @@ const NAV = {
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['audit', '📜', 'Audit Log'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   hr: [['manpower', '🧑‍💼', 'Manpower'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],

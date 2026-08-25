@@ -113,8 +113,23 @@ def cmd_reset(a):
             sys.exit("Password must be at least 6 characters.")
         u = _get(db, a.email)
         u.hashed_password = hash_password(a.password)
+        u.failed_login_count = 0          # a reset also clears any active lockout
+        u.lockout_until = None
         db.commit()
-        print(f"Password reset for {u.email}.")
+        print(f"Password reset for {u.email} (lockout cleared).")
+    finally:
+        db.close()
+
+
+def cmd_unlock(a):
+    """Clear a 'too many failed attempts' lock so the user can sign in right away."""
+    db = SessionLocal()
+    try:
+        u = _get(db, a.email)
+        u.failed_login_count = 0
+        u.lockout_until = None
+        db.commit()
+        print(f"Unlocked {u.email}. They can log in immediately.")
     finally:
         db.close()
 
@@ -177,9 +192,12 @@ def main():
 
     sub.add_parser("list-users", help="list all logins").set_defaults(func=cmd_list)
 
-    r = sub.add_parser("reset-password", help="set a new password")
+    r = sub.add_parser("reset-password", help="set a new password (also clears lockout)")
     r.add_argument("--email", required=True); r.add_argument("--password", required=True)
     r.set_defaults(func=cmd_reset)
+
+    ul = sub.add_parser("unlock", help="clear a 'too many failed attempts' lock")
+    ul.add_argument("--email", required=True); ul.set_defaults(func=cmd_unlock)
 
     s = sub.add_parser("set-role", help="change a user's role")
     s.add_argument("--email", required=True); s.add_argument("--role", required=True)

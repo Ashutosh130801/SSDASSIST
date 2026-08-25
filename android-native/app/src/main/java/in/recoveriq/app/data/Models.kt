@@ -299,12 +299,24 @@ data class QueueResponse(
     val counts: Map<String, Int> = emptyMap(),
 )
 
+// One merged note/remark (call or visit), tagged with who wrote it and when.
+@JsonClass(generateAdapter = true)
+data class CaseNote(
+    val by: String? = null,
+    val role: String? = null,
+    val source: String? = null,        // "call" | "visit"
+    val disposition: String? = null,
+    val text: String? = null,
+    @Json(name = "when") val at: String? = null,
+)
+
 @JsonClass(generateAdapter = true)
 data class PtpRow(
     val case: Case,
     @Json(name = "ptp_amount") val ptpAmount: Double? = null,
     @Json(name = "promised_date") val promisedDate: String? = null,
     val bucket: String,
+    val notes: List<CaseNote> = emptyList(),
 )
 
 @JsonClass(generateAdapter = true)
@@ -383,6 +395,7 @@ data class DashboardKpis(
     val received: Double = 0.0,
     val pending: Double = 0.0,
     @Json(name = "recovery_rate") val recoveryRate: Double = 0.0,
+    @Json(name = "cash_collected") val cashCollected: Double = 0.0,
     val paid: Int = 0,
     val unpaid: Int = 0,
     val partial: Int = 0,
