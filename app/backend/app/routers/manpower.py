@@ -31,6 +31,57 @@ SELF_EDITABLE = {
     "aadhar_address", "photo_url", "address",
 }
 
+# --- Profile change-request flow -------------------------------------------------
+# After the one-time lock, an employee can REQUEST a change to any of their profile
+# fields with the actual new value; HR / Admin review it and, on approval, the value
+# is applied to their profile.
+CR_APPROVERS = ("admin", "hr")           # who reviews change requests (HR/Admin only)
+
+# Any profile field the employee may request a change to, with a human label. Excludes
+# system-managed identity (id, emp_code, role, is_active, profile_completed, team-lead hat).
+REQUESTABLE_FIELDS = {
+    "name": "Full name", "email": "Login email", "phone": "Phone",
+    "designation": "Designation", "location": "Location", "branch": "Branch",
+    "gender": "Gender", "dob": "Date of birth", "joining_date": "Date of joining",
+    "blood_group": "Blood group", "marital_status": "Marital status",
+    "emergency_contact": "Emergency contact no.", "emergency_name": "Emergency contact name",
+    "emergency_relation": "Emergency contact relation", "aadhar_number": "Aadhaar number",
+    "pan_number": "PAN number", "bank_holder": "Bank account holder",
+    "bank_account": "Bank account number", "ifsc_code": "IFSC code", "bank_name": "Bank name",
+    "current_address": "Current address", "aadhar_address": "Aadhaar address",
+    "rent_own": "Rent / Own", "hr_ref": "HR reference", "ctc": "CTC",
+}
+_CR_DATE_FIELDS = ("dob", "joining_date")
+
+
+def _cr_display(u: models.User, field: str):
+    """Current value of a requestable field as a plain string for the diff view."""
+    v = getattr(u, field, None)
+    if field in _CR_DATE_FIELDS and v:
+        try:
+            return v.isoformat()
+        except Exception:
+            return str(v)
+    return "" if v is None else str(v)
+
+
+def _pcr(r: "models.ProfileChangeRequest", names: dict) -> dict:
+    nm = names.get(r.user_id, (None, None, None))
+    rv = names.get(r.reviewed_by, (None, None, None)) if r.reviewed_by else (None, None, None)
+    return {
+        "id": r.id, "user_id": r.user_id, "user_name": nm[0], "user_code": nm[2],
+        "user_branch": nm[1], "field": r.field, "field_label": r.field_label,
+        "old_value": r.old_value, "new_value": r.new_value, "note": r.note,
+        "status": r.status, "review_note": r.review_note,
+        "reviewed_by": r.reviewed_by, "reviewer_name": rv[0],
+        "reviewed_at": r.reviewed_at.isoformat() if r.reviewed_at else None,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    }
+
+
+def _cr_names(db: Session) -> dict:
+    return {u.id: (u.name, u.branch, u.emp_code) for u in db.query(models.User).all()}
+
 
 def _emp(u: models.User) -> dict:
     return {
@@ -230,7 +281,7 @@ def update_my_profile(body: dict = Body(...), db: Session = Depends(get_db),
     is_hr = user.role in HR_ROLES
     if user.profile_completed and not is_hr:
         raise HTTPException(status_code=403,
-                            detail="Your profile has already been completed. Ask HR/admin for further changes.")
+                            detail="Your profile is locked. Submit a change request for HR/Admin approval.")
     changed = 0
     for k, v in body.items():
         if k not in SELF_EDITABLE:
@@ -249,6 +300,144 @@ def update_my_profile(body: dict = Body(...), db: Session = Depends(get_db),
                  detail=f"{'HR' if is_hr else 'Self'} profile update ({changed} fields)")
     db.commit()
     return {"ok": True, "profile_completed": bool(user.profile_completed)}
+
+
+# --- Profile change requests (locked employees) --------------------------------
+@router.get("/me/change-fields")
+def my_change_fields(user: models.User = Depends(get_current_user)):
+    """The fields an employee may request a change to, each with its current value."""
+    return [{"field": f, "label": lbl, "current": _cr_display(user, f)}
+            for f, lbl in REQUESTABLE_FIELDS.items()]
+
+
+@router.post("/me/change-request")
+def submit_change_request(body: dict = Body(...), db: Session = Depends(get_db),
+                          user: models.User = Depends(get_current_user)):
+    """Employee asks HR/Admin to change one profile field to a specific new value."""
+    field = (body.get("field") or "").strip()
+    if field not in REQUESTABLE_FIELDS:
+        raise HTTPException(status_code=400, detail="That field cannot be changed by request.")
+    new_value = body.get("value")
+    new_value = "" if new_value is None else str(new_value).strip()
+    if not new_value:
+        raise HTTPException(status_code=400, detail="Enter the new value you want.")
+    old_value = _cr_display(user, field)
+    if new_value == old_value:
+        raise HTTPException(status_code=400, detail="That value is the same as your current one.")
+    # One open request per field — replace any earlier pending one for the same field.
+    db.query(models.ProfileChangeRequest).filter(
+        models.ProfileChangeRequest.user_id == user.id,
+        models.ProfileChangeRequest.field == field,
+        models.ProfileChangeRequest.status == "pending").update(
+        {models.ProfileChangeRequest.status: "superseded"})
+    r = models.ProfileChangeRequest(
+        user_id=user.id, field=field, field_label=REQUESTABLE_FIELDS[field],
+        old_value=old_value, new_value=new_value,
+        note=(body.get("note") or "").strip()[:300] or None, status="pending")
+    db.add(r)
+    db.flush()
+    # Alert HR / Admin.
+    from .notifications import push
+    for appr in db.query(models.User).filter(models.User.role.in_(CR_APPROVERS),
+                                             models.User.is_active.is_(True)).all():
+        push(db, appr.id, f"Profile change request — {user.name}",
+             f"{REQUESTABLE_FIELDS[field]}: “{old_value or '—'}” → “{new_value}”",
+             ntype="profile_request", by_name=user.name)
+    audit.record(db, user, "profile_update", None, entity_type="staff",
+                 detail=f"Requested change: {REQUESTABLE_FIELDS[field]} → {new_value}")
+    db.commit()
+    db.refresh(r)
+    return _pcr(r, _cr_names(db))
+
+
+@router.get("/me/change-requests")
+def my_change_requests(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """The signed-in employee's own change requests, newest first."""
+    rows = (db.query(models.ProfileChangeRequest)
+            .filter(models.ProfileChangeRequest.user_id == user.id)
+            .order_by(models.ProfileChangeRequest.created_at.desc()).all())
+    names = _cr_names(db)
+    return [_pcr(r, names) for r in rows]
+
+
+@router.get("/change-requests")
+def list_change_requests(status: str | None = None, q: str | None = None,
+                         db: Session = Depends(get_db),
+                         user: models.User = Depends(require_roles(*CR_APPROVERS))):
+    """HR / Admin: all employees' profile change requests, filterable by status + text."""
+    query = db.query(models.ProfileChangeRequest)
+    if status and status != "all":
+        query = query.filter(models.ProfileChangeRequest.status == status)
+    rows = query.order_by(models.ProfileChangeRequest.created_at.desc()).all()
+    names = _cr_names(db)
+    out = [_pcr(r, names) for r in rows]
+    if q:
+        s = q.lower().strip()
+        out = [e for e in out if any(s in (str(e.get(k) or "")).lower() for k in
+               ("user_name", "user_code", "user_branch", "field_label", "new_value", "old_value"))]
+    return out
+
+
+@router.get("/change-requests/pending-count")
+def change_requests_pending_count(db: Session = Depends(get_db),
+                                  user: models.User = Depends(require_roles(*CR_APPROVERS))):
+    n = db.query(models.ProfileChangeRequest).filter(
+        models.ProfileChangeRequest.status == "pending").count()
+    return {"pending": n}
+
+
+@router.post("/change-requests/{req_id}/{decision}")
+def decide_change_request(req_id: int, decision: str, body: dict = Body(default={}),
+                          db: Session = Depends(get_db),
+                          user: models.User = Depends(require_roles(*CR_APPROVERS))):
+    """HR / Admin approve (applies the value) or reject a profile change request."""
+    if decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be approve or reject")
+    r = db.query(models.ProfileChangeRequest).filter(
+        models.ProfileChangeRequest.id == req_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if r.status != "pending":
+        raise HTTPException(status_code=400, detail=f"This request is already {r.status}.")
+    emp = db.query(models.User).filter(models.User.id == r.user_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    if decision == "approve":
+        field, val = r.field, r.new_value
+        if field == "email":
+            new_email = (val or "").strip().lower()
+            if new_email and db.query(models.User).filter(
+                    models.User.email == new_email, models.User.id != emp.id).first():
+                raise HTTPException(status_code=400, detail="That login email is already registered.")
+            emp.email = new_email
+        elif field in _CR_DATE_FIELDS:
+            from datetime import datetime as _dt
+            try:
+                setattr(emp, field, _dt.strptime(str(val)[:10], "%Y-%m-%d").date() if val else None)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Approved value is not a valid date (YYYY-MM-DD).")
+        else:
+            setattr(emp, field, val if val not in ("",) else None)
+        r.status = "approved"
+    else:
+        r.status = "rejected"
+    from datetime import datetime as _dtn, timezone as _tz
+    r.reviewed_by = user.id
+    r.reviewed_at = _dtn.now(_tz.utc)
+    r.review_note = (body.get("review_note") or "").strip()[:300] or None
+
+    from .notifications import push
+    verb = "approved" if decision == "approve" else "rejected"
+    push(db, emp.id, f"Profile change {verb}",
+         f"{r.field_label} → “{r.new_value}” was {verb}"
+         + (f" · {r.review_note}" if r.review_note else ""),
+         ntype="profile_request", by_name=user.name)
+    audit.record(db, user, "staff_update", None, entity_type="staff", target_user_id=emp.id,
+                 detail=f"{verb.title()} profile change: {r.field_label} → {r.new_value}")
+    db.commit()
+    db.refresh(r)
+    return _pcr(r, _cr_names(db))
 
 
 # Registered AFTER the /me routes so "/me" is never captured as an emp_id.

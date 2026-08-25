@@ -145,12 +145,24 @@ class Repository(context: Context) {
     suspend fun deleteUser(id: Int) = Api.service.deleteUser(id)
 
     // --- Leave ---
-    suspend fun leaves(status: String? = null, scope: String = "auto"): List<Leave> =
-        Api.service.leaves(status, scope)
+    suspend fun leaves(status: String? = null, scope: String = "auto",
+                       leaveType: String? = null, fromDate: String? = null,
+                       toDate: String? = null, q: String? = null): List<Leave> =
+        Api.service.leaves(status, scope, leaveType, fromDate, toDate, q)
     suspend fun applyLeave(body: LeaveCreate): Leave = Api.service.applyLeave(body)
     suspend fun leaveBalance(): List<LeaveBalance> = Api.service.leaveBalance()
     suspend fun decideLeave(id: Int, approve: Boolean): Leave =
         Api.service.decideLeave(id, if (approve) "approve" else "reject")
+
+    // --- Profile change requests ---
+    suspend fun myChangeFields(): List<ChangeField> = Api.service.myChangeFields()
+    suspend fun submitChangeRequest(field: String, value: String, note: String?): ProfileChangeRequest =
+        Api.service.submitChangeRequest(mapOf("field" to field, "value" to value, "note" to note))
+    suspend fun myChangeRequests(): List<ProfileChangeRequest> = Api.service.myChangeRequests()
+    suspend fun changeRequests(status: String? = null, q: String? = null): List<ProfileChangeRequest> =
+        Api.service.changeRequests(status, q)
+    suspend fun decideChangeRequest(id: Int, approve: Boolean, reviewNote: String?): ProfileChangeRequest =
+        Api.service.decideChangeRequest(id, if (approve) "approve" else "reject", mapOf("review_note" to reviewNote))
 
     // --- Devices ---
     suspend fun devices(): List<Device> = Api.service.devices()

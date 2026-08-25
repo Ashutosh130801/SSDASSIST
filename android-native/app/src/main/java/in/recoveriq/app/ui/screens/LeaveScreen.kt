@@ -54,7 +54,13 @@ fun LeaveScreen(vm: AuthViewModel, user: User) {
     var refresh by remember { mutableIntStateOf(0) }
     var showApply by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val canApprove = user.isManager || user.isAdmin
+    val canApprove = user.isManager || user.isAdmin || user.role == "hr" || user.role == "headoffice"
+    // Leave history (all employees) is an HR / manager function — admin is left out of it.
+    val canSeeHistory = user.isManager || user.role == "hr" || user.role == "headoffice"
+    // Leave history (all employees) filters.
+    var histStatus by remember { mutableStateOf("all") }
+    var histType by remember { mutableStateOf("all") }
+    var histQ by remember { mutableStateOf("") }
 
     Scaffold(
         floatingActionButton = {
@@ -84,15 +90,62 @@ fun LeaveScreen(vm: AuthViewModel, user: User) {
                     }
                 }
             }
-            item { SectionTitle(if (canApprove) "Requests" else "My leave") }
+            item { SectionTitle(if (canApprove) "Pending approvals" else "My leave") }
             item {
-                AsyncContent(key = refresh, block = { vm.repo.leaves() }) { leaves, _ ->
-                    if (leaves.isEmpty()) EmptyState("No leave records.")
+                AsyncContent(key = refresh, block = { vm.repo.leaves(status = if (canApprove) "pending" else null, scope = if (canApprove) "team" else "mine") }) { leaves, _ ->
+                    if (leaves.isEmpty()) EmptyState(if (canApprove) "Nothing to approve." else "No leave records.")
                     else Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         leaves.forEach { lv ->
-                            LeaveCard(lv, canApprove) { approve ->
+                            LeaveCard(lv, canApprove && lv.userId != user.id) { approve ->
                                 scope.launch { runCatching { vm.repo.decideLeave(lv.id, approve) }; refresh++ }
                             }
+                        }
+                    }
+                }
+            }
+            if (!canApprove) {
+                item { SectionTitle("My leave history") }
+                item {
+                    AsyncContent(key = refresh, block = { vm.repo.leaves(scope = "mine") }) { leaves, _ ->
+                        if (leaves.isEmpty()) EmptyState("No leave records.")
+                        else Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            leaves.forEach { lv -> LeaveCard(lv, false) {} }
+                        }
+                    }
+                }
+            }
+            if (canSeeHistory) {
+                item { SectionTitle("Leave history — all employees") }
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("all" to "All", "pending" to "Pending", "approved" to "Approved", "rejected" to "Rejected").forEach { (v, l) ->
+                                FilterChip(selected = histStatus == v, onClick = { histStatus = v }, label = { Text(l) })
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            (listOf("all" to "All types") + listOf("Casual", "Sick", "Earned", "Unpaid").map { it to it }).forEach { (v, l) ->
+                                FilterChip(selected = histType == v, onClick = { histType = v }, label = { Text(l) })
+                            }
+                        }
+                        Fld(histQ, "Search name, branch, type, reason") { histQ = it }
+                    }
+                }
+                item {
+                    AsyncContent(
+                        key = "hist:$histStatus:$histType:$histQ:$refresh",
+                        block = {
+                            vm.repo.leaves(
+                                status = histStatus.takeIf { it != "all" },
+                                scope = "team",
+                                leaveType = histType.takeIf { it != "all" },
+                                q = histQ.ifBlank { null },
+                            )
+                        },
+                    ) { leaves, _ ->
+                        if (leaves.isEmpty()) EmptyState("No leave records match.")
+                        else Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            leaves.forEach { lv -> LeaveCard(lv, false) {} }
                         }
                     }
                 }

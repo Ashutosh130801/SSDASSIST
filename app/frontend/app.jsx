@@ -4181,14 +4181,31 @@ function LeaveView({ user }) {
   const [team, setTeam] = useState(null); const [ins, setIns] = useState(null);
   // HR + head office approve leave org-wide, alongside admin/manager.
   const isMgr = ['admin', 'manager', 'hr', 'headoffice'].includes(user.role);
+  // Leave history (all employees) is an HR / manager function — admin is left out of it.
+  const canSeeHistory = ['manager', 'hr', 'headoffice'].includes(user.role);
   const [ltype, setLtype] = useState('Casual'); const [s1, setS1] = useState(''); const [s2, setS2] = useState('');
   const [reason, setReason] = useState(''); const [busy, setBusy] = useState(false);
+  // Leave history (all employees) — filters + search, HR/admin/manager/head office.
+  const [hist, setHist] = useState(null);
+  const [hf, setHf] = useState({ status: 'all', type: 'all', from: '', to: '', q: '' });
+  const loadHist = () => {
+    if (!canSeeHistory) return;
+    const p = new URLSearchParams({ scope: 'team' });
+    if (hf.status !== 'all') p.set('status', hf.status);
+    if (hf.type !== 'all') p.set('leave_type', hf.type);
+    if (hf.from) p.set('from_date', hf.from);
+    if (hf.to) p.set('to_date', hf.to);
+    if (hf.q.trim()) p.set('q', hf.q.trim());
+    api('/api/leaves?' + p.toString()).then(setHist).catch(() => setHist([]));
+  };
   const load = () => {
     api('/api/leaves/balance').then(setBal).catch(() => {});
     api('/api/leaves?scope=mine').then(setMine).catch(() => setMine([]));
     if (isMgr) { api('/api/leaves?scope=team&status=pending').then(setTeam).catch(() => setTeam([])); api('/api/leaves/insights').then(setIns).catch(() => {}); }
+    loadHist();
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => { loadHist(); }, [hf.status, hf.type, hf.from, hf.to]);
   const apply = async () => {
     if (!s1 || !s2) return; setBusy(true);
     try { await api('/api/leaves', { method: 'POST', body: { leave_type: ltype, start_date: s1, end_date: s2, reason } });
@@ -4215,7 +4232,9 @@ function LeaveView({ user }) {
               <td><b>{l.user_name}</b><div className="muted" style={{ fontSize: 11.5 }}>{l.user_branch}</div></td>
               <td>{l.leave_type}</td><td className="muted">{l.start_date} → {l.end_date}</td><td className="mono">{l.days}</td>
               <td className="muted">{l.reason || '—'}</td>
-              <td style={{ whiteSpace: 'nowrap' }}><button className="btn sm gold" onClick={() => decide(l.id, 'approve')}>Approve</button>{' '}<button className="btn sm" onClick={() => decide(l.id, 'reject')}>Reject</button></td>
+              <td style={{ whiteSpace: 'nowrap' }}>{l.user_id === user.id
+                ? <span className="muted" style={{ fontSize: 11.5 }}>Your request — sent to Admin</span>
+                : <><button className="btn sm gold" onClick={() => decide(l.id, 'approve')}>Approve</button>{' '}<button className="btn sm" onClick={() => decide(l.id, 'reject')}>Reject</button></>}</td>
             </tr>)}</tbody></table></div>}
       </div>}
       <div className="grid2" style={{ gridTemplateColumns: '1.2fr 1fr' }}>
@@ -4248,6 +4267,35 @@ function LeaveView({ user }) {
               <td><span className={cx('badge', stBadge(l.status))}>{l.status}</span></td><td className="muted">{l.reason || '—'}</td>
             </tr>)}</tbody></table></div>}
       </div>
+      {canSeeHistory && <div className="glass card" style={{ marginTop: 16 }}>
+        <div className="section-h"><h3 style={{ fontSize: 15 }}>Leave history — all employees {hist ? `(${hist.length})` : ''}</h3></div>
+        <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          {[['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected']].map(([v, l]) =>
+            <div key={v} className={cx('chip', hf.status === v && 'on')} onClick={() => setHf(s => ({ ...s, status: v }))}>{l}</div>)}
+          <span style={{ width: 8 }} />
+          {[['all', 'All types'], ...LEAVE_TYPES.map(t => [t, t])].map(([v, l]) =>
+            <div key={v} className={cx('chip', hf.type === v && 'on')} onClick={() => setHf(s => ({ ...s, type: v }))}>{l}</div>)}
+        </div>
+        <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+          <div className="field" style={{ margin: 0 }}><label style={{ fontSize: 11 }}>From</label><input className="input" type="date" value={hf.from} onChange={e => setHf(s => ({ ...s, from: e.target.value }))} /></div>
+          <div className="field" style={{ margin: 0 }}><label style={{ fontSize: 11 }}>To</label><input className="input" type="date" value={hf.to} onChange={e => setHf(s => ({ ...s, to: e.target.value }))} /></div>
+          <div className="field" style={{ margin: 0, flex: 1, minWidth: 180 }}><label style={{ fontSize: 11 }}>Search</label>
+            <input className="input" placeholder="Name, branch, type, reason…" value={hf.q}
+              onChange={e => setHf(s => ({ ...s, q: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') loadHist(); }} /></div>
+          <button className="btn sm" style={{ alignSelf: 'flex-end' }} onClick={loadHist}>Search</button>
+          {(hf.status !== 'all' || hf.type !== 'all' || hf.from || hf.to || hf.q) &&
+            <button className="btn sm" style={{ alignSelf: 'flex-end' }} onClick={() => setHf({ status: 'all', type: 'all', from: '', to: '', q: '' })}>Clear</button>}
+        </div>
+        {!hist ? <Loader /> : hist.length === 0 ? <p className="muted">No leave records match.</p> :
+          <div className="tablewrap"><table>
+            <thead><tr><th>Who</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Approver</th><th>Reason</th></tr></thead>
+            <tbody>{hist.map(l => <tr key={l.id}>
+              <td><b>{l.user_name}</b><div className="muted" style={{ fontSize: 11.5 }}>{l.user_branch || '—'}</div></td>
+              <td>{l.leave_type}</td><td className="muted" style={{ whiteSpace: 'nowrap' }}>{l.start_date} → {l.end_date}</td><td className="mono">{l.days}</td>
+              <td><span className={cx('badge', stBadge(l.status))}>{l.status}</span></td>
+              <td className="muted">{l.approver_name || '—'}</td><td className="muted">{l.reason || '—'}</td>
+            </tr>)}</tbody></table></div>}
+      </div>}
     </div>
   );
 }
@@ -5515,10 +5563,12 @@ function SheetView({ user, config }) {
         .sv-btn:hover{border-color:var(--gold)}
         .sv-btn.primary{background:var(--gold);color:#fff;border-color:var(--gold)}
         .sv-dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px}
-        .sv-scroll{overflow:auto;border:1px solid var(--stroke-soft);border-radius:14px;background:var(--glass-2);flex:1}
+        .sv-scroll{overflow:auto;border:1px solid var(--stroke-soft);border-radius:14px;background:var(--glass-2);flex:1;max-height:calc(100vh - 210px)}
         table.sv{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
         table.sv th,table.sv td{padding:7px 10px;border-bottom:1px solid var(--stroke-soft);white-space:nowrap;text-align:left}
-        table.sv thead th{position:sticky;top:0;background:#EEF3FB;cursor:pointer;z-index:2;font-weight:600;color:var(--ink)}
+        table.sv thead th{position:sticky;background:#EEF3FB;cursor:pointer;z-index:2;font-weight:600;color:var(--ink)}
+        table.sv thead tr:first-child th{top:0;z-index:4;box-shadow:0 1px 0 var(--stroke-soft)}
+        table.sv thead tr.sv-fil th{top:34px;z-index:3;box-shadow:0 2px 4px rgba(0,0,0,.08)}
         table.sv tr:hover td{background:#F7FAFF}
         table.sv td input,table.sv td select{width:100%;min-width:80px;border:1px solid transparent;background:transparent;border-radius:6px;padding:4px 6px;font-size:13px}
         table.sv td input:focus,table.sv td select:focus{border-color:var(--gold);background:#fff;outline:none}
@@ -6268,6 +6318,13 @@ function ProfileView({ user }) {
   const [photoBusy, setPhotoBusy] = useState(false);
   const [trends, setTrends] = useState(null);   // FTD/MTD/LMTD/Overall for field/calling staff
   const showTrends = ['fos', 'telecaller', 'teamlead'].includes(user.role);
+  // Change-request flow for locked (non-HR) employees.
+  const [crFields, setCrFields] = useState(null);
+  const [myReqs, setMyReqs] = useState(null);
+  const [crForm, setCrForm] = useState({ field: '', value: '', note: '' });
+  const [crBusy, setCrBusy] = useState(false);
+  const [crOpen, setCrOpen] = useState(false);
+  const loadReqs = () => { api('/api/manpower/me/change-requests').then(setMyReqs).catch(() => setMyReqs([])); };
   const load = () => api('/api/manpower/me').then(m => { setMe(m); setF(m); }).catch(() => setMe({}));
   const uploadPhoto = async (fileObj) => {
     if (!fileObj) return;
@@ -6282,6 +6339,25 @@ function ProfileView({ user }) {
   useEffect(() => { load(); if (showTrends) api('/api/mis/employee-trends?user_id=' + user.id).then(r => setTrends(r.trends)).catch(() => {}); }, []);
   const isHR = ['admin', 'headoffice', 'hr'].includes(user.role);
   const canEdit = me && (!me.profile_completed || isHR);
+  const locked = me && me.profile_completed && !isHR;
+  useEffect(() => {
+    if (locked) {
+      api('/api/manpower/me/change-fields').then(setCrFields).catch(() => setCrFields([]));
+      loadReqs();
+    }
+  }, [locked]);
+  const crField = crFields && crFields.find(x => x.field === crForm.field);
+  const isDateField = ['dob', 'joining_date'].includes(crForm.field);
+  const submitReq = async () => {
+    if (!crForm.field || !String(crForm.value).trim()) { toast('Pick a field and enter the new value.', 'err'); return; }
+    setCrBusy(true);
+    try {
+      await api('/api/manpower/me/change-request', { method: 'POST', body: crForm });
+      toast('Request sent to HR/Admin for approval.');
+      setCrForm({ field: '', value: '', note: '' }); setCrOpen(false); loadReqs();
+    } catch (e) { toast(e.message, 'err'); } finally { setCrBusy(false); }
+  };
+  const reqBadge = s => s === 'approved' ? 'paid' : s === 'rejected' ? 'unpaid' : s === 'pending' ? 'partial' : '';
   const upd = (k, v) => setF(s => ({ ...s, [k]: v }));
   const save = async () => {
     setBusy(true);
@@ -6327,8 +6403,47 @@ function ProfileView({ user }) {
             </div>
             {canEdit && <button className="btn gold" style={{ marginTop: 12 }} onClick={() => setEditing(true)}>
               {me.profile_completed ? '✏ Edit profile' : '✏ Complete my profile (one-time)'}</button>}
-            {!me.profile_completed && !isHR && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>You can complete your profile once. After saving, ask HR for any further change.</p>}
-            {me.profile_completed && !isHR && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>🔒 Your profile is completed and locked. Contact HR/admin for changes.</p>}
+            {!me.profile_completed && !isHR && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>You can complete your profile once. After saving, request any further change for HR/Admin approval.</p>}
+            {locked && <div style={{ marginTop: 12 }}>
+              <div className="glass card" style={{ borderLeft: '3px solid var(--gold)', padding: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <b>🔒 Your profile is locked.</b>
+                  <span className="muted" style={{ fontSize: 12.5, flex: 1 }}>Need a correction? Request a change — HR/Admin will review and apply it.</span>
+                  <button className="btn sm gold" onClick={() => setCrOpen(o => !o)}>{crOpen ? 'Close' : '✏ Request a change'}</button>
+                </div>
+                {crOpen && <div style={{ marginTop: 10 }}>
+                  <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <div className="field"><label>Field to change</label>
+                      <select className="input" value={crForm.field}
+                        onChange={e => setCrForm(s => ({ ...s, field: e.target.value, value: '' }))}>
+                        <option value="">Choose a field…</option>
+                        {(crFields || []).map(x => <option key={x.field} value={x.field}>{x.label}</option>)}
+                      </select></div>
+                    <div className="field"><label>New value</label>
+                      <input className="input" type={isDateField ? 'date' : 'text'} value={crForm.value}
+                        onChange={e => setCrForm(s => ({ ...s, value: e.target.value }))}
+                        placeholder={crField ? 'New ' + crField.label.toLowerCase() : 'Select a field first'} /></div>
+                  </div>
+                  {crField && <p className="muted" style={{ fontSize: 12, margin: '2px 0 8px' }}>Current: <b>{crField.current || '—'}</b></p>}
+                  <div className="field"><label>Reason (optional)</label>
+                    <input className="input" value={crForm.note} maxLength={300}
+                      onChange={e => setCrForm(s => ({ ...s, note: e.target.value }))} placeholder="Why this change is needed" /></div>
+                  <div className="toolbar"><div style={{ flex: 1 }} />
+                    <button className="btn gold" disabled={crBusy} onClick={submitReq}>{crBusy ? 'Sending…' : '📨 Submit request'}</button></div>
+                </div>}
+              </div>
+              {myReqs && myReqs.length > 0 && <div className="glass card" style={{ marginTop: 10 }}>
+                <div className="section-h"><h3 style={{ fontSize: 14 }}>My change requests</h3></div>
+                <div className="tablewrap"><table>
+                  <thead><tr><th>Field</th><th>Requested value</th><th>Status</th><th>Reviewed by</th></tr></thead>
+                  <tbody>{myReqs.map(r => <tr key={r.id}>
+                    <td>{r.field_label}</td>
+                    <td className="muted">{r.old_value ? <span>{r.old_value} → <b>{r.new_value}</b></span> : <b>{r.new_value}</b>}</td>
+                    <td><span className={cx('badge', reqBadge(r.status))}>{r.status}</span>{r.review_note ? <div className="muted" style={{ fontSize: 11 }}>{r.review_note}</div> : null}</td>
+                    <td className="muted">{r.reviewer_name || '—'}</td>
+                  </tr>)}</tbody></table></div>
+              </div>}
+            </div>}
           </>) : (<>
             <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {PROFILE_FIELDS.map(([k, label, type]) => <div className="field" key={k}>
@@ -6340,6 +6455,66 @@ function ProfileView({ user }) {
           </>)}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ============================== Profile change requests (HR / Admin) ============================== */
+function ChangeRequestsView({ user }) {
+  const [rows, setRows] = useState(null);
+  const [status, setStatus] = useState('pending');
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(0);
+  const [note, setNote] = useState({});   // per-request review note
+  const load = () => {
+    const p = new URLSearchParams(); if (status) p.set('status', status); if (q.trim()) p.set('q', q.trim());
+    api('/api/manpower/change-requests?' + p.toString()).then(setRows).catch(() => setRows([]));
+  };
+  useEffect(() => { load(); }, [status]);
+  useDataChanged(load);
+  const decide = async (r, decision) => {
+    setBusy(r.id);
+    try {
+      await api(`/api/manpower/change-requests/${r.id}/${decision}`, { method: 'POST', body: { review_note: note[r.id] || '' } });
+      toast(decision === 'approve' ? 'Approved & applied to profile.' : 'Request rejected.');
+      setNote(n => { const c = { ...n }; delete c[r.id]; return c; }); load();
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(0); }
+  };
+  const badge = s => s === 'approved' ? 'paid' : s === 'rejected' ? 'unpaid' : s === 'pending' ? 'partial' : '';
+  return (
+    <div>
+      <div className="section-h"><h2 style={{ margin: 0 }}>Profile Change Requests</h2>
+        <span className="muted" style={{ fontSize: 13 }}>Employees' requested profile edits — approve to apply, or reject.</span></div>
+      <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+        {[['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['all', 'All']].map(([v, l]) =>
+          <div key={v} className={cx('chip', status === v && 'on')} onClick={() => setStatus(v)}>{l}</div>)}
+        <div style={{ flex: 1 }} />
+        <input className="input" style={{ maxWidth: 240 }} placeholder="Search name, field, value…" value={q}
+          onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') load(); }} />
+        <button className="btn sm" onClick={load}>Search</button>
+      </div>
+      {!rows ? <Loader /> : rows.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No requests{status !== 'all' ? ` (${status})` : ''}.</div> :
+        <div style={{ display: 'grid', gap: 10 }}>
+          {rows.map(r => <div key={r.id} className="glass card" style={{ padding: 12 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+              <b>{r.user_name}</b>
+              <span className="muted" style={{ fontSize: 12 }}>{r.user_code || ''}{r.user_branch ? ' · ' + r.user_branch : ''}</span>
+              <span className={cx('badge', badge(r.status))}>{r.status}</span>
+              <span className="muted" style={{ fontSize: 12, marginLeft: 'auto' }}>{fmtDT(r.created_at)}</span>
+            </div>
+            <div style={{ marginTop: 6, fontSize: 14 }}>
+              <b>{r.field_label}</b>: <span className="muted">{r.old_value || '—'}</span> → <b style={{ color: 'var(--gold)' }}>{r.new_value}</b>
+            </div>
+            {r.note && <p className="muted" style={{ fontSize: 12.5, margin: '4px 0 0' }}>Reason: {r.note}</p>}
+            {r.status === 'pending' ? <div className="toolbar" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
+              <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Remark (optional)"
+                value={note[r.id] || ''} onChange={e => setNote(n => ({ ...n, [r.id]: e.target.value }))} />
+              <button className="btn sm gold" disabled={busy === r.id} onClick={() => decide(r, 'approve')}>Approve & apply</button>
+              <button className="btn sm" disabled={busy === r.id} onClick={() => decide(r, 'reject')}>Reject</button>
+            </div> : <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+              {r.status === 'approved' ? '✓ Applied' : '✗ Rejected'}{r.reviewer_name ? ' by ' + r.reviewer_name : ''}{r.review_note ? ' · ' + r.review_note : ''}</p>}
+          </div>)}
+        </div>}
     </div>
   );
 }
@@ -6436,14 +6611,14 @@ function SupportView({ user }) {
 }
 
 const NAV = {
-  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['audit', '📜', 'Audit Log'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  hr: [['manpower', '🧑‍💼', 'Manpower'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
+  hr: [['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
   it: [['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
   staff: [['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
 };
@@ -6540,6 +6715,7 @@ const TOUR_DESC = {
   fmap: 'Field Tracking — your live location and today’s route; log GPS-stamped visits from here.',
   leave: 'Leave — apply for leave and track your approvals.',
   manpower: 'Manpower — employee records, the document vault (upload a whole folder), and offer / agreement letters.',
+  preqs: 'Change Requests — employees\' requested profile edits; approve to apply, or reject.',
   staff: 'Team — branch staff, their profiles and performance.',
   escalations: 'Escalations — hard or high-value cases pulled up for special attention.',
   records: 'Activity — a live log of every call, visit and payment.',
@@ -6641,6 +6817,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'audit': return <AuditLogView user={user} />;
       case 'archive': return <ArchiveView user={user} />;
       case 'manpower': return <ManpowerView user={user} />;
+      case 'preqs': return <ChangeRequestsView user={user} />;
       case 'profile': return <ProfileView user={user} config={config} />;
       case 'feedback': return <FeedbackView user={user} />;
       case 'escalations': return <EscalationsView user={user} />;

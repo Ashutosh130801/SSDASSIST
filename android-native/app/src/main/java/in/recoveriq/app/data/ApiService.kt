@@ -202,7 +202,11 @@ interface ApiService {
 
     // --- Leave ---
     @GET("api/leaves")
-    suspend fun leaves(@Query("status") status: String? = null, @Query("scope") scope: String = "auto"): List<Leave>
+    suspend fun leaves(@Query("status") status: String? = null, @Query("scope") scope: String = "auto",
+                       @Query("leave_type") leaveType: String? = null,
+                       @Query("from_date") fromDate: String? = null,
+                       @Query("to_date") toDate: String? = null,
+                       @Query("q") q: String? = null): List<Leave>
 
     @POST("api/leaves")
     suspend fun applyLeave(@Body body: LeaveCreate): Leave
@@ -256,6 +260,24 @@ interface ApiService {
 
     @POST("api/auth/change-password")
     suspend fun changePassword(@Body body: ChangePasswordRequest): Token
+
+    // --- Profile change requests ---
+    @GET("api/manpower/me/change-fields")
+    suspend fun myChangeFields(): List<ChangeField>
+
+    @POST("api/manpower/me/change-request")
+    suspend fun submitChangeRequest(@Body body: Map<String, String?>): ProfileChangeRequest
+
+    @GET("api/manpower/me/change-requests")
+    suspend fun myChangeRequests(): List<ProfileChangeRequest>
+
+    @GET("api/manpower/change-requests")
+    suspend fun changeRequests(@Query("status") status: String? = null,
+                               @Query("q") q: String? = null): List<ProfileChangeRequest>
+
+    @POST("api/manpower/change-requests/{id}/{decision}")
+    suspend fun decideChangeRequest(@Path("id") id: Int, @Path("decision") decision: String,
+                                    @Body body: Map<String, String?>): ProfileChangeRequest
 
     // --- Notifications (bell) ---
     @GET("api/notifications")

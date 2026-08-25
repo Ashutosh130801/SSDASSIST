@@ -19,6 +19,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -99,13 +101,7 @@ fun ProfileScreen(vm: AuthViewModel, user: User) {
             if (canEdit) {
                 EditDetailsCard(vm, p) { refresh++; reload() }
             } else {
-                InfoCard {
-                    Text("Details locked", fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "Your profile is complete. Contact HR / admin to change locked fields.",
-                        style = MaterialTheme.typography.bodySmall, color = Muted,
-                    )
-                }
+                ChangeRequestSection(vm) { refresh++ }
             }
 
             InfoCard {
@@ -125,6 +121,126 @@ fun ProfileScreen(vm: AuthViewModel, user: User) {
     if (showPwd) {
         ChangePasswordDialog(vm, onDismiss = { showPwd = false })
     }
+}
+
+/** Locked profile: request a change to any field (HR/Admin approve to apply) + my request history. */
+@Composable
+private fun ChangeRequestSection(vm: AuthViewModel, onChanged: () -> Unit) {
+    var reloadKey by remember { mutableIntStateOf(0) }
+    var showDialog by remember { mutableStateOf(false) }
+
+    InfoCard {
+        Text("🔒 Your profile is locked", fontWeight = FontWeight.SemiBold)
+        Text(
+            "Need a correction? Request a change — HR/Admin will review and apply it.",
+            style = MaterialTheme.typography.bodySmall, color = Muted,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = { showDialog = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("✏ Request a change")
+        }
+    }
+
+    AsyncContent(key = reloadKey, block = { vm.repo.myChangeRequests() }) { reqs, _ ->
+        if (reqs.isNotEmpty()) InfoCard {
+            Text("My change requests", fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            reqs.forEach { r ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text(r.fieldLabel ?: r.field, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = TextDark)
+                        Text(
+                            (if (!r.oldValue.isNullOrBlank()) "${r.oldValue} → " else "") + (r.newValue ?: ""),
+                            style = MaterialTheme.typography.bodySmall, color = Muted,
+                        )
+                        if (!r.reviewNote.isNullOrBlank()) Text(r.reviewNote!!, style = MaterialTheme.typography.labelSmall, color = Muted)
+                    }
+                    val col = when (r.status) { "approved" -> Good; "rejected" -> MaterialTheme.colorScheme.error; else -> BrandBlue }
+                    Text(r.status.uppercase(), style = MaterialTheme.typography.labelSmall, color = col, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+
+    if (showDialog) ChangeRequestDialog(
+        vm = vm,
+        onDismiss = { showDialog = false },
+        onSubmitted = { showDialog = false; reloadKey++; onChanged() },
+    )
+}
+
+@Composable
+private fun ChangeRequestDialog(vm: AuthViewModel, onDismiss: () -> Unit, onSubmitted: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val fields by produceState<List<`in`.recoveriq.app.data.ChangeField>>(initialValue = emptyList()) {
+        value = runCatching { vm.repo.myChangeFields() }.getOrDefault(emptyList())
+    }
+    var menuOpen by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<`in`.recoveriq.app.data.ChangeField?>(null) }
+    var value by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var err by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Request a change") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Field to change", style = MaterialTheme.typography.labelSmall, color = Muted)
+                Box {
+                    OutlinedButton(onClick = { menuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(selected?.label ?: "Choose a field…")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        fields.forEach { f ->
+                            DropdownMenuItem(text = { Text(f.label) }, onClick = {
+                                selected = f; value = ""; menuOpen = false
+                            })
+                        }
+                    }
+                }
+                selected?.let { f ->
+                    Text("Current: ${f.current ?: "—"}", style = MaterialTheme.typography.labelSmall, color = Muted)
+                }
+                OutlinedTextField(
+                    value = value, onValueChange = { value = it },
+                    label = { Text("New value") }, singleLine = true,
+                    colors = darkFieldColors(), modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = note, onValueChange = { note = it },
+                    label = { Text("Reason (optional)") },
+                    colors = darkFieldColors(), modifier = Modifier.fillMaxWidth(),
+                )
+                err?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !busy,
+                onClick = {
+                    val f = selected
+                    err = when {
+                        f == null -> "Pick a field to change."
+                        value.isBlank() -> "Enter the new value."
+                        else -> null
+                    }
+                    if (err == null && f != null) scope.launch {
+                        busy = true
+                        val r = runCatching { vm.repo.submitChangeRequest(f.field, value.trim(), note.ifBlank { null }) }
+                        busy = false
+                        if (r.isSuccess) onSubmitted()
+                        else err = "Could not send. " + (r.exceptionOrNull()?.message ?: "Try again.")
+                    }
+                },
+            ) { Text(if (busy) "Sending…" else "Submit") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
+    )
 }
 
 @Composable

@@ -530,3 +530,24 @@ class SupportTicket(Base):
     resolved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utcnow, index=True)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ProfileChangeRequest(Base):
+    """A locked employee's request to change one of their own profile fields. HR/Admin
+    review it; on approval the new value is applied to the user's profile."""
+    __tablename__ = "profile_change_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    field = Column(String(40), nullable=False)         # profile attribute being changed
+    field_label = Column(String(80))                   # human label shown in the UI
+    old_value = Column(Text)                            # snapshot at request time
+    new_value = Column(Text)                            # requested value (applied on approve)
+    note = Column(String(300), nullable=True)          # employee's reason / context
+    status = Column(String(20), default="pending", index=True)   # pending / approved / rejected
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    review_note = Column(String(300), nullable=True)   # HR remark on decision
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+
+    user = relationship("User", foreign_keys=[user_id])

@@ -90,6 +90,7 @@ import `in`.recoveriq.app.ui.theme.TextDark
 import `in`.recoveriq.app.ui.screens.ActivityScreen
 import `in`.recoveriq.app.ui.screens.CommunicationScreen
 import `in`.recoveriq.app.ui.screens.DevicesScreen
+import `in`.recoveriq.app.ui.screens.ChangeRequestsScreen
 import `in`.recoveriq.app.ui.screens.LeaveScreen
 import `in`.recoveriq.app.ui.screens.LitigationScreen
 import `in`.recoveriq.app.ui.screens.ForcePasswordChangeScreen
@@ -386,6 +387,8 @@ private fun navEntriesFor(
     val profile = NavEntry("profile", "My E-ID", Icons.Filled.Badge) { ProfileScreen(vm, user) }
     val leave = NavEntry("leave", "Leave", Icons.Filled.BeachAccess) { LeaveScreen(vm, user) }
     val security = NavEntry("security", "Security", Icons.Filled.Lock) { SecurityScreen(vm, user) }
+    // HR/Admin: review employees' profile change requests.
+    val changeReqs = NavEntry("preqs", "Change Requests", Icons.Filled.Badge) { ChangeRequestsScreen(vm) }
 
     return when (user.role) {
         "fos" -> listOf(
@@ -426,9 +429,10 @@ private fun navEntriesFor(
             NavEntry("devices", "Devices", Icons.Filled.PhoneAndroid) { DevicesScreen(vm) },
             security,
         )
-        // HR / IT / office staff: identity card + leave + security (no case portfolios).
-        "hr", "it", "staff" -> listOf(profile, leave, security)
-        else -> listOf( // admin + head office
+        // HR: identity card + leave + change-request review + security (no case portfolios).
+        "hr" -> listOf(profile, changeReqs, leave, security)
+        "it", "staff" -> listOf(profile, leave, security)
+        else -> listOfNotNull( // admin + head office
             dashboard,
             NavEntry("cases", "Accounts", Icons.Filled.Receipt) { PortfolioScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
@@ -436,6 +440,7 @@ private fun navEntriesFor(
             NavEntry("map", "Field Tracking", Icons.Filled.Map) { LiveMapScreen(vm) },
             NavEntry("records", "Activity", Icons.Filled.History) { ActivityScreen(vm) },
             NavEntry("staff", "Team", Icons.Filled.Groups) { TeamScreen(vm) },
+            if (user.isAdmin) changeReqs else null,   // approvers are admin + HR only
             profile, leave,
             NavEntry("templates", "Communication", Icons.Filled.Phone) { CommunicationScreen(vm) },
             NavEntry("devices", "Devices", Icons.Filled.PhoneAndroid) { DevicesScreen(vm) },

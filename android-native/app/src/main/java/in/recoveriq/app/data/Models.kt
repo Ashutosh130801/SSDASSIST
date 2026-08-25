@@ -522,6 +522,32 @@ data class LeaveBalance(
     val remaining: Int? = null,
 )
 
+// ---- Profile change requests ----
+@JsonClass(generateAdapter = true)
+data class ChangeField(
+    val field: String,
+    val label: String,
+    val current: String? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class ProfileChangeRequest(
+    val id: Int,
+    @Json(name = "user_id") val userId: Int? = null,
+    @Json(name = "user_name") val userName: String? = null,
+    @Json(name = "user_code") val userCode: String? = null,
+    @Json(name = "user_branch") val userBranch: String? = null,
+    val field: String,
+    @Json(name = "field_label") val fieldLabel: String? = null,
+    @Json(name = "old_value") val oldValue: String? = null,
+    @Json(name = "new_value") val newValue: String? = null,
+    val note: String? = null,
+    val status: String,
+    @Json(name = "review_note") val reviewNote: String? = null,
+    @Json(name = "reviewer_name") val reviewerName: String? = null,
+    @Json(name = "created_at") val createdAt: String? = null,
+)
+
 // ---- Devices ----
 @JsonClass(generateAdapter = true)
 data class Device(

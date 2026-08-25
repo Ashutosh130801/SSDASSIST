@@ -33,11 +33,18 @@ def _out(lv, names):
 
 
 def _can_manage(actor, target_user):
-    # HR and head office approve leave org-wide (any staff, any branch). Admin too.
+    if not target_user:
+        return False
+    if actor.id == target_user.id:
+        return False                      # nobody approves their own leave
+    # An HR's / head office's own leave is approved by an Administrator only.
+    if target_user.role in ("hr", "headoffice"):
+        return actor.role == "admin"
+    # HR and head office approve everyone else's leave (any staff, any branch). Admin too.
     if actor.role in ("admin", "hr", "headoffice"):
         return True
     if actor.role == "manager":
-        return target_user and target_user.branch == actor.branch and target_user.role not in ("admin", "manager")
+        return target_user.branch == actor.branch and target_user.role not in ("admin", "manager")
     return False
 
 
@@ -58,24 +65,41 @@ def apply_leave(body: schemas.LeaveCreate, db: Session = Depends(get_db),
 
 
 @router.get("", response_model=list[schemas.LeaveOut])
-def list_leaves(status: str | None = None, scope: str = "auto", db: Session = Depends(get_db),
+def list_leaves(status: str | None = None, scope: str = "auto",
+                leave_type: str | None = None, from_date: date | None = None,
+                to_date: date | None = None, q: str | None = None,
+                db: Session = Depends(get_db),
                 user: models.User = Depends(get_current_user)):
     """scope=mine -> only my leaves; scope=team -> branch/all (admin/manager);
-    scope=auto -> mine for staff, team for admin/manager."""
-    q = db.query(models.Leave)
+    scope=auto -> mine for staff, team for admin/manager.
+    Optional history filters: status, leave_type, from_date/to_date (overlap), q (name/branch/type/reason)."""
+    query = db.query(models.Leave)
     want_team = scope == "team" or (scope == "auto" and user.role in ("admin", "manager", "hr", "headoffice"))
     if not want_team or user.role in ("fos", "telecaller"):
-        q = q.filter(models.Leave.user_id == user.id)
+        query = query.filter(models.Leave.user_id == user.id)
     elif user.role == "manager":
         from sqlalchemy import select
         ids = select(models.User.id).where(models.User.branch == user.branch)
-        q = q.filter(models.Leave.user_id.in_(ids))
-    # admin team -> all
-    if status:
-        q = q.filter(models.Leave.status == status)
-    rows = q.order_by(models.Leave.created_at.desc()).all()
+        query = query.filter(models.Leave.user_id.in_(ids))
+    # admin/hr/headoffice team -> all
+    if status and status != "all":
+        query = query.filter(models.Leave.status == status)
+    if leave_type and leave_type != "all":
+        query = query.filter(models.Leave.leave_type == leave_type)
+    if from_date:                       # overlaps the window [from_date, to_date]
+        query = query.filter(models.Leave.end_date >= from_date)
+    if to_date:
+        query = query.filter(models.Leave.start_date <= to_date)
+    rows = query.order_by(models.Leave.created_at.desc()).all()
     names = _names(db)
-    return [_out(lv, names) for lv in rows]
+    out = [_out(lv, names) for lv in rows]
+    if q:
+        s = q.lower().strip()
+        def _hit(d):
+            return any(s in (str(getattr(d, k, "") or "")).lower()
+                       for k in ("user_name", "user_branch", "leave_type", "reason", "status"))
+        out = [d for d in out if _hit(d)]
+    return out
 
 
 @router.get("/balance")
@@ -109,6 +133,8 @@ def decide(leave_id: int, decision: str, db: Session = Depends(get_db),
     if not lv:
         raise HTTPException(status_code=404, detail="Leave not found")
     target = db.query(models.User).filter(models.User.id == lv.user_id).first()
+    if target and actor.id == target.id:
+        raise HTTPException(status_code=403, detail="You can't approve your own leave — it goes to an Administrator.")
     if not _can_manage(actor, target):
         raise HTTPException(status_code=403, detail="Not allowed to decide this request")
     lv.status = "approved" if decision == "approve" else "rejected"
