@@ -311,21 +311,23 @@ function bearingDeg(a, b) {
   return (toD(Math.atan2(y, x)) + 360) % 360;
 }
 /* A Leaflet DivIcon that looks like a live rider pin (Swiggy/Zomato style). */
-function fosDivIcon(label, heading) {
+function fosDivIcon(label, heading, online) {
   const L = window.L; if (!L) return null;
   if (!document.getElementById('fospulse-css')) {
     const st = document.createElement('style'); st.id = 'fospulse-css';
     st.textContent = '@keyframes fospulse{0%{transform:scale(.5);opacity:.7}100%{transform:scale(1.7);opacity:0}}';
     document.head.appendChild(st);
   }
-  const h = heading || 0;
+  const live = online !== false;                 // default to live for back-compat
+  const dot = live ? '#16A34A' : '#94A3B8';      // green when live, grey when offline
+  const tagBg = live ? '#15803D' : '#6B7280';
   return L.divIcon({
     className: '', iconSize: [34, 34], iconAnchor: [17, 17],
-    html: '<div style="position:relative;width:34px;height:34px">'
-      + '<div style="position:absolute;inset:0;border-radius:50%;background:rgba(37,99,235,.25);animation:fospulse 1.6s ease-out infinite"></div>'
-      + '<div style="position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;background:#2563EB;border:2px solid #fff;'
+    html: '<div style="position:relative;width:34px;height:34px;cursor:pointer" title="Tap for today\'s route, visits & profile">'
+      + (live ? '<div style="position:absolute;inset:0;border-radius:50%;background:rgba(22,163,74,.25);animation:fospulse 1.6s ease-out infinite"></div>' : '')
+      + '<div style="position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;background:' + dot + ';border:2px solid #fff;opacity:' + (live ? '1' : '.75') + ';'
       + 'box-shadow:0 2px 6px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;font-size:13px">🏍️</div>'
-      + (label ? '<div style="position:absolute;top:-14px;left:50%;transform:translateX(-50%);white-space:nowrap;background:#111;color:#fff;font-size:10px;padding:1px 5px;border-radius:6px">' + label + '</div>' : '')
+      + (label ? '<div style="position:absolute;top:-14px;left:50%;transform:translateX(-50%);white-space:nowrap;background:' + tagBg + ';color:#fff;font-size:10px;padding:1px 5px;border-radius:6px">' + (live ? '🟢 ' : '⚪ ') + label + '</div>' : '')
       + '</div>',
   });
 }
@@ -1906,10 +1908,13 @@ function LiveMap({ config }) {
           if (!gm) {
             // first sighting — drop the pin where they are
             gm = markers.current[o.officer_id] = new g.maps.Marker({ position: pos, map: map.current, title });
-            gm._m.setIcon(fosDivIcon(initials(o.name), heading));
+            gm._m.setIcon(fosDivIcon(initials(o.name), heading, on));
             gm._m.setLatLng([pos.lat, pos.lng]);
+            // Tap a pin → open that officer's today route + visits + profile.
+            const oid = o.officer_id;
+            try { gm._m.on('click', () => openOfficerRef.current(oid)); } catch (e) {}
           } else {
-            gm._m.options.title = title; try { gm._m.setIcon(fosDivIcon(initials(o.name), heading)); } catch (e) {}
+            gm._m.options.title = title; try { gm._m.setIcon(fosDivIcon(initials(o.name), heading, on)); } catch (e) {}
             if (on) animateMarker(gm._m, pos.lat, pos.lng, 900);   // glide to the new fix, Swiggy-style
             else gm._m.setLatLng([pos.lat, pos.lng]);
           }
@@ -1968,6 +1973,28 @@ function LiveMap({ config }) {
     try { const ds = await api(`/api/tracking/officer/${o.officer_id}/history-dates`); setDates(ds);
       if (ds.length) setSelDate(ds[0].date); } catch (e) { toast(e.message, 'err'); }
   };
+
+  // Tapping a map pin → open that officer and jump straight to TODAY's route + visits + profile.
+  const officersRef = useRef([]);
+  useEffect(() => { officersRef.current = officers; }, [officers]);
+  const openOfficerRef = useRef(() => {});
+  const autoRouteRef = useRef(false);
+  const openOfficerToday = useCallback(async (officerId) => {
+    const o = (officersRef.current || []).find(x => x.officer_id === officerId);
+    if (!o) return;
+    setHistOfficer(o); setDates(null); setRouteInfo(null); clearRoute();
+    const todayIST = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+    try {
+      const ds = await api(`/api/tracking/officer/${officerId}/history-dates`);
+      setDates(ds);
+      const pick = (ds || []).some(d => d.date === todayIST) ? todayIST : (ds && ds.length ? ds[0].date : '');
+      autoRouteRef.current = !!pick;
+      setSelDate(pick);   // showRoute runs off selDate via the effect below
+    } catch (e) { toast(e.message, 'err'); }
+  }, []);
+  useEffect(() => { openOfficerRef.current = openOfficerToday; }, [openOfficerToday]);
+  // When a pin sets the date (today), draw the route automatically.
+  useEffect(() => { if (histOfficer && selDate && autoRouteRef.current) { autoRouteRef.current = false; showRoute(); } });
 
   const showRoute = async () => {
     if (!histOfficer || !selDate || !window.google) return;
@@ -2048,8 +2075,22 @@ function LiveMap({ config }) {
           </div>
 
           {histOfficer && <div className="glass card">
-            <div className="section-h"><h3>Route history — {histOfficer.name}</h3>
+            <div className="section-h"><h3>{histOfficer.name}</h3>
               <button className="btn ghost sm" onClick={() => { setHistOfficer(null); clearRoute(); setRouteInfo(null); }}>✕</button></div>
+            {/* Profile summary + live status. */}
+            {(() => { const on = isOnline(histOfficer.last_seen); return <div className="glass card" style={{ padding: 10, marginBottom: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 13 }}>
+                <span className="badge" style={{ background: on ? 'rgba(22,163,74,.15)' : 'rgba(148,163,184,.2)', color: on ? 'var(--good)' : 'var(--ink-soft)' }}>
+                  {on ? '🟢 Live now' : '⚪ Offline · ' + agoLabel(histOfficer.last_seen)}</span>
+                {histOfficer.emp_code && <span className="muted">🆔 {histOfficer.emp_code}</span>}
+                <span className="muted">🏢 {histOfficer.branch || '—'}</span>
+                {histOfficer.banks && histOfficer.banks.length ? <span className="muted">🏦 {histOfficer.banks.join('/')}</span> : null}
+              </div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                {histOfficer.phone && <a className="btn sm" href={'tel:' + histOfficer.phone}>📞 Call</a>}
+                <button className="btn sm gold" onClick={() => navigateTo(histOfficer)} title="Directions to live location">🧭 Navigate</button>
+              </div>
+            </div>; })()}
             {dates === null ? <Loader /> : dates.length === 0 ? <p className="muted">No route recorded in the last 3 months.</p> : <>
               <div className="field"><label>Date (last 3 months)</label>
                 <select className="input" value={selDate} onChange={e => setSelDate(e.target.value)}>
@@ -3347,6 +3388,10 @@ function histIcon(d) {
 }
 const TL_ICON = { created: '🆕', allocated: '📌', visit: '📍', call: '📞', payment: '💰' };
 
+// Personal review-highlight palette (color key → display hex). Shared web-wide.
+const REVIEW_SWATCHES = [['red', '#EF4444'], ['amber', '#F59E0B'], ['green', '#22C55E'], ['blue', '#3B82F6'], ['purple', '#8B5CF6'], ['pink', '#EC4899'], ['grey', '#94A3B8']];
+const REVIEW_HEX = Object.fromEntries(REVIEW_SWATCHES);
+
 function CaseDrawer({ c, onClose, onChanged }) {
   const [cur, setCur] = useState(c); const [hist, setHist] = useState(null); const [tab, setTab] = useState('call');
   const [tpls, setTpls] = useState([]); const [tplId, setTplId] = useState(''); const [msg, setMsg] = useState('');
@@ -3362,6 +3407,11 @@ function CaseDrawer({ c, onClose, onChanged }) {
       const updated = await api(`/api/cases/${c.id}/contact-update`, { method: 'POST', body: { new_address: ncAddr, new_phone: ncPhone } });
       setCur(updated); setNcEdit(false); toast('Saved — assigned field officer notified.'); await refresh(); onChanged && onChanged();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  const setReviewColor = async (color) => {
+    try { const u = await api(`/api/cases/${c.id}/review-flag`, { method: 'POST', body: { color } });
+      setCur(u); onChanged && onChanged();
+    } catch (e) { toast(e.message, 'err'); }
   };
   const isPTP = dispo === 'PTP';   // RTP = Refuse to Pay is not a promise
   const isPaid = dispo === 'PAID'; const isCC = cur.segment === 'Credit Card';
@@ -3433,6 +3483,16 @@ function CaseDrawer({ c, onClose, onChanged }) {
           {canUndo && <button className="btn sm" disabled={busy} onClick={undoLast} title="Reverse the last payment, or restore the last edited field on this case">↶ Undo last</button>}
           <StatusBadge s={cur.status} /><PaidBadge s={cur.paid_status} /><PropBadge score={cur.propensity} />
           {cur.escalated && <span className="badge" style={{ background: 'rgba(220,38,38,.15)', color: 'var(--bad)' }}>Escalated</span>}
+        </div>
+        {/* Personal colour highlight — flag this case to review later (only you see your colours). */}
+        <div className="toolbar" style={{ margin: '0 0 12px', alignItems: 'center', gap: 6 }}>
+          <span className="muted" style={{ fontSize: 12 }}>🔖 Highlight:</span>
+          {REVIEW_SWATCHES.map(([col, hex]) => (
+            <button key={col} title={col} onClick={() => setReviewColor(cur.review_color === col ? '' : col)}
+              style={{ width: 20, height: 20, borderRadius: '50%', background: hex, cursor: 'pointer',
+                border: cur.review_color === col ? '3px solid var(--ink)' : '1px solid rgba(0,0,0,.2)' }} />
+          ))}
+          {cur.review_color && <button className="btn ghost sm" onClick={() => setReviewColor('')}>Clear</button>}
         </div>
         {(() => {
           // Funding-load sheets carry a FUNDING AMOUNT; CC & PL/BL sheets don't, so use Total
@@ -3560,10 +3620,11 @@ function CaseDrawer({ c, onClose, onChanged }) {
         </div>}
         {tab === 'hist' && <div>
           {hist === null ? <Loader /> : hist.length === 0 ? <p className="muted">No activity yet.</p> :
-            hist.map((h, i) => <div key={i} className="tl">
+            hist.map((h, i) => { const fresh = h.at && (Date.now() - new Date(h.at).getTime() < 24 * 3600 * 1000);
+            return <div key={i} className="tl" style={fresh ? { background: 'rgba(217,119,6,.12)', borderRadius: 8, padding: '4px 6px' } : null}>
               <div className="ic">{TL_ICON[h.type] || '•'}</div>
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: 13.5 }}>{h.title}{Number(h.amount) > 0 ? ` · ${INR(h.amount)}` : ''}</div>
+                <div style={{ fontWeight: 600, fontSize: 13.5 }}>{h.title}{Number(h.amount) > 0 ? ` · ${INR(h.amount)}` : ''}{fresh && <span className="badge" style={{ marginLeft: 6, background: 'var(--warn)', color: '#fff', fontSize: 9.5 }}>NEW</span>}</div>
                 {h.detail && <div className="muted" style={{ fontSize: 12.5 }}>{h.detail}</div>}
                 <div className="muted" style={{ fontSize: 11.5 }}>{h.by ? `by ${h.by} · ` : ''}{h.at ? fmtDT(h.at) : ''}
                   {h.photo && <a href={h.photo} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📷 photo</a>}
@@ -3571,7 +3632,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
                   {h.ptp_date && <span style={{ marginLeft: 6, color: 'var(--gold-2)' }}>PTP {String(h.ptp_date).slice(0, 10)}</span>}</div>
                 {h.note && h.note !== h.detail && <div style={{ fontSize: 12, marginTop: 2 }}>{h.note}</div>}
               </div>
-            </div>)}
+            </div>; })}
         </div>}
       </div>
     </div>
@@ -4547,6 +4608,7 @@ function MISView({ user }) {
   const [cycleView, setCycleView] = useState(false); // 'Cycle-wise MIS' — every portfolio by cycle
   const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // area-wise MIS
   const [cyclesSel, setCyclesSel] = useState([]); const [fosSel, setFosSel] = useState([]); const [callerSel, setCallerSel] = useState([]);
+  const [branchSel, setBranchSel] = useState([]);   // multi-select branches → combined MIS
   const [filterOpts, setFilterOpts] = useState({ cycles: [], fos: [], callers: [] });
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   useEffect(() => {
@@ -4558,12 +4620,12 @@ function MISView({ user }) {
     api('/api/mis/overview').then(setOv).catch(() => {});
   }, []);
   const fq = (cyclesSel.length ? `&cycles=${cyclesSel.join(',')}` : '') + (fosSel.length ? `&fos_ids=${fosSel.join(',')}` : '') + (callerSel.length ? `&caller_ids=${callerSel.join(',')}` : '');
-  const mbq = (monthB ? `&month_bucket=${monthB}` : '') + (area ? `&area=${encodeURIComponent(area)}` : '') + ((sel && sel.branch) ? `&branch=${encodeURIComponent(sel.branch)}` : '') + fq;
+  const mbq = (monthB ? `&month_bucket=${monthB}` : '') + (area ? `&area=${encodeURIComponent(area)}` : '') + (branchSel.length ? `&branch=${branchSel.map(encodeURIComponent).join(',')}` : '') + fq;
   const load = () => { if (!sel) { setD(null); return; } api(`/api/mis?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${mbq}`).then(setD).catch(e => setErr(e.message || 'Could not load MIS')); };
-  useEffect(() => { setErr(''); setD(null); load(); }, [sel, monthB, area, cyclesSel, fosSel, callerSel]);
+  useEffect(() => { setErr(''); setD(null); load(); }, [sel, monthB, area, cyclesSel, fosSel, callerSel, branchSel]);
   // Area list + filter options for the selected portfolio (reset when switching portfolio).
   useEffect(() => {
-    setArea(''); setCyclesSel([]); setFosSel([]); setCallerSel([]);
+    setArea(''); setCyclesSel([]); setFosSel([]); setCallerSel([]); setBranchSel([]);
     if (!sel) { setAreas([]); setFilterOpts({ cycles: [], fos: [], callers: [] }); return; }
     const bq = `bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${(sel.branch ? '&branch=' + encodeURIComponent(sel.branch) : '')}`;
     api('/api/cases/areas?' + bq).then(a => setAreas(a || [])).catch(() => setAreas([]));
@@ -4575,7 +4637,7 @@ function MISView({ user }) {
     const v = parseFloat(e.target.value) || 0;
     api('/api/mis/target', { method: 'PUT', body: { bank: sel.bank, product: sel.product, target_pct: v } }).then(load).catch(() => {});
   };
-  const dl = (tables) => download(`/api/mis/download?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&tables=${tables}${mbq}`, `MIS_${sel.bank}_${sel.product}${sel.branch ? '_' + sel.branch : ''}_${monthB || 'all'}.xlsx`);
+  const dl = (tables) => download(`/api/mis/download?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&tables=${tables}${mbq}`, `MIS_${sel.bank}_${sel.product}${branchSel.length ? '_' + branchSel.join('-') : ''}_${monthB || 'all'}.xlsx`);
 
   if (!prods) return <Loader />;
   if (!prods.length) return <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No products with cases yet. Upload a product file first.</div>;
@@ -4661,13 +4723,10 @@ function MISView({ user }) {
           onChange={e => { const pr = e.target.value; const f = prods.find(p => p.bank === sel.bank && p.product === pr); setSel({ bank: sel.bank, product: pr, branch: '', branch_split: !!(f && f.branch_split), branches: (f && f.branches) || [] }); setEmp(''); }}>
           {(sel ? prods.filter(p => p.bank === sel.bank) : []).map(p => <option key={p.product} value={p.product}>{p.product}{p.branch_split ? ' · 📍' : ''}</option>)}
         </select>
-        {/* Branch step — for portfolios uploaded with an explicit location (mirrors Accounts). */}
+        {/* Branch step — multi-select locations (blank = all); combined into one overall MIS. */}
         {sel && sel.branch_split && (sel.branches || []).length > 0 &&
-          <select className="input" style={{ maxWidth: 180 }} value={sel.branch || ''}
-            onChange={e => setSel({ ...sel, branch: e.target.value })} title="Location / branch">
-            <option value="">📍 All locations</option>
-            {sel.branches.map(b => <option key={b} value={b}>📍 {b}</option>)}
-          </select>}
+          <MultiSelect label="Location" icon="📍" width={200} selected={branchSel} onChange={setBranchSel}
+            options={sel.branches.map(b => ({ value: b, label: b }))} />}
         {/* Month-wise MIS — keep this-month and next-month figures cleanly separate. */}
         {[['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, lbl]) =>
           <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
@@ -4723,7 +4782,7 @@ function MISView({ user }) {
         </div>
 
         {/* FTD / MTD / LMTD / Overall cash-collected comparison for this portfolio */}
-        {d.trends && <TrendStrip trends={d.trends} title={`Achievement (cash collected) — ${sel.bank} · ${sel.product}${sel.branch ? ' · ' + sel.branch : ''}`} />}
+        {d.trends && <TrendStrip trends={d.trends} title={`Achievement (cash collected) — ${sel.bank} · ${sel.product}${branchSel.length ? ' · ' + branchSel.join(', ') : ''}`} />}
 
         {/* Charts */}
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14 }}>
@@ -4832,6 +4891,7 @@ function FeedbackView({ user }) {
   const [prods, setProds] = useState(null);
   const [sel, setSel] = useState(null);
   const [day, setDay] = useState(new Date().toISOString().slice(0, 10));
+  const [monthB, setMonthB] = useState('');           // '' all · current · next (period scope)
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [filters, setFilters] = useState({});
@@ -4854,9 +4914,9 @@ function FeedbackView({ user }) {
   };
   useEffect(() => { loadSetup(); }, []);
 
-  const qbase = () => sel ? `bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&day=${day}` : '';
+  const qbase = () => sel ? `bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&day=${day}` + (monthB ? `&month_bucket=${monthB}` : '') : '';
   const load = () => { if (!sel) { setData(null); return; } api('/api/feedback?' + qbase()).then(setData).catch(e => setErr(e.message || 'Could not load')); };
-  useEffect(() => { setErr(''); setData(null); setPicked({}); load(); }, [sel, day]);
+  useEffect(() => { setErr(''); setData(null); setPicked({}); load(); }, [sel, day, monthB]);
   useDataChanged(() => load());
 
   const setCell = (row, col, val) => {
@@ -4914,6 +4974,9 @@ function FeedbackView({ user }) {
           {prods.map((p, i) => <option key={i} value={p.bank + '||' + p.product}>{p.bank} · {p.product}</option>)}
         </select>
         <input type="date" className="input" style={{ maxWidth: 170 }} value={day} onChange={e => setDay(e.target.value)} />
+        <span className="muted" style={{ fontSize: 12 }}>Month:</span>
+        {[['', 'All'], ['current', '📅 This'], ['next', '🔜 Next']].map(([v, lbl]) =>
+          <div key={v || 'all'} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
         <input className="input" style={{ minWidth: 220 }} value={search} onChange={e => setSearch(e.target.value)}
           placeholder="🔍 Search name / phone / any column" />
         {search && <button className="btn ghost sm" onClick={() => setSearch('')}>✕</button>}
@@ -5221,6 +5284,8 @@ function SheetView({ user, config }) {
   const [live, setLive] = React.useState(false);
   const [search, setSearch] = React.useState('');
   const [paidF, setPaidF] = React.useState('');   // '' | 'PAID' | 'PARTIAL' | 'UNPAID'
+  const [escOnly, setEscOnly] = React.useState(false);   // show only escalated (locked) cases
+  const [reviewF, setReviewF] = React.useState('');      // '' | 'any' | a colour → my review-flag filter
   const [bankF, setBankF] = React.useState(''); const [prodF, setProdF] = React.useState('');
   const [cyclesSel, setCyclesSel] = React.useState([]);   // cycle multi-select filter
   const [monthB, setMonthB] = React.useState('current');   // default THIS month so months aren't merged
@@ -5337,6 +5402,16 @@ function SheetView({ user, config }) {
     savePrefs({ ...prefs, custom: prefs.custom.concat({ k, t: label, type: 'text', data: true }), order: prefs.order.concat(k), visible: prefs.visible.concat(k) });
   };
   const visibleCols = () => (prefs ? prefs.order : SHEET_COLS.map(c => c.k)).filter(k => prefs && prefs.visible.includes(k)).map(defByKey).filter(Boolean);
+  // Drag-to-reorder columns (Excel-style): move fromK to sit just before toK in the saved order.
+  const reorderCol = (fromK, toK) => {
+    if (!prefs || !fromK || fromK === toK) return;
+    const order = prefs.order.slice();
+    const fi = order.indexOf(fromK); if (fi < 0) return;
+    order.splice(fi, 1);
+    let ti = toK ? order.indexOf(toK) : order.length; if (ti < 0) ti = order.length;
+    order.splice(ti, 0, fromK);
+    savePrefs({ ...prefs, order });
+  };
 
   const rowFormula = (formula, row) => {
     try { return sheetSafeCalc(String(formula).replace(/^=/, '').replace(/\[([a-z_0-9]+)\]/gi, (_, k) => Number(row[k] || 0))); } catch (_) { return '—'; }
@@ -5346,6 +5421,8 @@ function SheetView({ user, config }) {
 
   const viewRows = () => {
     let out = rows.slice();
+    if (escOnly) out = out.filter(r => r.escalated);
+    if (reviewF) out = out.filter(r => reviewF === 'any' ? r.review_color : r.review_color === reviewF);
     if (paidF) out = out.filter(r => (r.paid_status || '').toUpperCase() === paidF);
     if (bankF) out = out.filter(r => (r.bank || '') === bankF);
     if (prodF) out = out.filter(r => (r.product || '') === prodF);
@@ -5494,10 +5571,21 @@ function SheetView({ user, config }) {
           style={{ width: 220, border: '1px solid var(--stroke-soft)', borderRadius: 10, padding: '7px 10px', fontSize: 13 }} />
         <button className="sv-btn" onClick={runCalc}>ƒx</button>
         {calcRes !== '' && <span style={{ fontWeight: 600, color: 'var(--gold)' }}>= {calcRes}</span>}
-        <button className="sv-btn" onClick={exportCSV}>⬇ CSV</button> <span className="muted" style={{ fontSize: 12 }}>Paid:</span>
+        <button className="sv-btn" onClick={exportCSV}>⬇ CSV</button>
+        <button className="sv-btn" onClick={exportXLSX}>⬇ Excel</button> <span className="muted" style={{ fontSize: 12 }}>Paid:</span>
         {[['', 'All'], ['PAID', 'Paid'], ['PARTIAL', 'Partial'], ['UNPAID', 'Unpaid']].map(([v, lbl]) =>
           <div key={v || 'all'} className={cx('chip', paidF === v && 'on')} onClick={() => setPaidF(paidF === v ? '' : v)}>{lbl}</div>)}
-        <button className="sv-btn" onClick={() => { setPaidF(''); setBankF(''); setProdF(''); setSearch(''); }} title="Clear filters">✕ Clear</button>
+        {rows.some(r => r.escalated) && <div className={cx('chip', escOnly && 'on')} onClick={() => setEscOnly(v => !v)}
+          style={escOnly ? { background: 'rgba(220,38,38,.12)', color: 'var(--bad)' } : { color: 'var(--bad)' }}
+          title="Cases escalated away from the handler — locked">🚩 Escalated ({rows.filter(r => r.escalated).length})</div>}
+        {/* My review-highlight filter: 🔖 any, then per colour. */}
+        <span className="muted" style={{ fontSize: 12 }}>🔖</span>
+        <div className={cx('chip', reviewF === 'any' && 'on')} onClick={() => setReviewF(reviewF === 'any' ? '' : 'any')} title="My highlighted cases">Flagged</div>
+        {REVIEW_SWATCHES.filter(([col]) => rows.some(r => r.review_color === col)).map(([col, hex]) => (
+          <button key={col} title={col} onClick={() => setReviewF(reviewF === col ? '' : col)}
+            style={{ width: 20, height: 20, borderRadius: '50%', background: hex, cursor: 'pointer',
+              border: reviewF === col ? '3px solid var(--ink)' : '1px solid rgba(0,0,0,.2)' }} />))}
+        <button className="sv-btn" onClick={() => { setPaidF(''); setBankF(''); setProdF(''); setSearch(''); setEscOnly(false); setReviewF(''); }} title="Clear filters">✕ Clear</button>
         <button className="sv-btn" onClick={() => setColMenu(v => !v)}>⚙ Columns</button>
         {colMenu && (
           <div className="sv-menu">
@@ -5534,8 +5622,13 @@ function SheetView({ user, config }) {
             <tr>
               <th style={{ minWidth: 70 }}>Act</th>
               {cols.map(c => (
-                <th key={c.k} onClick={() => setSort(s => s && s.k === c.k ? { k: c.k, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { k: c.k, dir: 'asc' })}>
-                  {c.t}{c.edit ? ' ✎' : ''}{sort && sort.k === c.k ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
+                <th key={c.k} draggable
+                  onDragStart={e => { e.dataTransfer.setData('text/col', c.k); e.dataTransfer.effectAllowed = 'move'; }}
+                  onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
+                  onDrop={e => { e.preventDefault(); const from = e.dataTransfer.getData('text/col'); if (from) reorderCol(from, c.k); }}
+                  onClick={() => setSort(s => s && s.k === c.k ? { k: c.k, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { k: c.k, dir: 'asc' })}
+                  title="Drag to reorder · click to sort" style={{ cursor: 'grab' }}>
+                  ⠿ {c.t}{c.edit ? ' ✎' : ''}{sort && sort.k === c.k ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
                 </th>
               ))}
             </tr>
@@ -5546,11 +5639,13 @@ function SheetView({ user, config }) {
           </thead>
           <tbody>
             {viewRows().map(row => (
-              <tr key={row.id}>
+              <tr key={row.id} style={{ ...(row.escalated ? { background: 'rgba(220,38,38,.07)' } : {}),
+                ...(row.review_color ? { boxShadow: `inset 4px 0 0 ${REVIEW_HEX[row.review_color] || '#888'}` } : {}) }}>
                 <td>
                   {row.phone && <a className="sv-ico" href={callScheme() + ':' + cleanTel(row.phone)} title="Call via Zoiper">📞</a>}
                   {row.phone && <button className="sv-ico" title="WhatsApp" onClick={() => window.open('https://wa.me/' + sheetWaNumber(row.phone), '_blank')}>💬</button>}
                   <button className="sv-ico" title="Open on my phone" onClick={() => openCase(row)}>📲</button>
+                  {row.escalated && <span className="badge" title="Escalated — locked; handled by your team lead / manager" style={{ background: 'rgba(220,38,38,.12)', color: 'var(--bad)', marginLeft: 4, fontSize: 10, fontWeight: 700 }}>🚩 ESCALATED</span>}
                   {row.closed && <span className="badge" title={`Closed ${row.close_date || ''} — locked`} style={{ background: '#e5e7eb', color: '#374151', marginLeft: 4, fontSize: 10 }}>🔒</span>}
                   {othersEditing(row.id).length > 0 && <span className="badge" style={{ background: '#fde68a', color: '#92400e', marginLeft: 4, fontSize: 10.5 }}
                     title={othersEditing(row.id).map(e => e.name + (e.field ? ` (${e.field})` : '')).join(', ') + ' editing now'}>
@@ -5558,8 +5653,8 @@ function SheetView({ user, config }) {
                 </td>
                 {cols.map(c => (
                   <td key={c.k}>
-                    {row.closed && (c.edit || c.data) ? (
-                        <span className="muted" title="Closed for the month — locked">{c.data ? ((row.extra || {})[c.k] || '—') : cellText(row, c)}</span>
+                    {(row.closed || row.escalated) && (c.edit || c.data) ? (
+                        <span className="muted" title={row.escalated ? 'Escalated — locked' : 'Closed for the month — locked'}>{c.data ? ((row.extra || {})[c.k] || '—') : cellText(row, c)}</span>
                       ) : c.data ? <input key={row.id + '-' + c.k} defaultValue={(row.extra || {})[c.k] || ''}
                         onFocus={() => sendPresence(row.id, c.t, true)}
                         onBlur={e => { sendPresence(row.id, c.t, false); if (String(e.target.value) !== String((row.extra || {})[c.k] || '')) editCell(row, c, e.target.value); }}
@@ -6703,16 +6798,19 @@ function App() {
   const handleLogin = (u) => { setUser(u); setPendingPick(!!(u && (u.available_views || []).length > 1)); };
   const [bootSlow, setBootSlow] = useState(false);
   useEffect(() => {
-    api('/api/config', { auth: false }).then(cfg => { setConfig(cfg); window.__ssdCfg = cfg; }).catch(() => setConfig({}));
+    // Safety net: never hang on the loader. If /api/config hasn't answered in 12s (server still
+    // starting, crashed, or a previous instance holding the DB), fall through + warn. This is
+    // cancelled the moment config loads, so a fast server never trips the banner.
+    let done = false;
+    const t = setTimeout(() => { if (!done) { setBootSlow(true); setConfig(c => c || {}); setReady(true); } }, 12000);
+    api('/api/config', { auth: false })
+      .then(cfg => { done = true; clearTimeout(t); setBootSlow(false); setConfig(cfg); window.__ssdCfg = cfg; })
+      .catch(() => { setConfig({}); });   // real failure → leave bootSlow to the timeout / retry
     if (store.t) api('/api/auth/me').then(u => { setUser(u); store.u = u; }).catch(() => { store.t = null; setUser(null); }).finally(() => setReady(true));
     else setReady(true);
-    // Safety net: never hang on the loader. If the server hasn't answered in 12s (e.g. it's still
-    // starting or a previous instance is holding the DB), fall through to the login screen.
-    const t = setTimeout(() => { setBootSlow(true); setConfig(c => c || {}); setReady(true); }, 12000);
-    return () => clearTimeout(t);
     const h = (e) => { e.preventDefault(); setInstallEvt(e); };
     window.addEventListener('beforeinstallprompt', h);
-    return () => window.removeEventListener('beforeinstallprompt', h);
+    return () => { clearTimeout(t); window.removeEventListener('beforeinstallprompt', h); };
   }, []);
   const logout = () => { store.t = null; store.u = null; setUser(null); };
   const install = async () => { if (!installEvt) return; installEvt.prompt(); try { await installEvt.userChoice; } catch {} setInstallEvt(null); };

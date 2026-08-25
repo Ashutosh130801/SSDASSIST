@@ -198,6 +198,70 @@ def _dec(v):
         return None
 
 
+# ---- Value-aware refinement: banks often reuse the generic word "STATUS" for BOTH the
+# PAID/UNPAID flag AND the NORM/STAB settlement type, so header names alone are ambiguous.
+# We look at the actual cell values to pick the right column for each role. ----
+_PAID_WORDS = ("PAID", "UNPAID", "SUCCESS", "FAIL", "BOUNCE", "REVERS", "RETURN", "SETTLED",
+               "DONE", "REJECT", "DISHON", "COLLECT", "RECEIVED", "YES", "NACHFAIL")
+_NS_WORDS = ("STAB", "NORM", "ROLL")
+
+
+def _sample(rows, h, n=60):
+    out = []
+    for r in rows[:n]:
+        v = r.get(h)
+        if v not in (None, ""):
+            out.append(v)
+    return out
+
+
+def _frac(vals, words):
+    tot = sum(1 for v in vals if str(v).strip())
+    if not tot:
+        return 0.0
+    hit = sum(1 for v in vals if any(w in str(v).strip().upper() for w in words))
+    return hit / tot
+
+
+def _refine(cols, headers, rows):
+    """Correct the header-based guesses using the column VALUES so PAID/UNPAID vs NORM/STAB
+    can't be confused, and the collected AMOUNT is always found even under an odd header."""
+    hs = [h for h in headers if h]
+    # 1) Paid/unpaid status = the status-like column whose values actually read PAID/UNPAID.
+    stat_candidates = [h for h in hs if h in _STAT or _frac(_sample(rows, h), _PAID_WORDS) >= 0.5]
+    if stat_candidates:
+        best = max(stat_candidates, key=lambda h: _frac(_sample(rows, h), _PAID_WORDS))
+        if _frac(_sample(rows, best), _PAID_WORDS) > 0:
+            cols["status"] = best
+    # 2) NORM/STAB settlement type = a DIFFERENT column whose values are STAB/NORM/ROLLBACK.
+    ns_cur = cols.get("ns")
+    if not ns_cur or ns_cur == cols.get("status"):
+        cand = [h for h in hs if h != cols.get("status")]
+        nsh = max(cand, key=lambda h: _frac(_sample(rows, h), _NS_WORDS), default=None)
+        if nsh and _frac(_sample(rows, nsh), _NS_WORDS) >= 0.2:
+            cols["ns"] = nsh
+        elif ns_cur == cols.get("status"):
+            cols["ns"] = None
+    # 3) Amount fallback: if no amount column was recognised, pick the numeric money column
+    #    (not a key / status / ns / name) with the most non-zero values.
+    if not cols.get("amount"):
+        # Never mistake a small-number column (cycle / bucket / count) for a money column.
+        taken = set(cols["keys"]) | {cols.get("status"), cols.get("ns"), cols.get("name"), cols.get("date")}
+        small_fields = {"cyc", "cycle", "bucket", "bkt", "dpd", "sno", "srno", "slno", "sl"}
+        best_h, best_hits = None, 0
+        for h in hs:
+            if h in taken or h in small_fields:
+                continue
+            vals = _sample(rows, h)
+            nums = [x for x in (_dec(v) for v in vals) if x is not None]
+            hits = sum(1 for x in nums if x > 0)
+            if nums and max(nums) > 100 and hits > best_hits:   # amounts are meaningfully large
+                best_h, best_hits = h, hits
+        if best_h and best_hits >= max(1, len(_sample(rows, best_h)) // 4):
+            cols["amount"] = best_h
+    return cols
+
+
 def _keyset(s):
     if s in (None, ""):
         return set()
@@ -233,6 +297,7 @@ def _prepare(content, default_bank, product, user, db):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read the DPR file: {e}")
     cols = _detect(headers)
+    cols = _refine(cols, headers, rows)   # value-aware: fix PAID vs NORM/STAB and find the amount
     if not cols["keys"]:
         raise HTTPException(status_code=400,
                             detail="No account / card / loan number column found in the DPR.")

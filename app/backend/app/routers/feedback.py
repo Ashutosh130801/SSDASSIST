@@ -86,7 +86,7 @@ def _fmt_date(dt):
     return dt.astimezone(IST).strftime("%d-%m-%Y")
 
 
-def _scope_feedback(db: Session, user, bank, product, branch=None):
+def _scope_feedback(db: Session, user, bank, product, branch=None, month_bucket=None):
     q = db.query(models.Case).filter(models.Case.bank == bank, models.Case.product == product,
                                      models.Case.removed.isnot(True))
     if user.role == "manager":
@@ -96,6 +96,10 @@ def _scope_feedback(db: Session, user, bank, product, branch=None):
         q = q.filter(teamlead_case_filter(user))     # a team lead sees their team's feedback
     elif branch:
         q = q.filter(models.Case.branch == branch)
+    # Month-wise: keep this-month / next-month books separate.
+    if month_bucket in ("current", "next"):
+        from .cases import _current_period, _next_period
+        q = q.filter(models.Case.period == (_current_period() if month_bucket == "current" else _next_period()))
     return q
 
 
@@ -151,6 +155,7 @@ def feedback_config(user: models.User = Depends(require_roles(*FEEDBACK_ROLES)))
 
 @router.get("")
 def get_feedback(bank: str, product: str, day: str | None = None, branch: str | None = None,
+                 month_bucket: str | None = None,
                  db: Session = Depends(get_db),
                  user: models.User = Depends(require_roles(*FEEDBACK_ROLES))):
     try:
@@ -158,7 +163,7 @@ def get_feedback(bank: str, product: str, day: str | None = None, branch: str | 
     except ValueError:
         d = datetime.now(IST).date()
 
-    cases = _scope_feedback(db, user, bank, product, branch).order_by(models.Case.customer_name).all()
+    cases = _scope_feedback(db, user, bank, product, branch, month_bucket).order_by(models.Case.customer_name).all()
     ids = [c.id for c in cases]
     if not ids:
         return {"day": d.isoformat(), "bank": bank, "product": product, "count": 0, "rows": []}
@@ -226,6 +231,7 @@ def edit_feedback(entry_id: int, field: str = Body(...), value: str | None = Bod
 
 @router.post("/refresh")
 def refresh_feedback(bank: str, product: str, day: str | None = None, branch: str | None = None,
+                     month_bucket: str | None = None,
                      db: Session = Depends(get_db),
                      user: models.User = Depends(require_roles(*FEEDBACK_ROLES))):
     """Force-pull the log-derived fields from the latest call/visit, overriding prior auto values
@@ -234,7 +240,7 @@ def refresh_feedback(bank: str, product: str, day: str | None = None, branch: st
         d = datetime.strptime(day, "%Y-%m-%d").date() if day else datetime.now(IST).date()
     except ValueError:
         d = datetime.now(IST).date()
-    cases = _scope_feedback(db, user, bank, product, branch).all()
+    cases = _scope_feedback(db, user, bank, product, branch, month_bucket).all()
     ids = [c.id for c in cases]
     if not ids:
         return {"ok": True, "updated": 0}
@@ -266,6 +272,7 @@ def refresh_feedback(bank: str, product: str, day: str | None = None, branch: st
 
 @router.get("/download")
 def download_feedback(bank: str, product: str, day: str | None = None, branch: str | None = None,
+                      month_bucket: str | None = None,
                       columns: str | None = None, ids: str | None = None,
                       db: Session = Depends(get_db),
                       user: models.User = Depends(require_roles(*FEEDBACK_ROLES))):
@@ -277,7 +284,7 @@ def download_feedback(bank: str, product: str, day: str | None = None, branch: s
     except ValueError:
         d = datetime.now(IST).date()
 
-    payload = get_feedback(bank, product, d.isoformat(), branch, db, user)
+    payload = get_feedback(bank, product, d.isoformat(), branch, month_bucket, db, user)
     rows = payload["rows"]
     if ids:
         keep = {int(x) for x in ids.split(",") if x.strip().isdigit()}

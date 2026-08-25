@@ -36,6 +36,62 @@ def push(db: Session, user_id: int, title: str, body: str,
     return n
 
 
+def _case_associates(db: Session, case, include_supervisors: bool = True) -> set[int]:
+    """User ids associated with a case: assigned FOS & caller (or their pre-escalation owners),
+    the escalation owner, the case's team lead, and — optionally — the branch manager(s) and
+    head office. Blocked/inactive users are dropped by the caller."""
+    ids: set[int] = set()
+    for v in (getattr(case, "assigned_fos_id", None), getattr(case, "assigned_caller_id", None),
+              getattr(case, "esc_prev_fos_id", None), getattr(case, "esc_prev_caller_id", None),
+              getattr(case, "escalated_to", None)):
+        if v:
+            ids.add(v)
+    # Team lead named on the case (matched to a user by name / emp code).
+    tl = (getattr(case, "team_lead", None) or "").strip().lower()
+    if tl:
+        from sqlalchemy import func, or_ as _or
+        row = (db.query(models.User.id)
+               .filter(models.User.role == "teamlead",
+                       _or(func.lower(func.trim(models.User.name)) == tl,
+                           func.lower(func.trim(models.User.emp_code)) == tl))
+               .first())
+        if row:
+            ids.add(row[0])
+    if include_supervisors:
+        # Branch manager(s) for the case's branch + all head-office users.
+        q = db.query(models.User.id).filter(models.User.is_active.is_(True))
+        from sqlalchemy import or_ as _or2
+        conds = [models.User.role == "headoffice"]
+        if getattr(case, "branch", None):
+            conds.append((models.User.role == "manager") & (models.User.branch == case.branch))
+        for (uid,) in q.filter(_or2(*conds)).all():
+            ids.add(uid)
+    return ids
+
+
+def notify_case_change(db: Session, case, actor, summary: str,
+                       ntype: str = "case_update", include_supervisors: bool = True) -> int:
+    """Notify everyone associated with a case that it changed — with what changed and who did it.
+    Excludes the actor. Caller commits. Returns how many notifications were created."""
+    actor_id = getattr(actor, "id", None)
+    actor_name = getattr(actor, "name", None) or "Someone"
+    ids = _case_associates(db, case, include_supervisors=include_supervisors)
+    ids.discard(actor_id)
+    if not ids:
+        return 0
+    # Skip blocked/inactive recipients.
+    active = {u.id for u in db.query(models.User.id).filter(
+        models.User.id.in_(ids), models.User.is_active.is_(True)).all()} if ids else set()
+    cust = getattr(case, "customer_name", None) or getattr(case, "account_no", None) or f"Case #{getattr(case, 'id', '')}"
+    title = f"{cust} — updated by {actor_name}"
+    body = f"{summary}\n— by {actor_name}"
+    n = 0
+    for uid in active:
+        push(db, uid, title, body, case_id=getattr(case, "id", None), ntype=ntype, by_name=actor_name)
+        n += 1
+    return n
+
+
 @router.get("")
 def my_notifications(unread_only: bool = False, limit: int = 50,
                      db: Session = Depends(get_db),

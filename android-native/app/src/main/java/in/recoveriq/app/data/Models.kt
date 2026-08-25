@@ -199,6 +199,10 @@ data class Case(
     @Json(name = "visited_today") val visitedToday: Boolean? = false,
     @Json(name = "contacted_today") val contactedToday: Boolean? = false,
     val escalated: Boolean? = false,
+    @Json(name = "esc_prev_fos_id") val escPrevFosId: Int? = null,
+    @Json(name = "esc_prev_caller_id") val escPrevCallerId: Int? = null,
+    @Json(name = "review_color") val reviewColor: String? = null,   // my personal highlight colour
+    @Json(name = "review_note") val reviewNote: String? = null,
     val propensity: Int? = null,
     val flagged: Boolean? = false,
     @Json(name = "flag_reason") val flagReason: String? = null,

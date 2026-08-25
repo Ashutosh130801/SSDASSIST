@@ -55,6 +55,8 @@ def _ensure_columns():
             "escalated_to": "INTEGER",
             "escalated_by": "INTEGER",
             "escalated_at": "TIMESTAMP",
+            "esc_prev_fos_id": "INTEGER",
+            "esc_prev_caller_id": "INTEGER",
             "removed": "BOOLEAN",
             "removed_at": "TIMESTAMP",
             "removed_by": "INTEGER",

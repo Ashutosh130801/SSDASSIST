@@ -190,6 +190,8 @@ private val CASE_FILTERS: List<Pair<String, (Case) -> Boolean>> = listOf(
     "Unpaid" to { c -> (c.paidStatus ?: "").uppercase() == "UNPAID" },
     "Paid" to { c -> (c.paidStatus ?: "").uppercase() == "PAID" },
     "PTP" to { c -> (c.disposition ?: "").uppercase() in listOf("PTP", "RTP") },
+    "🚩 Escalated" to { c -> c.escalated == true },
+    "🔖 Flagged" to { c -> !c.reviewColor.isNullOrBlank() },
 )
 
 // Sort criteria for the field agent's case list — pending amount only, ascending (default) or descending.

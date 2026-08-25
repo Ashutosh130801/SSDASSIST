@@ -178,6 +178,11 @@ class Case(Base):
     escalated_to = Column(Integer, ForeignKey("users.id"), nullable=True)   # who owns it now
     escalated_by = Column(Integer, nullable=True)
     escalated_at = Column(DateTime(timezone=True), nullable=True)
+    # Original assignees kept when escalated, so the case stays visible (locked) in their list
+    # and can be restored on de-escalation. The live assigned_* are nulled while escalated,
+    # which is what keeps escalated work out of their performance / MIS / queue.
+    esc_prev_fos_id = Column(Integer, nullable=True)
+    esc_prev_caller_id = Column(Integer, nullable=True)
 
     # Soft delete — head office can remove cases (bad/duplicate loads); they move to the
     # "Removed cases" bin, drop out of every list/MIS/dashboard, and can be restored.
@@ -492,6 +497,19 @@ class Notification(Base):
     read = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime, default=utcnow, index=True)
     created_by = Column(String(120))               # who triggered it (name)
+
+
+class CaseReviewFlag(Base):
+    """A personal colour highlight a user puts on a case to review later. Per-user (each user
+    sees only their own colours) so it never clashes with others or the system 'flagged' flag."""
+    __tablename__ = "case_review_flags"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    case_id = Column(Integer, ForeignKey("cases.id"), index=True)
+    color = Column(String(20))                    # e.g. red / amber / green / blue / purple
+    note = Column(String(200), nullable=True)     # optional short reminder
+    created_at = Column(DateTime, default=utcnow)
 
 
 class SupportTicket(Base):

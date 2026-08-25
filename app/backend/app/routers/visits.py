@@ -105,6 +105,11 @@ async def create_visit(
                         + (f", paid ₹{amt}" if (paid and amt > 0) else "")
                         + (f", {int(dist_m)}m from case" if dist_m else ""))
     audit.stamp_case(case, user)
+    from .notifications import notify_case_change
+    notify_case_change(db, case, user,
+                       f"Field visit — {disposition or 'logged'}" + (f" · paid ₹{amt}" if (paid and amt > 0) else "")
+                       + (f" · Note: {note}" if (note or "").strip() else ""),
+                       ntype="visit")
     db.commit()
     db.refresh(visit)
     from .realtime import notify_data_changed

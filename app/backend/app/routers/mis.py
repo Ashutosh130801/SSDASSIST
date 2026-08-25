@@ -160,14 +160,16 @@ def _group(cases: list, keyfn, idfn=None) -> list:
 
 
 def compute_mis(db: Session, user: models.User, bank: str, product: str,
-                period: str | None = None, area: str | None = None, branch: str | None = None,
+                period: str | None = None, area: str | None = None, branch=None,
                 cycles: list | None = None, fos_ids: list | None = None,
                 caller_ids: list | None = None, paid: str | None = None) -> dict:
     from .cases import propensity as _prop
     from sqlalchemy import func as _func
     q = _scope(db.query(models.Case), user).filter(models.Case.bank == bank, models.Case.product == product)
-    if branch:                          # branch-specific MIS (same product, different branches)
-        q = q.filter(models.Case.branch == branch)
+    # branch may be a single value or a list — multiple branches combine into one overall MIS.
+    branches = [branch] if isinstance(branch, str) and branch else (list(branch) if branch else [])
+    if branches:
+        q = q.filter(models.Case.branch.in_(branches))
     if period:                          # month-wise MIS: this month vs next month
         q = q.filter(models.Case.period == period)
     if area:                            # full MIS scoped to a single AREA (team) code
@@ -439,7 +441,7 @@ def mis(bank: str = Query(...), product: str = Query(...), month_bucket: str | N
     if not bank or not product:
         raise HTTPException(status_code=400, detail="bank and product are required")
     out = compute_mis(db, user, bank, product, period=_period_for(month_bucket),
-                      area=area or None, branch=branch or None,
+                      area=area or None, branch=_csv_str(branch),
                       cycles=_csv_str(cycles), fos_ids=_csv_int(fos_ids),
                       caller_ids=_csv_int(caller_ids), paid=paid or None)
     out["table_names"] = TABLE_NAMES
@@ -790,7 +792,7 @@ def download(bank: str = Query(...), product: str = Query(...),
             ws.column_dimensions[col[0].column_letter].width = min(max(w + 2, 12), 42)
 
     data = compute_mis(db, user, bank, product, period=_period_for(month_bucket),
-                       area=area or None, branch=branch or None,
+                       area=area or None, branch=_csv_str(branch),
                        cycles=_csv_str(cycles), fos_ids=_csv_int(fos_ids),
                        caller_ids=_csv_int(caller_ids), paid=paid or None)
     wanted = [t.strip() for t in tables.split(",") if t.strip()]

@@ -103,6 +103,13 @@ HEADER_MAP = {
     "month": "month",
     "fundingamount": "funding_amount", "stab": "stab_amount", "norm": "norm_amount",
     "amount": "received_amount", "receivedamount": "received_amount", "cashcoll": "received_amount",
+    # Collected / recovered amount — accept the many header variants banks use for "cash collected".
+    "cashcollected": "received_amount", "cashcollection": "received_amount", "collected": "received_amount",
+    "collectedamount": "received_amount", "amountcollected": "received_amount", "collection": "received_amount",
+    "collectionamount": "received_amount", "recovered": "received_amount", "recoveredamount": "received_amount",
+    "recovery": "received_amount", "recoveryamount": "received_amount", "received": "received_amount",
+    "amountreceived": "received_amount", "paidamt": "received_amount", "amtcollected": "received_amount",
+    "amtcoll": "received_amount", "settledamount": "received_amount", "settlementamount": "received_amount",
     "pendingamount": "pending_amount", "pending": "pending_amount",
     "totalouts": "total_outstanding", "tos": "total_outstanding", "currbal": "total_outstanding",
     "pos": "principal_outstanding", "principaloutstd": "principal_outstanding", "pri": "principal_outstanding",

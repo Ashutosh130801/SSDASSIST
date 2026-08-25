@@ -55,6 +55,16 @@ import `in`.recoveriq.app.ui.common.DateUtil
 import `in`.recoveriq.app.ui.common.InfoCard
 import `in`.recoveriq.app.ui.common.SectionTitle
 import `in`.recoveriq.app.ui.common.StatusChip
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import `in`.recoveriq.app.ui.common.REVIEW_COLOR_NAMES
+import `in`.recoveriq.app.ui.common.reviewColorOf
+import `in`.recoveriq.app.ui.theme.GlassStroke
+import `in`.recoveriq.app.ui.theme.TextDark
+import `in`.recoveriq.app.ui.theme.Bad
+import `in`.recoveriq.app.ui.theme.Warn
 import `in`.recoveriq.app.ui.theme.BrandBlue
 import `in`.recoveriq.app.ui.theme.Good
 import `in`.recoveriq.app.ui.theme.Muted
@@ -98,16 +108,39 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 CaseHeader(case)
+                // Escalated cases are locked for the front-line FOS/caller (handled by their lead).
+                val lockedForMe = case.escalated == true && (user.isFieldAgent || user.isTelecaller)
+                if (lockedForMe) {
+                    Surface(shape = RoundedCornerShape(12.dp), color = Bad.copy(alpha = 0.12f), contentColor = Bad) {
+                        Text("🚩 Escalated — locked. Your team lead / manager is handling this case.",
+                            modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold)
+                    }
+                }
                 ActionBar(
                     case = case,
                     meId = user.id,
-                    canPay = true,
-                    canLogCall = user.isTelecaller || user.isAdmin || user.isManager,
-                    canLogVisit = user.isFieldAgent,
+                    canPay = !lockedForMe,
+                    canLogCall = !lockedForMe && (user.isTelecaller || user.isAdmin || user.isManager),
+                    canLogVisit = !lockedForMe && user.isFieldAgent,
                     onPay = { showPay = true },
                     onLogCall = { showLogCall = true },
                     onLogVisit = { showVisit = true },
                 )
+                // Personal colour highlight — flag to review later (only you see your colours).
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("🔖 Highlight:", color = Muted, style = MaterialTheme.typography.labelMedium)
+                    REVIEW_COLOR_NAMES.forEach { col ->
+                        val c = reviewColorOf(col)!!
+                        val selected = case.reviewColor == col
+                        Surface(color = c, shape = CircleShape,
+                            border = if (selected) BorderStroke(3.dp, TextDark) else BorderStroke(1.dp, GlassStroke),
+                            modifier = Modifier.size(24.dp).clickable {
+                                scope.launch { runCatching { vm.repo.setReviewFlag(caseId, if (selected) null else col) }; refresh++ }
+                            }) {}
+                    }
+                }
+
                 DetailFields(case)
 
                 SectionTitle("Activity log")
@@ -395,11 +428,16 @@ private fun TimelineRow(e: TimelineEvent) {
         "call" -> androidx.compose.ui.graphics.Color(0xFFD97706)
         else -> MutedDim
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    val fresh = run {
+        val ms = try { DateUtil.millisFromIso(e.at) } catch (ex: Exception) { 0L }
+        ms > 0L && System.currentTimeMillis() - ms < 24L * 3600 * 1000
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = if (fresh) Modifier.background(Warn.copy(alpha = 0.12f), RoundedCornerShape(8.dp)).padding(6.dp) else Modifier) {
         Surface(color = dotColor, shape = CircleShape, modifier = Modifier.size(10.dp).padding(top = 4.dp)) {}
         Column(Modifier.weight(1f)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(e.title, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                Text(e.title + (if (fresh) "  🆕" else ""), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                 Text(DateUtil.humanTime(e.at), style = MaterialTheme.typography.labelSmall, color = MutedDim)
             }
             if (!e.detail.isNullOrBlank())

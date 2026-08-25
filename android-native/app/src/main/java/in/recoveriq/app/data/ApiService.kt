@@ -89,6 +89,10 @@ interface ApiService {
     @GET("api/cases/{id}")
     suspend fun case(@Path("id") id: Int): Case
 
+    // Personal colour highlight (review later) — empty color clears it.
+    @POST("api/cases/{id}/review-flag")
+    suspend fun setReviewFlag(@Path("id") id: Int, @Body body: Map<String, String?>): Case
+
     @PATCH("api/cases/{id}")
     suspend fun updateCase(@Path("id") id: Int, @Body body: CaseUpdate): Case
 

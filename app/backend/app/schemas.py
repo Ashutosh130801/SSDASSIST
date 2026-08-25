@@ -224,6 +224,8 @@ class CaseBase(BaseModel):
     contacted_today: Optional[bool] = None
     escalated: Optional[bool] = None
     escalated_to: Optional[int] = None
+    esc_prev_fos_id: Optional[int] = None
+    esc_prev_caller_id: Optional[int] = None
     extra: Optional[dict] = None
     account_no: Optional[str] = None
     card_no: Optional[str] = None
@@ -303,6 +305,9 @@ class CaseOut(CaseBase):
     # Merged notes/remarks history (calls + visits), newest first — populated on demand.
     notes: Optional[list] = None
     notes_text: Optional[str] = None      # same, flattened to one // -separated cell for sheets
+    # The signed-in user's personal review-highlight colour on this case (if any).
+    review_color: Optional[str] = None
+    review_note: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime]
 

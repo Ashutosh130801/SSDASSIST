@@ -4,7 +4,7 @@ from datetime import datetime, time, timedelta, timezone
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -138,12 +138,17 @@ def _case_closed(case: models.Case) -> bool:
 
 
 def _ensure_open(case: models.Case, user: models.User):
-    """Block field/calling operations on a case that has already closed for the month.
+    """Block field/calling operations on a case that has already closed for the month, or that
+    has been escalated away from the FOS/caller (it stays visible in their list but locked).
     Applies to FOS & telecallers; admin / manager / head office keep the ability to make
     corrections and post DPR payments."""
-    if user.role in ("fos", "telecaller") and _case_closed(case):
-        raise HTTPException(status_code=403,
-                            detail="This case has closed for the month and is locked. Ask an admin if a change is needed.")
+    if user.role in ("fos", "telecaller"):
+        if case.escalated:
+            raise HTTPException(status_code=403,
+                                detail="This case has been escalated and is locked for you. Your team lead / manager is handling it.")
+        if _case_closed(case):
+            raise HTTPException(status_code=403,
+                                detail="This case has closed for the month and is locked. Ask an admin if a change is needed.")
 
 
 def _scope(q, user: models.User, include_removed: bool = False):
@@ -161,9 +166,14 @@ def _scope(q, user: models.User, include_removed: bool = False):
         q = q.filter(or_(models.Case.period.is_(None),
                          models.Case.period.in_([_current_period(), _next_period()])))
     if user.role == "fos":
-        return q.filter(models.Case.assigned_fos_id == user.id)
+        # Own live cases + cases escalated away from them (kept visible but locked).
+        return q.filter(or_(models.Case.assigned_fos_id == user.id,
+                            and_(models.Case.escalated.is_(True),
+                                 models.Case.esc_prev_fos_id == user.id)))
     if user.role == "telecaller":
-        return q.filter(models.Case.assigned_caller_id == user.id)
+        return q.filter(or_(models.Case.assigned_caller_id == user.id,
+                            and_(models.Case.escalated.is_(True),
+                                 models.Case.esc_prev_caller_id == user.id)))
     if user.role == "teamlead":
         # Case-level ownership: the case's team_lead (from the upload) names this lead.
         return q.filter(teamlead_case_filter(user))
@@ -201,6 +211,20 @@ def propensity(c) -> int:
 def _with_score(cases):
     for c in cases:
         c.propensity = propensity(c)
+    return cases
+
+
+def _mark_review_flags(db, user, cases):
+    """Attach the signed-in user's personal review-highlight colour to each case (batch)."""
+    ids = [c.id for c in cases if getattr(c, "id", None)]
+    if not ids or not user:
+        return cases
+    flags = {f.case_id: f for f in db.query(models.CaseReviewFlag).filter(
+        models.CaseReviewFlag.user_id == user.id, models.CaseReviewFlag.case_id.in_(ids)).all()}
+    for c in cases:
+        f = flags.get(c.id)
+        c.review_color = f.color if f else None
+        c.review_note = f.note if f else None
     return cases
 
 
@@ -273,6 +297,8 @@ def list_cases(
     fos_ids: str | None = None,         # multi-select FOS filter — CSV of user ids
     caller_ids: str | None = None,      # multi-select caller filter — CSV of user ids
     with_notes: bool = False,           # attach merged notes/remarks history (live sheet)
+    review_color: str | None = None,    # only cases the user flagged with this colour
+    flagged_review: bool | None = None, # only cases the user has flagged (any colour)
     limit: int = Query(500, le=5000),
     offset: int = 0,
 ):
@@ -331,7 +357,13 @@ def list_cases(
             models.Case.phone.ilike(like),
             models.Case.pincode.ilike(like),
         ))
-    rows = _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).offset(offset).limit(limit).all()))
+    # Personal review-highlight filters (the user's own colour flags).
+    if review_color or flagged_review:
+        fq = db.query(models.CaseReviewFlag.case_id).filter(models.CaseReviewFlag.user_id == user.id)
+        if review_color:
+            fq = fq.filter(models.CaseReviewFlag.color == review_color)
+        q = q.filter(models.Case.id.in_(fq))
+    rows = _mark_review_flags(db, user, _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).offset(offset).limit(limit).all())))
     if with_notes:
         from ..notes import case_notes_map, join_notes
         nmap = case_notes_map(db, [c.id for c in rows], limit=5)
@@ -388,6 +420,12 @@ def escalate_case(case_id: int, body: EscalateIn = EscalateIn(), db: Session = D
     case.escalated_to = owner_id
     case.escalated_by = actor.id
     case.escalated_at = datetime.now(timezone.utc)
+    # Remember the original owners so the case stays visible (locked) in their list and can be
+    # restored later; nulling the LIVE assignment is what removes it from their queue/perf/MIS.
+    if case.assigned_fos_id:
+        case.esc_prev_fos_id = case.assigned_fos_id
+    if case.assigned_caller_id:
+        case.esc_prev_caller_id = case.assigned_caller_id
     case.assigned_fos_id = None            # drop from the FOS queue / performance
     case.assigned_caller_id = None         # drop from the caller queue / performance
     if body.note:
@@ -396,6 +434,10 @@ def escalate_case(case_id: int, body: EscalateIn = EscalateIn(), db: Session = D
                  detail=f"Escalated to {owner.name}" + (f": {body.note}" if body.note else ""),
                  target_user_id=owner_id)
     audit.stamp_case(case, actor)
+    from .notifications import notify_case_change
+    notify_case_change(db, case, actor,
+                       f"Case escalated to {owner.name}" + (f" — {body.note}" if body.note else "") + " (locked for the field/calling staff)",
+                       ntype="escalate")
     db.commit()
     from .realtime import notify_data_changed
     notify_data_changed(case.bank, case.product)
@@ -412,12 +454,58 @@ def deescalate_case(case_id: int, db: Session = Depends(get_db),
     _manager_owns(db, actor, case)
     case.escalated = False
     case.escalated_to = None
-    audit.record(db, actor, "deescalate", case, detail="Released escalation back to pool")
+    # Hand the case back to its original owners (if it still has none live).
+    if case.assigned_fos_id is None and case.esc_prev_fos_id:
+        case.assigned_fos_id = case.esc_prev_fos_id
+    if case.assigned_caller_id is None and case.esc_prev_caller_id:
+        case.assigned_caller_id = case.esc_prev_caller_id
+    case.esc_prev_fos_id = None
+    case.esc_prev_caller_id = None
+    audit.record(db, actor, "deescalate", case, detail="Released escalation back to original owner")
     audit.stamp_case(case, actor)
+    from .notifications import notify_case_change
+    notify_case_change(db, case, actor, "Escalation released — case returned to its owner", ntype="deescalate")
     db.commit()
     from .realtime import notify_data_changed
     notify_data_changed(case.bank, case.product)
     return {"ok": True}
+
+
+class ReviewFlagIn(BaseModel):
+    color: str | None = None            # '' / null clears the flag
+    note: str | None = None
+
+
+REVIEW_COLORS = {"red", "amber", "green", "blue", "purple", "pink", "grey"}
+
+
+@router.post("/{case_id}/review-flag", response_model=schemas.CaseOut)
+def set_review_flag(case_id: int, body: ReviewFlagIn = ReviewFlagIn(), db: Session = Depends(get_db),
+                    user: models.User = Depends(get_current_user)):
+    """Set / change / clear the signed-in user's personal colour highlight on a case
+    (to review later). Personal to each user — never shown to others."""
+    case = _scope(db.query(models.Case), user).filter(models.Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    color = (body.color or "").strip().lower() or None
+    if color and color not in REVIEW_COLORS:
+        raise HTTPException(status_code=400, detail="Invalid colour")
+    flag = db.query(models.CaseReviewFlag).filter(
+        models.CaseReviewFlag.user_id == user.id, models.CaseReviewFlag.case_id == case_id).first()
+    if color is None:
+        if flag:
+            db.delete(flag)
+    elif flag:
+        flag.color = color
+        flag.note = (body.note or "").strip() or None
+    else:
+        db.add(models.CaseReviewFlag(user_id=user.id, case_id=case_id, color=color,
+                                     note=(body.note or "").strip() or None))
+    db.commit()
+    db.refresh(case)
+    _mark_review_flags(db, user, [case])
+    case.propensity = propensity(case)
+    return case
 
 
 @router.get("/areas")
@@ -630,6 +718,7 @@ def update_case(case_id: int, body: schemas.CaseUpdate, db: Session = Depends(ge
     case = _scope(db.query(models.Case), user).filter(models.Case.id == case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    _ensure_open(case, user)   # escalated/closed cases are read-only for FOS & callers
     data = body.model_dump(exclude_unset=True)
     # admin reassigns freely; manager/team-lead may reassign only within their own people.
     if user.role in ("admin", "manager", "teamlead"):
@@ -641,6 +730,14 @@ def update_case(case_id: int, body: schemas.CaseUpdate, db: Session = Depends(ge
     else:
         data.pop("assigned_fos_id", None)
         data.pop("assigned_caller_id", None)
+    # Fields whose change is worth notifying associated users about (skips minor numeric tweaks).
+    NOTIFY_FIELDS = {
+        "status": "Status", "paid_status": "Paid status", "disposition": "Disposition",
+        "remarks": "Remarks", "final_status": "Final status", "follow_up_date": "Follow-up / PTP date",
+        "new_phone": "New phone", "new_address": "New address",
+        "assigned_fos_id": "Assigned FOS", "assigned_caller_id": "Assigned caller",
+    }
+    change_msgs = []
     # Audit every field that actually changes; assignment changes get a clearer action.
     for k, v in data.items():
         old = getattr(case, k, None)
@@ -652,8 +749,11 @@ def update_case(case_id: int, body: schemas.CaseUpdate, db: Session = Depends(ge
             audit.record(db, user, "deallocate" if v is None else "reassign", case,
                          field=k, old=old, new=v,
                          detail=f"{k.replace('_id','')} → {who or 'unassigned'}", target_user_id=v)
+            change_msgs.append(f"{NOTIFY_FIELDS[k]} → {who or 'unassigned'}")
         else:
             audit.record(db, user, "edit", case, field=k, old=old, new=v)
+            if k in NOTIFY_FIELDS:
+                change_msgs.append(f"{NOTIFY_FIELDS[k]}: {old or '—'} → {v or '—'}")
     audit.stamp_case(case, user)
     # keep pending consistent when received changes — use the same collection base
     # (funding → TOS → ENR) as record_payment, and never let pending go below zero.
@@ -663,8 +763,13 @@ def update_case(case_id: int, body: schemas.CaseUpdate, db: Session = Depends(ge
         if Decimal(case.received_amount or 0) > 0 and case.pending_amount <= 0:
             case.paid_status = "PAID"
             case.status = "paid"
+    if change_msgs:
+        from .notifications import notify_case_change
+        notify_case_change(db, case, user, "; ".join(change_msgs))
     db.commit()
     db.refresh(case)
+    from .realtime import notify_data_changed
+    notify_data_changed(case.bank, case.product)
     return case
 
 
@@ -791,6 +896,10 @@ def record_payment(case_id: int, body: PaymentIn, db: Session = Depends(get_db),
     audit.record(db, user, "payment", case, new=str(amt),
                  detail=f"Collected ₹{amt} via {body.mode}" + (f" ({body.note})" if body.note else ""))
     audit.stamp_case(case, user)
+    from .notifications import notify_case_change
+    notify_case_change(db, case, user,
+                       f"Payment ₹{amt} via {body.mode} → {case.paid_status}" + (f" · {body.note}" if body.note else ""),
+                       ntype="payment")
     db.commit()
     db.refresh(case)
     from .realtime import notify_data_changed
@@ -856,6 +965,7 @@ def mark_paid(case_id: int, body: MarkPaidIn = MarkPaidIn(), db: Session = Depen
     case = _scope(db.query(models.Case), actor).filter(models.Case.id == case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    _ensure_open(case, actor)   # locked for FOS/callers once escalated/closed
     amt = Decimal(str(body.amount)) if body.amount is not None else Decimal(0)
     if amt <= 0:                                    # default to whatever is still outstanding
         amt = _pay_base_total(case) - Decimal(case.received_amount or 0)
@@ -877,6 +987,8 @@ def mark_paid(case_id: int, body: MarkPaidIn = MarkPaidIn(), db: Session = Depen
     case.last_contacted_at = datetime.now(timezone.utc)
     audit.record(db, actor, "paid", case, old="UNPAID", new="PAID", detail=f"Marked PAID ₹{amt}{tag}")
     audit.stamp_case(case, actor)
+    from .notifications import notify_case_change
+    notify_case_change(db, case, actor, f"Marked PAID ₹{amt}{tag}" + (f" · {body.note}" if body.note else ""), ntype="paid")
     db.commit()
     db.refresh(case)
     from .realtime import notify_data_changed
@@ -910,6 +1022,8 @@ def mark_unpaid(case_id: int, db: Session = Depends(get_db),
     audit.record(db, actor, "unpaid", case, old="PAID", new="UNPAID",
                  detail=f"Marked UNPAID (reversed ₹{prev})" if prev > 0 else "Marked UNPAID")
     audit.stamp_case(case, actor)
+    from .notifications import notify_case_change
+    notify_case_change(db, case, actor, f"Marked UNPAID" + (f" (reversed ₹{prev})" if prev > 0 else ""), ntype="unpaid")
     db.commit()
     db.refresh(case)
     from .realtime import notify_data_changed
@@ -1017,6 +1131,7 @@ def contact_update(case_id: int, body: ContactUpdateIn, db: Session = Depends(ge
     case = _scope(db.query(models.Case), actor).filter(models.Case.id == case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    _ensure_open(case, actor)   # escalated/closed cases are read-only for FOS & callers
     na = (body.new_address or "").strip() or None
     nph = (body.new_phone or "").strip() or None
     if na is None and nph is None:
@@ -1037,19 +1152,14 @@ def contact_update(case_id: int, body: ContactUpdateIn, db: Session = Depends(ge
     case.new_contact_by = actor.name
     case.new_contact_at = datetime.now(timezone.utc)
 
-    # Alert the assigned field officer (persisted bell + live push).
-    if case.assigned_fos_id:
-        parts = []
-        if "phone" in changed and case.new_phone:
-            parts.append(f"📞 {case.new_phone}")
-        if "address" in changed and case.new_address:
-            parts.append(f"📍 {case.new_address}")
-        who = case.customer_name or case.account_no or f"case #{case.id}"
-        from .notifications import push
-        push(db, case.assigned_fos_id,
-             title=f"Updated contact — {who}",
-             body="  ·  ".join(parts) + f"   (by {actor.name})",
-             case_id=case.id, ntype="contact_update", by_name=actor.name)
+    # Alert everyone associated (assigned FOS/caller, team lead, manager, HO) of the new contact.
+    parts = []
+    if "phone" in changed and case.new_phone:
+        parts.append(f"📞 New phone {case.new_phone}")
+    if "address" in changed and case.new_address:
+        parts.append(f"📍 New address {case.new_address}")
+    from .notifications import notify_case_change
+    notify_case_change(db, case, actor, " · ".join(parts), ntype="contact_update")
 
     db.commit()
     db.refresh(case)

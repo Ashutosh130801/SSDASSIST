@@ -76,6 +76,16 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
                  detail=f"Call logged — {body.disposition or 'no disposition'}"
                         + (f", PTP ₹{body.ptp_amount}" if (disp == 'PTP' and body.ptp_amount) else ""))
     audit.stamp_case(case, user)
+    # Notify everyone associated (assigned FOS/caller, team lead, manager, HO) of the update.
+    from .notifications import notify_case_change
+    _summ = f"Call logged — {body.disposition or 'no disposition'}"
+    if disp == "PTP" and body.ptp_amount:
+        _summ += f" · PTP ₹{body.ptp_amount}" + (f" by {body.ptp_date}" if body.ptp_date else "")
+    if disp == "PAID" and body.paid_amount:
+        _summ += f" · Paid ₹{body.paid_amount}"
+    if (body.note or "").strip():
+        _summ += f" · Note: {body.note.strip()}"
+    notify_case_change(db, case, user, _summ, ntype="call")
     db.commit()
     db.refresh(call)
     from .realtime import notify_data_changed

@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -84,6 +85,20 @@ fun PersonChip(text: String, onClick: () -> Unit) {
     }
 }
 
+// Personal review-highlight colour name → Compose Color (matches the web palette).
+fun reviewColorOf(name: String?): androidx.compose.ui.graphics.Color? = when (name) {
+    "red" -> androidx.compose.ui.graphics.Color(0xFFEF4444)
+    "amber" -> androidx.compose.ui.graphics.Color(0xFFF59E0B)
+    "green" -> androidx.compose.ui.graphics.Color(0xFF22C55E)
+    "blue" -> androidx.compose.ui.graphics.Color(0xFF3B82F6)
+    "purple" -> androidx.compose.ui.graphics.Color(0xFF8B5CF6)
+    "pink" -> androidx.compose.ui.graphics.Color(0xFFEC4899)
+    "grey" -> androidx.compose.ui.graphics.Color(0xFF94A3B8)
+    else -> null
+}
+
+val REVIEW_COLOR_NAMES = listOf("red", "amber", "green", "blue", "purple", "pink", "grey")
+
 @Composable
 fun CaseCard(
     case: Case,
@@ -100,6 +115,7 @@ fun CaseCard(
         else -> CardWhite
     }
     val cardBorder = when {
+        case.escalated == true -> Bad.copy(alpha = 0.8f)   // escalated → locked, highlighted
         case.flagged == true -> Bad.copy(alpha = 0.7f)     // red caution — needs review
         state == "paid" -> Good.copy(alpha = 0.5f)
         state == "touched" -> Warn.copy(alpha = 0.5f)
@@ -116,9 +132,14 @@ fun CaseCard(
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column(Modifier.weight(1f)) {
-                    Text((if (case.flagged == true) "⚠️ " else "") + (case.customerName ?: "Unnamed customer"),
-                        fontWeight = FontWeight.Bold,
-                        color = TextDark, style = MaterialTheme.typography.titleSmall)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        reviewColorOf(case.reviewColor)?.let {
+                            Surface(color = it, shape = CircleShape, modifier = Modifier.size(11.dp)) {}
+                        }
+                        Text((if (case.flagged == true) "⚠️ " else "") + (case.customerName ?: "Unnamed customer"),
+                            fontWeight = FontWeight.Bold,
+                            color = TextDark, style = MaterialTheme.typography.titleSmall)
+                    }
                     // line 2: account · bank · product
                     Text(listOfNotNull(case.accountNo, case.bank, case.product).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall, color = Muted)
@@ -162,7 +183,7 @@ fun CaseCard(
                     PaidTag(case.paidStatus)
                     if (state == "paid") TouchTag("PAID", Good)
                     else if (state == "touched") TouchTag(if (case.visitedToday == true) "VISITED" else "DONE TODAY", Warn)
-                    if (case.escalated == true) TouchTag("ESCALATED", Warn)
+                    if (case.escalated == true) TouchTag("🚩 ESCALATED · LOCKED", Bad)
                     if (case.flagged == true) TouchTag("⚠ REVIEW", Bad)
                 }
                 if (showQuickActions && !case.phone.isNullOrBlank()) {

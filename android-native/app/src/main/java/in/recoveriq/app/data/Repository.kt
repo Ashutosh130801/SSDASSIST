@@ -59,7 +59,11 @@ class Repository(context: Context) {
     /** Cases assigned to the signed-in user (fos or caller), filtered client-side. */
     suspend fun myCases(): List<Case> {
         val id = myId()
-        return Api.service.cases(limit = 1000).filter { it.assignedFosId == id || it.assignedCallerId == id }
+        // Live cases assigned to me, plus cases escalated away from me (kept visible, locked).
+        return Api.service.cases(limit = 1000).filter {
+            it.assignedFosId == id || it.assignedCallerId == id ||
+                (it.escalated == true && (it.escPrevFosId == id || it.escPrevCallerId == id))
+        }
     }
 
     suspend fun allCases(
@@ -88,6 +92,8 @@ class Repository(context: Context) {
     )
 
     suspend fun case(id: Int): Case = Api.service.case(id)
+    suspend fun setReviewFlag(id: Int, color: String?): Case =
+        Api.service.setReviewFlag(id, mapOf("color" to (color ?: "")))
     suspend fun updateCase(id: Int, update: CaseUpdate): Case = Api.service.updateCase(id, update)
     suspend fun recordPayment(id: Int, amount: Double, mode: String = "UPI", note: String? = null, normStab: String? = null): Case =
         Api.service.recordPayment(id, PaymentRequest(amount, mode, note, normStab))
