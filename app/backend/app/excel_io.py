@@ -251,6 +251,9 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
                         if pc:
                             rec["pincode"] = pc
                             break
+            # Keep every raw cell value of the row so the importer can recognise an employee ID
+            # (e.g. a team-lead code TL001) that appears in a column we don't map by header.
+            rec["_cells"] = [str(v).strip() for v in r if v not in (None, "")]
             # derive pending if missing
             all_records.append(rec)
         # process every sheet that looks like case data (e.g. addresses may live

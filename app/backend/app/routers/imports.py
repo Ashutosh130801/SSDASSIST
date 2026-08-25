@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from datetime import datetime, date
+from sqlalchemy import or_
+from datetime import datetime, date, timezone
 import io
 
 from .. import models
@@ -181,6 +182,15 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     def _match_teamlead(val):
         return _match(val, _tl_by_code)
 
+    def _row_tl_code(rec):
+        """Header-agnostic fallback: recognise a known team-lead emp code (e.g. TL001) appearing
+        in ANY cell of the row, for formats (like PL/BL) that have no team-lead column."""
+        for cell in (rec.get("_cells") or []):
+            u = _tl_by_code.get(str(cell).strip().upper())
+            if u:
+                return u.emp_code or u.name
+        return None
+
     def _resolve_caller(val):
         return _match_caller(val)[0]
 
@@ -274,7 +284,11 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                     existing.branch = fu.branch
             elif not existing.assigned_fos_id:
                 _flag(kwargs, "fos", _rawf, _fr)
-            # Team lead: stamp on the case + link its caller/FOS to that TL.
+            # Team lead: header column first, else a TL emp code found anywhere in the row.
+            if not _match_teamlead(existing.team_lead)[0]:
+                _tlc = _row_tl_code(rec)
+                if _tlc:
+                    existing.team_lead = _tlc
             _apply_teamlead(existing, cu or _by_id.get(existing.assigned_caller_id),
                             fu or _by_id.get(existing.assigned_fos_id))
             if default_bank:
@@ -317,6 +331,35 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                 kwargs["branch"] = fu.branch
         else:
             _flag(kwargs, "fos", _rawf, _fr)
+        # Carry over a caller-discovered NEW phone / NEW address from any earlier case with the
+        # same account OR card number (a different month/bucket) so the field team can reach the
+        # customer straight away. Marked "Imported from database" so it's clear it wasn't on the sheet.
+        cardno = kwargs.get("card_no")
+        if (not kwargs.get("new_phone") or not kwargs.get("new_address")) and (acct or cardno):
+            keyconds = []
+            if acct:
+                keyconds.append(models.Case.account_no == acct)
+            if cardno:
+                keyconds.append(models.Case.card_no == cardno)
+            prior = (db.query(models.Case)
+                     .filter(or_(*keyconds), models.Case.removed.isnot(True),
+                             or_(models.Case.new_phone.isnot(None), models.Case.new_address.isnot(None)))
+                     .order_by(models.Case.new_contact_at.desc(), models.Case.updated_at.desc())
+                     .first())
+            if prior:
+                pulled = False
+                if not kwargs.get("new_phone") and prior.new_phone:
+                    kwargs["new_phone"] = prior.new_phone; pulled = True
+                if not kwargs.get("new_address") and prior.new_address:
+                    kwargs["new_address"] = prior.new_address; pulled = True
+                if pulled:
+                    kwargs["new_contact_by"] = "Imported from database"
+                    kwargs["new_contact_at"] = datetime.now(timezone.utc)
+        # Team lead: header column first, else a TL emp code found anywhere in the row.
+        if not _match_teamlead(kwargs.get("team_lead"))[0]:
+            _tlc = _row_tl_code(rec)
+            if _tlc:
+                kwargs["team_lead"] = _tlc
         kwargs["import_batch_id"] = batch.id
         new_case = models.Case(**kwargs)
         _apply_teamlead(new_case, cu, fu)     # stamp TL + link caller/FOS to that team lead
