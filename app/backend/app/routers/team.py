@@ -467,11 +467,10 @@ def my_team(db: Session = Depends(get_db),
     return out
 
 
-@router.get("/overview")
-def team_overview(db: Session = Depends(get_db),
-                  lead: models.User = Depends(require_roles("teamlead"))):
-    """Team-lead dashboard: overall team KPIs, per-member performance cards (with phone
-    for calling), a 30-day team collection trend and a member leaderboard."""
+def _overview_payload(db: Session, lead: models.User) -> dict:
+    """Team-lead dashboard payload: overall team KPIs, per-member performance cards (with
+    phone for calling), a 30-day team collection trend and a member leaderboard. Shared by
+    the lead's own /overview and the admin/manager/HO 'view this lead's team' endpoint."""
     from .cases import teamlead_case_filter
     member_ids = _teamlead_member_ids(db, lead)
     members = []
@@ -540,3 +539,27 @@ def team_overview(db: Session = Depends(get_db),
     return {"lead": {"id": lead.id, "name": lead.name, "branch": lead.branch},
             "members": cards, "kpis": kpis, "trend": trend,
             "leaderboard": sorted(cards, key=lambda x: x["recovered"], reverse=True)}
+
+
+@router.get("/overview")
+def team_overview(db: Session = Depends(get_db),
+                  lead: models.User = Depends(require_roles("teamlead"))):
+    """The signed-in team lead's own team dashboard."""
+    return _overview_payload(db, lead)
+
+
+@router.get("/lead/{uid}/overview")
+def lead_overview(uid: int, db: Session = Depends(get_db),
+                  actor: models.User = Depends(get_current_user)):
+    """The SAME team dashboard a team lead sees for their own team — exposed to admin, head
+    office and the lead's branch manager (and the lead themselves) so they can review a
+    team lead's team and each member's performance from the lead's profile."""
+    lead = db.query(models.User).filter(models.User.id == uid).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Team lead not found")
+    if not (lead.role == "teamlead" or getattr(lead, "also_team_lead", False)):
+        raise HTTPException(status_code=400, detail="That user is not a team lead")
+    if actor.id != lead.id and actor.role not in ("admin", "headoffice"):
+        if not (actor.role == "manager" and lead.branch == actor.branch):
+            raise HTTPException(status_code=403, detail="Not allowed to view this team")
+    return _overview_payload(db, lead)

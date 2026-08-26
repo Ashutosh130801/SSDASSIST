@@ -140,7 +140,12 @@ def list_manpower(role: str | None = None, location: str | None = None, q: str |
                   db: Session = Depends(get_db), user: models.User = Depends(require_roles(*HR_ROLES))):
     """The full employee directory with role / location / text filters."""
     query = db.query(models.User).filter(models.User.role != "techsupport")   # hidden support role
-    if role:
+    if role == "teamlead":
+        # Include dual-role staff (a caller/FOS who also wears the team-lead hat) in the
+        # team-leads directory, so their team is reachable too.
+        from sqlalchemy import or_ as _or
+        query = query.filter(_or(models.User.role == "teamlead", models.User.also_team_lead.is_(True)))
+    elif role:
         query = query.filter(models.User.role == role)
     if location:
         query = query.filter(func_lower(models.User.location) == location.strip().lower())

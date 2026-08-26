@@ -117,6 +117,8 @@ interface ApiService {
         @Query("bank") bank: String? = null,
         @Query("date_from") dateFrom: String? = null,
         @Query("date_to") dateTo: String? = null,
+        @Query("caller_id") callerId: Int? = null,
+        @Query("fos_id") fosId: Int? = null,
     ): PtpResponse
 
     @GET("api/calls/case/{id}")

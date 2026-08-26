@@ -162,6 +162,7 @@ def queue(bank: str | None = None, product: str | None = None, db: Session = Dep
 @router.get("/ptp-tracker")
 def ptp_tracker(bank: str | None = None, product: str | None = None,
                 date_from: str | None = None, date_to: str | None = None,
+                caller_id: int | None = None, fos_id: int | None = None,
                 db: Session = Depends(get_db),
                 user: models.User = Depends(require_roles("telecaller", "admin", "manager",
                                                           "teamlead", "headoffice", "backend"))):
@@ -207,6 +208,26 @@ def ptp_tracker(bank: str | None = None, product: str | None = None,
         q = q.filter(models.Case.follow_up_date <= d_to)
     cases = q.all()
 
+    # Filter options: every caller / FOS with a PTP case in the current scope (built BEFORE the
+    # per-person filter so the dropdowns stay complete). Then narrow to the picked caller/FOS.
+    caller_ids = {c.assigned_caller_id for c in cases if c.assigned_caller_id}
+    fos_ids = {c.assigned_fos_id for c in cases if c.assigned_fos_id}
+    umap = {}
+    if caller_ids | fos_ids:
+        for uid, nm, code in db.query(models.User.id, models.User.name, models.User.emp_code)\
+                .filter(models.User.id.in_(list(caller_ids | fos_ids))).all():
+            umap[uid] = {"id": uid, "name": nm, "emp_code": code}
+    caller_opts = sorted((umap[i] for i in caller_ids if i in umap), key=lambda x: (x["name"] or ""))
+    fos_opts = sorted((umap[i] for i in fos_ids if i in umap), key=lambda x: (x["name"] or ""))
+    if caller_id:
+        cases = [c for c in cases if c.assigned_caller_id == caller_id]
+    if fos_id:
+        cases = [c for c in cases if c.assigned_fos_id == fos_id]
+
+    # Resolve both the assigned caller AND FOS name/code onto each case (two columns in the UI).
+    from .cases import _attach_assignees
+    _attach_assignees(db, cases)
+
     # Last-5 merged notes (calls + visits) per case, in two queries.
     from ..notes import case_notes_map
     notes_by_case = case_notes_map(db, [c.id for c in cases], limit=5)
@@ -232,7 +253,7 @@ def ptp_tracker(bank: str | None = None, product: str | None = None,
     counts = {"overdue": 0, "today": 0, "upcoming": 0}
     for r in rows:
         counts[r["bucket"]] += 1
-    return {"rows": rows, "counts": counts}
+    return {"rows": rows, "counts": counts, "callers": caller_opts, "fos": fos_opts}
 
 
 @router.get("/case/{case_id}", response_model=list[schemas.CallOut])

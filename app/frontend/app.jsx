@@ -642,6 +642,41 @@ function MultiSelect({ label, icon, options, selected, onChange, width }) {
   );
 }
 
+/* Single-select dropdown with a type-to-search box — for long people lists (callers / FOS).
+   options: [{ value, label }]. value '' = the "all" choice shown as `allLabel`. */
+function SearchSelect({ value, onChange, options, allLabel = 'All', placeholder = 'Type to search…', width = 180 }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const sel = (options || []).find(o => String(o.value) === String(value));
+  const ql = q.trim().toLowerCase();
+  const shown = ql ? (options || []).filter(o => (o.label || '').toLowerCase().includes(ql)) : (options || []);
+  const pick = (v) => { onChange(v); setOpen(false); setQ(''); };
+  return (
+    <div style={{ position: 'relative', display: 'inline-block' }}>
+      <div className={cx('chip', value !== '' && 'on')} onClick={() => setOpen(o => !o)}
+        style={{ cursor: 'pointer', maxWidth: width, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {sel ? sel.label : allLabel} ▾
+      </div>
+      {open && <>
+        <div onClick={() => { setOpen(false); setQ(''); }} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+        <div className="glass card" style={{ position: 'absolute', zIndex: 50, marginTop: 6, minWidth: width + 40, maxHeight: 320, overflow: 'auto', padding: 8, boxShadow: '0 10px 26px rgba(0,0,0,.16)' }}>
+          <input className="input" autoFocus placeholder={placeholder} value={q} onChange={e => setQ(e.target.value)}
+            style={{ width: '100%', marginBottom: 6, fontSize: 13 }} />
+          <div style={{ padding: '5px 6px', fontSize: 13, cursor: 'pointer', borderRadius: 6, color: value === '' ? 'var(--gold)' : 'inherit' }}
+            onClick={() => pick('')}>{allLabel}</div>
+          {shown.length === 0 && <div className="muted" style={{ fontSize: 12, padding: '4px 6px' }}>No match.</div>}
+          {shown.map(o => (
+            <div key={o.value} onClick={() => pick(o.value)}
+              style={{ padding: '5px 6px', fontSize: 13, cursor: 'pointer', borderRadius: 6, background: String(o.value) === String(value) ? 'rgba(37,99,235,.10)' : 'transparent' }}>
+              {o.label}
+            </div>
+          ))}
+        </div>
+      </>}
+    </div>
+  );
+}
+
 /* ---------- Bank logo with an initials-badge fallback so nothing renders broken ----------
    Clearbit's free logo API was retired, so we fetch the favicon from Google's service (reliable
    and CORS-friendly), then fall back to DuckDuckGo, then to a coloured initials tile. */
@@ -2526,6 +2561,74 @@ function TeamLeadView({ config, user }) {
   );
 }
 
+/* Admin / manager / head office: view a team lead's team dashboard (the same overview the
+   lead sees) from their profile in the Team section — team KPIs, members, each member's
+   performance, and a leaderboard. */
+function TeamLeadOverviewModal({ lead, config, onClose }) {
+  const [ov, setOv] = useState(null); const [err, setErr] = useState('');
+  const [dashUser, setDashUser] = useState(null); const [perfUser, setPerfUser] = useState(null);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  useEffect(() => {
+    api('/api/team/lead/' + lead.id + '/overview').then(setOv).catch(e => setErr(e.message || 'Could not load'));
+  }, [lead.id]);
+  const k = ov && ov.kpis;
+  const trend = ov && { labels: (ov.trend || []).map(t => t.date.slice(5)), datasets: [{ label: 'Collected ₹', data: (ov.trend || []).map(t => t.collected), borderColor: '#2563EB', backgroundColor: 'rgba(37,99,235,.15)', fill: true, tension: .35 }] };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 920, width: '96%', maxHeight: '92vh', overflowY: 'auto' }}>
+        <div className="section-h"><h3 style={{ margin: 0 }}>{lead.name}'s team{lead.branch ? ' · ' + lead.branch : ''}</h3>
+          <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        {err ? <div className="glass card" style={{ color: 'var(--bad)', padding: 16 }}>{err}</div> : !ov ? <Loader /> : <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))', gap: 10, marginBottom: 12 }}>
+            <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>Members</div><b>{k.members}</b><div className="muted" style={{ fontSize: 11 }}>{k.fos} FOS · {k.callers} callers</div></div>
+            <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>Cases</div><b>{k.cases}</b><div className="muted" style={{ fontSize: 11 }}>{k.resolved} resolved</div></div>
+            <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{money(k.recovered)}</b></div>
+            <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>Pending</div><b style={{ color: 'var(--gold)' }}>{money(k.pending)}</b></div>
+            <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>Recovery %</div><b>{Number(k.recovery_pct || 0).toFixed(1)}%</b></div>
+          </div>
+          {window.Chart && (ov.trend || []).length > 0 && <div className="glass card" style={{ padding: 12, marginBottom: 12 }}>
+            <div className="section-h"><h3 style={{ fontSize: 14 }}>Team collections — last 30 days</h3></div>
+            <ChartBox type="line" data={trend} height={180} />
+          </div>}
+          <div className="section-h"><h3 style={{ fontSize: 15 }}>Members &amp; performance</h3></div>
+          {(ov.members || []).length === 0 ? <div className="glass card muted" style={{ padding: 18, textAlign: 'center' }}>No members tagged to this team lead yet.</div> :
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(250px,1fr))', gap: 10 }}>
+              {ov.members.map(m => <div key={m.id} className="glass card" style={{ padding: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                  <div><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDashUser(m)}>{m.name}</b>
+                    {m.emp_code && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10.5 }}>{m.emp_code}</span>}
+                    <div className="muted" style={{ fontSize: 12 }}>{roleName(m.role)}{m.phone ? ' · ' + m.phone : ''}</div></div>
+                  <span className="badge allocated">{Number(m.recovery_pct || 0).toFixed(0)}%</span>
+                </div>
+                <div style={{ display: 'flex', gap: 10, marginTop: 8, fontSize: 12 }} className="muted">
+                  <span>Cases <b style={{ color: 'var(--ink)' }}>{m.assigned}</b></span>
+                  <span>Resolved <b style={{ color: 'var(--good)' }}>{m.resolved}</b></span>
+                  <span>Recovered <b style={{ color: 'var(--good)' }}>{money(m.recovered)}</b></span>
+                </div>
+                <div className="toolbar" style={{ margin: '8px 0 0', flexWrap: 'wrap' }}>
+                  {m.phone && <a className="btn sm gold" href={'tel:' + m.phone}>📞 Call</a>}
+                  <button className="btn sm" onClick={() => setDashUser(m)}>Profile</button>
+                  <button className="btn sm" onClick={() => setPerfUser(m)}>📈 Performance</button>
+                </div>
+              </div>)}
+            </div>}
+          {(ov.leaderboard || []).length > 0 && <div className="glass card" style={{ padding: 6, marginTop: 12 }}>
+            <div className="section-h" style={{ padding: '8px 10px 0' }}><h3 style={{ fontSize: 14 }}>Leaderboard</h3></div>
+            <div className="tablewrap"><table>
+              <thead><tr><th>#</th><th>Member</th><th>Role</th><th>Cases</th><th>Recovered</th><th>Recovery %</th></tr></thead>
+              <tbody>{ov.leaderboard.map((m, i) => <tr key={m.id}>
+                <td>{i + 1}</td><td><b>{m.name}</b></td><td>{roleName(m.role)}</td><td>{m.assigned}</td>
+                <td style={{ color: 'var(--good)' }}>{money(m.recovered)}</td><td>{Number(m.recovery_pct || 0).toFixed(1)}%</td></tr>)}
+              </tbody></table></div>
+          </div>}
+        </>}
+        {dashUser && <EmployeeDashboard u={dashUser} config={config} onClose={() => setDashUser(null)} />}
+        {perfUser && <PerformanceModal u={perfUser} onClose={() => setPerfUser(null)} />}
+      </div>
+    </div>
+  );
+}
+
 /* Move (or swap) a staff member's entire caseload to another same-role staff member. */
 function TransferModal({ staff, onClose, onDone }) {
   const [role, setRole] = useState('fos');
@@ -2580,6 +2683,7 @@ function StaffView({ config, user }) {
   const [addBranch, setAddBranch] = useState(false);
   const [routeOfficer, setRouteOfficer] = useState(null); const [showReport, setShowReport] = useState(false);
   const [liveOfficer, setLiveOfficer] = useState(null); const [perfUser, setPerfUser] = useState(null); const [showChart, setShowChart] = useState(false); const [dashUser, setDashUser] = useState(null);
+  const [tlOverview, setTlOverview] = useState(null);   // team lead whose team dashboard is open
   const load = () => { api('/api/users').then(setUsers); api('/api/team/branches').then(setBranches).catch(() => setBranches([])); };
   useEffect(() => { load(); }, []);
   const [associates, setAssociates] = useState([]);   // FOS from other locations working this branch's cases
@@ -2587,17 +2691,20 @@ function StaffView({ config, user }) {
     if (!openBranch) { setAssociates([]); return; }
     api('/api/team/branch-associates?branch=' + encodeURIComponent(openBranch)).then(setAssociates).catch(() => setAssociates([]));
   }, [openBranch]);
-  // Admin/HO: all field officers, filterable by location (they aren't bound to a branch).
-  const [fosMode, setFosMode] = useState(false);
+  // Admin/HO: a role-wise directory (field officers / callers / team leads) for quick access to
+  // each person's profile + performance. FOS are location-based, so they get a location filter.
+  const [listRole, setListRole] = useState('');        // '' = branches; else 'fos' | 'telecaller' | 'teamlead'
   const [fosLoc, setFosLoc] = useState('');
-  const [fosList, setFosList] = useState(null);
+  const [roleList, setRoleList] = useState(null);
   const [fosLocs, setFosLocs] = useState([]);
   useEffect(() => { if (seesAll) api('/api/manpower/filters').then(d => setFosLocs(d.locations || [])).catch(() => {}); }, [seesAll]);
   useEffect(() => {
-    if (!fosMode) return;
-    const p = new URLSearchParams({ role: 'fos' }); if (fosLoc) p.set('location', fosLoc);
-    api('/api/manpower?' + p).then(setFosList).catch(() => setFosList([]));
-  }, [fosMode, fosLoc]);
+    if (!listRole) return;
+    setRoleList(null);
+    const p = new URLSearchParams({ role: listRole });
+    if (listRole === 'fos' && fosLoc) p.set('location', fosLoc);
+    api('/api/manpower?' + p).then(setRoleList).catch(() => setRoleList([]));
+  }, [listRole, fosLoc]);
 
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
 
@@ -2640,26 +2747,37 @@ function StaffView({ config, user }) {
   if (seesAll && !openBranch) {
     return (
       <div>
-        <div className="toolbar">
-          <div className={cx('chip', !fosMode && 'on')} onClick={() => setFosMode(false)}>🏢 Branches</div>
-          <div className={cx('chip', fosMode && 'on')} onClick={() => setFosMode(true)}>🧭 Field Officers</div>
+        <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+          <div className={cx('chip', !listRole && 'on')} onClick={() => setListRole('')}>🏢 Branches</div>
+          <div className={cx('chip', listRole === 'fos' && 'on')} onClick={() => setListRole('fos')}>🧭 Field Officers</div>
+          <div className={cx('chip', listRole === 'telecaller' && 'on')} onClick={() => setListRole('telecaller')}>📞 Callers</div>
+          <div className={cx('chip', listRole === 'teamlead' && 'on')} onClick={() => setListRole('teamlead')}>👥 Team Leads</div>
           {searchBox}
           <div style={{ flex: 1 }} />
-          {fosMode && <select className="input" style={{ maxWidth: 180, height: 34 }} value={fosLoc} onChange={e => setFosLoc(e.target.value)}>
+          {listRole === 'fos' && <select className="input" style={{ maxWidth: 180, height: 34 }} value={fosLoc} onChange={e => setFosLoc(e.target.value)}>
             <option value="">All locations</option>{fosLocs.map(l => <option key={l} value={l}>{l}</option>)}</select>}
           <button className="btn" onClick={() => setShowReport(true)}>📅 Attendance</button>
           <button className="btn gold" onClick={() => setAddBranch(true)}>+ Add branch</button></div>
-        {fosMode ? (
-          !fosList ? <Loader /> : <div className="glass card" style={{ padding: 6 }}>
-            <div className="muted" style={{ fontSize: 12, padding: '4px 8px' }}>{fosList.length} field officers{fosLoc ? ' in ' + fosLoc : ' (all locations)'} — they're location-based, not tied to a branch.</div>
+        {listRole ? (
+          !roleList ? <Loader /> : <div className="glass card" style={{ padding: 6 }}>
+            <div className="muted" style={{ fontSize: 12, padding: '4px 8px' }}>
+              {roleList.length} {listRole === 'fos' ? 'field officers' : listRole === 'telecaller' ? 'callers' : 'team leads'}
+              {listRole === 'fos' ? (fosLoc ? ' in ' + fosLoc : ' (all locations)') : ''}
+              {listRole === 'teamlead' ? ' — open a team lead to see their team and each member’s performance.' : ''}
+            </div>
             <div className="tablewrap"><table>
-              <thead><tr><th>Code</th><th>Name</th><th>Location</th><th>Branch</th><th>Phone</th><th></th></tr></thead>
-              <tbody>{fosList.map(u => <tr key={u.id}>
-                <td className="mono">{u.emp_code}</td>
-                <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDashUser({ id: u.id, name: u.name, role: 'fos', branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>{u.name}</b></td>
-                <td>{u.location || '—'}</td><td className="muted">{u.branch || '—'}</td><td>{u.phone || '—'}</td>
-                <td style={{ whiteSpace: 'nowrap' }}><button className="btn sm" onClick={() => setDashUser({ id: u.id, name: u.name, role: 'fos', branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>Performance</button> <ContactBtns phone={u.phone} /></td></tr>)}
-                {fosList.length === 0 && <tr><td colSpan="6" className="muted" style={{ padding: 12 }}>No field officers here.</td></tr>}
+              <thead><tr><th>Code</th><th>Name</th><th>{listRole === 'fos' ? 'Location' : 'Branch'}</th><th>Phone</th><th></th></tr></thead>
+              <tbody>{roleList.map(u => <tr key={u.id}>
+                <td className="mono">{u.emp_code || (u.tl_emp_code || '—')}</td>
+                <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => listRole === 'teamlead' ? setTlOverview(u) : setDashUser({ id: u.id, name: u.name, role: listRole, branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>{u.name}</b>
+                  {u.also_team_lead && listRole !== 'teamlead' && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10 }}>+TL</span>}</td>
+                <td className="muted">{(listRole === 'fos' ? u.location : u.branch) || '—'}</td><td>{u.phone || '—'}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  {listRole === 'teamlead'
+                    ? <button className="btn sm gold" onClick={() => setTlOverview(u)}>👥 Team &amp; performance</button>
+                    : <button className="btn sm" onClick={() => setDashUser({ id: u.id, name: u.name, role: listRole, branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>Performance</button>}
+                  {' '}<ContactBtns phone={u.phone} /></td></tr>)}
+                {roleList.length === 0 && <tr><td colSpan="5" className="muted" style={{ padding: 12 }}>None here.</td></tr>}
               </tbody></table></div>
           </div>
         ) : !branches ? <Loader /> : branches.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No branches yet. Add one to assign a manager.</div> :
@@ -2679,6 +2797,7 @@ function StaffView({ config, user }) {
         {addBranch && <AddBranchModal onClose={() => setAddBranch(false)} onDone={() => { setAddBranch(false); load(); }} />}
         {showReport && users && <ReportModal officers={users} onClose={() => setShowReport(false)} />}
         {dashUser && <EmployeeDashboard u={dashUser} config={config} onClose={() => setDashUser(null)} />}
+        {tlOverview && <TeamLeadOverviewModal lead={tlOverview} config={config} onClose={() => setTlOverview(null)} />}
       </div>);
   }
 
@@ -2742,7 +2861,8 @@ function StaffView({ config, user }) {
             <td>{u.is_active ? <span className="badge paid">active</span> : <span className="badge unpaid">inactive</span>}
               {u.employment_type && <div className="muted" style={{ fontSize: 11 }}>{u.employment_type}</div>}</td>
             <td style={{ whiteSpace: 'nowrap' }}>
-              {(u.role === 'fos' || u.role === 'telecaller') && <button className="btn sm gold" onClick={() => setPerfUser(u)} title="Daily / weekly / monthly performance">📈 Performance</button>}
+              {(u.role === 'teamlead' || u.also_team_lead) && <button className="btn sm gold" onClick={() => setTlOverview(u)} title="Their team & each member's performance">👥 Team</button>}
+              {' '}{(u.role === 'fos' || u.role === 'telecaller') && <button className="btn sm gold" onClick={() => setPerfUser(u)} title="Daily / weekly / monthly performance">📈 Performance</button>}
               {' '}{u.role === 'fos' && <button className="btn sm" onClick={() => setLiveOfficer(u)} title="Today's live route">📍 Live</button>}
               {' '}{u.role === 'fos' && <button className="btn sm" onClick={() => setRouteOfficer(u)} title="Route history">🕘 History</button>}
               {' '}<button className="btn sm" onClick={() => { setEditing(u); setPresetBranch(branchName); setModal(true); }}>Edit</button>
@@ -2774,6 +2894,7 @@ function StaffView({ config, user }) {
       {transferOpen && <TransferModal staff={user.role === 'manager' ? staff : users} onClose={() => setTransferOpen(false)} onDone={() => { setTransferOpen(false); load(); }} />}
       {perfUser && <PerformanceModal u={perfUser} onClose={() => setPerfUser(null)} />}
       {dashUser && <EmployeeDashboard u={dashUser} config={config} onClose={() => setDashUser(null)} />}
+      {tlOverview && <TeamLeadOverviewModal lead={tlOverview} config={config} onClose={() => setTlOverview(null)} />}
       {routeOfficer && <RouteHistoryModal officer={routeOfficer} config={config} onClose={() => setRouteOfficer(null)} />}
       {liveOfficer && <LiveRouteModal officer={liveOfficer} config={config} onClose={() => setLiveOfficer(null)} />}
       {showReport && users && <ReportModal officers={users} onClose={() => setShowReport(false)} />}
@@ -3749,9 +3870,11 @@ function PTPTracker() {
   const [data, setData] = useState(null); const [bank, setBank] = useState(''); const [product, setProduct] = useState(''); const [drawer, setDrawer] = useState(null);
   const [err, setErr] = useState(''); const [search, setSearch] = useState('');
   const [dFrom, setDFrom] = useState(''); const [dTo, setDTo] = useState('');   // promise-date calendar range
+  const [callerF, setCallerF] = useState(''); const [fosF, setFosF] = useState('');   // caller / FOS filters
   const [opts, setOpts] = useState({ banks: [], products: [] });
   const load = () => { const p = new URLSearchParams(); if (bank) p.set('bank', bank); if (product) p.set('product', product);
     if (dFrom) p.set('date_from', dFrom); if (dTo) p.set('date_to', dTo);
+    if (callerF) p.set('caller_id', callerF); if (fosF) p.set('fos_id', fosF);
     setErr('');
     api('/api/calls/ptp-tracker' + (p.toString() ? '?' + p : '')).then(d => setData(d))
       .catch(e => { setErr(e.message || 'Could not load promises'); setData({ rows: [], counts: { overdue: 0, today: 0, upcoming: 0 } }); }); };
@@ -3763,7 +3886,7 @@ function PTPTracker() {
     const products = [...new Set(all.filter(c => !bank || c.bank === bank).map(c => c.product).filter(Boolean))].sort();
     setOpts({ banks, products });
   }).catch(() => setOpts({ banks: [], products: [] }));
-  useEffect(() => { load(); loadMeta(); }, [bank, product, dFrom, dTo]);
+  useEffect(() => { load(); loadMeta(); }, [bank, product, dFrom, dTo, callerF, fosF]);
   if (!data) return <Loader />;
   if (err) return <div className="glass card" style={{ color: 'var(--bad)' }}>Couldn’t load the PTP tracker: {err}
     <button className="btn sm" style={{ marginLeft: 10 }} onClick={load}>Retry</button></div>;
@@ -3791,6 +3914,11 @@ function PTPTracker() {
           <option value="">All banks</option>{opts.banks.map(b => <option key={b}>{b}</option>)}</select>
         <select className="input" style={{ maxWidth: 150 }} value={product} onChange={e => setProduct(e.target.value)}>
           <option value="">All products</option>{opts.products.map(p => <option key={p}>{p}</option>)}</select>
+        <SearchSelect value={callerF} onChange={setCallerF} allLabel="All callers" placeholder="Search caller…"
+          options={(data.callers || []).map(u => ({ value: u.id, label: `${u.name}${u.emp_code ? ` (${u.emp_code})` : ''}` }))} />
+        <SearchSelect value={fosF} onChange={setFosF} allLabel="All FOS" placeholder="Search FOS…"
+          options={(data.fos || []).map(u => ({ value: u.id, label: `${u.name}${u.emp_code ? ` (${u.emp_code})` : ''}` }))} />
+        {(callerF || fosF) && <button className="btn ghost sm" onClick={() => { setCallerF(''); setFosF(''); }}>✕ staff</button>}
         <button className="btn sm" onClick={load}>↻</button>
       </div>
       {visible.length === 0 ? <p className="muted">{search ? `No promises match "${search}".` : 'No active promises to pay right now.'}</p> :
@@ -3803,7 +3931,7 @@ function PTPTracker() {
             <div className="tablewrap"><table>
               <thead><tr>
                 <th>Customer</th><th>Bank · Product</th><th>Bucket</th><th>Cycle</th><th>Card / A/C</th>
-                <th>Outstanding</th><th>Collected</th><th>Promised (PTP)</th><th>Promise date</th><th>Pending</th><th>Caller / FOS</th><th>Recent notes</th><th></th>
+                <th>Outstanding</th><th>Collected</th><th>Promised (PTP)</th><th>Promise date</th><th>Pending</th><th>Caller</th><th>FOS</th><th>Recent notes</th><th></th>
               </tr></thead>
               <tbody>{rows.map(r => { const c = r.case; return <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
                 <td><b>{c.customer_name}</b><div className="muted" style={{ fontSize: 12 }}>{c.phone || '—'}</div></td>
@@ -3816,7 +3944,8 @@ function PTPTracker() {
                 <td className="mono">{r.ptp_amount != null ? INR(r.ptp_amount) : '—'}</td>
                 <td style={{ color: key === 'overdue' ? 'var(--bad)' : 'var(--ink)', whiteSpace: 'nowrap' }}>{r.promised_date || '—'}</td>
                 <td className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</td>
-                <td style={{ fontSize: 12 }}>{c.caller_name || c.fos_name || '—'}</td>
+                <td style={{ fontSize: 12 }}>{c.assigned_caller_name ? `${c.assigned_caller_name}${c.assigned_caller_code ? ` (${c.assigned_caller_code})` : ''}` : (c.caller_name || '—')}</td>
+                <td style={{ fontSize: 12 }}>{c.assigned_fos_name ? `${c.assigned_fos_name}${c.assigned_fos_code ? ` (${c.assigned_fos_code})` : ''}` : (c.fos_name || '—')}</td>
                 <td style={{ fontSize: 11.5, minWidth: 220, maxWidth: 320 }}>
                   {(r.notes && r.notes.length) ? <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     {r.notes.slice(0, 5).map((n, i) => <div key={i} style={{ lineHeight: 1.3 }}>

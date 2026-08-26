@@ -191,8 +191,10 @@ data class Case(
     @Json(name = "assigned_caller_id") val assignedCallerId: Int? = null,
     @Json(name = "assigned_fos_name") val assignedFosName: String? = null,
     @Json(name = "assigned_fos_phone") val assignedFosPhone: String? = null,
+    @Json(name = "assigned_fos_code") val assignedFosCode: String? = null,
     @Json(name = "assigned_caller_name") val assignedCallerName: String? = null,
     @Json(name = "assigned_caller_phone") val assignedCallerPhone: String? = null,
+    @Json(name = "assigned_caller_code") val assignedCallerCode: String? = null,
     @Json(name = "follow_up_date") val followUpDate: String? = null,
     @Json(name = "last_contacted_at") val lastContactedAt: String? = null,
     val visited: Boolean? = false,
@@ -324,9 +326,20 @@ data class PtpRow(
 )
 
 @JsonClass(generateAdapter = true)
+data class StaffOpt(
+    val id: Int,
+    val name: String? = null,
+    @Json(name = "emp_code") val empCode: String? = null,
+) {
+    val label: String get() = (name ?: "#$id") + (empCode?.let { " ($it)" } ?: "")
+}
+
+@JsonClass(generateAdapter = true)
 data class PtpResponse(
     val rows: List<PtpRow> = emptyList(),
     val counts: Map<String, Int> = emptyMap(),
+    val callers: List<StaffOpt> = emptyList(),
+    val fos: List<StaffOpt> = emptyList(),
 )
 
 // ---- Templates (WhatsApp/SMS) ----

@@ -7,8 +7,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -20,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import `in`.recoveriq.app.data.Case
 import `in`.recoveriq.app.data.PtpRow
+import `in`.recoveriq.app.data.StaffOpt
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.common.AsyncContent
 import `in`.recoveriq.app.ui.common.CaseCard
@@ -78,6 +83,8 @@ fun PtpTrackerScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     var bucket by remember { mutableStateOf("overdue") }
     var dFrom by remember { mutableStateOf("") }
     var dTo by remember { mutableStateOf("") }
+    var callerId by remember { mutableStateOf<Int?>(null) }
+    var fosId by remember { mutableStateOf<Int?>(null) }
     val buckets = listOf("overdue", "today", "upcoming")
     Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         SectionTitle("Promise-to-pay tracker", Modifier.padding(top = 12.dp, start = 4.dp))
@@ -89,7 +96,17 @@ fun PtpTrackerScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
             if (dFrom.isNotBlank() || dTo.isNotBlank())
                 TextButton(onClick = { dFrom = ""; dTo = "" }) { Text("Clear") }
         }
-        AsyncContent(key = "$dFrom|$dTo", block = { vm.repo.ptpTracker(dateFrom = dFrom, dateTo = dTo) }) { resp, _ ->
+        AsyncContent(key = "$dFrom|$dTo|$callerId|$fosId",
+            block = { vm.repo.ptpTracker(dateFrom = dFrom, dateTo = dTo, callerId = callerId, fosId = fosId) }) { resp, _ ->
+            // Searchable caller / FOS filters (built from the current scope's options).
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+                Box(Modifier.weight(1f)) {
+                    StaffSearchDropdown("All callers", resp.callers, callerId) { callerId = it }
+                }
+                Box(Modifier.weight(1f)) {
+                    StaffSearchDropdown("All FOS", resp.fos, fosId) { fosId = it }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 buckets.forEach { b ->
                     val n = resp.counts[b] ?: 0
@@ -125,8 +142,19 @@ private fun PtpCard(row: PtpRow, onOpenCase: (Int) -> Unit) {
             append("by ${DateUtil.humanDate(it)}")
         }
     }.ifBlank { "Promise to pay" }
+    val caller = row.case.assignedCallerName?.let { it + (row.case.assignedCallerCode?.let { c -> " ($c)" } ?: "") }
+        ?: row.case.callerName
+    val fos = row.case.assignedFosName?.let { it + (row.case.assignedFosCode?.let { c -> " ($c)" } ?: "") }
+        ?: row.case.fosName
     Column {
         CaseCard(row.case, onClick = { onOpenCase(row.case.id) }, subtitle = promise)
+        if (caller != null || fos != null) {
+            Text(
+                "📞 Caller: ${caller ?: "—"}    🧍 FOS: ${fos ?: "—"}",
+                color = Muted, style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(start = 12.dp, top = 1.dp),
+            )
+        }
         if (row.notes.isNotEmpty()) {
             Column(Modifier.fillMaxWidth().padding(start = 12.dp, top = 2.dp, bottom = 2.dp)) {
                 Text("Recent notes", color = Muted, style = MaterialTheme.typography.labelSmall)
@@ -140,6 +168,34 @@ private fun PtpCard(row: PtpRow, onOpenCase: (Int) -> Unit) {
                     )
                 }
             }
+        }
+    }
+}
+
+/** A single-select dropdown with a type-to-search box, for long people lists (callers / FOS).
+ * `value` = selected id (null = the "all" choice shown as [allLabel]). */
+@Composable
+private fun StaffSearchDropdown(allLabel: String, options: List<StaffOpt>, value: Int?, onChange: (Int?) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    val selected = options.firstOrNull { it.id == value }
+    val shown = if (query.isBlank()) options
+    else options.filter { it.label.contains(query.trim(), ignoreCase = true) }
+    Box {
+        OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(selected?.label ?: allLabel, maxLines = 1)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false; query = "" }) {
+            OutlinedTextField(
+                value = query, onValueChange = { query = it },
+                placeholder = { Text("Search…") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+            DropdownMenuItem(text = { Text(allLabel) }, onClick = { onChange(null); open = false; query = "" })
+            shown.forEach { o ->
+                DropdownMenuItem(text = { Text(o.label) }, onClick = { onChange(o.id); open = false; query = "" })
+            }
+            if (shown.isEmpty()) DropdownMenuItem(text = { Text("No match", color = Muted) }, onClick = {}, enabled = false)
         }
     }
 }

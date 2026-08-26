@@ -2,6 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from .database import get_db
 from .security import decode_token
@@ -34,8 +35,11 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     primary = user.role
     allowed = allowed_views(user)
     av = payload.get("av") or primary
-    if av in allowed:
-        user.role = av
+    if av in allowed and av != primary:
+        # Override the effective role for THIS request only. Use set_committed_value so SQLAlchemy
+        # treats it as the already-persisted value — it is never marked dirty, so a later db.commit()
+        # in the same request can't flush the active view over the user's real (primary) role.
+        set_committed_value(user, "role", av)
     user._primary_role = primary        # noqa: SLF001 (transient, per-request only)
     user._active_view = user.role       # noqa: SLF001
     user.available_views = allowed
