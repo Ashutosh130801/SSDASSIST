@@ -363,6 +363,7 @@ class Device(Base):
     device_id = Column(String(80), nullable=False, index=True)   # client-generated stable id
     label = Column(String(160))                                  # user agent / friendly name
     approved = Column(Boolean, default=False)
+    approved_at = Column(DateTime(timezone=True), nullable=True)  # when it became approved (for the keep-latest-2 rule)
     last_seen = Column(DateTime(timezone=True), default=utcnow)
     created_at = Column(DateTime(timezone=True), default=utcnow)
 

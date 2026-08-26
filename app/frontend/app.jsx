@@ -4443,12 +4443,20 @@ function DevicesView() {
   };
   if (!items) return <Loader />;
   const pending = items.filter(d => !d.approved); const approved = items.filter(d => d.approved);
+  const CAP = 2; const EXEMPT = ['admin', 'techsupport'];
   const tbl = (list, isPending) => <div className="glass card" style={{ padding: 6, marginBottom: 14 }}>
     <div className="tablewrap"><table>
-      <thead><tr><th>User</th><th>Branch</th><th>Device</th><th>Last seen</th><th></th></tr></thead>
-      <tbody>{list.map(d => <tr key={d.id}>
-        <td><b>{d.user_name || ('#' + d.user_id)}</b><div className="muted" style={{ fontSize: 11.5 }}>{d.label}</div></td>
+      <thead><tr><th>User</th><th>Branch</th><th>Active devices</th><th>Device</th><th>Last seen</th><th></th></tr></thead>
+      <tbody>{list.map(d => { const n = d.approved_count || 0; const exempt = EXEMPT.includes(d.user_role);
+        return <tr key={d.id}>
+        <td><b>{d.user_name || ('#' + d.user_id)}</b><div className="muted" style={{ fontSize: 11.5 }}>{roleName(d.user_role)}{d.label ? ' · ' + d.label : ''}</div></td>
         <td>{d.user_branch || '—'}</td>
+        <td>
+          <span className={cx('badge', n >= CAP && !exempt ? 'partial' : 'allocated')}>{n} approved</span>
+          {exempt ? <div className="muted" style={{ fontSize: 11 }}>no limit</div>
+            : isPending && n >= CAP ? <div className="muted" style={{ fontSize: 11, color: 'var(--warn)' }}>approving drops the oldest (max {CAP})</div>
+            : <div className="muted" style={{ fontSize: 11 }}>max {CAP}</div>}
+        </td>
         <td className="mono" style={{ fontSize: 12 }}>{d.device_id}</td>
         <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{fmtDT(d.last_seen)}</td>
         <td style={{ whiteSpace: 'nowrap' }}>
@@ -4456,7 +4464,7 @@ function DevicesView() {
             ? <><button className="btn sm gold" onClick={() => act(d.id, 'approve')}>Approve</button>{' '}<button className="btn sm" onClick={() => act(d.id, 'delete')}>Reject</button></>
             : <><button className="btn sm" onClick={() => act(d.id, 'revoke')}>Revoke</button>{' '}<button className="btn sm" onClick={() => act(d.id, 'delete')}>Remove</button></>}
         </td>
-      </tr>)}</tbody></table></div></div>;
+      </tr>; })}</tbody></table></div></div>;
   return (
     <div>
       <div className="toolbar"><span className="muted">Approve the devices your staff sign in from. A new device is blocked until you approve it.</span>

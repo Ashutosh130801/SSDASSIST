@@ -111,6 +111,9 @@ def _ensure_columns():
         "visits": {
             "distance_from_case_m": "FLOAT",
         },
+        "devices": {
+            "approved_at": "TIMESTAMP",
+        },
         "import_batches": {
             "product": "VARCHAR(80)",
         },

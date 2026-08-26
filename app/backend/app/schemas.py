@@ -104,8 +104,11 @@ class DeviceOut(BaseModel):
     approved: bool
     last_seen: datetime
     created_at: datetime
+    approved_at: Optional[datetime] = None
     user_name: Optional[str] = None
     user_branch: Optional[str] = None
+    user_role: Optional[str] = None
+    approved_count: Optional[int] = None   # how many approved devices this user currently has
 
 
 class LeaveCreate(BaseModel):

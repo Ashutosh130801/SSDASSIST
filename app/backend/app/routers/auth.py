@@ -87,7 +87,13 @@ def _device_gate(db: Session, user: models.User, device_id: str | None, label: s
         return
     count = db.query(models.Device).filter(models.Device.user_id == user.id).count()
     auto = (count == 0) or (user.role == "admin")
-    db.add(models.Device(user_id=user.id, device_id=device_id, label=label, approved=auto))
+    db.add(models.Device(user_id=user.id, device_id=device_id, label=label, approved=auto,
+                         approved_at=datetime.now(timezone.utc) if auto else None))
+    db.flush()
+    if auto:
+        # Auto-approved (first device or admin) → enforce the keep-latest-2 cap.
+        from .devices import prune_approved_devices
+        prune_approved_devices(db, user.id)
     db.commit()
     if not auto:
         raise HTTPException(status_code=403,
