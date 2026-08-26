@@ -429,7 +429,7 @@ private fun TimelineRow(e: TimelineEvent) {
         else -> MutedDim
     }
     val fresh = run {
-        val ms = try { DateUtil.millisFromIso(e.at) } catch (ex: Exception) { 0L }
+        val ms = try { DateUtil.millisFromIso(e.at) ?: 0L } catch (ex: Exception) { 0L }
         ms > 0L && System.currentTimeMillis() - ms < 24L * 3600 * 1000
     }
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp),
