@@ -108,7 +108,8 @@ def _emp(u: models.User) -> dict:
 
 _ROLE_LABELS = {"telecaller": "Tele-calling Agent", "fos": "Field Agent", "teamlead": "Team Lead",
                 "manager": "Collections Manager", "admin": "Administrator", "headoffice": "Head Office",
-                "backend": "Back-office Official", "hr": "HR", "it": "IT", "staff": "Staff"}
+                "backend": "Back-office Official", "hr": "HR", "it": "IT", "staff": "Staff",
+                "techsupport": "Tech Support", "it_support_view": "IT Support View"}
 
 
 def _all_roles(u) -> str:
@@ -197,6 +198,9 @@ def download(role: str | None = None, location: str | None = None,
         ws.append([e.get(c[0]) for c in cols])
     ws.freeze_panes = "A2"
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    audit.record(db, user, "download", None, entity_type="download",
+                 detail=f"Downloaded manpower directory (Excel){f' — role={role}' if role else ''}")
+    db.commit()
     return StreamingResponse(buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=SSDE_manpower.xlsx"})
@@ -229,9 +233,9 @@ def add_employee(body: dict = Body(...), db: Session = Depends(get_db),
     if role == "admin" and user.role != "admin":
         raise HTTPException(status_code=403,
                             detail="Only an administrator can create another Administrator.")
-    if role == "techsupport" and user.role != "admin":
+    if role in ("techsupport", "it_support_view") and user.role != "admin":
         raise HTTPException(status_code=403,
-                            detail="Only an administrator can create a Tech Support account.")
+                            detail="Only an administrator can create a Tech Support / IT Support View account.")
     if db.query(models.User).filter(models.User.email == email).first():
         raise HTTPException(status_code=400, detail="That login email is already registered")
 
@@ -474,10 +478,11 @@ def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get
     old_role = u.role
     new_role = (body.get("role") or "").strip()
     if new_role:
-        # Only an admin may grant/alter the admin or Tech Support super-roles.
-        if (new_role in ("admin", "techsupport") or old_role in ("admin", "techsupport")) and user.role != "admin":
+        # Only an admin may grant/alter the admin, Tech Support or IT Support View roles.
+        _priv = ("admin", "techsupport", "it_support_view")
+        if (new_role in _priv or old_role in _priv) and user.role != "admin":
             raise HTTPException(status_code=403,
-                                detail="Only an administrator can assign or change the Administrator / Tech Support role.")
+                                detail="Only an administrator can assign or change the Administrator / Tech Support / IT Support View role.")
         u.role = new_role
     # Optional: when the role changes, regenerate the emp code so its prefix matches the new
     # role (e.g. FO001 → TL003). Off by default — existing sheet references keep the old code.
@@ -680,6 +685,9 @@ def documents_zip(emp_id: int, db: Session = Depends(get_db),
     buf.seek(0)
     safe = "".join(ch for ch in (emp.name or f"emp{emp_id}")
                    if ch.isalnum() or ch in " _-").strip().replace(" ", "_") or f"emp{emp_id}"
+    audit.record(db, user, "download", None, entity_type="download", target_user_id=emp_id,
+                 detail=f"Downloaded documents ZIP for {emp.name}")
+    db.commit()
     return StreamingResponse(buf, media_type="application/zip",
                              headers={"Content-Disposition": f'attachment; filename="{safe}.zip"'})
 
@@ -694,6 +702,9 @@ def download_document(emp_id: int, doc_id: int, db: Session = Depends(get_db),
     data = read_bytes(d.ref)
     if data is None:
         raise HTTPException(status_code=404, detail="File missing from storage")
+    audit.record(db, user, "download", None, entity_type="download", target_user_id=emp_id,
+                 detail=f"Downloaded document '{d.doc_type}' ({d.filename or ''}) for emp #{emp_id}")
+    db.commit()
     return StreamingResponse(io.BytesIO(data), media_type=d.content_type or "application/octet-stream",
                              headers={"Content-Disposition": f'attachment; filename="{d.filename or d.doc_type}"'})
 

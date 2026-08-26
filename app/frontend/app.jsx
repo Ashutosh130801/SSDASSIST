@@ -498,7 +498,7 @@ const GOLD = '#2563EB', GOLD2 = '#1D4ED8';
 const PALETTE = ['#2563EB', '#0EA5E9', '#16A34A', '#F97316', '#8B5CF6', '#14B8A6', '#EAB308'];
 
 /* Role display labels (internal keys stay admin/manager/fos/telecaller for RBAC) */
-const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', teamlead: 'Team Lead', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office', hr: 'HR', it: 'IT', staff: 'Staff', techsupport: 'Tech Support' };
+const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', teamlead: 'Team Lead', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office', hr: 'HR', it: 'IT', staff: 'Staff', techsupport: 'Tech Support', it_support_view: 'IT Support View' };
 const roleName = (r) => ROLE_LABEL[r] || r;
 
 /* ============================== Login ============================== */
@@ -5980,9 +5980,9 @@ function StaffFormModal({ existing, roles, onClose, onDone, isAdmin }) {
   // Only an admin may assign the Administrator role — hide it for everyone else,
   // unless the person being edited is already an admin (keep it shown so it's not dropped).
   if (!isAdmin && !(existing && existing.role === 'admin')) ROLE_OPTS = ROLE_OPTS.filter(r => r !== 'admin');
-  // Tech Support is an admin-only super-role. Offer it only to admins; hide it otherwise.
-  if (isAdmin && !ROLE_OPTS.includes('techsupport')) ROLE_OPTS = [...ROLE_OPTS, 'techsupport'];
-  if (!isAdmin) ROLE_OPTS = ROLE_OPTS.filter(r => r !== 'techsupport');
+  // Tech Support (super-role) and IT Support View (read-only auditor) are admin-only.
+  if (isAdmin) { ['techsupport', 'it_support_view'].forEach(r => { if (!ROLE_OPTS.includes(r)) ROLE_OPTS = [...ROLE_OPTS, r]; }); }
+  else ROLE_OPTS = ROLE_OPTS.filter(r => r !== 'techsupport' && r !== 'it_support_view');
   const field = (k, label, type = 'text') => (
     <div className="field" key={k}><label>{label}</label>
       <input className="input" type={type} value={f[k] || ''} onChange={e => set(k, e.target.value)} /></div>
@@ -6775,6 +6775,17 @@ NAV.techsupport = [
   ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['profile', '🪪', 'My E-ID'],
   ['security', '🔒', 'Security'],
 ];
+// IT Support View: a read-only auditor — can open every screen and download, but the backend
+// rejects any change. (Same broad menu as tech support, minus the support inbox.)
+NAV.it_support_view = [
+  ['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'],
+  ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'],
+  ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'],
+  ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'],
+  ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'],
+  ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['profile', '🪪', 'My E-ID'],
+  ['security', '🔒', 'Security'],
+];
 function NativeTrackingOnboard({ onDone }) {
   const openSettings = () => { try { const BG = window.Capacitor.registerPlugin('BackgroundGeolocation'); if (BG.openSettings) BG.openSettings(); } catch (e) {} };
   return (
@@ -7004,6 +7015,9 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
             <div><div style={{ fontWeight: 600, fontSize: 14 }}>{user.name}</div>
               <div className="muted" style={{ fontSize: 12 }}>{user.branch || user.email}</div></div></div>
         </div>
+        {user.role === 'it_support_view' && <div className="glass card" style={{ margin: '0 0 12px', padding: '8px 12px', borderLeft: '3px solid var(--info)', fontSize: 13 }}>
+          👁️ <b>IT Support View</b> — read-only. You can view and download everything, but changes are disabled (any edit will be blocked).
+        </div>}
         {render()}
         {notifCase && <CaseDrawer c={{ id: notifCase }} onClose={() => setNotifCase(null)} onChanged={() => {}} />}
         {trackOnboard && <NativeTrackingOnboard onDone={() => { try { localStorage.setItem('ssd_trackonboard', '1'); } catch (e) {} setTrackOnboard(false); }} />}

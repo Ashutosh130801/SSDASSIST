@@ -818,6 +818,10 @@ def download(bank: str = Query(...), product: str = Query(...),
     wb.save(buf)
     buf.seek(0)
     fname = f"MIS_{bank}_{product}.xlsx".replace(" ", "_").replace("/", "-")
+    from .. import audit as _audit
+    _audit.record(db, user, "download", None, entity_type="download",
+                  detail=f"Downloaded MIS export — {bank or 'all'}/{product or 'all'}")
+    db.commit()
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'})

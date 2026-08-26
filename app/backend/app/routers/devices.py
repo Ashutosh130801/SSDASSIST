@@ -81,6 +81,10 @@ def list_devices(pending: bool | None = None, db: Session = Depends(get_db),
 def approve_device(dev_id: int, db: Session = Depends(get_db),
                    actor: models.User = Depends(require_roles("admin", "manager"))):
     dev = _get_device(db, actor, dev_id)
+    owner = db.query(models.User).filter(models.User.id == dev.user_id).first()
+    if owner and owner.role == "it_support_view" and actor.role not in ("admin", "techsupport"):
+        raise HTTPException(status_code=403,
+                            detail="IT Support View devices can only be approved by an admin or tech-support.")
     dev.approved = True
     dev.approved_at = datetime.now(timezone.utc)
     # Keep at most MAX_APPROVED_DEVICES per user; older approved devices are removed and

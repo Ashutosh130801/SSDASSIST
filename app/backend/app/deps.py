@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from sqlalchemy.orm import Session
@@ -10,8 +10,16 @@ from . import models
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
+# A read-only auditor role: sees & downloads everything, but may not change anything.
+READONLY_ROLES = ("it_support_view",)
+_SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+# Self-account security endpoints a read-only user is still allowed to POST to (so they can
+# set their own password / 2FA / passkey and actually sign in) — nothing that touches shared data.
+_READONLY_WRITE_ALLOW = ("/api/auth/", "/api/webauthn")
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
+
+def get_current_user(request: Request, token: str = Depends(oauth2_scheme),
+                     db: Session = Depends(get_db)) -> models.User:
     cred_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -44,6 +52,14 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user._active_view = user.role       # noqa: SLF001
     user.available_views = allowed
     user.active_view = user.role
+
+    # Read-only roles: block every state-changing request (anything but GET/HEAD/OPTIONS),
+    # except the self-security endpoints they need to sign in and secure their own account.
+    if primary in READONLY_ROLES and request.method not in _SAFE_METHODS:
+        path = request.url.path
+        if not any(path.startswith(p) for p in _READONLY_WRITE_ALLOW):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="IT Support View is read-only — you can view and download, but not make changes.")
     return user
 
 
@@ -61,7 +77,10 @@ def require_roles(*roles: str):
     def checker(user: models.User = Depends(get_current_user)) -> models.User:
         # 'techsupport' is a hidden diagnostic super-role — it may open every screen/endpoint so
         # support can reproduce and understand any user's problem. It is never listed in Manpower.
-        if user.role == "techsupport":
+        # 'techsupport' (full super-role) and 'it_support_view' (read-only auditor) may reach
+        # every endpoint. Writes for the read-only role are already blocked in get_current_user,
+        # so this only opens up the GET/read side for them.
+        if user.role in ("techsupport",) + READONLY_ROLES:
             return user
         if user.role not in roles:
             raise HTTPException(

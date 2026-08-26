@@ -86,14 +86,26 @@ def _device_gate(db: Session, user: models.User, device_id: str | None, label: s
         db.commit()
         return
     count = db.query(models.Device).filter(models.Device.user_id == user.id).count()
-    auto = (count == 0) or (user.role == "admin")
-    db.add(models.Device(user_id=user.id, device_id=device_id, label=label, approved=auto,
-                         approved_at=datetime.now(timezone.utc) if auto else None))
+    # IT Support View is an auditor account: EVERY device (even the first) must be approved,
+    # and only by an admin or tech-support — never auto-approved.
+    is_readonly = user.role == "it_support_view"
+    auto = (user.role == "admin") or (count == 0 and not is_readonly)
+    dev = models.Device(user_id=user.id, device_id=device_id, label=label, approved=auto,
+                        approved_at=datetime.now(timezone.utc) if auto else None)
+    db.add(dev)
     db.flush()
     if auto:
         # Auto-approved (first device or admin) → enforce the keep-latest-2 cap.
         from .devices import prune_approved_devices
         prune_approved_devices(db, user.id)
+    elif is_readonly:
+        # Route this approval request to admins + tech-support via the notification bell.
+        from .notifications import push
+        for appr in db.query(models.User).filter(
+                models.User.role.in_(("admin", "techsupport")), models.User.is_active.is_(True)).all():
+            push(db, appr.id, "Device approval needed — IT Support View",
+                 f"{user.name} is trying to sign in from a new device ({label or device_id}). Approve it in Devices.",
+                 ntype="device_request", by_name=user.name)
     db.commit()
     if not auto:
         raise HTTPException(status_code=403,

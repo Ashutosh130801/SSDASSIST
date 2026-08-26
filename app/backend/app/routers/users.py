@@ -11,7 +11,8 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 _HRMS_FIELDS = ("employment_type", "joining_date", "address", "emergency_contact", "photo_url")
 _ROLE_PREFIX = {"telecaller": "TC", "fos": "FO", "manager": "MG", "backend": "BO",
                 "admin": "AD", "headoffice": "HO", "teamlead": "TL",
-                "hr": "HR", "it": "IT", "staff": "ST", "techsupport": "TS"}
+                "hr": "HR", "it": "IT", "staff": "ST", "techsupport": "TS",
+                "it_support_view": "IV"}
 
 
 def _team_lead_name(db: Session, tl_id):

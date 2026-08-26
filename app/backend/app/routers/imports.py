@@ -472,6 +472,9 @@ def delete_batch(batch_id: int, db: Session = Depends(get_db),
 @router.get("/export")
 def export(db: Session = Depends(get_db), admin: models.User = Depends(require_roles("admin", "backend", "headoffice"))):
     data = export_cases(db)
+    audit.record(db, admin, "download", None, entity_type="download",
+                 detail="Downloaded full recovery tracker export (Excel)")
+    db.commit()
     return StreamingResponse(
         io.BytesIO(data),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

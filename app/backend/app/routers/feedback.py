@@ -316,6 +316,10 @@ def download_feedback(bank: str, product: str, day: str | None = None, branch: s
     wb.save(out)
     out.seek(0)
     fname = f"feedback_{bank}_{product}_{d.isoformat()}.xlsx".replace(" ", "_")
+    from .. import audit as _audit
+    _audit.record(db, user, "download", None, entity_type="download",
+                  detail=f"Downloaded Bank Feedback — {bank}/{product} {d.isoformat()}")
+    db.commit()
     return StreamingResponse(
         out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'})

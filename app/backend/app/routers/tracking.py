@@ -386,6 +386,10 @@ def distance_report(start: str, end: str, officer_id: int | None = None,
 
     out = io.BytesIO(); wb.save(out)
     fname = f"SSD_Attendance_{start}_to_{end}.xlsx"
+    from .. import audit as _audit
+    _audit.record(db, admin, "download", None, entity_type="download",
+                  detail=f"Downloaded attendance / distance report {start} → {end}")
+    db.commit()
     return StreamingResponse(
         io.BytesIO(out.getvalue()),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -422,6 +426,10 @@ def route_csv(officer_id: int, date: str, db: Session = Depends(get_db),
         w.writerow([name, date, i, ts, p.latitude, p.longitude, p.accuracy or "", p.speed or ""])
 
     safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_") or str(officer_id)
+    from .. import audit as _audit
+    _audit.record(db, viewer, "download", None, entity_type="download", target_user_id=officer_id,
+                  detail=f"Downloaded route CSV for {name} on {date}")
+    db.commit()
     return StreamingResponse(
         io.BytesIO(buf.getvalue().encode("utf-8")),
         media_type="text/csv",
