@@ -5968,10 +5968,13 @@ function StaffFormModal({ existing, roles, onClose, onDone, isAdmin }) {
   const [f, setF] = useState(init);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
-  let ROLE_OPTS = (roles && roles.length ? roles : ['manager', 'teamlead', 'telecaller', 'fos', 'headoffice', 'backend', 'hr', 'it', 'staff', 'admin']);
+  let ROLE_OPTS = (roles && roles.length ? [...roles] : ['manager', 'teamlead', 'telecaller', 'fos', 'headoffice', 'backend', 'hr', 'it', 'staff', 'admin']);
   // Only an admin may assign the Administrator role — hide it for everyone else,
   // unless the person being edited is already an admin (keep it shown so it's not dropped).
   if (!isAdmin && !(existing && existing.role === 'admin')) ROLE_OPTS = ROLE_OPTS.filter(r => r !== 'admin');
+  // Tech Support is an admin-only super-role. Offer it only to admins; hide it otherwise.
+  if (isAdmin && !ROLE_OPTS.includes('techsupport')) ROLE_OPTS = [...ROLE_OPTS, 'techsupport'];
+  if (!isAdmin) ROLE_OPTS = ROLE_OPTS.filter(r => r !== 'techsupport');
   const field = (k, label, type = 'text') => (
     <div className="field" key={k}><label>{label}</label>
       <input className="input" type={type} value={f[k] || ''} onChange={e => set(k, e.target.value)} /></div>

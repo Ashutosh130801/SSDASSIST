@@ -131,6 +131,8 @@ def _all_ids(u) -> str:
 def filters(db: Session = Depends(get_db), user: models.User = Depends(require_roles(*HR_ROLES))):
     us = db.query(models.User.role, models.User.location).all()
     roles = sorted({r for r, _ in us if r})
+    if user.role != "admin":                       # Tech Support is admin-only
+        roles = [r for r in roles if r != "techsupport"]
     locations = sorted({(loc or "").strip() for _, loc in us if loc and loc.strip()})
     return {"roles": roles, "locations": locations}
 
@@ -139,7 +141,9 @@ def filters(db: Session = Depends(get_db), user: models.User = Depends(require_r
 def list_manpower(role: str | None = None, location: str | None = None, q: str | None = None,
                   db: Session = Depends(get_db), user: models.User = Depends(require_roles(*HR_ROLES))):
     """The full employee directory with role / location / text filters."""
-    query = db.query(models.User).filter(models.User.role != "techsupport")   # hidden support role
+    query = db.query(models.User)
+    if user.role != "admin":                       # Tech Support is visible to admin only
+        query = query.filter(models.User.role != "techsupport")
     if role == "teamlead":
         # Include dual-role staff (a caller/FOS who also wears the team-lead hat) in the
         # team-leads directory, so their team is reachable too.
@@ -225,6 +229,9 @@ def add_employee(body: dict = Body(...), db: Session = Depends(get_db),
     if role == "admin" and user.role != "admin":
         raise HTTPException(status_code=403,
                             detail="Only an administrator can create another Administrator.")
+    if role == "techsupport" and user.role != "admin":
+        raise HTTPException(status_code=403,
+                            detail="Only an administrator can create a Tech Support account.")
     if db.query(models.User).filter(models.User.email == email).first():
         raise HTTPException(status_code=400, detail="That login email is already registered")
 
@@ -467,10 +474,10 @@ def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get
     old_role = u.role
     new_role = (body.get("role") or "").strip()
     if new_role:
-        # Only an admin may grant the admin role, or change an existing admin's role.
-        if (new_role == "admin" or old_role == "admin") and user.role != "admin":
+        # Only an admin may grant/alter the admin or Tech Support super-roles.
+        if (new_role in ("admin", "techsupport") or old_role in ("admin", "techsupport")) and user.role != "admin":
             raise HTTPException(status_code=403,
-                                detail="Only an administrator can assign or change the Administrator role.")
+                                detail="Only an administrator can assign or change the Administrator / Tech Support role.")
         u.role = new_role
     # Optional: when the role changes, regenerate the emp code so its prefix matches the new
     # role (e.g. FO001 → TL003). Off by default — existing sheet references keep the old code.
