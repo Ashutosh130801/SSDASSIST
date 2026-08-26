@@ -19,8 +19,8 @@ HISTORY_ROLES = ("admin", "manager", "headoffice", "teamlead")
 
 def _authorize_officer_view(db: Session, viewer: models.User, officer_id: int):
     """Managers may only view officers in their branch; team leads only their own
-    team members. Admin & head office see everyone. Raises 403 otherwise."""
-    if viewer.role in ("admin", "headoffice"):
+    team members. Admin, head office & tech-support see everyone. Raises 403 otherwise."""
+    if viewer.role in ("admin", "headoffice", "techsupport"):
         return
     if viewer.role == "manager":
         off = db.query(models.User).filter(models.User.id == officer_id).first()
