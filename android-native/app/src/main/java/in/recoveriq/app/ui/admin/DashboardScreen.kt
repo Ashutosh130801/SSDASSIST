@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -105,6 +106,18 @@ fun DashboardScreen(
                     }
                 }
             }
+            // Collections pipeline — the derived funnel (assigned/touched/ptp/paid), not the raw
+            // status column. Fall back to by_status only if an older backend hasn't shipped it.
+            run {
+                val pipe: List<Pair<String, Int>> =
+                    if (d.pipeline.isNotEmpty())
+                        d.pipeline.map { PIPELINE_LABELS[it.key].orEmpty().ifEmpty { it.key } to it.count }
+                    else d.byStatus.map { (PIPELINE_LABELS[it.status] ?: it.status) to it.count }
+                if (pipe.any { it.second > 0 }) {
+                    item { SectionTitle("Collections pipeline") }
+                    item { PipelineCard(pipe) }
+                }
+            }
             if (d.byBank.isNotEmpty()) {
                 item { SectionTitle("By bank") }
                 items(d.byBank.size) { i -> BankRowCard(d.byBank[i]) }
@@ -132,6 +145,30 @@ private fun Pill(label: String, count: Int, color: androidx.compose.ui.graphics.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(count.toString(), fontWeight = FontWeight.Bold, color = color)
         Text(label, style = MaterialTheme.typography.labelSmall, color = MutedDim)
+    }
+}
+
+private val PIPELINE_LABELS = mapOf(
+    "new" to "New", "allocated" to "Allocated", "in_progress" to "In Progress",
+    "ptp" to "PTP", "paid" to "Resolved", "unpaid" to "Unpaid",
+)
+
+@Composable
+private fun PipelineCard(rows: List<Pair<String, Int>>) {
+    val max = (rows.maxOfOrNull { it.second } ?: 1).coerceAtLeast(1)
+    InfoCard {
+        rows.forEach { (label, count) ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(label, Modifier.width(96.dp), style = MaterialTheme.typography.bodySmall, color = Muted)
+                @Suppress("DEPRECATION")
+                LinearProgressIndicator(
+                    progress = (count.toFloat() / max).coerceIn(0f, 1f),
+                    modifier = Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)),
+                )
+                Text(count.toString(), Modifier.padding(start = 10.dp),
+                    fontWeight = FontWeight.SemiBold, color = BrandBlue)
+            }
+        }
     }
 }
 

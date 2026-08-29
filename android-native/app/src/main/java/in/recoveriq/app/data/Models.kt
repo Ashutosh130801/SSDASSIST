@@ -178,6 +178,10 @@ data class Case(
     @Json(name = "norm_amount") val normAmount: Double = 0.0,
     @Json(name = "stab_amount") val stabAmount: Double = 0.0,
     @Json(name = "norm_stab") val normStab: String? = null,
+    @Json(name = "is_settlement_case") val isSettlementCase: Boolean = false,
+    @Json(name = "remaining_to_norm") val remainingToNorm: Double? = null,   // pending NORM
+    @Json(name = "remaining_to_stab") val remainingToStab: Double? = null,   // pending STAB
+    @Json(name = "auto_debit") val autoDebit: Boolean = false,
     val status: String? = null,
     @Json(name = "paid_status") val paidStatus: String? = null,
     val disposition: String? = null,
@@ -425,6 +429,9 @@ data class BankRow(val bank: String, val cases: Int, val received: Double, val p
 data class StatusRow(val status: String, val count: Int)
 
 @JsonClass(generateAdapter = true)
+data class PipelineRow(val key: String, val count: Int)
+
+@JsonClass(generateAdapter = true)
 data class DispRow(val disposition: String, val count: Int)
 
 @JsonClass(generateAdapter = true)
@@ -438,6 +445,7 @@ data class DashboardResponse(
     val kpis: DashboardKpis = DashboardKpis(),
     @Json(name = "by_bank") val byBank: List<BankRow> = emptyList(),
     @Json(name = "by_status") val byStatus: List<StatusRow> = emptyList(),
+    val pipeline: List<PipelineRow> = emptyList(),   // derived funnel: new/allocated/in_progress/ptp/paid
     @Json(name = "by_disposition") val byDisposition: List<DispRow> = emptyList(),
     val trend: List<TrendPoint> = emptyList(),
     @Json(name = "fo_leaderboard") val leaderboard: List<LeaderRow> = emptyList(),

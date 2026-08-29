@@ -858,6 +858,7 @@ class PaymentIn(BaseModel):
     mode: str = "UPI"
     note: str | None = None
     norm_stab: str | None = None      # NORM / STAB paid (credit-card cases)
+    auto_debit: bool = False          # auto-debit / e-NACH: allow ₹0 and still mark PAID
 
 
 @router.post("/{case_id}/payment", response_model=schemas.CaseOut)
@@ -870,35 +871,33 @@ def record_payment(case_id: int, body: PaymentIn, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="Case not found")
     _ensure_open(case, user)
     amt = Decimal(str(body.amount or 0))
-    if amt <= 0:
+    # Auto-debit / e-NACH settlement may be logged at ₹0 (mandate set, nothing collected yet) —
+    # it still marks the case PAID. Every other payment must be a positive amount.
+    if amt < 0 or (amt == 0 and not body.auto_debit):
         raise HTTPException(status_code=400, detail="Amount must be greater than zero")
+    if body.auto_debit:
+        case.auto_debit = True
 
     case.received_amount = (Decimal(case.received_amount or 0) + amt)
-    # Pending is always the real balance = base (TOS when no funding) − received. It stays
-    # visible even after the case is resolved; it does NOT get zeroed on 'paid'.
-    pend = _pay_base_total(case) - Decimal(case.received_amount or 0)
-    case.pending_amount = pend if pend > 0 else Decimal(0)
     if body.norm_stab:
         ns = body.norm_stab.upper()
         case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
-    # A NORM/STAB (settlement) payment resolves the case regardless of the remaining balance;
-    # a full collection (nothing left) also resolves it. Otherwise it's a partial.
-    if bool(body.norm_stab) or pend <= 0:
-        case.paid_status = "PAID"
-        case.status = "paid"
-        case.follow_up_date = None
-    else:
-        case.paid_status = "PARTIAL"
+    # Single source of truth: recompute PAID / PARTIAL / UNPAID, pending, status, follow-up.
+    # A NORM/STAB case is PAID only once the settlement amount is reached; below it stays PARTIAL.
+    # Auto-debit forces PAID even at ₹0 (cash stays 0, pending stays the full balance).
+    from .. import paymath
+    paymath.recompute(case)
 
-    note = f"₹{amt} via {body.mode}" + (f" — {body.note}" if body.note else "")
+    _mode = "Auto-debit" if body.auto_debit else body.mode
+    note = (f"Auto-debit settlement" if (body.auto_debit and amt == 0) else f"₹{amt} via {_mode}") + (f" — {body.note}" if body.note else "")
     db.add(models.CallLog(case_id=case.id, caller_id=user.id,
                           disposition="PAYMENT", ptp_amount=amt, note=note))
     audit.record(db, user, "payment", case, new=str(amt),
-                 detail=f"Collected ₹{amt} via {body.mode}" + (f" ({body.note})" if body.note else ""))
+                 detail=f"Collected ₹{amt} via {_mode}" + (f" ({body.note})" if body.note else ""))
     audit.stamp_case(case, user)
     from .notifications import notify_case_change
     notify_case_change(db, case, user,
-                       f"Payment ₹{amt} via {body.mode} → {case.paid_status}" + (f" · {body.note}" if body.note else ""),
+                       f"Payment ₹{amt} via {_mode} → {case.paid_status}" + (f" · {body.note}" if body.note else ""),
                        ntype="payment")
     db.commit()
     db.refresh(case)
@@ -917,6 +916,7 @@ class MarkPaidIn(BaseModel):
     norm_stab: str | None = None             # NORM / STAB (credit-card cases)
     mode: str | None = "DPR"
     note: str | None = None
+    auto_debit: bool = False                 # auto-debit / e-NACH: mark PAID at ₹0, collect nothing
 
 
 def _pay_base_total(case) -> Decimal:
@@ -967,28 +967,36 @@ def mark_paid(case_id: int, body: MarkPaidIn = MarkPaidIn(), db: Session = Depen
         raise HTTPException(status_code=404, detail="Case not found")
     _ensure_open(case, actor)   # locked for FOS/callers once escalated/closed
     amt = Decimal(str(body.amount)) if body.amount is not None else Decimal(0)
-    if amt <= 0:                                    # default to whatever is still outstanding
-        amt = _pay_base_total(case) - Decimal(case.received_amount or 0)
-    if amt <= 0:
-        raise HTTPException(status_code=400, detail="Nothing outstanding to mark paid — enter an amount")
+    if body.auto_debit:
+        # Auto-debit / e-NACH: mark PAID at whatever was entered (₹0 allowed) — do NOT default to
+        # the full outstanding. Cash = the entered amount (0), pending stays the full balance.
+        case.auto_debit = True
+        if amt < 0:
+            amt = Decimal(0)
+    else:
+        if amt <= 0:                                # default to whatever is still outstanding
+            amt = _pay_base_total(case) - Decimal(case.received_amount or 0)
+        if amt <= 0:
+            raise HTTPException(status_code=400, detail="Nothing outstanding to mark paid — enter an amount")
     case.received_amount = Decimal(case.received_amount or 0) + amt
-    pend = _pay_base_total(case) - Decimal(case.received_amount or 0)
-    case.pending_amount = pend if pend > 0 else Decimal(0)
-    case.paid_status = "PAID"
-    case.status = "paid"
-    case.follow_up_date = None
     if body.norm_stab:
         ns = body.norm_stab.upper()
         case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
+    # Recompute: a NORM/STAB case only becomes PAID at/above its settlement amount; below it is
+    # recorded as PARTIAL (and excluded from cash collection). Plain cases PAID once outstanding is met.
+    from .. import paymath
+    new_status = paymath.recompute(case)
     credit_id = case.assigned_caller_id or case.assigned_fos_id or actor.id
     tag = f" ({case.norm_stab})" if case.norm_stab else ""
-    db.add(models.CallLog(case_id=case.id, caller_id=credit_id, disposition="PAID", ptp_amount=amt,
+    db.add(models.CallLog(case_id=case.id, caller_id=credit_id,
+                          disposition="PAID" if new_status == "PAID" else "PAYMENT", ptp_amount=amt,
                           note=f"{body.mode or 'DPR'}: customer paid ₹{amt}{tag}" + (f" — {body.note}" if body.note else "")))
     case.last_contacted_at = datetime.now(timezone.utc)
-    audit.record(db, actor, "paid", case, old="UNPAID", new="PAID", detail=f"Marked PAID ₹{amt}{tag}")
+    audit.record(db, actor, "paid" if new_status == "PAID" else "payment", case, old="UNPAID", new=new_status,
+                 detail=f"Marked {new_status} ₹{amt}{tag}")
     audit.stamp_case(case, actor)
     from .notifications import notify_case_change
-    notify_case_change(db, case, actor, f"Marked PAID ₹{amt}{tag}" + (f" · {body.note}" if body.note else ""), ntype="paid")
+    notify_case_change(db, case, actor, f"Marked {new_status} ₹{amt}{tag}" + (f" · {body.note}" if body.note else ""), ntype="paid")
     db.commit()
     db.refresh(case)
     from .realtime import notify_data_changed
@@ -1013,6 +1021,7 @@ def mark_unpaid(case_id: int, db: Session = Depends(get_db),
     case.paid_status = "UNPAID"
     case.status = "allocated"
     case.norm_stab = None
+    case.auto_debit = False           # reverting clears any auto-debit settlement
     case.follow_up_date = None
     if prev > 0:                                    # negative entry nets the caller's collected back down
         credit_id = case.assigned_caller_id or case.assigned_fos_id or actor.id

@@ -198,6 +198,8 @@ private val CASE_FILTERS: List<Pair<String, (Case) -> Boolean>> = listOf(
 private val CASE_SORTS: List<Pair<String, Comparator<Case>>> = listOf(
     "Pending ↑" to compareBy { it.pendingAmount },
     "Pending ↓" to compareByDescending { it.pendingAmount },
+    "Pending NORM ↓" to compareByDescending { it.remainingToNorm ?: 0.0 },
+    "Pending STAB ↓" to compareByDescending { it.remainingToStab ?: 0.0 },
 )
 
 @OptIn(ExperimentalLayoutApi::class)

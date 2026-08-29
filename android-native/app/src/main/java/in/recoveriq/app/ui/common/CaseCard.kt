@@ -160,6 +160,11 @@ fun CaseCard(
                         style = MaterialTheme.typography.labelSmall, color = MutedDim)
                     if (case.receivedAmount > 0) Text("paid ₹${"%,.0f".format(case.receivedAmount)}",
                         style = MaterialTheme.typography.labelSmall, color = Good)
+                    // Pending NORM / STAB (settlement cases) — shown to FOS at a glance.
+                    if (case.isSettlementCase && (case.paidStatus ?: "").uppercase() != "PAID") {
+                        case.remainingToNorm?.let { Text("N: ₹${"%,.0f".format(it)}", style = MaterialTheme.typography.labelSmall, color = Muted) }
+                        case.remainingToStab?.let { Text("S: ₹${"%,.0f".format(it)}", style = MaterialTheme.typography.labelSmall, color = Muted) }
+                    }
                 }
             }
             if (onOpenPerf != null && (case.assignedCallerId != null || case.assignedFosId != null)) {

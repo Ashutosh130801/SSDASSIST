@@ -75,15 +75,13 @@ async def create_visit(
         case.disposition = "MOVED"
     if paid and amt > 0:
         case.received_amount = (Decimal(case.received_amount or 0) + amt)
-        case.pending_amount = (Decimal(case.funding_amount or 0) - Decimal(case.received_amount or 0))
-        if case.pending_amount <= 0:
-            case.paid_status = "PAID"
-            case.status = "paid"
-        else:
-            case.paid_status = "PARTIAL"
         if norm_stab:                         # credit-card: NORM or STAB paid
             ns = norm_stab.upper()
             case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
+        # Single source of truth: PAID only when the NORM/STAB settlement (or full outstanding
+        # for plain cases) is reached; below that it stays PARTIAL and is excluded from cash.
+        from .. import paymath
+        paymath.recompute(case)
     if latitude and longitude and location_correct:
         case.latitude = latitude
         case.longitude = longitude
@@ -93,8 +91,8 @@ async def create_visit(
         pd = datetime.strptime(ptp_date, "%Y-%m-%d").date() if ptp_date else None
     except ValueError:
         pd = None
-    if case.paid_status == "PAID" and Decimal(case.pending_amount or 0) <= 0:
-        case.follow_up_date = None                              # settled → out of the queue
+    if case.paid_status == "PAID":                              # settled (full or NORM/STAB) → out of the queue
+        case.follow_up_date = None
     else:
         # unpaid / partial after a visit → carry to the promised date, else next working day
         case.follow_up_date = pd or (datetime.now(IST).date() + timedelta(days=1))

@@ -63,6 +63,7 @@ def _ensure_columns():
             "flagged": "BOOLEAN",
             "flag_reason": "VARCHAR(160)",
             "branch_explicit": "BOOLEAN",
+            "auto_debit": "BOOLEAN",
         },
         "users": {
             "employment_type": "VARCHAR(30)",
@@ -130,6 +131,31 @@ def _ensure_columns():
 
 
 _ensure_columns()
+
+
+def _recompute_pay_status():
+    """Re-derive every case's PAID / PARTIAL / UNPAID + pending against the settlement (NORM/STAB)
+    money rules, so historical rows match the single source of truth in app.paymath. Idempotent:
+    only rows whose status/pending actually change are written."""
+    from .database import SessionLocal
+    from . import models as _m, paymath as _pm
+    db = SessionLocal()
+    try:
+        changed = 0
+        for c in db.query(_m.Case).filter(_m.Case.removed.isnot(True)).yield_per(500):
+            before = (c.paid_status, c.pending_amount, c.status)
+            _pm.recompute(c)
+            if (c.paid_status, c.pending_amount, c.status) != before:
+                changed += 1
+        if changed:
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+_recompute_pay_status()
 
 
 def _backfill_emp_codes():

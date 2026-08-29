@@ -340,6 +340,8 @@ def _prepare(content, default_bank, product, user, db):
         items.append({"action": act, "case_id": match.id, "key": keyshow,
                       "customer": match.customer_name, "amount": float(amount or 0),
                       "norm_stab": ns, "current": match.paid_status,
+                      # a paid row with an explicit ₹0 amount = auto-debit settlement
+                      "auto_debit": bool(paid and amount is not None and amount == 0),
                       "updates": {k: str(v) for k, v in field_ups.items()},
                       "_case": match, "_amount": amount, "_ns": ns, "_fields": field_ups})
     return cols, items
@@ -425,31 +427,42 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
             fields_n += len(ups)
             change["fields"] = {k: str(v) for k, v in ups.items()}
 
+        from .. import paymath
+        # A paid DPR row with an EXPLICIT ₹0 amount = an auto-debit / e-NACH settlement: mark the
+        # case PAID, but collect nothing (cash stays 0, pending stays the full balance). A paid row
+        # with no amount at all still means "settle the full outstanding" (unchanged behaviour).
+        is_autodebit = (it["_amount"] is not None and it["_amount"] == 0)
         if act == "mark_paid":
-            # Unpaid → paid: ADD the DPR amount (in-full when no amount given) as collection.
-            add = amt if amt is not None else base
+            if is_autodebit:
+                case.auto_debit = True
+                add = Decimal(0)
+            else:
+                add = amt if amt is not None else base   # amt = the >0 amount, else full base
             new_recv = prev_recv + add
             case.received_amount = new_recv
-            case.pending_amount = max(Decimal(0), base - new_recv)
-            case.paid_status, case.status, case.follow_up_date = "PAID", "paid", None
             if ns:
                 case.norm_stab = ns
-            _log_payment(case, add, f"DPR: paid ₹{add}" + (f" ({ns})" if ns else ""))
+            # auto_debit → PAID at ₹0; otherwise a NORM/STAB case is PAID only once its settlement
+            # is reached (below → PARTIAL), and plain cases PAID once the outstanding is met.
+            new_status = paymath.recompute(case)
+            _log_payment(case, add, ("DPR: auto-debit settlement (₹0)" if is_autodebit
+                                     else f"DPR: paid ₹{add}") + (f" ({ns})" if ns else ""))
             collected_total += add
-            change.update({"new_status": "PAID", "delta": float(add), "new_received": float(new_recv)})
+            change.update({"new_status": new_status, "delta": float(add), "new_received": float(new_recv),
+                           "auto_debit": is_autodebit})
             paid_n += 1; _touch(case)
 
         elif act == "extra_paid" and amt is not None:
             # Already paid + DPR paid again with an amount → a NEW extra collection ADDED on top
-            # (customer paid more on their own). Stays paid; collected amount rises everywhere.
+            # (customer paid more on their own). Collected amount rises everywhere.
             new_recv = prev_recv + amt
             case.received_amount = new_recv
-            case.pending_amount = max(Decimal(0), base - new_recv)
             if ns:
                 case.norm_stab = ns
+            new_status = paymath.recompute(case)
             _log_payment(case, amt, f"DPR updated collection: extra ₹{amt}" + (f" ({ns})" if ns else ""))
             collected_total += amt
-            change.update({"new_status": "PAID", "delta": float(amt), "new_received": float(new_recv),
+            change.update({"new_status": new_status, "delta": float(amt), "new_received": float(new_recv),
                            "extra": True})
             extra_n += 1; _touch(case)
 
@@ -458,6 +471,7 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
             case.received_amount = Decimal(0)
             case.pending_amount = base
             case.paid_status, case.status, case.norm_stab = "UNPAID", "allocated", None
+            case.auto_debit = False   # a reversal / bounce clears any auto-debit settlement
             if prev_recv > 0:
                 _log_payment(case, (-prev_recv), "DPR: reversed (marked unpaid)")
                 collected_total -= prev_recv

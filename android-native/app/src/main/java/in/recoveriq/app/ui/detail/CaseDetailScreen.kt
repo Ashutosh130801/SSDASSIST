@@ -371,7 +371,13 @@ private fun DetailFields(case: Case) {
         Field("ENR", if (case.enr > 0) money(case.enr) else null)
         Field("NORM amount", if (case.normAmount > 0) money(case.normAmount) else null)
         Field("STAB amount", if (case.stabAmount > 0) money(case.stabAmount) else null)
+        // Pending settlement — how much more to reach NORM / STAB (0 once reached). Shown to FOS too.
+        if (case.isSettlementCase && (case.paidStatus ?: "").uppercase() != "PAID") {
+            Field("Pending NORM", case.remainingToNorm?.let { money(it) })
+            Field("Pending STAB", case.remainingToStab?.let { money(it) })
+        }
         Field("Paid at (NORM/STAB)", case.normStab)
+        if (case.autoDebit) Field("Payment type", "⚡ Auto-debit / e-NACH — PAID (cash not counted)")
         Field("Caller", case.callerName)
         Field("Field agent (FOS)", case.fosName)
     }

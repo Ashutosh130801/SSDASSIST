@@ -245,7 +245,9 @@ def _window(db: Session, u: models.User, start):
         q = q.filter(models.CallLog.created_at >= start)
     calls = q.all()
     ptp = sum(1 for c in calls if (c.disposition or "") == "PTP")   # RTP = Refuse to Pay, not a promise
-    collected = _d(sum(_d(c.ptp_amount) for c in calls if (c.disposition or "") == "PAID"))
+    # Every collection event counts: caller payments, head-office mark-paid, DPR (all logged as
+    # PAYMENT or PAID; reversals carry a negative amount and net out).
+    collected = _d(sum(_d(c.ptp_amount) for c in calls if (c.disposition or "") in ("PAYMENT", "PAID")))
     return {"label": "calls", "count": len(calls), "ptp": ptp, "collected": collected}
 
 
@@ -317,7 +319,7 @@ def employee_dashboard(uid: int, db: Session = Depends(get_db),
     pending_amt = sum(_d(c.pending_amount) for c in cases)
     resolved = sum(1 for c in cases if paid(c))
 
-    pay_events = [(d_ist(cl.created_at), _d(cl.ptp_amount)) for cl in calls if (cl.disposition or "") == "PAYMENT"]
+    pay_events = [(d_ist(cl.created_at), _d(cl.ptp_amount)) for cl in calls if (cl.disposition or "") in ("PAYMENT", "PAID")]
     pay_events += [(d_ist(v.created_at), _d(v.amount_collected)) for v in visits if _d(v.amount_collected) > 0]
     cash = round(sum(a for d, a in pay_events), 2)
 
@@ -529,7 +531,7 @@ def _overview_payload(db: Session, lead: models.User) -> dict:
                                             ~models.CallLog.case_id.in_(esc)).all() if member_ids else []
     visits = db.query(models.Visit).filter(models.Visit.officer_id.in_(member_ids),
                                            ~models.Visit.case_id.in_(esc)).all() if member_ids else []
-    pay = [(d_ist(cl.created_at), _d(cl.ptp_amount)) for cl in calls if (cl.disposition or "") == "PAYMENT"]
+    pay = [(d_ist(cl.created_at), _d(cl.ptp_amount)) for cl in calls if (cl.disposition or "") in ("PAYMENT", "PAID")]
     pay += [(d_ist(v.created_at), _d(v.amount_collected)) for v in visits if _d(v.amount_collected) > 0]
     today_d = datetime.now(IST).date()
     trend = [{"date": (today_d - timedelta(days=i)).isoformat(),

@@ -2,7 +2,7 @@ from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List
 
-from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator
+from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator, model_validator
 
 
 # ---------- Auth / Users ----------
@@ -311,8 +311,29 @@ class CaseOut(CaseBase):
     # The signed-in user's personal review-highlight colour on this case (if any).
     review_color: Optional[str] = None
     review_note: Optional[str] = None
+    # Settlement (NORM/STAB) money view — computed from this case's own fields (source of truth
+    # in app.paymath), so the UI can show partial vs settled, what's left, and any overpayment.
+    auto_debit: Optional[bool] = None              # settled via auto-debit / e-NACH mandate
+    is_settlement_case: Optional[bool] = None      # has a NORM and/or STAB amount
+    settle_target: Optional[Decimal] = None        # minimum needed to settle (tag-aware)
+    remaining_to_norm: Optional[Decimal] = None    # NORM − received (0 once reached)
+    remaining_to_stab: Optional[Decimal] = None    # STAB − received
+    excess_paid: Optional[Decimal] = None          # paid over the settlement target (settled cases)
+    partial_amount: Optional[Decimal] = None       # below-settlement money (not counted as cash)
     created_at: datetime
     updated_at: Optional[datetime]
+
+    @model_validator(mode="after")
+    def _fill_settlement_view(self):
+        from . import paymath
+        self.is_settlement_case = paymath.is_settlement(self)
+        if self.is_settlement_case:
+            self.settle_target = paymath.settle_target(self)
+            self.remaining_to_norm = paymath.remaining_to_norm(self)
+            self.remaining_to_stab = paymath.remaining_to_stab(self)
+            self.excess_paid = paymath.excess_over(self)
+            self.partial_amount = paymath.partial_amount(self)
+        return self
 
 
 # ---------- Visits ----------

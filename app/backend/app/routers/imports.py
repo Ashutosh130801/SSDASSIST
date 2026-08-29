@@ -237,6 +237,15 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             })
 
     imported, skipped = 0, 0
+    # Any collection that arrives on the sheet (a non-zero received amount) is logged as a dated
+    # PAYMENT event so it shows up in the collections trend / FTD-MTD windows exactly like an
+    # in-app payment. Delta-based (new − old) so re-uploading the same file never double-counts.
+    _imp_events: list[tuple] = []
+    def _num(v):
+        try:
+            return float(str(v).replace(",", "").strip() or 0)
+        except Exception:
+            return 0.0
     for rec in records:
         kwargs = record_to_case_kwargs(rec)
         acct = kwargs.get("account_no")
@@ -256,6 +265,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                 eq = eq.filter(models.Case.product == _mp)
             existing = eq.first()
         if existing:
+            _old_recv = _num(existing.received_amount)
             # update amounts / status, don't duplicate
             for k in ("funding_amount", "received_amount", "pending_amount", "paid_status",
                       "disposition", "remarks", "address", "pincode", "phone",
@@ -301,6 +311,9 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                 existing.branch = branch
                 existing.branch_explicit = True   # explicit upload branch → this portfolio splits
             _apply_period(existing, rec)      # re-stamp period + recompute close date
+            _dnew = _num(existing.received_amount) - _old_recv
+            if _dnew > 0.5:                   # sheet shows more collected than before → dated event
+                _imp_events.append((existing, round(_dnew, 2)))
             skipped += 1
             continue
         # This upload is for one bank + product + segment — stamp every new row.
@@ -365,7 +378,20 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
         _apply_teamlead(new_case, cu, fu)     # stamp TL + link caller/FOS to that team lead
         _apply_period(new_case, rec)
         db.add(new_case)
+        _rv0 = _num(kwargs.get("received_amount"))
+        if _rv0 > 0.5:                        # fresh case already carries a collection → dated event
+            _imp_events.append((new_case, round(_rv0, 2)))
         imported += 1
+
+    # Turn every imported collection into a dated PAYMENT event so the trend / FTD-MTD windows
+    # count it identically to a caller payment, DPR update, or field collection — no gaps.
+    if _imp_events:
+        db.flush()                            # assign ids to freshly-added cases
+        for _c, _amt in _imp_events:
+            _cid = _c.assigned_caller_id or _c.assigned_fos_id
+            db.add(models.CallLog(case_id=_c.id, caller_id=_cid,
+                                  disposition="PAYMENT", ptp_amount=_amt,
+                                  note="Imported collection (from upload)"))
 
     batch.rows_imported = imported
     batch.rows_skipped = skipped

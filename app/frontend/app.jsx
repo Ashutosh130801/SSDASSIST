@@ -939,9 +939,13 @@ function Dashboard({ user, branch }) {
   if (err) return <div className="glass card" style={{ color: 'var(--bad)' }}>{err}</div>;
   if (!d) return <Loader />;
   const k = d.kpis;
-  const statusMap = {}; (d.by_status || []).forEach(s => { statusMap[s.status] = s.count; });
+  // Prefer the backend's DERIVED pipeline (real funnel: assigned/touched/ptp/paid). Fall back to
+  // the raw status counts only if an older backend hasn't shipped `pipeline` yet.
+  const pipeMap = {};
+  if (d.pipeline && d.pipeline.length) { d.pipeline.forEach(s => { pipeMap[s.key] = s.count; }); }
+  else { (d.by_status || []).forEach(s => { pipeMap[s.status] = s.count; }); }
   const stages = ['new', 'allocated', 'in_progress', 'ptp', 'paid']
-    .map(s => ({ key: s, ...STAGE_META[s], count: statusMap[s] || 0 }));
+    .map(s => ({ key: s, ...STAGE_META[s], count: pipeMap[s] || 0 }));
   const maxStage = Math.max(1, ...stages.map(s => s.count));
   const rate = Math.max(0, Math.min(100, k.recovery_rate || 0));
   const lb = d.fo_leaderboard || [];
@@ -966,6 +970,8 @@ function Dashboard({ user, branch }) {
             sub={<span>{INR(collectedToday)} collected today</span>} />}
         <StatCard icon="⏳" label="Pending" accent="amber" value={INR(k.pending)} valueColor="var(--warn)"
           sub={<span>{INR(collectedToday)} collected today</span>} />
+        {Number(k.partial_payments) > 0 && <StatCard icon="🟠" label="Partial payments" accent="amber" value={INR(k.partial_payments)} valueColor="var(--warn)"
+          sub={<span>below-settlement (not in cash)</span>} />}
         <StatCard icon="🎯" label="Portfolio Target" accent="" value={INR(k.target)}
           sub="Total outstanding" />
       </div>
@@ -988,6 +994,14 @@ function Dashboard({ user, branch }) {
             {(hl.top_untouched || []).slice(0, 5).map((r, i) => <div key={i} className="stat-row"><span className="k">{r.customer || '—'} <span className="muted" style={{ fontSize: 11 }}>· {r.product}</span></span><b style={{ color: 'var(--warn)' }}>{money(r.pending)}</b></div>)}
             {(!hl.top_untouched || !hl.top_untouched.length) && <div className="muted" style={{ fontSize: 12 }}>All cases have been contacted.</div>}</div>
         </div>
+        {((hl.top_by_norm || []).length > 0 || (hl.top_by_stab || []).length > 0) && <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+          <div><div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>High-value by NORM (pending)</div>
+            {(hl.top_by_norm || []).slice(0, 5).map((r, i) => <div key={i} className="stat-row"><span className="k">{r.customer || '—'} <span className="muted" style={{ fontSize: 11 }}>· {r.product}</span></span><b style={{ color: 'var(--info)' }}>{money(r.pending)}</b></div>)}
+            {(!hl.top_by_norm || !hl.top_by_norm.length) && <div className="muted" style={{ fontSize: 12 }}>No NORM settlements pending.</div>}</div>
+          <div><div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>High-value by STAB (pending)</div>
+            {(hl.top_by_stab || []).slice(0, 5).map((r, i) => <div key={i} className="stat-row"><span className="k">{r.customer || '—'} <span className="muted" style={{ fontSize: 11 }}>· {r.product}</span></span><b style={{ color: 'var(--info)' }}>{money(r.pending)}</b></div>)}
+            {(!hl.top_by_stab || !hl.top_by_stab.length) && <div className="muted" style={{ fontSize: 12 }}>No STAB settlements pending.</div>}</div>
+        </div>}
       </div>}
 
       <div className="grid2" style={{ marginBottom: 16 }}>
@@ -3220,6 +3234,9 @@ function CaseCard({ c, onVisit, onNav, onDetails }) {
       <div className="muted" style={{ fontSize: 13, margin: '4px 0 8px' }}>{c.bank} · {c.bucket || '—'} · cyc {c.cycle || '—'}</div>
       <div style={{ fontSize: 13, color: 'var(--ink-soft)', minHeight: 34 }}>{c.address || 'No address'} {c.pincode ? `(${c.pincode})` : ''}</div>
       <div className="stat-row"><span className="k">Pending</span><b className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</b></div>
+      {c.is_settlement_case && (c.paid_status || '') !== 'PAID' && <div className="stat-row" style={{ fontSize: 12.5 }}>
+        <span className="k">Pending NORM / STAB</span>
+        <b className="mono" style={{ color: 'var(--info)' }}>{c.remaining_to_norm != null ? INR(c.remaining_to_norm) : '—'} / {c.remaining_to_stab != null ? INR(c.remaining_to_stab) : '—'}</b></div>}
       <div className="toolbar" style={{ margin: '10px 0 0' }}>
         <button className="btn sm gold" style={{ flex: 1 }} onClick={onVisit} disabled={c.closed} title={c.closed ? 'Closed for the month — locked' : ''}>Log visit</button>
         {onDetails && <button className="btn sm" onClick={onDetails}>Details</button>}
@@ -3310,7 +3327,7 @@ function FOLiveMap({ config }) {
 function FOCases({ config }) {
   const [cases, setCases] = useState(null); const [view, setView] = useState('list'); const [active, setActive] = useState(null); const [detail, setDetail] = useState(null);
   const [collapsed, setCollapsed] = useState({}); const [bucketFilter, setBucketFilter] = useState('');
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(''); const [sortBy, setSortBy] = useState('');   // '' = grouped
   const mapEl = useRef(null); const map = useRef(null);
   const load = () => api('/api/cases').then(setCases);
   useEffect(() => { load(); }, []);
@@ -3366,8 +3383,24 @@ function FOCases({ config }) {
           return <div key={b} className={cx('chip', bucketFilter === b && 'on')} onClick={() => setBucketFilter(b)}>{b} ({n})</div>;
         })}
       </div>
+      <div className="toolbar" style={{ marginTop: -2 }}>
+        <span className="muted" style={{ fontSize: 12.5 }}>Sort:</span>
+        {[['', '🗂 Grouped'], ['pending', 'Pending ↓'], ['norm', 'Pending NORM ↓'], ['stab', 'Pending STAB ↓']].map(([v, l]) =>
+          <div key={v} className={cx('chip', sortBy === v && 'on')} onClick={() => setSortBy(v)}>{l}</div>)}
+      </div>
       {view === 'map' ? <div className="glass" style={{ padding: 6 }}><div className="map tall" ref={mapEl}></div></div> :
         shown.length === 0 ? <p className="muted">{search ? `No cases match "${search}".` : 'No cases in this bucket.'}</p> :
+        sortBy ? (() => {
+          const sv = c => sortBy === 'norm' ? Number(c.remaining_to_norm || 0)
+            : sortBy === 'stab' ? Number(c.remaining_to_stab || 0) : Number(c.pending_amount || 0);
+          const flat = [...shown].sort((a, b) => sv(b) - sv(a));
+          const lbl = sortBy === 'norm' ? 'Pending NORM' : sortBy === 'stab' ? 'Pending STAB' : 'Pending';
+          return <div className="glass card">
+            <div className="muted" style={{ fontSize: 12.5, padding: '2px 2px 8px' }}>{flat.length} cases · sorted by {lbl} (high → low)</div>
+            <div className="grid3">
+              {flat.map(c => <CaseCard key={c.id} c={c} onVisit={() => setActive(c)} onNav={() => openNav(c)} onDetails={() => setDetail(c)} />)}
+            </div></div>;
+        })() :
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             {groups.map(bank => <div key={bank.bank} className="glass card">
               <div className="section-h" style={{ cursor: 'pointer', margin: 0 }} onClick={() => toggle(bank.bank)}>
@@ -3518,7 +3551,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
   const [tpls, setTpls] = useState([]); const [tplId, setTplId] = useState(''); const [msg, setMsg] = useState('');
   const [dispo, setDispo] = useState('PTP'); const [amt, setAmt] = useState(''); const [ptpDate, setPtpDate] = useState('');
   const [followDate, setFollowDate] = useState(''); const [callNote, setCallNote] = useState('');
-  const [payAmt, setPayAmt] = useState(''); const [payMode, setPayMode] = useState('UPI'); const [payNote, setPayNote] = useState(''); const [normStab, setNormStab] = useState('STAB');
+  const [payAmt, setPayAmt] = useState(''); const [payMode, setPayMode] = useState('UPI'); const [payNote, setPayNote] = useState(''); const [normStab, setNormStab] = useState('STAB'); const [payAuto, setPayAuto] = useState(false);
   const [ncAddr, setNcAddr] = useState(''); const [ncPhone, setNcPhone] = useState(''); const [ncEdit, setNcEdit] = useState(false);
   const [busy, setBusy] = useState(false);
   const saveContact = async () => {
@@ -3558,9 +3591,9 @@ function CaseDrawer({ c, onClose, onChanged }) {
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
   const recordPay = async () => {
-    if (!payAmt) return; setBusy(true);
-    try { const updated = await api(`/api/cases/${c.id}/payment`, { method: 'POST', body: { amount: payAmt, mode: payMode, note: payNote, norm_stab: isCC ? normStab : null } });
-      setCur(updated); setPayAmt(''); setPayNote(''); toast('Payment recorded.'); await refresh(); onChanged && onChanged();
+    if (!payAuto && !payAmt) return; setBusy(true);
+    try { const updated = await api(`/api/cases/${c.id}/payment`, { method: 'POST', body: { amount: payAmt || '0', mode: payAuto ? 'Auto-debit' : payMode, note: payNote, norm_stab: isCC ? normStab : null, auto_debit: payAuto } });
+      setCur(updated); setPayAmt(''); setPayNote(''); setPayAuto(false); toast(payAuto ? 'Auto-debit settlement recorded.' : 'Payment recorded.'); await refresh(); onChanged && onChanged();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
   const meRole = (store.u || {}).role; const meId = (store.u || {}).id;
@@ -3648,6 +3681,17 @@ function CaseDrawer({ c, onClose, onChanged }) {
           {(Number(cur.norm_amount) || Number(cur.stab_amount) || cur.norm_stab) && row('NORM / STAB',
             `${Number(cur.norm_amount) ? 'NORM ' + INR(cur.norm_amount) : ''}${Number(cur.stab_amount) ? '  ·  STAB ' + INR(cur.stab_amount) : ''}${cur.norm_stab ? '  ·  paid: ' + cur.norm_stab : ''}`.trim() || '—')}
           {row('Cash collected', Number(cur.received_amount) ? INR(cur.received_amount) : null)}
+          {cur.auto_debit && row('Payment type', '⚡ Auto-debit / e-NACH — marked PAID (cash not counted)')}
+          {/* Settlement (NORM/STAB) money view — pending to settle, overpayment, or plain pending. */}
+          {cur.is_settlement_case && (cur.paid_status || '') !== 'PAID' && <>
+            {cur.remaining_to_norm != null ? row('Pending NORM', INR(cur.remaining_to_norm)) : null}
+            {cur.remaining_to_stab != null ? row('Pending STAB', INR(cur.remaining_to_stab)) : null}
+            {(cur.paid_status || '') === 'PARTIAL' && row('Partial paid (not counted as cash)', INR(cur.partial_amount || cur.received_amount))}
+          </>}
+          {cur.is_settlement_case && (cur.paid_status || '') === 'PAID' && Number(cur.excess_paid) > 0
+            ? row('Paid over settlement', INR(cur.excess_paid)) : null}
+          {!cur.is_settlement_case && (cur.paid_status || '') !== 'PAID' && Number(cur.pending_amount) > 0
+            ? row('Pending', INR(cur.pending_amount)) : null}
           {row('Last disposition', cur.disposition)}
           {row('Last contacted', cur.last_contacted_at ? fmtDT(cur.last_contacted_at) : null)}
           {row('Next follow-up', cur.follow_up_date)}
@@ -3702,8 +3746,11 @@ function CaseDrawer({ c, onClose, onChanged }) {
               <option>UPI</option><option>Cash</option><option>Bank Transfer</option><option>Cheque</option><option>BBPS</option></select></div></div>
           {isCC && <div className="field"><label>Paid at (credit card)</label>
             <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option><option>ROLLBACK</option></select></div>}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, margin: '2px 0 6px' }}>
+            <input type="checkbox" checked={payAuto} onChange={e => setPayAuto(e.target.checked)} />
+            Auto-debit / e-NACH settlement <span className="muted" style={{ fontSize: 11.5 }}>(marks PAID even at ₹0 — not counted as cash)</span></label>
           <div className="field"><label>Note (optional)</label><input className="input" value={payNote} onChange={e => setPayNote(e.target.value)} /></div>
-          <button className="btn gold block" onClick={recordPay} disabled={busy || !payAmt || cur.closed}>Save payment</button>
+          <button className="btn gold block" onClick={recordPay} disabled={busy || (!payAuto && !payAmt) || cur.closed}>{payAuto ? 'Mark auto-debit paid' : 'Save payment'}</button>
           {(() => {
             const cfg = window.__ssdCfg || {};
             const link = upiLink(cfg, cur, payAmt);
@@ -4831,7 +4878,7 @@ function MISView({ user }) {
     if (v === null || v === undefined || v === '') return '—';
     if (/(_pct$|^pct$)/.test(k)) return v + '%';
     if (typeof v === 'boolean') return v ? 'Yes' : '—';
-    if (/(enr|amount|pending|collected|cash|coll|leakage|target_enr|achieved_enr|gap)/.test(k) && typeof v === 'number') return money(v);
+    if (/(enr|amount|pending|collected|cash|coll|leakage|target_enr|achieved_enr|gap|^norm$|^stab$|pending_norm|pending_stab)/.test(k) && typeof v === 'number') return money(v);
     return v;
   };
   const printTable = (title, headers, rows2d) => {
@@ -4847,10 +4894,11 @@ function MISView({ user }) {
   // Area-wise gets its own columns highlighting outstanding + recovery rate per area.
   const AREA = [['label', 'Area'], ['count', 'Count'], ['paid', 'Paid'], ['unpaid', 'Unpaid'], ['enr', 'ENR'], ['pending', 'Pending'], ['amount', 'Collected'], ['recovery_pct', 'Recovery %'], ['pct', 'Paid %'], ['norm_pct', 'NORM %'], ['stab_pct', 'STAB %']];
   const CASES = [['customer', 'Customer'], ['account', 'Account'], ['pending', 'Pending'], ['enr', 'ENR'], ['propensity', 'Score'], ['fos', 'FOS'], ['caller', 'Caller']];
+  const NS_CASES = [['customer', 'Customer'], ['account', 'Account'], ['norm', 'NORM'], ['pending_norm', 'Pending NORM'], ['stab', 'STAB'], ['pending_stab', 'Pending STAB'], ['pending', 'Pending'], ['fos', 'FOS'], ['caller', 'Caller']];
   const TABLES = [
     ['by_fos', GROUP], ['by_caller', GROUP], ['by_area', AREA], ['by_team_lead', GROUP], ['by_cat', GROUP], ['by_dpd', GROUP],
     ['aging', [['label', 'Recency'], ['count', 'Count'], ['pending', 'Pending']]],
-    ['untouched_table', CASES], ['top_pending', CASES], ['priority', CASES],
+    ['untouched_table', CASES], ['top_by_norm', NS_CASES], ['top_by_stab', NS_CASES], ['top_pending', CASES], ['priority', CASES],
     ['obstacles', [['caller', 'Caller'], ['total', 'Total'], ['obstacles', 'Obstacles'], ['rate_pct', 'Rate %']]],
     ['productivity', [['emp', 'Employee'], ['calls_today', 'Calls'], ['visits_today', 'Visits'], ['idle', 'Idle']]],
     ['field_efficiency', [['fos', 'FOS'], ['visits', 'Visits'], ['distance_km', 'Dist km'], ['off_location', 'Off-loc'], ['collected', 'Collected']]],
@@ -5885,6 +5933,7 @@ function PaymentEditModal({ row, mode, initAmount, onClose, onDone }) {
   const [state, setState] = React.useState(null); const [err, setErr] = React.useState('');
   const [amount, setAmount] = React.useState(''); const [ns, setNs] = React.useState('STAB');
   const [busy, setBusy] = React.useState(false); const [okOver, setOkOver] = React.useState(false);
+  const [auto, setAuto] = React.useState(false);
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const isCC = (row.segment || '') === 'Credit Card';
   // Overpayment guard: if the total received would exceed the funded/outstanding amount,
@@ -5912,8 +5961,9 @@ function PaymentEditModal({ row, mode, initAmount, onClose, onDone }) {
     setBusy(true); setErr('');
     try {
       const updated = await api('/api/cases/' + row.id + '/mark-paid', { method: 'POST',
-        body: { amount: amount || null, norm_stab: isCC ? ns : null, mode: 'Manual' } });
-      toast('Marked paid — reflected in performance & MIS.'); onDone(updated);
+        body: { amount: auto ? (amount || '0') : (amount || null), norm_stab: isCC ? ns : null,
+                mode: auto ? 'Auto-debit' : 'Manual', auto_debit: auto } });
+      toast(auto ? 'Auto-debit settlement — marked paid.' : 'Marked paid — reflected in performance & MIS.'); onDone(updated);
     } catch (e) { setErr(e.message); setBusy(false); }
   };
   const confirmUnpaid = async () => {
@@ -5934,9 +5984,12 @@ function PaymentEditModal({ row, mode, initAmount, onClose, onDone }) {
             <p style={{ fontSize: 13.5, lineHeight: 1.6 }}>Record a payment the customer made directly (e.g. from the bank DPR). This credits the assigned caller/FOS and updates MIS.</p>
             <div className="stat-row"><span className="k">Already received</span><b>{money(state.received_amount)}</b></div>
             <div className="stat-row"><span className="k">Outstanding</span><b style={{ color: 'var(--warn)' }}>{money(state.pending_amount)}</b></div>
-            <div className="field"><label>Amount paid (₹)</label><input className="input" type="number" value={amount} onChange={e => setAmount(e.target.value)} /></div>
+            <div className="field"><label>Amount paid (₹)</label><input className="input" type="number" value={amount} onChange={e => setAmount(e.target.value)} disabled={auto} /></div>
             {isCC && <div className="field"><label>Paid at (credit card)</label>
               <select className="input" value={ns} onChange={e => setNs(e.target.value)}><option>STAB</option><option>NORM</option><option>ROLLBACK</option></select></div>}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, margin: '2px 0' }}>
+              <input type="checkbox" checked={auto} onChange={e => { setAuto(e.target.checked); if (e.target.checked) setAmount('0'); }} />
+              Auto-debit / e-NACH <span className="muted" style={{ fontSize: 11 }}>(PAID at ₹0 — not counted as cash)</span></label>
             {isOver && <div className="glass card" style={{ background: 'rgba(220,38,38,.08)', border: '1px solid rgba(220,38,38,.35)', padding: 10, marginTop: 4 }}>
               <div style={{ color: 'var(--bad)', fontWeight: 700, fontSize: 13 }}>⚠ Overpayment — likely a duplicate</div>
               <div className="muted" style={{ fontSize: 12.5, marginTop: 3, lineHeight: 1.5 }}>

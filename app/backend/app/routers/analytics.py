@@ -48,8 +48,12 @@ def dashboard(branch: str | None = None, month_bucket: str | None = None,
         return _scope(q, user, branch, period=period)
     base = sc(db.query(models.Case))
 
+    from .. import paymath
     total_cases = base.count()
-    cash = _d(base.with_entities(func.coalesce(func.sum(models.Case.received_amount), 0)).scalar())
+    # Cash collection excludes below-settlement partials on NORM/STAB cases; those are surfaced
+    # separately as `partial_payments`. Plain (no NORM/STAB) cases count all received as cash.
+    cash = _d(base.with_entities(func.coalesce(func.sum(paymath.cash_expr()), 0)).scalar())
+    partial_payments = _d(base.with_entities(func.coalesce(func.sum(paymath.partial_expr()), 0)).scalar())
     # ENR is the recovery base for credit-card/PL-BL data; fall back to funding for older loads.
     total_enr = _d(base.with_entities(func.coalesce(func.sum(models.Case.enr), 0)).scalar())
     paid_enr = _d(sc(db.query(models.Case))
@@ -92,6 +96,31 @@ def dashboard(branch: str | None = None, month_bucket: str | None = None,
     )
     by_status = [{"status": s or "—", "count": c} for s, c in status_rows]
 
+    # Collections Pipeline — a REAL funnel, not the raw `status` column (which stays "new" until a
+    # case is actively worked and only flips to "allocated" on a paid→unpaid reversal, so it badly
+    # under-counts allocation). Each case falls in exactly one stage, derived live:
+    #   paid        → settled (paid_status PAID)
+    #   ptp         → promised to pay (status ptp or a PTP disposition), not yet paid
+    #   in_progress → contacted / visited but no PTP or payment yet
+    #   allocated   → assigned to an FOS or caller but not touched yet
+    #   new         → not assigned and not touched
+    C = models.Case
+    prows = sc(db.query(C.paid_status, C.status, C.disposition, C.last_contacted_at,
+                        C.visited, C.assigned_fos_id, C.assigned_caller_id)).all()
+    pipe = {"new": 0, "allocated": 0, "in_progress": 0, "ptp": 0, "paid": 0}
+    for ps, st, dp, lc, vis, fid, cid in prows:
+        if (ps or "").upper() == "PAID":
+            pipe["paid"] += 1
+        elif st == "ptp" or "ptp" in (dp or "").lower():
+            pipe["ptp"] += 1
+        elif lc is not None or st == "in_progress" or vis is True:
+            pipe["in_progress"] += 1
+        elif fid is not None or cid is not None:
+            pipe["allocated"] += 1
+        else:
+            pipe["new"] += 1
+    pipeline = [{"key": k, "count": pipe[k]} for k in ("new", "allocated", "in_progress", "ptp", "paid")]
+
     # by disposition
     disp_rows = (
         sc(db.query(models.Case.disposition, func.count(models.Case.id)))
@@ -100,8 +129,12 @@ def dashboard(branch: str | None = None, month_bucket: str | None = None,
     )
     by_disposition = [{"disposition": d, "count": c} for d, c in disp_rows]
 
-    # collections trend (last 14 days from visits)
+    # Collections trend (last 14 days) — ALL money in: field-visit collections + call-log
+    # collections (caller payments, head-office mark-paid, DPR — logged as PAYMENT/PAID), so the
+    # trend reflects every payment path, not just visits.
     since = datetime.now(timezone.utc) - timedelta(days=14)
+    from sqlalchemy import select as _select
+    day_map: dict[str, dict] = {}
     vq = db.query(
         func.date(models.Visit.created_at).label("d"),
         func.coalesce(func.sum(models.Visit.amount_collected), 0),
@@ -110,25 +143,58 @@ def dashboard(branch: str | None = None, month_bucket: str | None = None,
     if user.role == "fos":
         vq = vq.filter(models.Visit.officer_id == user.id)
     if branch:
-        from sqlalchemy import select as _select
         vq = vq.filter(models.Visit.officer_id.in_(
             _select(models.User.id).where(models.User.branch == branch)))
-    vq = vq.group_by("d").order_by("d")
-    trend = [{"date": str(d), "collected": _d(a), "visits": v} for d, a, v in vq.all()]
+    for d, a, v in vq.group_by("d").all():
+        day_map.setdefault(str(d), {"collected": 0.0, "visits": 0})
+        day_map[str(d)]["collected"] += _d(a); day_map[str(d)]["visits"] += int(v or 0)
+    cq = db.query(
+        func.date(models.CallLog.created_at).label("d"),
+        func.coalesce(func.sum(models.CallLog.ptp_amount), 0),
+    ).filter(models.CallLog.created_at >= since, models.CallLog.disposition.in_(("PAYMENT", "PAID")))
+    if user.role == "fos":
+        cq = cq.filter(models.CallLog.caller_id == user.id)
+    if branch:
+        cq = cq.filter(models.CallLog.caller_id.in_(
+            _select(models.User.id).where(models.User.branch == branch)))
+    for d, a in cq.group_by("d").all():
+        day_map.setdefault(str(d), {"collected": 0.0, "visits": 0})
+        day_map[str(d)]["collected"] += _d(a)
+    trend = [{"date": k, "collected": round(v["collected"], 2), "visits": v["visits"]}
+             for k, v in sorted(day_map.items())]
 
-    # FO leaderboard (admin only useful)
-    fo_rows = (
-        db.query(models.User.name,
-                 func.count(models.Visit.id),
-                 func.coalesce(func.sum(models.Visit.amount_collected), 0))
-        .join(models.Visit, models.Visit.officer_id == models.User.id)
-        .filter(models.User.role == "fos")
-        .filter((models.User.branch == branch) if branch else (models.User.id == models.User.id))
-        .group_by(models.User.name)
-        .order_by(func.coalesce(func.sum(models.Visit.amount_collected), 0).desc())
-        .limit(10).all()
-    )
-    fo_leaderboard = [{"name": n, "visits": v, "collected": _d(a)} for n, v, a in fo_rows]
+    # FO leaderboard (admin-only useful) — rank by EVERY rupee attributed to the agent, not just
+    # field-visit cash: visit collections + any payment logged against them (mark-paid, DPR,
+    # caller payment) via CallLog credited to their id. Otherwise agents whose recoveries land
+    # through the office/DPR path read ₹0 and the board looks empty.
+    fq = db.query(models.User.id, models.User.name).filter(models.User.role == "fos")
+    if branch:
+        fq = fq.filter(models.User.branch == branch)
+    fos_users = fq.all()
+    fos_ids = [u.id for u in fos_users]
+    coll: dict[int, float] = {i: 0.0 for i in fos_ids}
+    visit_ct: dict[int, int] = {i: 0 for i in fos_ids}
+    if fos_ids:
+        for oid, ct, amt in (
+            db.query(models.Visit.officer_id, func.count(models.Visit.id),
+                     func.coalesce(func.sum(models.Visit.amount_collected), 0))
+            .filter(models.Visit.officer_id.in_(fos_ids))
+            .group_by(models.Visit.officer_id).all()
+        ):
+            coll[oid] = coll.get(oid, 0.0) + _d(amt)
+            visit_ct[oid] = int(ct or 0)
+        for cid, amt in (
+            db.query(models.CallLog.caller_id,
+                     func.coalesce(func.sum(models.CallLog.ptp_amount), 0))
+            .filter(models.CallLog.caller_id.in_(fos_ids),
+                    models.CallLog.disposition.in_(("PAYMENT", "PAID")))
+            .group_by(models.CallLog.caller_id).all()
+        ):
+            coll[cid] = coll.get(cid, 0.0) + _d(amt)
+    fo_leaderboard = sorted(
+        [{"name": u.name, "visits": visit_ct.get(u.id, 0), "collected": round(coll.get(u.id, 0.0), 2)}
+         for u in fos_users],
+        key=lambda x: x["collected"], reverse=True)[:10]
 
     return {
         "kpis": {
@@ -141,10 +207,12 @@ def dashboard(branch: str | None = None, month_bucket: str | None = None,
             # so a caller sees "how many of my cases are done" independent of ₹ amounts.
             "resolution_rate": round(paid / total_cases * 100, 2) if total_cases else 0.0,
             "cash_collected": cash,
+            "partial_payments": partial_payments,   # below-settlement money on NORM/STAB cases
             "paid": paid, "unpaid": unpaid, "partial": partial,
         },
         "by_bank": by_bank,
         "by_status": by_status,
+        "pipeline": pipeline,
         "by_disposition": by_disposition,
         "trend": trend,
         "fo_leaderboard": fo_leaderboard,
@@ -161,7 +229,7 @@ def db_summary(db: Session = Depends(get_db), admin: models.User = Depends(requi
         "cases": db.query(models.Case).filter(models.Case.removed.isnot(True)).count(),
         "visits": db.query(models.Visit).count(),
         "calls": db.query(models.CallLog).count(),
-        "payments": db.query(models.CallLog).filter(models.CallLog.disposition == "PAYMENT").count(),
+        "payments": db.query(models.CallLog).filter(models.CallLog.disposition.in_(("PAYMENT", "PAID"))).count(),
         "location_pings": db.query(models.LocationPing).count(),
         "import_batches": db.query(models.ImportBatch).count(),
     }
@@ -237,12 +305,12 @@ def activity(kind: str = "all", limit: int = 150,
              .join(models.Case, models.Case.id == models.CallLog.case_id))
         q = apply_case_filters(q)
         if kind == "payments":
-            q = q.filter(models.CallLog.disposition == "PAYMENT")
+            q = q.filter(models.CallLog.disposition.in_(("PAYMENT", "PAID")))
         if emp:
             q = q.filter(models.CallLog.caller_id == emp)
         for cl, name, bk, br, pr, tm in q.order_by(models.CallLog.created_at.desc()).limit(limit).all():
             items.append({
-                "type": "payment" if cl.disposition == "PAYMENT" else "call",
+                "type": "payment" if (cl.disposition or "") in ("PAYMENT", "PAID") else "call",
                 "at": cl.created_at, "case_id": cl.case_id, "customer": name,
                 "bank": bk, "branch": br, "product": pr, "area": tm,
                 "by": users.get(cl.caller_id, ""), "amount": _d(cl.ptp_amount),

@@ -29,6 +29,11 @@ router = APIRouter(prefix="/api/mis", tags=["mis"])
 
 MIS_ROLES = ("admin", "manager", "backend", "headoffice", "teamlead")
 
+# Every disposition that represents actual money moving on a case — so caller payments,
+# head-office mark-paid, and DPR uploads are ALL counted as collection (reversals carry a
+# negative ptp_amount and net themselves out). Field-visit collections live on the Visit table.
+PAY_DISPOSITIONS = ("PAYMENT", "PAID")
+
 
 def _f(x) -> float:
     return float(x or 0)
@@ -52,9 +57,28 @@ def _base(c) -> float:
     return 0.0
 
 
+def _reali_target(c) -> float:
+    """What a case is expected to realise, for the realization %. Settlement cases use their
+    settlement figure (NORM, else STAB); non-settlement cases use their outstanding base. Using a
+    pure NORM denominator made realization meaningless (and >100%) on portfolios with little/no
+    NORM — this keeps it a sensible 'collected ÷ what-was-targeted' across every portfolio."""
+    n = _f(c.norm_amount)
+    if n > 0:
+        return n
+    s = _f(c.stab_amount)
+    if s > 0:
+        return s
+    return _base(c)
+
+
 def _agg(rows: list) -> dict:
     """Core aggregation for a group of cases (ENR-based percentages)."""
+    from .. import paymath
     total_enr = sum(_f(c.enr) for c in rows)
+    # Cash collection excludes below-settlement partials on NORM/STAB cases (they show as a
+    # separate 'partial_payments' figure); plain cases count all received as cash.
+    cash_coll = sum(float(paymath.cash_qualified(c)) for c in rows)
+    partial_pay = sum(float(paymath.partial_amount(c)) for c in rows)
     paid_rows = [c for c in rows if _is_paid(c)]
     unpaid_rows = [c for c in rows if not _is_paid(c)]
     paid_enr = sum(_f(c.enr) for c in paid_rows)
@@ -86,11 +110,12 @@ def _agg(rows: list) -> dict:
         "rollback_collected": round(rollback_collected, 2),   # actual cash collected as rollback
         "rollback_target": round(rollback_target, 2),         # sum of rollback amounts on file
         "rollback_count": len(rb_paid),
-        "amount": round(sum(_f(c.received_amount) for c in rows), 2),   # CASH COLL
+        "amount": round(cash_coll, 2),   # CASH COLL (settlement partials excluded)
+        "partial_payments": round(partial_pay, 2),   # below-settlement money on NORM/STAB cases
         # PENDING computed live from the real base (never a stale 0): base − received, floored at 0.
         "pending": round(sum(max(0.0, _base(c) - _f(c.received_amount)) for c in rows), 2),
         "pos": round(sum(_f(c.principal_outstanding) for c in rows), 2),   # Total POS (principal outstanding)
-        "recovery_pct": _pct(sum(_f(c.received_amount) for c in rows), total_enr),  # cash collected / ENR
+        "recovery_pct": _pct(cash_coll, total_enr),  # cash collected / ENR
         "visited": sum(1 for c in rows if c.visited),
         "not_visited": sum(1 for c in rows if not c.visited),
     }
@@ -122,7 +147,7 @@ def collection_windows(db: Session, case_ids: list, overall_received=None) -> di
     lm_till = date(lm_year, lm_month, min(today.day, lm_days))
 
     calls = (db.query(models.CallLog.created_at, models.CallLog.ptp_amount)
-             .filter(models.CallLog.case_id.in_(case_ids), models.CallLog.disposition == "PAYMENT").all())
+             .filter(models.CallLog.case_id.in_(case_ids), models.CallLog.disposition.in_(PAY_DISPOSITIONS)).all())
     visits = (db.query(models.Visit.created_at, models.Visit.amount_collected)
               .filter(models.Visit.case_id.in_(case_ids), models.Visit.amount_collected > 0).all())
     events = [(c[0], float(c[1] or 0)) for c in calls] + [(v[0], float(v[1] or 0)) for v in visits]
@@ -258,7 +283,7 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
     month_start = today.replace(day=1)
     dim = monthrange(today.year, today.month)[1]
 
-    pay_events = [(d_ist(cl.created_at), _f(cl.ptp_amount)) for cl in calls if (cl.disposition or "") == "PAYMENT"]
+    pay_events = [(d_ist(cl.created_at), _f(cl.ptp_amount)) for cl in calls if (cl.disposition or "") in PAY_DISPOSITIONS]
     pay_events += [(d_ist(v.created_at), _f(v.amount_collected)) for v in visits if _f(v.amount_collected) > 0]
 
     collected_mtd = round(sum(a for d, a in pay_events if d and d >= month_start), 2)
@@ -291,12 +316,22 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
     from .cases import propensity as _prop
 
     def case_row(c):
+        recv = _f(c.received_amount)
         return {"customer": c.customer_name, "account": c.account_no, "pending": _f(c.pending_amount),
                 "enr": _f(c.enr), "propensity": getattr(c, "propensity", None) or _prop(c),
+                "norm": _f(c.norm_amount), "stab": _f(c.stab_amount),
+                "pending_norm": max(_f(c.norm_amount) - recv, 0.0) if _f(c.norm_amount) > 0 else 0.0,
+                "pending_stab": max(_f(c.stab_amount) - recv, 0.0) if _f(c.stab_amount) > 0 else 0.0,
                 "fos": _fos_label(c), "caller": _caller_label(c),
                 "contacted": bool(c.last_contacted_at or c.visited)}
 
     untouched_tbl = [case_row(c) for c in sorted(untouched, key=lambda x: _f(x.pending_amount), reverse=True)[:25]]
+    # High-value settlement cases still to collect: the biggest NORM / STAB targets not yet paid.
+    _open = [c for c in cases if not _is_paid(c)]
+    top_by_norm = [case_row(c) for c in sorted([c for c in _open if _f(c.norm_amount) > 0],
+                                               key=lambda x: _f(x.norm_amount), reverse=True)[:25]]
+    top_by_stab = [case_row(c) for c in sorted([c for c in _open if _f(c.stab_amount) > 0],
+                                               key=lambda x: _f(x.stab_amount), reverse=True)[:25]]
 
     def recency(c):
         d = d_ist(c.last_contacted_at)
@@ -353,6 +388,7 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
         key=lambda x: x["collected"], reverse=True)
 
     norm_target_total = sum(_f(c.norm_amount) for c in cases)
+    reali_target_total = sum(_reali_target(c) for c in cases)   # NORM→STAB→outstanding per case
     paid_cases = [c for c in cases if _is_paid(c)]
     stab_paid = [c for c in paid_cases if (c.norm_stab or "").upper() == "STAB"]
     norm_paid = [c for c in paid_cases if (c.norm_stab or "").upper() == "NORM"]
@@ -368,7 +404,8 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
     settlement = {
         "collected": round(collected_all, 2),
         "norm_target": round(norm_target_total, 2),
-        "realization_pct": _pct(collected_all, norm_target_total),
+        "reali_target": round(reali_target_total, 2),
+        "realization_pct": _pct(collected_all, reali_target_total),
         "stab_enr": round(stab_enr, 2), "norm_enr": round(norm_enr, 2),
         "stab_share_pct": _pct(stab_enr, stab_enr + norm_enr),
         "norm_share_pct": _pct(norm_enr, stab_enr + norm_enr),
@@ -404,6 +441,8 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
         "trend": trend,
         "funnel": funnel,
         "untouched_table": untouched_tbl,
+        "top_by_norm": top_by_norm,
+        "top_by_stab": top_by_stab,
         "aging": aging,
         "top_pending": top_pending,
         "priority": priority,
@@ -716,6 +755,9 @@ _AREA = [("label", "AREA"), ("count", "COUNT"), ("paid", "PAID"), ("unpaid", "UN
          ("pct", "PAID %"), ("norm_pct", "NORM %"), ("stab_pct", "STAB %")]
 _CASELIST = [("customer", "Customer"), ("account", "Account"), ("pending", "Pending"),
              ("enr", "ENR"), ("propensity", "Score"), ("fos", "FOS"), ("caller", "Caller"), ("contacted", "Contacted")]
+_NS_CASELIST = [("customer", "Customer"), ("account", "Account"), ("norm", "NORM"), ("pending_norm", "Pending NORM"),
+                ("stab", "STAB"), ("pending_stab", "Pending STAB"), ("pending", "Pending"),
+                ("fos", "FOS"), ("caller", "Caller"), ("contacted", "Contacted")]
 _TABLE_COLS = {
     "by_fos": _GROUP, "by_caller": _GROUP, "by_area": _AREA, "by_team_lead": _GROUP,
     "by_cat": _GROUP, "by_dpd": _GROUP,
@@ -726,6 +768,7 @@ _TABLE_COLS = {
                     ("pending_visit", "PENDING VISIT"), ("cash_coll", "CASH COLL")],
     "aging": [("label", "Recency"), ("count", "Count"), ("pending", "Pending")],
     "untouched_table": _CASELIST, "top_pending": _CASELIST, "priority": _CASELIST,
+    "top_by_norm": _NS_CASELIST, "top_by_stab": _NS_CASELIST,
     "obstacles": [("caller", "Caller"), ("total", "Total"), ("obstacles", "Obstacles"), ("rate_pct", "Rate %")],
     "productivity": [("emp", "Employee"), ("calls_today", "Calls today"), ("visits_today", "Visits today"), ("idle", "Idle")],
     "field_efficiency": [("fos", "FOS"), ("visits", "Visits"), ("distance_km", "Distance km"), ("off_location", "Off-location"), ("collected", "Collected")],
@@ -740,6 +783,7 @@ TABLE_NAMES = {
     "by_team_lead": "Team-lead wise", "by_cat": "Category-wise", "by_dpd": "Bucket (DPD) recovery",
     "projection": "Month-end projection", "trend": "Collection trend (30d)",
     "funnel": "Conversion & PTP funnel", "untouched_table": "Untouched high-value cases",
+    "top_by_norm": "High-value by NORM", "top_by_stab": "High-value by STAB",
     "aging": "Contact aging", "top_pending": "Top pending cases", "priority": "Propensity worklist",
     "obstacles": "Obstacle rates", "productivity": "Productivity (today)",
     "field_efficiency": "FOS field efficiency", "settlement": "Settlement leakage & realization",
@@ -836,7 +880,7 @@ def highlights(db: Session = Depends(get_db), user: models.User = Depends(requir
     total_enr = sum(_f(c.enr) for c in cases)
     paid_enr = sum(_f(c.enr) for c in cases if _is_paid(c))
     collected = sum(_f(c.received_amount) for c in cases)
-    norm_target = sum(_f(c.norm_amount) for c in cases)
+    norm_target = sum(_reali_target(c) for c in cases)   # NORM→STAB→outstanding, never a bare 0
     untouched = [c for c in cases if not c.last_contacted_at and not c.visited]
     ptp_broken = sum(1 for c in cases if (c.disposition or "").upper() == "PTP"
                      and not _is_paid(c) and c.follow_up_date and c.follow_up_date < today)
@@ -876,6 +920,16 @@ def highlights(db: Session = Depends(get_db), user: models.User = Depends(requir
                       "pending": _f(c.pending_amount)}
                      for c in sorted(untouched, key=lambda x: _f(x.pending_amount), reverse=True)[:8]]
 
+    def _ns_hi(field):
+        opens = [c for c in cases if not _is_paid(c) and _f(getattr(c, field)) > 0]
+        return [{"customer": c.customer_name, "account": c.account_no,
+                 "product": f"{c.bank or '—'} · {c.product or '—'}", "fos": _fos_lbl(c),
+                 "target": _f(getattr(c, field)),
+                 "pending": max(_f(getattr(c, field)) - _f(c.received_amount), 0.0)}
+                for c in sorted(opens, key=lambda x: _f(getattr(x, field)), reverse=True)[:8]]
+    top_by_norm = _ns_hi("norm_amount")
+    top_by_stab = _ns_hi("stab_amount")
+
     return {
         "total_enr": round(total_enr, 2), "paid_enr": round(paid_enr, 2),
         "achieved_pct": _pct(paid_enr, total_enr), "collected": round(collected, 2),
@@ -884,6 +938,7 @@ def highlights(db: Session = Depends(get_db), user: models.User = Depends(requir
         "ptp_broken": ptp_broken,
         "target_gap": round(target_gap, 2), "employees_behind": emps_behind, "employees_total": emps_total,
         "behind_targets": behind[:8], "top_untouched": top_untouched,
+        "top_by_norm": top_by_norm, "top_by_stab": top_by_stab,
     }
 
 
