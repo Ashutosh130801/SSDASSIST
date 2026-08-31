@@ -82,6 +82,17 @@ class Repository(context: Context) {
 
     suspend fun myPerformance(monthBucket: String = "current", bank: String? = null, product: String? = null): Performance =
         Api.service.myPerformance(monthBucket = monthBucket, bank = bank?.ifBlank { null }, product = product?.ifBlank { null })
+
+    // Full MIS for one portfolio (generic map — every block the web MIS renders).
+    suspend fun mis(
+        bank: String, product: String, monthBucket: String? = null, area: String? = null,
+        branch: String? = null, cycles: String? = null, fosIds: String? = null,
+        callerIds: String? = null, paid: String? = null,
+    ): Map<String, Any?> = Api.service.mis(
+        bank = bank, product = product, monthBucket = monthBucket?.ifBlank { null },
+        area = area?.ifBlank { null }, branch = branch?.ifBlank { null },
+        cycles = cycles?.ifBlank { null }, fosIds = fosIds?.ifBlank { null },
+        callerIds = callerIds?.ifBlank { null }, paid = paid?.ifBlank { null })
     suspend fun portfolioCases(
         bank: String?, product: String?, branch: String?, paid: String?,
         cycles: String?, fosIds: String?, callerIds: String?,

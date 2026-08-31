@@ -8,6 +8,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.BeachAccess
@@ -73,6 +74,7 @@ import `in`.recoveriq.app.ui.ai.AiAssistScreen
 import `in`.recoveriq.app.ui.caller.CallQueueScreen
 import `in`.recoveriq.app.ui.caller.PtpTrackerScreen
 import `in`.recoveriq.app.ui.common.CasesScreen
+import `in`.recoveriq.app.ui.common.MisScreen
 import `in`.recoveriq.app.ui.common.MyPerformanceScreen
 import `in`.recoveriq.app.ui.common.PortfolioScreen
 import `in`.recoveriq.app.ui.common.GuidedTour
@@ -389,6 +391,8 @@ private fun navEntriesFor(
     val security = NavEntry("security", "Security", Icons.Filled.Lock) { SecurityScreen(vm, user) }
     // HR/Admin: review employees' profile change requests.
     val changeReqs = NavEntry("preqs", "Change Requests", Icons.Filled.Badge) { ChangeRequestsScreen(vm) }
+    // Full MIS — only for roles the backend grants MIS access (admin, manager, backend, head office, team lead).
+    val mis = NavEntry("mis", "MIS", Icons.Filled.Assessment) { MisScreen(vm, user) }
 
     return when (user.role) {
         "fos" -> listOf(
@@ -415,11 +419,13 @@ private fun navEntriesFor(
             NavEntry("tldash", "My Team", Icons.Filled.Groups) { TeamLeadDashboardScreen(vm, onOpenCase) },
             NavEntry("cases", "Team Accounts", Icons.Filled.Receipt) { PortfolioScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
+            mis,
             profile, leave, security,
         )
         "manager" -> listOf(
             dashboard,
             NavEntry("cases", "Accounts", Icons.Filled.Receipt) { PortfolioScreen(vm, onOpenCase) },
+            mis,
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
             NavEntry("legal", "Litigation", Icons.Filled.Gavel) { LitigationScreen(vm) },
             NavEntry("map", "Field Tracking", Icons.Filled.Map) { LiveMapScreen(vm) },
@@ -432,9 +438,10 @@ private fun navEntriesFor(
         // HR: identity card + leave + change-request review + security (no case portfolios).
         "hr" -> listOf(profile, changeReqs, leave, security)
         "it", "staff" -> listOf(profile, leave, security)
-        else -> listOfNotNull( // admin + head office
+        else -> listOfNotNull( // admin + head office + backend + support views
             dashboard,
             NavEntry("cases", "Accounts", Icons.Filled.Receipt) { PortfolioScreen(vm, onOpenCase) },
+            mis,
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
             NavEntry("legal", "Litigation", Icons.Filled.Gavel) { LitigationScreen(vm) },
             NavEntry("map", "Field Tracking", Icons.Filled.Map) { LiveMapScreen(vm) },

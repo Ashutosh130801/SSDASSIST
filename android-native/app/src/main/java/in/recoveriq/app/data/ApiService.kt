@@ -63,6 +63,21 @@ interface ApiService {
     @GET("api/cases/product-summary")
     suspend fun productSummary(@Query("month_bucket") monthBucket: String? = null): List<ProductSummary>
 
+    // Full MIS for one portfolio — the whole payload (overall + every pivot/leaderboard/insight
+    // table) returned as a generic map so the screen can render each block the web shows.
+    @GET("api/mis")
+    suspend fun mis(
+        @Query("bank") bank: String,
+        @Query("product") product: String,
+        @Query("month_bucket") monthBucket: String? = null,
+        @Query("area") area: String? = null,
+        @Query("branch") branch: String? = null,
+        @Query("cycles") cycles: String? = null,
+        @Query("fos_ids") fosIds: String? = null,
+        @Query("caller_ids") callerIds: String? = null,
+        @Query("paid") paid: String? = null,
+    ): Map<String, Any?>
+
     @GET("api/cases/filter-options")
     suspend fun filterOptions(
         @Query("bank") bank: String? = null,
