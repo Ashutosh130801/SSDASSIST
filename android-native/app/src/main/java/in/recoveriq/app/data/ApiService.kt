@@ -85,6 +85,14 @@ interface ApiService {
         @Query("branch") branch: String? = null,
     ): FilterOptions
 
+    // Distinct AREA/region codes for a portfolio (for the MIS area filter).
+    @GET("api/cases/areas")
+    suspend fun areas(
+        @Query("bank") bank: String? = null,
+        @Query("product") product: String? = null,
+        @Query("branch") branch: String? = null,
+    ): List<String>
+
     // Any FOS/caller's performance (clickable name → performance screen).
     @GET("api/mis/performance")
     suspend fun performance(

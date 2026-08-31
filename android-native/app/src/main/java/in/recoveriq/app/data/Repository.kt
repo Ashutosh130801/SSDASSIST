@@ -77,6 +77,8 @@ class Repository(context: Context) {
         Api.service.productSummary(monthBucket?.ifBlank { null })
     suspend fun filterOptions(bank: String? = null, product: String? = null, branch: String? = null): FilterOptions =
         Api.service.filterOptions(bank = bank, product = product, branch = branch?.ifBlank { null })
+    suspend fun areas(bank: String? = null, product: String? = null, branch: String? = null): List<String> =
+        Api.service.areas(bank = bank, product = product, branch = branch?.ifBlank { null })
     suspend fun performance(empId: Int, role: String?, monthBucket: String = "current"): Performance =
         Api.service.performance(empId = empId, role = role?.ifBlank { null }, monthBucket = monthBucket)
 

@@ -289,6 +289,97 @@ async def upload_my_photo(file: UploadFile = File(...), db: Session = Depends(ge
     return {"ok": True, "photo_url": resolve_photo(ref)}
 
 
+@router.post("/me/signature")
+async def upload_my_signature(file: UploadFile = File(...), db: Session = Depends(get_db),
+                              user: models.User = Depends(require_roles(*HR_ROLES))):
+    """HR uploads / replaces their OWN signature image (PNG preferred, JPG allowed). Stored as a
+    base64 data URI on the user so it embeds directly into generated letters — no hosted URL."""
+    ct = (file.content_type or "").lower()
+    if ct not in ("image/png", "image/jpeg", "image/jpg"):
+        raise HTTPException(status_code=400, detail="Please upload a PNG (or JPG) image")
+    content = await file.read()
+    if len(content) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Signature image too large (max 2 MB)")
+    import base64 as _b64
+    mime = "image/png" if "png" in ct else "image/jpeg"
+    user.signature_uri = f"data:{mime};base64," + _b64.b64encode(content).decode()
+    audit.record(db, user, "profile_update", None, entity_type="staff", detail="Uploaded letter signature")
+    db.commit()
+    return {"ok": True, "has_signature": True}
+
+
+@router.get("/me/signature")
+def my_signature(user: models.User = Depends(require_roles(*HR_ROLES))):
+    """Whether the signed-in HR has a signature on file (and the image for preview)."""
+    sig = getattr(user, "signature_uri", None)
+    return {"has_signature": bool(sig), "signature_uri": sig or ""}
+
+
+# ---- Company-level Managing Partner signature (one shared image, admin-managed) ----
+_PARTNER_SIG_KEY = "signatory_signature"
+
+
+def _get_setting(db: Session, key: str) -> str:
+    row = db.query(models.AppSetting).filter(models.AppSetting.key == key).first()
+    return (row.value if row else "") or ""
+
+
+def _set_setting(db: Session, key: str, value) -> None:
+    row = db.query(models.AppSetting).filter(models.AppSetting.key == key).first()
+    if row is None:
+        db.add(models.AppSetting(key=key, value=value))
+    else:
+        row.value = value
+
+
+@router.post("/company-signature")
+async def upload_company_signature(file: UploadFile = File(...), db: Session = Depends(get_db),
+                                   user: models.User = Depends(require_roles("admin"))):
+    """Admin uploads / replaces the Managing Partner's signature (one shared company image).
+    Stored as a base64 data URI and printed in the 'For [company]' cell of every letter."""
+    ct = (file.content_type or "").lower()
+    if ct not in ("image/png", "image/jpeg", "image/jpg"):
+        raise HTTPException(status_code=400, detail="Please upload a PNG (or JPG) image")
+    content = await file.read()
+    if len(content) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Signature image too large (max 2 MB)")
+    import base64 as _b64
+    mime = "image/png" if "png" in ct else "image/jpeg"
+    _set_setting(db, _PARTNER_SIG_KEY, f"data:{mime};base64," + _b64.b64encode(content).decode())
+    audit.record(db, user, "settings_update", None, entity_type="settings",
+                 detail="Uploaded Managing Partner signature")
+    db.commit()
+    return {"ok": True, "has_signature": True}
+
+
+@router.get("/company-signature")
+def company_signature(db: Session = Depends(get_db),
+                      user: models.User = Depends(require_roles(*HR_ROLES))):
+    """The Managing Partner signature on file (for preview + to show its status)."""
+    sig = _get_setting(db, _PARTNER_SIG_KEY)
+    return {"has_signature": bool(sig), "signature_uri": sig, "can_edit": user.role == "admin"}
+
+
+@router.delete("/company-signature")
+def clear_company_signature(db: Session = Depends(get_db),
+                            user: models.User = Depends(require_roles("admin"))):
+    _set_setting(db, _PARTNER_SIG_KEY, "")
+    audit.record(db, user, "settings_update", None, entity_type="settings",
+                 detail="Removed Managing Partner signature")
+    db.commit()
+    return {"ok": True, "has_signature": False}
+
+
+@router.delete("/me/signature")
+def clear_my_signature(db: Session = Depends(get_db),
+                       user: models.User = Depends(require_roles(*HR_ROLES))):
+    """Remove the signed-in HR's stored signature."""
+    user.signature_uri = None
+    audit.record(db, user, "profile_update", None, entity_type="staff", detail="Removed letter signature")
+    db.commit()
+    return {"ok": True, "has_signature": False}
+
+
 @router.patch("/me")
 def update_my_profile(body: dict = Body(...), db: Session = Depends(get_db),
                       user: models.User = Depends(get_current_user)):
@@ -742,9 +833,12 @@ def _company(d: dict) -> dict:
         "address": d.get("company_address")
         or "39-11-5, 4th Floor, Axis Bank Upstairs, Opp Union Bank, Murali Nagar, Visakhapatnam - 530007",
         "hr_name": d.get("hr_name") or "Nambala Santhi Kumari",
+        "hr_title": d.get("hr_title") or "HR Manager",
+        "hr_signature": d.get("hr_signature") or "",   # base64 data URI of the HR's signature
         "hr_email": d.get("hr_email") or "ssdenterpriseshr@gmail.com",
         "signatory": d.get("signatory") or "S Govind Rao",
         "signatory_title": d.get("signatory_title") or "Managing Partner",
+        "signatory_signature": d.get("signatory_signature") or "",   # Managing Partner signature (data URI)
     }
 
 
@@ -782,16 +876,29 @@ def _letterhead(c: dict, subtitle: str) -> str:
 
 
 def _sign_block(c: dict, name: str) -> str:
-    return f"""<table style="width:100%;margin-top:40px;font-size:13px"><tr>
-    <td style="width:50%;vertical-align:top">
-      <div style="height:34px"></div>
-      <div style="border-top:2px solid {_GOLD};width:230px;padding-top:4px;color:{_NAVY}">For <b>{_esc(c['name'])}</b></div>
+    line = f"border-top:2px solid {_GOLD};width:200px;padding-top:4px;color:{_NAVY}"
+    cell = "width:34%;vertical-align:top;padding-right:8px"
+    # Signature images (if uploaded) sit in the 34px space just above each signature line.
+    def _mark(uri):
+        return (f'<img src="{uri}" alt="Signature" style="height:38px;max-width:190px;object-fit:contain;display:block;margin-bottom:-2px" />'
+                if uri else '<div style="height:34px"></div>')
+    hr_mark = _mark(c.get("hr_signature") or "")
+    partner_mark = _mark(c.get("signatory_signature") or "")
+    return f"""<table style="width:100%;margin-top:40px;font-size:12.5px"><tr>
+    <td style="{cell}">
+      {partner_mark}
+      <div style="{line}">For <b>{_esc(c['name'])}</b></div>
       <div>{_esc(c['signatory'])}</div>
       <div style="color:#6b7280">{_esc(c['signatory_title'])}</div>
     </td>
-    <td style="width:50%;vertical-align:top">
+    <td style="{cell}">
+      {hr_mark}
+      <div style="{line}">Authorised by <b>{_esc(c['hr_name'])}</b></div>
+      <div style="color:#6b7280">{_esc(c['hr_title'])} · Human Resources</div>
+    </td>
+    <td style="width:32%;vertical-align:top">
       <div style="height:34px"></div>
-      <div style="border-top:2px solid {_GOLD};width:230px;padding-top:4px;color:{_NAVY}">Accepted by <b>{_esc(name)}</b></div>
+      <div style="{line}">Accepted by <b>{_esc(name)}</b></div>
       <div style="color:#6b7280">Signature &amp; Date</div>
     </td>
   </tr></table>"""
@@ -993,12 +1100,29 @@ def _send_email(to: str, subject: str, html: str, attachments=None):
         server.sendmail(msg["From"], [to], msg.as_string())
 
 
+def _inject_signer(body: dict, user, db: Session) -> None:
+    """Stamp the letter's signatures from stored images: the signed-in HR's own signature (with
+    their name, if the request didn't set one) on the 'Authorised by' line, and the company-level
+    Managing Partner signature on the 'For [company]' line. Missing images leave the letter
+    unchanged (printed name only), so nothing breaks before a signature is uploaded."""
+    sig = getattr(user, "signature_uri", None) or ""
+    if sig and not body.get("hr_signature"):
+        body["hr_signature"] = sig
+        if not body.get("hr_name"):
+            body["hr_name"] = user.name
+    if not body.get("signatory_signature"):
+        partner = _get_setting(db, _PARTNER_SIG_KEY)
+        if partner:
+            body["signatory_signature"] = partner
+
+
 @router.post("/offer-letter")
 def offer_letter_preview(body: dict = Body(...), db: Session = Depends(get_db),
                          user: models.User = Depends(require_roles(*HR_ROLES))):
     emp = db.query(models.User).filter(models.User.id == body.get("emp_id")).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
+    _inject_signer(body, user, db)
     return {"html": _offer_letter_html(emp, body), "email": emp.email}
 
 
@@ -1011,6 +1135,7 @@ def offer_letter_email(body: dict = Body(...), db: Session = Depends(get_db),
     to = (body.get("to") or emp.email or "").strip()
     if not to:
         raise HTTPException(status_code=400, detail="No recipient email — add the employee's email first")
+    _inject_signer(body, user, db)
     html = body.get("html") or _offer_letter_html(emp, body)
     subject = body.get("subject") or f"Offer of Employment — {emp.name}"
     safe = "".join(ch for ch in (emp.name or "candidate") if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
@@ -1028,6 +1153,7 @@ def agreement_letter_preview(body: dict = Body(...), db: Session = Depends(get_d
     emp = db.query(models.User).filter(models.User.id == body.get("emp_id")).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
+    _inject_signer(body, user, db)
     return {"html": _agreement_letter_html(emp, body), "email": emp.email}
 
 
@@ -1040,6 +1166,7 @@ def agreement_letter_email(body: dict = Body(...), db: Session = Depends(get_db)
     to = (body.get("to") or emp.email or "").strip()
     if not to:
         raise HTTPException(status_code=400, detail="No recipient email — add the employee's email first")
+    _inject_signer(body, user, db)
     html = body.get("html") or _agreement_letter_html(emp, body)
     subject = body.get("subject") or f"Employment Agreement — {emp.name}"
     safe = "".join(ch for ch in (emp.name or "employee") if ch.isalnum() or ch in " _-").strip().replace(" ", "_")

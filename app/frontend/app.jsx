@@ -6406,6 +6406,8 @@ function LetterModal({ emp, kind: initialKind, onClose }) {
   const [html, setHtml] = useState('');
   const [to, setTo] = useState(emp.email || '');
   const [busy, setBusy] = useState('');
+  const [sig, setSig] = useState(null);   // my (HR) signature on file: {has_signature, signature_uri}
+  const [psig, setPsig] = useState(null); // company Managing-Partner signature: {has_signature, signature_uri, can_edit}
   const [meta, setMeta] = useState({
     designation: emp.designation || '', reporting_to: '', location: emp.location || emp.branch || '',
     joining_date: '', ctc: '', employment_type: 'Full Time', work_schedule: '9:30 AM to 7:30 PM',
@@ -6420,6 +6422,34 @@ function LetterModal({ emp, kind: initialKind, onClose }) {
       setHtml(r.html); if (!to && r.email) setTo(r.email);
     } catch (e) { toast(e.message); } finally { setBusy(''); } };
   useEffect(() => { gen(); }, [kind]);   // regenerate when switching letter type
+  const loadSig = () => api('/api/manpower/me/signature').then(setSig).catch(() => setSig({ has_signature: false }));
+  useEffect(() => { loadSig(); }, []);
+  const uploadSig = async (file) => {
+    if (!file) return; setBusy('sig');
+    try { const fd = new FormData(); fd.append('file', file);
+      await api('/api/manpower/me/signature', { method: 'POST', form: fd });
+      await loadSig(); await gen();   // regenerate so the signature shows on the letter
+      toast('Signature saved');
+    } catch (e) { toast(e.message || 'Could not upload'); } finally { setBusy(''); }
+  };
+  const removeSig = async () => { setBusy('sig');
+    try { await api('/api/manpower/me/signature', { method: 'DELETE' }); await loadSig(); await gen(); }
+    catch (e) { toast(e.message); } finally { setBusy(''); }
+  };
+  const loadPsig = () => api('/api/manpower/company-signature').then(setPsig).catch(() => setPsig({ has_signature: false, can_edit: false }));
+  useEffect(() => { loadPsig(); }, []);
+  const uploadPsig = async (file) => {
+    if (!file) return; setBusy('psig');
+    try { const fd = new FormData(); fd.append('file', file);
+      await api('/api/manpower/company-signature', { method: 'POST', form: fd });
+      await loadPsig(); await gen();
+      toast('Managing Partner signature saved');
+    } catch (e) { toast(e.message || 'Could not upload'); } finally { setBusy(''); }
+  };
+  const removePsig = async () => { setBusy('psig');
+    try { await api('/api/manpower/company-signature', { method: 'DELETE' }); await loadPsig(); await gen(); }
+    catch (e) { toast(e.message); } finally { setBusy(''); }
+  };
   const current = () => (ref.current ? ref.current.innerHTML : html);
   const print = () => { const w = window.open('', '_blank'); if (!w) return;
     w.document.write(`<html><head><title>${title} — ${emp.name}</title></head><body style="padding:24px">${current()}</body></html>`);
@@ -6456,6 +6486,33 @@ function LetterModal({ emp, kind: initialKind, onClose }) {
           <button className="btn" disabled={busy === 'gen'} onClick={gen}>{busy === 'gen' ? 'Generating…' : '↻ Regenerate'}</button>
           <div style={{ flex: 1 }} />
           <input className="input" style={{ maxWidth: 240 }} placeholder="Recipient email" value={to} onChange={e => setTo(e.target.value)} />
+        </div>
+        <div className="toolbar" style={{ margin: '2px 0 8px', alignItems: 'center', gap: 8 }}>
+          <span className="muted" style={{ fontSize: 12 }}>My signature:</span>
+          {sig && sig.has_signature
+            ? <><img src={sig.signature_uri} alt="signature" style={{ height: 26, background: '#fff', border: '1px solid var(--line)', borderRadius: 4, padding: '1px 5px' }} />
+                <button className="btn ghost sm" disabled={busy === 'sig'} onClick={removeSig}>Remove</button></>
+            : <span className="muted" style={{ fontSize: 12 }}>none yet</span>}
+          <label className="btn sm" style={{ cursor: 'pointer', margin: 0 }}>
+            {busy === 'sig' ? 'Uploading…' : (sig && sig.has_signature ? '↻ Replace' : '⤒ Upload PNG')}
+            <input type="file" accept="image/png,image/jpeg" style={{ display: 'none' }}
+              onChange={e => { uploadSig(e.target.files[0]); e.target.value = ''; }} />
+          </label>
+          <span className="muted" style={{ fontSize: 11 }}>Appears on the “Authorised by” line. Transparent PNG works best.</span>
+        </div>
+        <div className="toolbar" style={{ margin: '0 0 8px', alignItems: 'center', gap: 8 }}>
+          <span className="muted" style={{ fontSize: 12 }}>Managing Partner signature:</span>
+          {psig && psig.has_signature
+            ? <><img src={psig.signature_uri} alt="partner signature" style={{ height: 26, background: '#fff', border: '1px solid var(--line)', borderRadius: 4, padding: '1px 5px' }} />
+                {psig.can_edit && <button className="btn ghost sm" disabled={busy === 'psig'} onClick={removePsig}>Remove</button>}</>
+            : <span className="muted" style={{ fontSize: 12 }}>none yet</span>}
+          {psig && psig.can_edit
+            ? <label className="btn sm" style={{ cursor: 'pointer', margin: 0 }}>
+                {busy === 'psig' ? 'Uploading…' : (psig.has_signature ? '↻ Replace' : '⤒ Upload PNG')}
+                <input type="file" accept="image/png,image/jpeg" style={{ display: 'none' }}
+                  onChange={e => { uploadPsig(e.target.files[0]); e.target.value = ''; }} />
+              </label>
+            : <span className="muted" style={{ fontSize: 11 }}>Admin sets this once — used on every letter.</span>}
         </div>
         <div ref={ref} contentEditable suppressContentEditableWarning dangerouslySetInnerHTML={{ __html: html }}
           style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 10, padding: 18, maxHeight: 400, overflow: 'auto' }} />

@@ -38,6 +38,7 @@ class User(Base):
     address = Column(Text)
     emergency_contact = Column(String(60))
     photo_url = Column(String(255))
+    signature_uri = Column(Text)                # HR's signature PNG as a base64 data URI (for letters)
     is_active = Column(Boolean, default=True)   # False = blocked / left → login denied, hidden from active pickers
     blocked_reason = Column(String(200))        # why the account was blocked (e.g. "left org", "on hold")
     blocked_at = Column(DateTime, nullable=True)
@@ -555,3 +556,12 @@ class ProfileChangeRequest(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
 
     user = relationship("User", foreign_keys=[user_id])
+
+
+class AppSetting(Base):
+    """Tiny key/value store for company-level settings kept in the DB (e.g. the Managing
+    Partner's signature image as a base64 data URI). Auto-created by create_all()."""
+    __tablename__ = "app_settings"
+    key = Column(String(60), primary_key=True)
+    value = Column(Text)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

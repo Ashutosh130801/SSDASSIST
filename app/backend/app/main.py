@@ -108,6 +108,7 @@ def _ensure_columns():
             "assigned_products": "JSON",
             "emp_code": "VARCHAR(20)",
             "team_lead_id": "INTEGER",
+            "signature_uri": "TEXT",
         },
         "visits": {
             "distance_from_case_m": "FLOAT",
