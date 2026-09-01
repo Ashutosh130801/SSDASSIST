@@ -57,6 +57,7 @@ class UserOut(UserBase):
     team_lead_name: Optional[str] = None    # resolved name of the team lead (display only)
     # Dual-role (caller/FOS who is also a team lead)
     also_team_lead: Optional[bool] = None
+    ho_manager: Optional[bool] = None             # head-office user titled "Head Office Manager"
     tl_emp_code: Optional[str] = None
     available_views: Optional[List[str]] = None   # hats this account can switch between
     active_view: Optional[str] = None             # the hat currently in effect
@@ -64,7 +65,7 @@ class UserOut(UserBase):
 
     # Never emit null for these — the native app parses them as non-null (a NULL from an
     # older DB row would otherwise fail JSON decoding on the phone).
-    @field_validator("also_team_lead", mode="before")
+    @field_validator("also_team_lead", "ho_manager", mode="before")
     @classmethod
     def _atl_bool(cls, v):
         return bool(v)

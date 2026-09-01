@@ -39,6 +39,10 @@ class User(Base):
     emergency_contact = Column(String(60))
     photo_url = Column(String(255))
     signature_uri = Column(Text)                # HR's signature PNG as a base64 data URI (for letters)
+    # Live presence (attendance / who's-online). Updated by the heartbeat + work actions.
+    last_seen = Column(DateTime(timezone=True), nullable=True)        # last heartbeat from any device
+    last_active_at = Column(DateTime(timezone=True), nullable=True)   # last real activity (input or a logged call/visit/payment)
+    last_platform = Column(String(10))                                # 'web' | 'android'
     is_active = Column(Boolean, default=True)   # False = blocked / left → login denied, hidden from active pickers
     blocked_reason = Column(String(200))        # why the account was blocked (e.g. "left org", "on hold")
     blocked_at = Column(DateTime, nullable=True)
@@ -70,6 +74,9 @@ class User(Base):
     # can switch anytime — one hat at a time (the active view drives all scoping).
     also_team_lead = Column(Boolean, default=False)
     tl_emp_code = Column(String(20), nullable=True)      # e.g. TL014, alongside FO012 / TC003
+    # A head-office user additionally titled "Head Office Manager" (admin-only). Same access as
+    # head office; only the label differs and they have no attendance login-window restriction.
+    ho_manager = Column(Boolean, default=False)
     # E-ID / profile lifecycle: staff may edit their own profile ONCE after first login.
     profile_completed = Column(Boolean, default=False)   # they finished their one-time edit
     must_change_password = Column(Boolean, default=False)
@@ -565,3 +572,44 @@ class AppSetting(Base):
     key = Column(String(60), primary_key=True)
     value = Column(Text)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Attendance(Base):
+    """One row per employee per day: check-in/out (with GPS), status, and the day's worked /
+    active / idle time. Populated by the check-in screen + presence heartbeat, and read by the
+    Attendance dashboards. Unique per (user_id, date)."""
+    __tablename__ = "attendance"
+    __table_args__ = (UniqueConstraint("user_id", "date", name="uq_attendance_user_day"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    date = Column(Date, index=True, nullable=False)               # the working day (IST)
+
+    check_in_at = Column(DateTime(timezone=True), nullable=True)
+    check_in_lat = Column(Float, nullable=True)
+    check_in_lng = Column(Float, nullable=True)
+    check_in_photo = Column(String(255), nullable=True)   # GPS-tagged check-in selfie (FOS)
+    check_out_at = Column(DateTime(timezone=True), nullable=True)
+    check_out_lat = Column(Float, nullable=True)
+    check_out_lng = Column(Float, nullable=True)
+
+    status = Column(String(12), default="present")   # present / absent / leave / weekoff / holiday
+    late = Column(Boolean, default=False)            # checked in after the allowed window
+    source = Column(String(10), default="checkin")   # checkin / auto
+    auto_checkout = Column(Boolean, default=False)   # closed by the 7pm auto-logout
+
+    shift_start = Column(String(5))                  # snapshot "08:00" / "09:00"
+    shift_end = Column(String(5))                    # "19:00"
+
+    worked_seconds = Column(Integer, default=0)      # check-in → check-out (or now)
+    active_seconds = Column(Integer, default=0)      # heartbeat-attributed active time
+    idle_seconds = Column(Integer, default=0)        # heartbeat-attributed idle time
+    overtime = Column(Boolean, default=False)        # chose to keep working past shift end
+    overtime_seconds = Column(Integer, default=0)
+
+    last_platform = Column(String(10))               # last device seen that day
+    note = Column(String(240), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    user = relationship("User", foreign_keys=[user_id])

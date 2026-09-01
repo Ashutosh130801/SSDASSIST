@@ -86,6 +86,8 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
     if (body.note or "").strip():
         _summ += f" · Note: {body.note.strip()}"
     notify_case_change(db, case, user, _summ, ntype="call")
+    from .. import presence as _presence
+    _presence.touch(db, user.id, active=True)   # logging a call = active (so calls aren't idle)
     db.commit()
     db.refresh(call)
     from .realtime import notify_data_changed

@@ -14,7 +14,7 @@ from . import models  # noqa: F401  (register models)
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
                       team, mis, feedback, reminders, audit_log, archive, catalog, manpower,
-                      notifications, dpr, support)
+                      notifications, dpr, support, attendance)
 
 settings = get_settings()
 
@@ -109,6 +109,13 @@ def _ensure_columns():
             "emp_code": "VARCHAR(20)",
             "team_lead_id": "INTEGER",
             "signature_uri": "TEXT",
+            "last_seen": "TIMESTAMP",
+            "last_active_at": "TIMESTAMP",
+            "last_platform": "VARCHAR(10)",
+            "ho_manager": "BOOLEAN",
+        },
+        "attendance": {
+            "check_in_photo": "VARCHAR(255)",
         },
         "visits": {
             "distance_from_case_m": "FLOAT",
@@ -457,7 +464,8 @@ async def _security_headers(request, call_next):
 
 for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, devices,
           leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis, feedback,
-          reminders, audit_log, archive, catalog, manpower, notifications, dpr, support):
+          reminders, audit_log, archive, catalog, manpower, notifications, dpr, support,
+          attendance):
     app.include_router(r.router)
 
 
@@ -466,6 +474,24 @@ async def _capture_loop():
     import asyncio
     from .routers import realtime as _rt
     _rt.set_loop(asyncio.get_running_loop())
+    asyncio.create_task(_attendance_sweeper())
+
+
+async def _attendance_sweeper():
+    """Auto-check-out anyone still 'in' past shift end + grace, even with no heartbeat."""
+    import asyncio
+    from .routers import attendance as _att
+    from .database import SessionLocal
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                _att.sweep(db)
+            finally:
+                db.close()
+        except Exception:
+            pass
+        await asyncio.sleep(180)
 
 
 @app.get("/api/config")

@@ -13,6 +13,14 @@ if _is_sqlite:
 
 engine = create_engine(settings.database_url, pool_pre_ping=True, connect_args=connect_args)
 
+# Make it unambiguous which database this process is actually using (credentials hidden).
+try:
+    _where = settings.database_url.split("://", 1)[-1]
+    _where = _where.split("@")[-1] if "@" in _where else _where
+    print(f"[SSD] Database: {'SQLite' if _is_sqlite else 'PostgreSQL'}  ->  {_where}", flush=True)
+except Exception:
+    pass
+
 if _is_sqlite:
     # Keep read endpoints (ORDER BY / large SELECTs) working even when the host
     # disk is nearly full: sort/temp data goes to memory instead of a disk temp

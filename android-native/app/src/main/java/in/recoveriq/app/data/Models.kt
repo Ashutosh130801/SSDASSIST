@@ -431,6 +431,71 @@ data class StatusRow(val status: String, val count: Int)
 @JsonClass(generateAdapter = true)
 data class PipelineRow(val key: String, val count: Int)
 
+// ---- Attendance ----
+@JsonClass(generateAdapter = true)
+data class AttPresence(
+    val state: String = "offline",
+    val platform: String? = null,
+    @Json(name = "last_seen") val lastSeen: String? = null,
+    @Json(name = "idle_seconds") val idleSeconds: Int = 0,
+)
+
+@JsonClass(generateAdapter = true)
+data class AttRow(
+    @Json(name = "user_id") val userId: Int = 0,
+    val name: String? = null,
+    @Json(name = "emp_code") val empCode: String? = null,
+    val role: String? = null,
+    val status: String = "absent",
+    val late: Boolean = false,
+    @Json(name = "check_in_at") val checkInAt: String? = null,
+    @Json(name = "check_out_at") val checkOutAt: String? = null,
+    @Json(name = "check_in_lat") val checkInLat: Double? = null,
+    @Json(name = "check_in_lng") val checkInLng: Double? = null,
+    @Json(name = "live_lat") val liveLat: Double? = null,
+    @Json(name = "live_lng") val liveLng: Double? = null,
+    @Json(name = "live_at") val liveAt: String? = null,
+    @Json(name = "worked_seconds") val workedSeconds: Int = 0,
+    @Json(name = "idle_seconds") val idleSeconds: Int = 0,
+    @Json(name = "auto_checkout") val autoCheckout: Boolean = false,
+    val calls: Int = 0, val visits: Int = 0, val collected: Double = 0.0,
+    @Json(name = "show_activity") val showActivity: Boolean = false,
+    @Json(name = "team_total") val teamTotal: Boolean = false,
+    val presence: AttPresence = AttPresence(),
+)
+
+@JsonClass(generateAdapter = true)
+data class MeToday(
+    val tracked: Boolean = false,
+    @Json(name = "needs_checkin") val needsCheckin: Boolean = false,
+    @Json(name = "shift_start") val shiftStart: String = "09:00",
+    @Json(name = "shift_end") val shiftEnd: String = "19:00",
+    @Json(name = "late_after") val lateAfter: String = "10:00",
+    val attendance: AttRow = AttRow(),
+)
+
+@JsonClass(generateAdapter = true)
+data class HeartbeatResp(
+    @Json(name = "prompt_overtime") val promptOvertime: Boolean = false,
+    @Json(name = "auto_logout") val autoLogout: Boolean = false,
+    @Json(name = "minutes_to_shift_end") val minutesToShiftEnd: Int? = null,
+    @Json(name = "checked_out") val checkedOut: Boolean = false,
+)
+
+@JsonClass(generateAdapter = true)
+data class AttDaySummary(
+    val present: Int = 0, val late: Int = 0, val absent: Int = 0,
+    val leave: Int = 0, val online: Int = 0, val total: Int = 0,
+)
+
+@JsonClass(generateAdapter = true)
+data class AttDay(
+    val date: String = "",
+    val rows: List<AttRow> = emptyList(),
+    val summary: AttDaySummary = AttDaySummary(),
+    @Json(name = "can_download") val canDownload: Boolean = false,
+)
+
 @JsonClass(generateAdapter = true)
 data class DispRow(val disposition: String, val count: Int)
 

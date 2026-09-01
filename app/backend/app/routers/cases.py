@@ -899,6 +899,8 @@ def record_payment(case_id: int, body: PaymentIn, db: Session = Depends(get_db),
     notify_case_change(db, case, user,
                        f"Payment ₹{amt} via {_mode} → {case.paid_status}" + (f" · {body.note}" if body.note else ""),
                        ntype="payment")
+    from .. import presence as _presence
+    _presence.touch(db, user.id, active=True)   # recording a payment = active
     db.commit()
     db.refresh(case)
     from .realtime import notify_data_changed

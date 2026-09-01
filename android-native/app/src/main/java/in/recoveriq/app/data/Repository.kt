@@ -79,6 +79,29 @@ class Repository(context: Context) {
         Api.service.filterOptions(bank = bank, product = product, branch = branch?.ifBlank { null })
     suspend fun areas(bank: String? = null, product: String? = null, branch: String? = null): List<String> =
         Api.service.areas(bank = bank, product = product, branch = branch?.ifBlank { null })
+
+    // ---- Attendance ----
+    suspend fun attMeToday(): MeToday = Api.service.attMeToday()
+    suspend fun attCheckin(lat: Double?, lng: Double?): Map<String, Any?> =
+        Api.service.attCheckin(mapOf("lat" to lat, "lng" to lng, "platform" to "android"))
+    suspend fun attCheckinPhoto(bytes: ByteArray, lat: Double?, lng: Double?): Map<String, Any?> {
+        val part = MultipartBody.Part.createFormData(
+            "file", "checkin.jpg", bytes.toRequestBody("image/jpeg".toMediaType()))
+        fun t(v: String?) = v?.toRequestBody("text/plain".toMediaType())
+        return Api.service.attCheckinPhoto(part, t(lat?.toString()), t(lng?.toString()),
+            "android".toRequestBody("text/plain".toMediaType()))
+    }
+    suspend fun attCheckout(lat: Double?, lng: Double?): Map<String, Any?> =
+        Api.service.attCheckout(mapOf("lat" to lat, "lng" to lng))
+    suspend fun attOvertime(): Map<String, Any?> = Api.service.attOvertime()
+    suspend fun attHeartbeat(active: Boolean): HeartbeatResp =
+        Api.service.attHeartbeat(mapOf("platform" to "android", "active" to active))
+    suspend fun attDay(date: String? = null, role: String? = null): AttDay =
+        Api.service.attDay(date, role?.ifBlank { null })
+    suspend fun attMonth(month: String? = null, role: String? = null): Map<String, Any?> =
+        Api.service.attMonth(month, role?.ifBlank { null })
+    suspend fun attDownload(month: String? = null, role: String? = null): okhttp3.ResponseBody =
+        Api.service.attDownload(month, role?.ifBlank { null })
     suspend fun performance(empId: Int, role: String?, monthBucket: String = "current"): Performance =
         Api.service.performance(empId = empId, role = role?.ifBlank { null }, monthBucket = monthBucket)
 

@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SpaceDashboard
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,6 +75,8 @@ import `in`.recoveriq.app.ui.ai.AiAssistScreen
 import `in`.recoveriq.app.ui.caller.CallQueueScreen
 import `in`.recoveriq.app.ui.caller.PtpTrackerScreen
 import `in`.recoveriq.app.ui.common.CasesScreen
+import `in`.recoveriq.app.ui.attendance.AttendanceGate
+import `in`.recoveriq.app.ui.attendance.AttendanceScreen
 import `in`.recoveriq.app.ui.common.MisScreen
 import `in`.recoveriq.app.ui.common.MyPerformanceScreen
 import `in`.recoveriq.app.ui.common.PortfolioScreen
@@ -252,7 +255,8 @@ private fun HomeScaffold(
     onRequestBatteryExemption: () -> Unit,
 ) {
     val items = remember(user.role) {
-        navEntriesFor(vm, user, onOpenCase, onNeedTrackingPermissions, onRequestBatteryExemption)
+        navEntriesFor(vm, user, onOpenCase, onNeedTrackingPermissions, onRequestBatteryExemption) +
+            NavEntry("attendance", "Attendance", Icons.Filled.Schedule) { AttendanceScreen(vm, user) }
     }
     var currentKey by remember { mutableStateOf(items.first().key) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -345,6 +349,9 @@ private fun HomeScaffold(
                         }
                     },
                     actions = {
+                        androidx.compose.material3.IconButton(onClick = { currentKey = "attendance" }) {
+                            Icon(Icons.Filled.Schedule, "Attendance")
+                        }
                         androidx.compose.material3.IconButton(onClick = onOpenAi) {
                             Icon(Icons.Filled.AutoAwesome, "AI Assist")
                         }
@@ -361,6 +368,8 @@ private fun HomeScaffold(
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 current.screen()
+                // Daily check-in gate + presence heartbeat + shift-end prompt (runs app-wide).
+                AttendanceGate(vm, user)
                 // Floating help / tour button (bottom-right).
                 FloatingActionButton(
                     onClick = { showTour = true },

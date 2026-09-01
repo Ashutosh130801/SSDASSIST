@@ -108,6 +108,8 @@ async def create_visit(
                        f"Field visit — {disposition or 'logged'}" + (f" · paid ₹{amt}" if (paid and amt > 0) else "")
                        + (f" · Note: {note}" if (note or "").strip() else ""),
                        ntype="visit")
+    from .. import presence as _presence
+    _presence.touch(db, user.id, active=True)   # logging a visit = active
     db.commit()
     db.refresh(visit)
     from .realtime import notify_data_changed

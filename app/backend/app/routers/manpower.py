@@ -102,6 +102,7 @@ def _emp(u: models.User) -> dict:
         "blocked_at": u.blocked_at.isoformat() if u.blocked_at else None,
         "profile_completed": bool(u.profile_completed),
         "also_team_lead": bool(u.also_team_lead), "tl_emp_code": u.tl_emp_code,
+        "ho_manager": bool(getattr(u, "ho_manager", False)),
         "all_roles": _all_roles(u), "all_ids": _all_ids(u),
     }
 
@@ -114,7 +115,11 @@ _ROLE_LABELS = {"telecaller": "Tele-calling Agent", "fos": "Field Agent", "teaml
 
 def _all_roles(u) -> str:
     """Both roles for a dual-role user, e.g. 'Field Agent + Team Lead'."""
-    label = _ROLE_LABELS.get(u.role, (u.role or "").title())
+    # A head-office user promoted to Head Office Manager shows that title instead.
+    if getattr(u, "ho_manager", False) and u.role == "headoffice":
+        label = "Head Office Manager"
+    else:
+        label = _ROLE_LABELS.get(u.role, (u.role or "").title())
     if getattr(u, "also_team_lead", False) and u.role != "teamlead":
         return f"{label} + Team Lead"
     return label
@@ -378,6 +383,23 @@ def clear_my_signature(db: Session = Depends(get_db),
     audit.record(db, user, "profile_update", None, entity_type="staff", detail="Removed letter signature")
     db.commit()
     return {"ok": True, "has_signature": False}
+
+
+@router.post("/{uid}/ho-manager")
+def set_ho_manager(uid: int, body: dict = Body(default={}), db: Session = Depends(get_db),
+                   user: models.User = Depends(require_roles("admin"))):
+    """Admin-only: promote / demote a Head Office user to 'Head Office Manager'. Same access as
+    head office — only the title differs and they have no attendance login-window restriction."""
+    target = db.query(models.User).filter(models.User.id == uid).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.role != "headoffice":
+        raise HTTPException(status_code=400, detail="Only a Head Office user can be made Head Office Manager.")
+    target.ho_manager = bool(body.get("value", True))
+    audit.record(db, user, "staff_update", None, entity_type="staff", target_user_id=target.id,
+                 detail="Promoted to Head Office Manager" if target.ho_manager else "Removed Head Office Manager title")
+    db.commit()
+    return {"ok": True, "ho_manager": bool(target.ho_manager), "all_roles": _all_roles(target)}
 
 
 @router.patch("/me")
@@ -878,13 +900,17 @@ def _letterhead(c: dict, subtitle: str) -> str:
 def _sign_block(c: dict, name: str) -> str:
     line = f"border-top:2px solid {_GOLD};width:200px;padding-top:4px;color:{_NAVY}"
     cell = "width:34%;vertical-align:top;padding-right:8px"
-    # Signature images (if uploaded) sit in the 34px space just above each signature line.
+    # Fixed 78px box the same width as the signature line, so the image is centered over the line
+    # and large/visible, while all three signature lines stay aligned even when a cell has no image.
+    box = "width:200px;height:78px;text-align:center;line-height:78px"
     def _mark(uri):
-        return (f'<img src="{uri}" alt="Signature" style="height:38px;max-width:190px;object-fit:contain;display:block;margin-bottom:-2px" />'
-                if uri else '<div style="height:34px"></div>')
+        return (f'<div style="{box}"><img src="{uri}" alt="Signature" '
+                f'style="max-width:196px;max-height:74px;object-fit:contain;vertical-align:middle" /></div>'
+                if uri else f'<div style="{box}"></div>')
     hr_mark = _mark(c.get("hr_signature") or "")
     partner_mark = _mark(c.get("signatory_signature") or "")
-    return f"""<table style="width:100%;margin-top:40px;font-size:12.5px"><tr>
+    emp_mark = _mark("")
+    return f"""<table style="width:100%;margin-top:36px;font-size:12.5px"><tr>
     <td style="{cell}">
       {partner_mark}
       <div style="{line}">For <b>{_esc(c['name'])}</b></div>
@@ -897,7 +923,7 @@ def _sign_block(c: dict, name: str) -> str:
       <div style="color:#6b7280">{_esc(c['hr_title'])} · Human Resources</div>
     </td>
     <td style="width:32%;vertical-align:top">
-      <div style="height:34px"></div>
+      {emp_mark}
       <div style="{line}">Accepted by <b>{_esc(name)}</b></div>
       <div style="color:#6b7280">Signature &amp; Date</div>
     </td>

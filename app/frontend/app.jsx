@@ -99,6 +99,9 @@ const placeCall = (phone, scheme) => { const n = cleanTel(phone); if (!n) return
   try { window.location.href = (scheme || callScheme()) + ':' + n; } catch (e) {} };
 
 // A Call button that asks HOW to place the call: via Zoiper (→ Dinstar) or the phone dialer.
+// Fired whenever a call is initiated, so attendance presence counts the call time as ACTIVE
+// (a caller on a call, not typing, must not be marked idle).
+const onCallStart = () => { try { window.dispatchEvent(new CustomEvent('ssd-oncall')); } catch (e) {} };
 function CallMenu({ phone, label = 'Call', size = 'sm', gold }) {
   const [open, setOpen] = useState(false);
   if (!phone) return null;
@@ -110,9 +113,9 @@ function CallMenu({ phone, label = 'Call', size = 'sm', gold }) {
         <div style={{ position: 'fixed', inset: 0, zIndex: 59 }} onClick={() => setOpen(false)} />
         <div className="glass" style={{ position: 'absolute', zIndex: 60, top: '100%', left: 0, marginTop: 4, padding: 6, borderRadius: 10, minWidth: 180, boxShadow: 'var(--shadow)' }}>
           <button className="btn sm gold" style={{ width: '100%', marginBottom: 5 }}
-            onClick={() => { setOpen(false); placeCall(n, callScheme()); }}>☎️ Call via Zoiper</button>
+            onClick={() => { setOpen(false); onCallStart(); placeCall(n, callScheme()); }}>☎️ Call via Zoiper</button>
           <a className="btn ghost sm" style={{ width: '100%', display: 'block', textAlign: 'center' }}
-            href={'tel:' + n} onClick={() => setOpen(false)}>📱 Phone dialer</a>
+            href={'tel:' + n} onClick={() => { setOpen(false); onCallStart(); }}>📱 Phone dialer</a>
         </div>
       </>}
     </span>
@@ -473,13 +476,36 @@ async function stampPhoto(file, coords, address) {
 }
 
 /* Chart.js wrapper */
-function ChartBox({ type, data, options, height = 240 }) {
+// Inline Chart.js plugin: draw each slice's value + percentage on a doughnut/pie arc.
+// `fmt` formats the value (e.g. ₹ short); percentages are computed from the dataset total.
+const arcValuePctPlugin = (fmt) => ({
+  id: 'arcValuePct',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart; const meta = chart.getDatasetMeta(0);
+    const ds = (chart.data.datasets[0] || {}).data || [];
+    const total = ds.reduce((a, b) => a + (Number(b) || 0), 0) || 1;
+    ctx.save();
+    ctx.font = '700 12px "Hanken Grotesk", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    (meta.data || []).forEach((arc, i) => {
+      const v = Number(ds[i]) || 0; if (v <= 0) return;
+      const pct = Math.round((v / total) * 100); if (pct < 3) return;   // skip slivers
+      const p = arc.tooltipPosition();
+      ctx.fillStyle = '#fff';
+      ctx.fillText(fmt ? fmt(v) : String(v), p.x, p.y - 7);
+      ctx.fillText(pct + '%', p.x, p.y + 8);
+    });
+    ctx.restore();
+  },
+});
+
+function ChartBox({ type, data, options, height = 240, plugins }) {
   const ref = useRef(null); const chart = useRef(null);
   useEffect(() => {
     if (!ref.current || !window.Chart) return;
     try {
       chart.current = new window.Chart(ref.current, {
-        type, data,
+        type, data, plugins: plugins || [],
         options: {
           responsive: true, maintainAspectRatio: false,
           plugins: { legend: { labels: { color: '#475569', font: { family: 'Hanken Grotesk' } } } },
@@ -2516,6 +2542,7 @@ function TeamLeadView({ config, user }) {
           <b style={{ color: 'var(--gold)', cursor: 'pointer' }} title="Open full dashboard" onClick={() => setDashUser(m)}>{m.name}</b>
           {m.emp_code && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10.5 }}>{m.emp_code}</span>}
           <div className="muted" style={{ fontSize: 12 }}>{roleName(m.role)}{m.phone ? ' · ' + m.phone : ''}</div>
+          <PersonPresence id={m.id} style={{ marginTop: 3, display: 'inline-block' }} />
         </div>
         <span className="badge allocated">{Number(m.recovery_pct || 0).toFixed(0)}%</span>
       </div>
@@ -2746,7 +2773,8 @@ function StaffView({ config, user }) {
             <tbody>{searchHits.map(u => <tr key={u.id}>
               <td className="mono">{u.emp_code || '—'}</td>
               <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDashUser({ id: u.id, name: u.name, role: u.role, branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>{u.name}</b>
-                {u.is_active === false && <span className="badge" style={{ marginLeft: 6 }}>inactive</span>}</td>
+                {u.is_active === false && <span className="badge" style={{ marginLeft: 6 }}>inactive</span>}
+                <div><PersonPresence id={u.id} /></div></td>
               <td>{roleName(u.role)}</td><td className="muted">{u.branch || '—'}</td><td>{u.location || '—'}</td><td>{u.phone || '—'}</td>
               <td style={{ whiteSpace: 'nowrap' }}><button className="btn sm" onClick={() => setDashUser({ id: u.id, name: u.name, role: u.role, branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>Performance</button> <ContactBtns phone={u.phone} /></td></tr>)}
               {searchHits.length === 0 && <tr><td colSpan="7" className="muted" style={{ padding: 12 }}>No employees match “{q}”.</td></tr>}
@@ -2996,7 +3024,8 @@ function EmployeeDashboard({ u, config, onClose }) {
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 920, width: '96%' }}>
-        <div className="section-h"><h3 style={{ margin: 0 }}>{u.name} <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>· {roleName(u.role)}{u.branch ? ' · ' + u.branch : ''}</span></h3>
+        <div className="section-h"><div><h3 style={{ margin: 0 }}>{u.name} <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>· {roleName(u.role)}{u.branch ? ' · ' + u.branch : ''}</span></h3>
+          <PersonPresence id={u.id} style={{ marginTop: 2, display: 'inline-block' }} /></div>
           <button className="btn ghost sm" onClick={onClose}>✕</button></div>
         {err && <div style={{ color: 'var(--bad)' }}>{err}</div>}
         {!d ? <Loader /> : <>
@@ -5024,7 +5053,18 @@ function MISView({ user }) {
           <div className="glass card" style={{ padding: 12 }}><b>Top FOS — achieved ENR</b>
             <ChartBox type="bar" height={220} data={{ labels: d.leaderboard.slice(0, 10).map(r => (r.emp || '').split('/')[0]), datasets: [{ data: d.leaderboard.slice(0, 10).map(r => r.achieved_enr), backgroundColor: '#2563EB' }] }} options={{ plugins: { legend: { display: false } } }} /></div>
           <div className="glass card" style={{ padding: 12 }}><b>Settlement — STAB vs NORM ENR</b>
-            <ChartBox type="doughnut" height={220} options={{ cutout: '65%' }} data={{ labels: ['STAB', 'NORM'], datasets: [{ data: [st.stab_enr, st.norm_enr], backgroundColor: ['#D97706', '#16A34A'] }] }} /></div>
+            <ChartBox type="doughnut" height={220} plugins={[arcValuePctPlugin(money)]}
+              options={{ cutout: '62%', plugins: {
+                legend: { position: 'bottom', labels: { color: '#475569', font: { family: 'Hanken Grotesk' },
+                  generateLabels: (ch) => {
+                    const ds = ch.data.datasets[0].data || []; const tot = ds.reduce((a, b) => a + (+b || 0), 0) || 1;
+                    return ch.data.labels.map((lb, i) => ({ text: `${lb} — ${money(ds[i])} (${Math.round((ds[i] / tot) * 100)}%)`,
+                      fillStyle: ch.data.datasets[0].backgroundColor[i], strokeStyle: ch.data.datasets[0].backgroundColor[i], index: i })); } } },
+                tooltip: { callbacks: { label: (ctx) => {
+                  const ds = ctx.dataset.data; const tot = ds.reduce((a, b) => a + (+b || 0), 0) || 1;
+                  return `${ctx.label}: ${money(ctx.raw)} (${Math.round((ctx.raw / tot) * 100)}%)`; } } },
+              } }}
+              data={{ labels: ['STAB', 'NORM'], datasets: [{ data: [st.stab_enr, st.norm_enr], backgroundColor: ['#D97706', '#16A34A'] }] }} /></div>
           <div className="glass card" style={{ padding: 12 }}><b>PTP kept vs broken</b>
             <ChartBox type="doughnut" height={220} options={{ cutout: '65%' }} data={{ labels: ['Kept', 'Broken', 'Pending'], datasets: [{ data: [fn.ptp_kept, fn.ptp_broken, Math.max(fn.ptp_total - fn.ptp_kept - fn.ptp_broken, 0)], backgroundColor: ['#16A34A', '#DC2626', '#E3E9F1'] }] }} /></div>
           <div className="glass card" style={{ padding: 12 }}><b>Area-wise achieved %</b>
@@ -6139,6 +6179,12 @@ function ManpowerView({ user }) {
     api('/api/manpower/' + e.id, { method: 'PATCH', body: { is_active: true } })
       .then(() => { toast(e.name + ' restored — they can log in again.'); setSel(null); load(); }).catch(err => toast(err.message, 'err'));
   };
+  const toggleHoMgr = (e) => {
+    const make = !e.ho_manager;
+    api('/api/manpower/' + e.id + '/ho-manager', { method: 'POST', body: { value: make } })
+      .then(() => { toast(make ? e.name + ' is now Head Office Manager.' : 'Head Office Manager title removed.'); setSel(s => s ? { ...s, ho_manager: make } : s); load(); })
+      .catch(err => toast(err.message, 'err'));
+  };
   const shown = (rows || []).filter(e => statusF === 'all' ? true : statusF === 'blocked' ? e.is_active === false : e.is_active !== false);
   const blockedCount = (rows || []).filter(e => e.is_active === false).length;
   return (
@@ -6168,7 +6214,8 @@ function ManpowerView({ user }) {
             <thead><tr><th>Code</th><th>Name</th><th>Role</th><th>Designation</th><th>Location</th><th>Branch</th><th>Phone</th><th>DOJ</th><th></th></tr></thead>
             <tbody>{shown.map(e => <tr key={e.id} style={{ cursor: 'pointer', ...(e.is_active === false ? { background: 'rgba(220,38,38,.05)' } : {}) }} onClick={() => setSel(e)}>
               <td className="mono">{e.emp_code || '—'}{e.also_team_lead && e.tl_emp_code ? <span className="muted"> / {e.tl_emp_code}</span> : ''}</td>
-              <td><b>{e.name}</b>{e.is_active === false && <span className="badge unpaid" style={{ marginLeft: 6 }} title={e.blocked_reason || 'Blocked'}>⛔ Blocked</span>}</td>
+              <td><b>{e.name}</b>{e.is_active === false && <span className="badge unpaid" style={{ marginLeft: 6 }} title={e.blocked_reason || 'Blocked'}>⛔ Blocked</span>}
+                <div><PersonPresence id={e.id} /></div></td>
               <td><span className="badge allocated">{roleName(e.role)}</span>{e.also_team_lead && e.role !== 'teamlead' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ Team Lead</span>}</td>
               <td className="muted" style={{ fontSize: 12 }}>{e.designation || '—'}</td>
               <td>{e.location || '—'}</td><td className="muted">{e.branch || '—'}</td>
@@ -6199,6 +6246,10 @@ function ManpowerView({ user }) {
               <React.Fragment key={k}><div className="dt">{k}</div><div className="dd">{v || '—'}</div></React.Fragment>)}
           </div>
           {canAdd && <EmployeeDocs emp={sel} />}
+          {user.role === 'admin' && sel.role === 'headoffice' && <div className="glass card" style={{ marginTop: 10, padding: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ flex: 1 }}><b>Head Office Manager</b><div className="muted" style={{ fontSize: 12 }}>Same access as Head Office, titled “Head Office Manager”, and no attendance login-window limit. Admin only.</div></div>
+            <button className={cx('btn', sel.ho_manager ? '' : 'gold')} onClick={() => toggleHoMgr(sel)}>{sel.ho_manager ? 'Remove title' : 'Make HO Manager'}</button>
+          </div>}
           {canAdd && <div className="toolbar" style={{ marginTop: 10 }}>
             <button className="btn gold" onClick={() => setOfferFor({ emp: sel, kind: 'offer' })}>📝 Offer letter</button>
             <button className="btn gold" onClick={() => setOfferFor({ emp: sel, kind: 'agreement' })}>📄 Agreement letter</button>
@@ -6540,6 +6591,7 @@ function EIDCard({ e }) {
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 17, fontWeight: 700 }}>{e.name}</div>
           <div className="muted" style={{ fontSize: 13 }}>{e.designation || roleName(e.role)}</div>
+          {e.id && <PersonPresence id={e.id} style={{ marginTop: 2, display: 'inline-block' }} />}
           <div style={{ marginTop: 6, fontSize: 13 }}><b className="mono">{e.all_ids || e.emp_code}</b> · {e.all_roles || roleName(e.role)}</div>
           <div className="muted" style={{ fontSize: 12 }}>{[e.location, e.branch].filter(Boolean).join(' · ')}</div>
           <div className="muted" style={{ fontSize: 12 }}>{e.phone}{e.blood_group ? ' · 🩸 ' + e.blood_group : ''}</div>
@@ -7040,6 +7092,267 @@ function TourOverlay({ steps, go, onClose }) {
   );
 }
 
+/* ============================== Attendance & live presence ============================== */
+function getGeo() {
+  return new Promise((res) => {
+    if (!navigator.geolocation) return res(null);
+    navigator.geolocation.getCurrentPosition(
+      p => res({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy }),
+      () => res(null), { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 });
+  });
+}
+const platformTag = () => { try { const c = window.Capacitor; return (c && (c.isNativePlatform ? c.isNativePlatform() : c.isNative)) ? 'android' : 'web'; } catch (e) { return 'web'; } };
+const fmtDur = (s) => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h}h ${m}m` : `${m}m`; };
+const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+const ATT_COLOR = { present: '#16A34A', P: '#16A34A', L: '#D97706', A: '#DC2626', W: '#94A3B8', LV: '#2563EB', leave: '#2563EB', absent: '#DC2626', weekoff: '#94A3B8' };
+
+function PresenceBadge({ p }) {
+  if (!p) return null;
+  const c = { active: '#16A34A', idle: '#D97706', offline: '#94A3B8' }[p.state] || '#94A3B8';
+  const plat = p.platform === 'android' ? 'mobile' : 'web';
+  const label = p.state === 'active' ? ('Active on ' + plat)
+    : p.state === 'idle' ? ('Idle' + (p.idle_seconds > 60 ? ' ' + fmtDur(p.idle_seconds) : ''))
+      : 'Offline';
+  return <span title={p.last_seen ? 'Last seen ' + fmtTime(p.last_seen) : ''} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: c, fontWeight: 600 }}>
+    <span style={{ width: 8, height: 8, borderRadius: '50%', background: c, display: 'inline-block' }} />{label}</span>;
+}
+
+/* Self-fetching presence badge for a single user — drop <PersonPresence id={u.id} /> anywhere a
+   person / profile is shown. Refreshes every 45s. */
+function PersonPresence({ id, style }) {
+  const [p, setP] = useState(null);
+  useEffect(() => {
+    if (!id) return;
+    let stop = false;
+    const load = () => api('/api/attendance/presence?ids=' + id).then(m => { if (!stop) setP(m[String(id)] || null); }).catch(() => {});
+    load(); const t = setInterval(load, 45000);
+    return () => { stop = true; clearInterval(t); };
+  }, [id]);
+  if (!p) return null;
+  return <span style={style}><PresenceBadge p={p} /></span>;
+}
+
+/* First-login-of-day check-in popup with GPS capture. */
+function CheckinModal({ user, shift, onDone, onSkip }) {
+  const [busy, setBusy] = useState(false); const [geo, setGeo] = useState(null); const [locBusy, setLocBusy] = useState(true);
+  useEffect(() => { getGeo().then(g => { setGeo(g); setLocBusy(false); }); }, []);
+  const now = new Date();
+  const greet = now.getHours() < 12 ? 'morning' : now.getHours() < 17 ? 'afternoon' : 'evening';
+  const late = now.toTimeString().slice(0, 5) > (shift.late_after || '10:00');
+  const doCheckin = async () => {
+    setBusy(true);
+    try {
+      const g = geo || await getGeo();
+      const r = await api('/api/attendance/checkin', { method: 'POST', body: { lat: g && g.lat, lng: g && g.lng, platform: platformTag() } });
+      toast(r.late ? 'Checked in — marked present (late).' : 'Checked in. Have a great day!');
+      onDone(r.attendance);
+    } catch (e) { toast(e.message || 'Could not check in'); setBusy(false); }
+  };
+  return <div className="modal-bg" style={{ zIndex: 3000 }}>
+    <div className="modal glass" style={{ maxWidth: 420, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+      <div style={{ fontSize: 44, lineHeight: 1 }}>🕘</div>
+      <h2 style={{ margin: '8px 0 2px' }}>Good {greet}, {(user.name || '').split(' ')[0]}!</h2>
+      <p className="muted" style={{ marginTop: 0 }}>Check in to start your day · Shift {shift.shift_start}–{shift.shift_end}</p>
+      <div className="glass card" style={{ textAlign: 'left', margin: '12px 0', fontSize: 13.5 }}>
+        <div className="stat-row"><span className="k">⏰ Time now</span><b>{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}{late && <span style={{ color: 'var(--warn)', marginLeft: 6, fontSize: 12 }}>late</span>}</b></div>
+        <div className="stat-row"><span className="k">📍 Location</span><b style={{ fontSize: 12.5 }}>{locBusy ? 'Locating…' : geo ? `${geo.lat.toFixed(5)}, ${geo.lng.toFixed(5)}` : 'Unavailable'}</b></div>
+      </div>
+      <button className="btn gold" style={{ width: '100%', padding: '13px', fontSize: 16, fontWeight: 700 }} disabled={busy} onClick={doCheckin}>{busy ? 'Checking in…' : '✓ Check in & start'}</button>
+      <p className="muted" style={{ fontSize: 11, marginTop: 10 }}>Your check-in time and location are recorded for attendance. {onSkip && <a onClick={onSkip} style={{ cursor: 'pointer', color: 'var(--info)' }}>Not now</a>}</p>
+    </div>
+  </div>;
+}
+
+/* Mounted once in the Shell: runs the check-in gate, the presence heartbeat, and the 7pm
+   overtime / auto-logout prompt. */
+function AttendanceGate({ user, onLogout }) {
+  const [today, setToday] = useState(null);
+  const [showCheckin, setShowCheckin] = useState(false);
+  const [overtime, setOvertime] = useState(false);
+  const callUntil = React.useRef(0);
+  const lastInput = React.useRef(Date.now());
+  useEffect(() => {
+    const bump = () => { lastInput.current = Date.now(); };
+    const evs = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
+    evs.forEach(e => window.addEventListener(e, bump, { passive: true }));
+    const oncall = () => { callUntil.current = Date.now() + 12 * 60 * 1000; };
+    window.addEventListener('ssd-oncall', oncall);
+    return () => { evs.forEach(e => window.removeEventListener(e, bump)); window.removeEventListener('ssd-oncall', oncall); };
+  }, []);
+  const load = () => api('/api/attendance/me/today').then(d => { setToday(d); if (d.needs_checkin) setShowCheckin(true); }).catch(() => { });
+  useEffect(() => { load(); }, []);
+  const tracked = today && today.tracked;
+  useEffect(() => {
+    if (!tracked) return;
+    let stop = false;
+    const beat = async () => {
+      const active = (document.visibilityState === 'visible' && (Date.now() - lastInput.current) < 180000) || Date.now() < callUntil.current;
+      try {
+        const r = await api('/api/attendance/heartbeat', { method: 'POST', body: { platform: platformTag(), active } });
+        if (r.auto_logout) { toast('Shift ended — you were auto checked-out.'); onLogout(); return; }
+        if (r.prompt_overtime) setOvertime(true);
+      } catch (e) { }
+    };
+    beat();
+    const t = setInterval(() => { if (!stop) beat(); }, 30000);
+    return () => { stop = true; clearInterval(t); };
+  }, [tracked]);
+  if (!today) return null;
+  const doOvertime = async () => { await api('/api/attendance/overtime', { method: 'POST' }).catch(() => { }); setOvertime(false); toast('Overtime started — keep going!'); };
+  const doCheckout = async () => { const g = await getGeo(); await api('/api/attendance/checkout', { method: 'POST', body: { lat: g && g.lat, lng: g && g.lng } }).catch(() => { }); setOvertime(false); toast('Checked out. See you tomorrow!'); onLogout(); };
+  return <>
+    {showCheckin && today.needs_checkin && <CheckinModal user={user} shift={today} onDone={() => { setShowCheckin(false); load(); }} onSkip={() => setShowCheckin(false)} />}
+    {overtime && <div className="modal-bg" style={{ zIndex: 3000 }}>
+      <div className="modal glass" style={{ maxWidth: 390, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize: 38 }}>🌙</div>
+        <h3 style={{ margin: '6px 0' }}>Shift ended ({today.shift_end})</h3>
+        <p className="muted">Check out for the day, or continue working (overtime)? If there's no response you'll be auto checked-out in 5 minutes.</p>
+        <div className="toolbar" style={{ justifyContent: 'center', gap: 10, marginTop: 6 }}>
+          <button className="btn" onClick={doCheckout}>Check out</button>
+          <button className="btn gold" onClick={doOvertime}>Continue working</button>
+        </div>
+      </div></div>}
+  </>;
+}
+
+/* The Attendance dashboard (top-bar icon opens this). Everyone sees their own; HR / admin /
+   head-office see all; managers see their branch; team leads see their team. */
+function AttendanceView({ user }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [tab, setTab] = useState('today');
+  const [date, setDate] = useState(today);
+  const [month, setMonth] = useState(today.slice(0, 7));
+  const [role, setRole] = useState('');
+  const [q, setQ] = useState('');
+  const [day, setDay] = useState(null);
+  const [mon, setMon] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const loadDay = () => { const p = new URLSearchParams(); p.set('date', date); if (role) p.set('role', role); api('/api/attendance/day?' + p).then(setDay).catch(() => setDay(null)); };
+  const loadMon = () => { const p = new URLSearchParams(); p.set('month', month); if (role) p.set('role', role); api('/api/attendance/month?' + p).then(setMon).catch(() => setMon(null)); };
+  useEffect(() => { if (tab === 'today') loadDay(); }, [tab, date, role]);
+  useEffect(() => { if (tab === 'month') loadMon(); }, [tab, month, role]);
+  useEffect(() => { if (tab !== 'today') return; const t = setInterval(loadDay, 30000); return () => clearInterval(t); }, [tab, date, role]);
+  const roles = day ? [...new Set(day.rows.map(r => r.role))].sort() : [];
+  const rows = (day ? day.rows : []).filter(r => !q || (r.name || '').toLowerCase().includes(q.toLowerCase()) || (r.emp_code || '').toLowerCase().includes(q.toLowerCase()));
+  const people = (mon ? mon.people : []).filter(p => !q || (p.name || '').toLowerCase().includes(q.toLowerCase()) || (p.emp_code || '').toLowerCase().includes(q.toLowerCase()));
+  const dl = () => { const p = new URLSearchParams(); p.set('month', month); if (role) p.set('role', role); download('/api/attendance/download?' + p, `Attendance_${month}.xlsx`); };
+  const stTag = (r) => { const s = r.late ? 'Late' : r.status === 'present' ? 'Present' : r.status === 'leave' ? 'Leave' : r.status === 'weekoff' ? 'Week-off' : r.status === 'absent' ? 'Absent' : r.status; const c = ATT_COLOR[r.late ? 'L' : r.status] || '#64748B'; return <span style={{ color: c, fontWeight: 700, fontSize: 12.5 }}>{s}</span>; };
+  return <div>
+    <div className="toolbar" style={{ marginBottom: 10 }}>
+      <div className={cx('chip', tab === 'today' && 'on')} onClick={() => setTab('today')}>📅 Day</div>
+      <div className={cx('chip', tab === 'month' && 'on')} onClick={() => setTab('month')}>🗓 Month</div>
+      <div style={{ flex: 1 }} />
+      {tab === 'today'
+        ? <input type="date" className="input" value={date} max={today} onChange={e => setDate(e.target.value)} style={{ maxWidth: 160 }} />
+        : <input type="month" className="input" value={month} max={today.slice(0, 7)} onChange={e => setMonth(e.target.value)} style={{ maxWidth: 160 }} />}
+      {(day && day.can_download || mon && mon.can_download) && tab === 'month' && <button className="btn gold sm" onClick={dl}>⬇ Download sheet</button>}
+    </div>
+    <div className="toolbar" style={{ marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
+      <input className="input" placeholder="🔎 Search name / ID…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 220 }} />
+      <span className="muted" style={{ fontSize: 12 }}>Role:</span>
+      <div className={cx('chip', !role && 'on')} onClick={() => setRole('')}>All</div>
+      {roles.map(rl => <div key={rl} className={cx('chip', role === rl && 'on')} onClick={() => setRole(rl)}>{roleName(rl)}</div>)}
+    </div>
+
+    {tab === 'today' && (!day ? <Loader /> : <>
+      <div className="kpi-row" style={{ marginBottom: 10 }}>
+        <div className="glass card"><div className="k">Present</div><b style={{ color: 'var(--good)' }}>{day.summary.present}</b></div>
+        <div className="glass card"><div className="k">Late</div><b style={{ color: 'var(--warn)' }}>{day.summary.late}</b></div>
+        <div className="glass card"><div className="k">Absent</div><b style={{ color: 'var(--bad)' }}>{day.summary.absent}</b></div>
+        <div className="glass card"><div className="k">On leave</div><b style={{ color: 'var(--info)' }}>{day.summary.leave}</b></div>
+        <div className="glass card"><div className="k">Online now</div><b>{day.summary.online}</b></div>
+      </div>
+      <div className="glass card" style={{ overflowX: 'auto', padding: 0 }}>
+        <table className="tbl" style={{ minWidth: 900 }}>
+          <thead><tr><th>Name</th><th>Status</th><th>Presence</th><th>Check-in</th><th>Check-out</th><th>Worked</th><th>Idle</th><th>Calls</th><th>Visits</th><th>Collected</th></tr></thead>
+          <tbody>
+            {rows.map(r => <tr key={r.user_id} style={{ cursor: 'pointer' }} onClick={() => setDetail({ id: r.user_id, date })}>
+              <td><b>{r.name}</b><div className="muted" style={{ fontSize: 11 }}>{r.emp_code || ''} · {roleName(r.role)}</div></td>
+              <td>{stTag(r)}</td>
+              <td><PresenceBadge p={r.presence} /></td>
+              <td>{fmtTime(r.check_in_at)}
+                {r.check_in_lat != null && <div style={{ fontSize: 10 }} onClick={e => e.stopPropagation()}><a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${r.check_in_lat},${r.check_in_lng}`}>📍 {r.check_in_lat.toFixed(4)}, {r.check_in_lng.toFixed(4)}</a></div>}
+                {r.role === 'fos' && r.live_lat != null && <div style={{ fontSize: 10 }} onClick={e => e.stopPropagation()}><a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${r.live_lat},${r.live_lng}`} style={{ color: 'var(--good)', fontWeight: 700 }}>🛰 Live · {fmtTime(r.live_at)}</a></div>}</td>
+              <td>{fmtTime(r.check_out_at)}{r.auto_checkout && <span className="muted" style={{ fontSize: 10 }}> (auto)</span>}</td>
+              <td>{fmtDur(r.worked_seconds)}</td>
+              <td className="muted">{fmtDur(r.idle_seconds)}</td>
+              <td>{r.show_activity ? (r.calls || 0) : <span className="muted">—</span>}{r.team_total && r.show_activity ? <span className="muted" style={{ fontSize: 9 }}> ·team</span> : ''}</td>
+              <td>{r.show_activity ? (r.visits || 0) : <span className="muted">—</span>}</td>
+              <td>{r.show_activity ? money(r.collected) : <span className="muted">—</span>}</td>
+            </tr>)}
+            {rows.length === 0 && <tr><td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 20 }}>No one to show.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </>)}
+
+    {tab === 'month' && (!mon ? <Loader /> : <div className="glass card" style={{ overflowX: 'auto', padding: 0 }}>
+      <table className="tbl" style={{ minWidth: 900, fontSize: 12 }}>
+        <thead><tr><th style={{ position: 'sticky', left: 0, background: 'var(--glass-2)' }}>Name</th>
+          {mon.days.map(d => <th key={d} style={{ padding: '6px 3px' }}>{d.slice(8)}</th>)}
+          <th>P</th><th>Late</th><th>Lv</th><th>Abs</th><th>Hrs</th></tr></thead>
+        <tbody>
+          {people.map(p => <tr key={p.user_id}>
+            <td style={{ position: 'sticky', left: 0, background: 'var(--glass-2)', cursor: 'pointer' }} onClick={() => setDetail({ id: p.user_id, date: month + '-01' })}><b>{p.name}</b><div className="muted" style={{ fontSize: 10 }}>{p.emp_code || ''}</div></td>
+            {mon.days.map(d => { const v = p.days[d] || ''; return <td key={d} style={{ textAlign: 'center', color: ATT_COLOR[v] || '#94A3B8', fontWeight: 700 }}>{v}</td>; })}
+            <td style={{ textAlign: 'center' }}>{p.present}</td><td style={{ textAlign: 'center', color: 'var(--warn)' }}>{p.late}</td>
+            <td style={{ textAlign: 'center', color: 'var(--info)' }}>{p.leave}</td><td style={{ textAlign: 'center', color: 'var(--bad)' }}>{p.absent}</td>
+            <td style={{ textAlign: 'center' }}>{p.worked_hours}</td>
+          </tr>)}
+          {people.length === 0 && <tr><td colSpan={mon.days.length + 6} className="muted" style={{ textAlign: 'center', padding: 20 }}>No data.</td></tr>}
+        </tbody>
+      </table>
+      <div className="muted" style={{ fontSize: 11, padding: '6px 10px' }}>Legend: <b style={{ color: '#16A34A' }}>P</b> Present · <b style={{ color: '#D97706' }}>L</b> Late · <b style={{ color: '#2563EB' }}>LV</b> Leave · <b style={{ color: '#DC2626' }}>A</b> Absent · <b style={{ color: '#94A3B8' }}>W</b> Week-off</div>
+    </div>)}
+
+    {detail && <AttendanceDetail id={detail.id} date={detail.date} onClose={() => setDetail(null)} />}
+  </div>;
+}
+
+/* Per-person day detail — activity + check-in map point + their audit log for that day. */
+function AttendanceDetail({ id, date, onClose }) {
+  const [d, setD] = useState(null); const [dt, setDt] = useState(date);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  useEffect(() => { api(`/api/attendance/user/${id}?date=${dt}`).then(setD).catch(() => setD(null)); }, [id, dt]);
+  return <div className="modal-bg" onClick={onClose} style={{ zIndex: 2600 }}>
+    <div className="modal glass" style={{ maxWidth: 620, width: '96%' }} onClick={e => e.stopPropagation()}>
+      {!d ? <Loader /> : <>
+        <div className="section-h"><h3>{d.row.name} · {roleName(d.row.role)}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <div className="toolbar" style={{ margin: '2px 0 8px' }}>
+          <input type="date" className="input" value={dt} onChange={e => setDt(e.target.value)} style={{ maxWidth: 160 }} />
+          <div style={{ flex: 1 }} /><PresenceBadge p={d.row.presence} />
+        </div>
+        <div className="kpi-row" style={{ marginBottom: 8 }}>
+          <div className="glass card"><div className="k">Check-in</div><b>{fmtTime(d.row.check_in_at)}</b>{d.row.late && <div style={{ color: 'var(--warn)', fontSize: 11 }}>late</div>}</div>
+          <div className="glass card"><div className="k">Check-out</div><b>{fmtTime(d.row.check_out_at)}</b></div>
+          <div className="glass card"><div className="k">Worked</div><b>{fmtDur(d.row.worked_seconds)}</b></div>
+          <div className="glass card"><div className="k">Idle</div><b className="muted">{fmtDur(d.row.idle_seconds)}</b></div>
+        </div>
+        <div className="kpi-row" style={{ marginBottom: 8 }}>
+          {d.row.show_activity && <div className="glass card"><div className="k">Calls{d.row.team_total ? ' (team)' : ''}</div><b>{d.row.calls || 0}</b></div>}
+          {d.row.show_activity && <div className="glass card"><div className="k">Visits{d.row.team_total ? ' (team)' : ''}</div><b>{d.row.visits || 0}</b></div>}
+          {d.row.show_activity && <div className="glass card"><div className="k">Collected{d.row.team_total ? ' (team)' : ''}</div><b style={{ color: 'var(--good)' }}>{money(d.row.collected)}</b></div>}
+          <div className="glass card"><div className="k">Status</div><b style={{ color: ATT_COLOR[d.row.late ? 'L' : d.row.status] || '#64748B' }}>{d.row.late ? 'Present (late)' : (d.row.status || '').replace(/^\w/, c => c.toUpperCase())}</b></div>
+        </div>
+        {d.row.check_in_lat != null && <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>📍 Check-in location: {d.row.check_in_lat.toFixed(5)}, {d.row.check_in_lng.toFixed(5)} · <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${d.row.check_in_lat},${d.row.check_in_lng}`}>view on map</a></div>}
+        {d.row.role === 'fos' && d.row.live_lat != null && <div style={{ fontSize: 12, marginBottom: 8, color: 'var(--good)', fontWeight: 600 }}>🛰 Live location ({fmtTime(d.row.live_at)}): {d.row.live_lat.toFixed(5)}, {d.row.live_lng.toFixed(5)} · <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${d.row.live_lat},${d.row.live_lng}`}>track on map</a></div>}
+        {d.row.check_in_photo && <div style={{ marginBottom: 8 }}>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 3, fontWeight: 700 }}>📸 Check-in photo (GPS-tagged)</div>
+          <a href={d.row.check_in_photo} target="_blank" rel="noreferrer"><img src={d.row.check_in_photo} alt="check-in" style={{ maxWidth: 240, maxHeight: 300, borderRadius: 10, border: '1px solid var(--line)', display: 'block' }} /></a>
+          {d.row.check_in_lat != null && <div className="muted" style={{ fontSize: 11, marginTop: 3 }}>📍 {d.row.check_in_lat.toFixed(5)}, {d.row.check_in_lng.toFixed(5)} · captured {fmtTime(d.row.check_in_at)}</div>}
+        </div>}
+        <div className="muted" style={{ fontSize: 12, fontWeight: 700, margin: '4px 0' }}>Activity log ({d.audit.length})</div>
+        <div style={{ maxHeight: 240, overflow: 'auto' }}>
+          {d.audit.length === 0 ? <p className="muted" style={{ fontSize: 12 }}>No logged actions this day.</p> :
+            d.audit.map((a, i) => <div key={i} style={{ display: 'flex', gap: 8, fontSize: 12.5, padding: '4px 0', borderBottom: '1px solid var(--line)' }}>
+              <span className="muted" style={{ minWidth: 54 }}>{fmtTime(a.at)}</span><b style={{ minWidth: 90 }}>{a.action}</b><span>{a.detail}</span></div>)}
+        </div>
+      </>}
+    </div>
+  </div>;
+}
+
 function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, onSwitchView }) {
   // Expose the viewer's role so shared perf components can hide peer comparisons from front-line staff.
   try { window.__ssdRole = user.role; } catch (e) {}
@@ -7066,7 +7379,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       if (native && user.role === 'fos' && !localStorage.getItem('ssd_trackonboard')) setTrackOnboard(true);
     } catch (e) {}
   }, []);
-  const title = (nav.find(n => n[0] === view) || [, , ''])[2];
+  const title = view === 'attendance' ? 'Attendance' : (nav.find(n => n[0] === view) || [, , ''])[2];
   const render = () => {
     switch (view) {
       case 'dashboard': return <Dashboard user={user} />;
@@ -7095,6 +7408,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'ptp': return <PTPTracker />;
       case 'ai': return <AIAssist user={user} />;
       case 'security': return <SecurityView user={user} />;
+      case 'attendance': return <AttendanceView user={user} />;
       case 'help': case 'support': return <SupportView user={user} />;
       default: return null;
     }
@@ -7104,7 +7418,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       <aside className="sidebar glass" style={{ borderRadius: 0 }}>
         <div className="brand"><img src="assets/logo.png" alt="" />
           <div><div className="n brandfont" style={{ fontSize: 16 }}>{(config && config.brand_name) || 'RecoverIQ'}</div>
-            <div className="s" style={{ fontSize: 10 }}>{roleName(user.role)}</div></div></div>
+            <div className="s" style={{ fontSize: 10 }}>{user.ho_manager ? 'Head Office Manager' : roleName(user.role)}</div></div></div>
         {canSwitchView && <div className="navitem" onClick={onSwitchView}
           title="You have more than one role — switch your active view"
           style={{ background: 'rgba(59,130,246,.10)', color: 'var(--info)', fontWeight: 600 }}>
@@ -7120,7 +7434,9 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
         <div className="topbar">
           <h1>{title}</h1>
           {installEvt && <button className="btn sm gold" style={{ marginLeft: 'auto', marginRight: 10 }} onClick={onInstall}>⬇ Install app</button>}
-          <NotificationBell onOpenCase={setNotifCase} style={{ marginLeft: installEvt ? 0 : 'auto', marginRight: 10 }} />
+          <button className="btn ghost sm" title="Attendance" onClick={() => setView('attendance')}
+            style={{ marginLeft: installEvt ? 0 : 'auto', marginRight: 8, fontSize: 18, padding: '4px 8px', background: view === 'attendance' ? 'var(--gold-soft,rgba(37,99,235,.12))' : 'transparent' }}>🕐</button>
+          <NotificationBell onOpenCase={setNotifCase} style={{ marginRight: 10 }} />
           <div className="usertag"><div className="avatar">{initials(user.name)}</div>
             <div><div style={{ fontWeight: 600, fontSize: 14 }}>{user.name}</div>
               <div className="muted" style={{ fontSize: 12 }}>{user.branch || user.email}</div></div></div>
@@ -7131,6 +7447,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
         {render()}
         {notifCase && <CaseDrawer c={{ id: notifCase }} onClose={() => setNotifCase(null)} onChanged={() => {}} />}
         {trackOnboard && <NativeTrackingOnboard onDone={() => { try { localStorage.setItem('ssd_trackonboard', '1'); } catch (e) {} setTrackOnboard(false); }} />}
+        <AttendanceGate user={user} onLogout={onLogout} />
       </main>
       <nav className="mobnav">
         {nav.map(([id, ic, label]) => <div key={id} data-nav={id} className={cx('navitem', view === id && 'active')} onClick={() => setView(id)}>

@@ -93,6 +93,41 @@ interface ApiService {
         @Query("branch") branch: String? = null,
     ): List<String>
 
+    // ---- Attendance ----
+    @GET("api/attendance/me/today")
+    suspend fun attMeToday(): MeToday
+
+    @POST("api/attendance/checkin")
+    suspend fun attCheckin(@Body body: Map<String, Any?>): Map<String, Any?>
+
+    @Multipart
+    @POST("api/attendance/checkin/photo")
+    suspend fun attCheckinPhoto(
+        @Part file: MultipartBody.Part,
+        @Part("lat") lat: RequestBody?,
+        @Part("lng") lng: RequestBody?,
+        @Part("platform") platform: RequestBody,
+    ): Map<String, Any?>
+
+    @POST("api/attendance/checkout")
+    suspend fun attCheckout(@Body body: Map<String, Any?>): Map<String, Any?>
+
+    @POST("api/attendance/overtime")
+    suspend fun attOvertime(): Map<String, Any?>
+
+    @POST("api/attendance/heartbeat")
+    suspend fun attHeartbeat(@Body body: Map<String, Any?>): HeartbeatResp
+
+    @GET("api/attendance/day")
+    suspend fun attDay(@Query("date") date: String? = null, @Query("role") role: String? = null): AttDay
+
+    @GET("api/attendance/month")
+    suspend fun attMonth(@Query("month") month: String? = null, @Query("role") role: String? = null): Map<String, Any?>
+
+    @retrofit2.http.Streaming
+    @GET("api/attendance/download")
+    suspend fun attDownload(@Query("month") month: String? = null, @Query("role") role: String? = null): okhttp3.ResponseBody
+
     // Any FOS/caller's performance (clickable name → performance screen).
     @GET("api/mis/performance")
     suspend fun performance(
