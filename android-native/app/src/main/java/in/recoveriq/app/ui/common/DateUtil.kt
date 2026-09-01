@@ -27,7 +27,9 @@ object DateUtil {
         val d = ((b - a) / 86_400_000L).toInt() + 1
         return if (d < 1) 1 else d
     }
-    private val pretty = SimpleDateFormat("dd MMM, HH:mm", Locale.US)
+    // Timestamps are shown in IST; dates (calendar days) are shown as-is (no zone shift).
+    private val IST = TimeZone.getTimeZone("Asia/Kolkata")
+    private val pretty = SimpleDateFormat("dd MMM, hh:mm a", Locale.US).apply { timeZone = IST }
     private val prettyDate = SimpleDateFormat("dd MMM yyyy", Locale.US)
 
     /** ISO date [days] from today, e.g. plusDaysIso(1) = tomorrow. */
@@ -41,7 +43,10 @@ object DateUtil {
     fun humanTime(isoTs: String?): String {
         if (isoTs.isNullOrBlank()) return ""
         return runCatching {
-            val src = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+            // Server timestamps are UTC (naive on SQLite) — parse as UTC, print in IST.
+            val src = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
             pretty.format(src.parse(isoTs.take(19))!!)
         }.getOrDefault(isoTs.take(16).replace('T', ' '))
     }

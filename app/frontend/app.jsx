@@ -74,6 +74,10 @@ const IST_TZ = 'Asia/Kolkata';
 const fmtDT = (iso) => { const d = toDate(iso); return isNaN(d.getTime()) ? '' : d.toLocaleString('en-IN', { timeZone: IST_TZ, day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); };
 const fmtHM = (iso) => { const d = toDate(iso); return isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('en-IN', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit' }); };
 const fmtDay = (iso) => { const d = toDate(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-IN', { timeZone: IST_TZ, day: '2-digit', month: 'short', year: 'numeric' }); };
+// Today's calendar date in IST (YYYY-MM-DD) — use for "today" defaults so the day is correct
+// even in the 00:00–05:30 IST window when the UTC date is still the previous day.
+const istToday = () => new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+const fmtTimeIST = (iso) => { const d = toDate(iso); return isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('en-IN', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', hour12: true }); };
 
 // Field-officer presence: "live" if their app pinged within the last 3 minutes.
 // "live" if a ping arrived within the last 12s (~3-4 of the 3s refresh cycles). Using a single
@@ -2195,7 +2199,7 @@ function LiveMap({ config }) {
             <button className="btn ghost sm" onClick={() => setRosterOpen(false)}>✕</button></div>
           <div className="toolbar" style={{ gap: 10, marginBottom: 10, alignItems: 'flex-end' }}>
             <div className="field" style={{ margin: 0 }}><label style={{ fontSize: 11 }}>Date</label>
-              <input className="input" type="date" max={new Date().toISOString().slice(0, 10)} value={rosterDate}
+              <input className="input" type="date" max={istToday()} value={rosterDate}
                 onChange={e => { setRosterDate(e.target.value); loadRoster(e.target.value); }} /></div>
             {rosterDate && <button className="btn sm" onClick={() => { setRosterDate(''); loadRoster(''); }}>Today</button>}
             <div className="field" style={{ margin: 0, minWidth: 200 }}><label style={{ fontSize: 11 }}>Search</label>
@@ -2495,7 +2499,7 @@ function LiveRouteModal({ officer, config, onClose }) {
 }
 
 function ReportModal({ officers, onClose }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = istToday();
   const weekAgo = new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10);
   const [start, setStart] = useState(weekAgo); const [end, setEnd] = useState(today); const [oid, setOid] = useState('');
   const dl = () => { const p = new URLSearchParams({ start, end }); if (oid) p.set('officer_id', oid);
@@ -4685,7 +4689,7 @@ function LegalView() {
     api('/api/legal/insights').then(setIns).catch(() => {});
   };
   useEffect(() => { load(); }, [mt, st]);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = istToday();
   const hearingStyle = (d) => !d ? {} : d < today ? { color: 'var(--bad)', fontWeight: 600 } : d === today ? { color: 'var(--gold-2)', fontWeight: 600 } : {};
   return (
     <div>
@@ -5163,7 +5167,7 @@ function FeedbackView({ user }) {
   const [cfg, setCfg] = useState(null);
   const [prods, setProds] = useState(null);
   const [sel, setSel] = useState(null);
-  const [day, setDay] = useState(new Date().toISOString().slice(0, 10));
+  const [day, setDay] = useState(istToday());
   const [monthB, setMonthB] = useState('');           // '' all · current · next (period scope)
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -5761,7 +5765,7 @@ function SheetView({ user, config }) {
   if (!prefs) return <div className="glass" style={{ padding: 24, borderRadius: 16 }}>Loading sheet…</div>;
 
   // KPI strip (computed live from the visible data)
-  const today = new Date().toISOString().slice(0, 10);
+  const today = istToday();
   // KPIs follow the current view: a selected bank/product shows THAT portfolio's totals; with
   // "all" selected they show the overall figures. (viewRows applies the bank/product filters.)
   const kpiRows = viewRows();
@@ -6921,8 +6925,8 @@ const NAV = {
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   hr: [['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
-  it: [['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
-  staff: [['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
+  it: [['attendance', '🕐', 'Attendance'], ['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
+  staff: [['attendance', '🕐', 'Attendance'], ['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
 };
 // Everyone gets a Help & Support entry (raise a query, track it).
 Object.keys(NAV).forEach(r => { if (!NAV[r].some(n => n[0] === 'help')) NAV[r].push(['help', '🆘', 'Help & Support']); });
@@ -7103,7 +7107,8 @@ function getGeo() {
 }
 const platformTag = () => { try { const c = window.Capacitor; return (c && (c.isNativePlatform ? c.isNativePlatform() : c.isNative)) ? 'android' : 'web'; } catch (e) { return 'web'; } };
 const fmtDur = (s) => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h}h ${m}m` : `${m}m`; };
-const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+// Attendance times render in IST via the shared helper (treats naive server times as UTC).
+const fmtTime = fmtTimeIST;
 const ATT_COLOR = { present: '#16A34A', P: '#16A34A', L: '#D97706', A: '#DC2626', W: '#94A3B8', LV: '#2563EB', leave: '#2563EB', absent: '#DC2626', weekoff: '#94A3B8' };
 
 function PresenceBadge({ p }) {
@@ -7154,7 +7159,7 @@ function CheckinModal({ user, shift, onDone, onSkip }) {
       <h2 style={{ margin: '8px 0 2px' }}>Good {greet}, {(user.name || '').split(' ')[0]}!</h2>
       <p className="muted" style={{ marginTop: 0 }}>Check in to start your day · Shift {shift.shift_start}–{shift.shift_end}</p>
       <div className="glass card" style={{ textAlign: 'left', margin: '12px 0', fontSize: 13.5 }}>
-        <div className="stat-row"><span className="k">⏰ Time now</span><b>{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}{late && <span style={{ color: 'var(--warn)', marginLeft: 6, fontSize: 12 }}>late</span>}</b></div>
+        <div className="stat-row"><span className="k">⏰ Time now</span><b>{now.toLocaleTimeString('en-IN', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', hour12: true })}{late && <span style={{ color: 'var(--warn)', marginLeft: 6, fontSize: 12 }}>late</span>}</b></div>
         <div className="stat-row"><span className="k">📍 Location</span><b style={{ fontSize: 12.5 }}>{locBusy ? 'Locating…' : geo ? `${geo.lat.toFixed(5)}, ${geo.lng.toFixed(5)}` : 'Unavailable'}</b></div>
       </div>
       <button className="btn gold" style={{ width: '100%', padding: '13px', fontSize: 16, fontWeight: 700 }} disabled={busy} onClick={doCheckin}>{busy ? 'Checking in…' : '✓ Check in & start'}</button>
@@ -7218,7 +7223,7 @@ function AttendanceGate({ user, onLogout }) {
 /* The Attendance dashboard (top-bar icon opens this). Everyone sees their own; HR / admin /
    head-office see all; managers see their branch; team leads see their team. */
 function AttendanceView({ user }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = istToday();
   const [tab, setTab] = useState('today');
   const [date, setDate] = useState(today);
   const [month, setMonth] = useState(today.slice(0, 7));
@@ -7227,6 +7232,7 @@ function AttendanceView({ user }) {
   const [day, setDay] = useState(null);
   const [mon, setMon] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [statF, setStatF] = useState('');   // click a KPI to filter the list to that status
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const loadDay = () => { const p = new URLSearchParams(); p.set('date', date); if (role) p.set('role', role); api('/api/attendance/day?' + p).then(setDay).catch(() => setDay(null)); };
   const loadMon = () => { const p = new URLSearchParams(); p.set('month', month); if (role) p.set('role', role); api('/api/attendance/month?' + p).then(setMon).catch(() => setMon(null)); };
@@ -7234,7 +7240,11 @@ function AttendanceView({ user }) {
   useEffect(() => { if (tab === 'month') loadMon(); }, [tab, month, role]);
   useEffect(() => { if (tab !== 'today') return; const t = setInterval(loadDay, 30000); return () => clearInterval(t); }, [tab, date, role]);
   const roles = day ? [...new Set(day.rows.map(r => r.role))].sort() : [];
-  const rows = (day ? day.rows : []).filter(r => !q || (r.name || '').toLowerCase().includes(q.toLowerCase()) || (r.emp_code || '').toLowerCase().includes(q.toLowerCase()));
+  const online = r => r.presence && (r.presence.state === 'active' || r.presence.state === 'idle');
+  const passStat = r => statF === '' || (statF === 'present' && r.status === 'present') || (statF === 'late' && r.late)
+    || (statF === 'absent' && r.status === 'absent') || (statF === 'leave' && r.status === 'leave')
+    || (statF === 'online' && online(r));
+  const rows = (day ? day.rows : []).filter(r => passStat(r) && (!q || (r.name || '').toLowerCase().includes(q.toLowerCase()) || (r.emp_code || '').toLowerCase().includes(q.toLowerCase())));
   const people = (mon ? mon.people : []).filter(p => !q || (p.name || '').toLowerCase().includes(q.toLowerCase()) || (p.emp_code || '').toLowerCase().includes(q.toLowerCase()));
   const dl = () => { const p = new URLSearchParams(); p.set('month', month); if (role) p.set('role', role); download('/api/attendance/download?' + p, `Attendance_${month}.xlsx`); };
   const stTag = (r) => { const s = r.late ? 'Late' : r.status === 'present' ? 'Present' : r.status === 'leave' ? 'Leave' : r.status === 'weekoff' ? 'Week-off' : r.status === 'absent' ? 'Absent' : r.status; const c = ATT_COLOR[r.late ? 'L' : r.status] || '#64748B'; return <span style={{ color: c, fontWeight: 700, fontSize: 12.5 }}>{s}</span>; };
@@ -7257,12 +7267,14 @@ function AttendanceView({ user }) {
 
     {tab === 'today' && (!day ? <Loader /> : <>
       <div className="kpi-row" style={{ marginBottom: 10 }}>
-        <div className="glass card"><div className="k">Present</div><b style={{ color: 'var(--good)' }}>{day.summary.present}</b></div>
-        <div className="glass card"><div className="k">Late</div><b style={{ color: 'var(--warn)' }}>{day.summary.late}</b></div>
-        <div className="glass card"><div className="k">Absent</div><b style={{ color: 'var(--bad)' }}>{day.summary.absent}</b></div>
-        <div className="glass card"><div className="k">On leave</div><b style={{ color: 'var(--info)' }}>{day.summary.leave}</b></div>
-        <div className="glass card"><div className="k">Online now</div><b>{day.summary.online}</b></div>
+        {[['present', 'Present', day.summary.present, 'var(--good)'], ['late', 'Late', day.summary.late, 'var(--warn)'],
+          ['absent', 'Absent', day.summary.absent, 'var(--bad)'], ['leave', 'On leave', day.summary.leave, 'var(--info)'],
+          ['online', 'Online now', day.summary.online, 'var(--ink)']].map(([key, label, val, color]) =>
+          <div key={key} className="glass card" onClick={() => setStatF(statF === key ? '' : key)}
+            style={{ cursor: 'pointer', border: statF === key ? '2px solid ' + color : undefined }}>
+            <div className="k">{label}</div><b style={{ color }}>{val}</b></div>)}
       </div>
+      {statF && <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Showing <b>{rows.length}</b> {statF === 'online' ? 'online' : statF} · <a style={{ cursor: 'pointer', color: 'var(--info)' }} onClick={() => setStatF('')}>clear filter</a></div>}
       <div className="glass card" style={{ overflowX: 'auto', padding: 0 }}>
         <table className="tbl" style={{ minWidth: 900 }}>
           <thead><tr><th>Name</th><th>Status</th><th>Presence</th><th>Check-in</th><th>Check-out</th><th>Worked</th><th>Idle</th><th>Calls</th><th>Visits</th><th>Collected</th></tr></thead>

@@ -59,11 +59,18 @@ private fun fmtDur(sec: Int): String {
     return if (h > 0) "${h}h ${m}m" else "${m}m"
 }
 
+// API timestamps are UTC (naive on SQLite). Treat as UTC and render in IST.
 private fun hhmm(iso: String?): String {
     if (iso.isNullOrBlank()) return "—"
     return try {
-        val t = iso.substringAfter('T').substring(0, 5)
-        t
+        val core = iso.substringBefore('+').substringBefore('Z').replace('T', ' ').take(19)
+        val pat = if (core.length > 10) "yyyy-MM-dd HH:mm:ss" else "yyyy-MM-dd HH:mm"
+        val inFmt = java.text.SimpleDateFormat(pat, java.util.Locale.US)
+        inFmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        val d = inFmt.parse(core.take(pat.length)) ?: return "—"
+        val out = java.text.SimpleDateFormat("hh:mm a", java.util.Locale.US)
+        out.timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata")
+        out.format(d)
     } catch (e: Exception) { "—" }
 }
 
