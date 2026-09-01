@@ -327,6 +327,9 @@ class CaseOut(CaseBase):
     @model_validator(mode="after")
     def _fill_settlement_view(self):
         from . import paymath
+        # Never emit null for the boolean fields the phone app parses as non-null (older DB rows
+        # can have NULL auto_debit → the Android Moshi adapter would crash on "My Accounts").
+        self.auto_debit = bool(self.auto_debit)
         self.is_settlement_case = paymath.is_settlement(self)
         if self.is_settlement_case:
             self.settle_target = paymath.settle_target(self)
