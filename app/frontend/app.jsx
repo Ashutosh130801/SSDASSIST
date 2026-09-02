@@ -3476,8 +3476,12 @@ function useLocationPing(user, config) {
     // ---- Web fallback (foreground only) ----
     if (!navigator.geolocation) return;
     let alive = true, lastSent = 0, lastPos = null, watchId = null, wakeLock = null;
-    const minGap = 2 * 1000;                                    // allow a location send about every 3s
-    const heartbeatMs = 3 * 1000;                              // force a ping every 3s even when stationary
+    const minGap = 2 * 1000;                                    // while MOVING, allow a send about every 2s (route quality)
+    // While STATIONARY we only need a keep-alive ping: presence counts an officer "live" if they
+    // pinged in the last 3 min, so 20s is plenty. (Was 3s — that wrote a LocationPing row every 3s
+    // per officer and, with many FOS online, hammered the DB's single writer.) Movement is still
+    // streamed in real time by watchPosition below, so route tracking is unaffected.
+    const heartbeatMs = 20 * 1000;                             // force a ping every 20s even when stationary
     const distM = (a, b) => { if (!a || !b) return 1e9; const R = 6371000, dLa = (b.latitude - a.latitude) * Math.PI / 180,
       dLo = (b.longitude - a.longitude) * Math.PI / 180, la1 = a.latitude * Math.PI / 180, la2 = b.latitude * Math.PI / 180;
       const h = Math.sin(dLa / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };

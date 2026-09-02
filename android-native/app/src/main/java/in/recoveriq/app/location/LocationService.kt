@@ -47,8 +47,11 @@ class LocationService : Service() {
         const val ACTION_START = "in.recoveriq.app.action.START_TRACKING"
         const val ACTION_STOP = "in.recoveriq.app.action.STOP_TRACKING"
 
-        /** Update cadence — a fix at most every 5s, never faster than 3s. */
-        private const val INTERVAL_MS = 5_000L
+        /** Update cadence. Baseline (e.g. standing still) a fix about every 20s — enough to stay
+         *  "live" (presence window is 3 min) without writing a LocationPing row every few seconds
+         *  per officer, which hammered the DB's single writer. While MOVING the provider may still
+         *  deliver as fast as every 3s, so route tracking stays real-time. */
+        private const val INTERVAL_MS = 20_000L
         private const val FASTEST_MS = 3_000L
     }
 

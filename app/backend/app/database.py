@@ -11,7 +11,20 @@ _is_sqlite = settings.database_url.startswith("sqlite")
 if _is_sqlite:
     connect_args = {"check_same_thread": False}
 
-engine = create_engine(settings.database_url, pool_pre_ping=True, connect_args=connect_args)
+# Pool sizing (applies to both SQLite and Postgres). The default 5 + 10 overflow was too
+# small once every client started sending a presence heartbeat: under load all 15 connections
+# get checked out waiting on the DB and the next request times out. A larger pool + recycle
+# absorbs those spikes. These values are safe and beneficial on Postgres too (no change needed
+# when DATABASE_URL is switched over for go-live).
+engine = create_engine(
+    settings.database_url,
+    pool_pre_ping=True,
+    pool_size=20,          # persistent connections kept open
+    max_overflow=40,       # extra burst connections when the pool is busy
+    pool_recycle=1800,     # recycle a connection after 30 min (avoids stale server-side closes)
+    pool_timeout=30,       # wait up to 30s for a free connection before erroring
+    connect_args=connect_args,
+)
 
 # Make it unambiguous which database this process is actually using (credentials hidden).
 try:
@@ -29,6 +42,15 @@ if _is_sqlite:
     def _sqlite_pragmas(dbapi_conn, _rec):
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA temp_store=MEMORY")
+        # WAL lets readers and one writer work at the same time, instead of every reader
+        # blocking behind the writer (the root cause of the QueuePool timeouts under the
+        # presence-heartbeat write load). busy_timeout makes a writer WAIT up to 20s for the
+        # lock instead of holding its pooled connection and jamming the pool. synchronous=NORMAL
+        # is the safe, standard pairing with WAL. All SQLite-only: this hook never fires on
+        # Postgres, so nothing here needs undoing at go-live.
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=20000")
+        cur.execute("PRAGMA synchronous=NORMAL")
         cur.close()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
