@@ -13,9 +13,10 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 # A read-only auditor role: sees & downloads everything, but may not change anything.
 READONLY_ROLES = ("it_support_view",)
 _SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
-# Self-account security endpoints a read-only user is still allowed to POST to (so they can
-# set their own password / 2FA / passkey and actually sign in) — nothing that touches shared data.
-_READONLY_WRITE_ALLOW = ("/api/auth/", "/api/webauthn")
+# Self-account endpoints a read-only user is still allowed to POST to (so they can set their own
+# password / 2FA / passkey and sign in, and mark their own attendance). None of these touch shared
+# collections data — attendance check-in/out/heartbeat only records the user's own presence.
+_READONLY_WRITE_ALLOW = ("/api/auth/", "/api/webauthn", "/api/attendance/")
 
 
 def get_current_user(request: Request, token: str = Depends(oauth2_scheme),

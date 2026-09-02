@@ -96,10 +96,10 @@ def _scope_feedback(db: Session, user, bank, product, branch=None, month_bucket=
         q = q.filter(teamlead_case_filter(user))     # a team lead sees their team's feedback
     elif branch:
         q = q.filter(models.Case.branch == branch)
-    # Month-wise: keep this-month / next-month books separate.
-    if month_bucket in ("current", "next"):
-        from .cases import _current_period, _next_period
-        q = q.filter(models.Case.period == (_current_period() if month_bucket == "current" else _next_period()))
+    # Month-wise: keep each month's book separate (this / next / last month).
+    if month_bucket in ("current", "next", "last"):
+        from .cases import _period_bucket
+        q = q.filter(models.Case.period == _period_bucket(month_bucket))
     return q
 
 

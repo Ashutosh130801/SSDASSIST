@@ -756,7 +756,7 @@ function PerfModal({ empId, role, name, onClose }) {
           <button className="btn ghost sm" onClick={onClose}>✕</button>
         </div>
         <div className="toolbar" style={{ marginBottom: 8 }}>
-          {[['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, l]) =>
+          {[['current', '📅 This month'], ['next', '🔜 Next month'], ['last', '🗄️ Last month'], ['', 'All months']].map(([v, l]) =>
             <div key={v} className={cx('chip', mb === v && 'on')} onClick={() => setMb(v)}>{l}</div>)}
         </div>
         {err && <div className="glass card" style={{ color: 'var(--bad)', padding: 12 }}>{err}</div>}
@@ -888,7 +888,7 @@ function PerfPortfolios({ empId, role }) {
       <div className="section-h" style={{ marginBottom: 6 }}>
         <h3 style={{ margin: 0, fontSize: 15 }}>📊 Portfolio-wise performance</h3>
         <div className="toolbar">
-          {[['current', '📅 This month'], ['next', '🔜 Next'], ['', 'All']].map(([v, l]) =>
+          {[['current', '📅 This month'], ['next', '🔜 Next'], ['last', '🗄️ Last'], ['', 'All']].map(([v, l]) =>
             <div key={v} className={cx('chip', mb === v && 'on')} onClick={() => setMb(v)}>{l}</div>)}
         </div>
       </div>
@@ -955,8 +955,9 @@ const STAGE_META = {
 
 function Dashboard({ user, branch }) {
   const [d, setD] = useState(null); const [err, setErr] = useState(''); const [hl, setHl] = useState(null);
-  // Month-wise separation so stats/analytics aren't merged across months. Field/calling staff default to THIS month.
-  const [monthB, setMonthB] = useState((user.role === 'fos' || user.role === 'telecaller') ? 'current' : '');
+  // Month-wise separation so stats/analytics aren't merged across months. Everyone defaults to
+  // THIS month (not "all months") so the dashboard reflects the current book on open.
+  const [monthB, setMonthB] = useState('current');
   const isMgr = (user.role === 'admin' || user.role === 'manager' || user.role === 'headoffice') && !branch;
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const loadDash = () => {
@@ -985,7 +986,7 @@ function Dashboard({ user, branch }) {
   return (
     <div>
       <div className="toolbar" style={{ marginBottom: 10 }}>
-        {[['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, lbl]) =>
+        {[['current', '📅 This month'], ['next', '🔜 Next month'], ['last', '🗄️ Last month'], ['', 'All months']].map(([v, lbl]) =>
           <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
       </div>
       <div className="kpis">
@@ -1742,7 +1743,7 @@ function CasesView({ user }) {
         {isHO && <div className={cx('chip', mode === 'removed' && 'on')} onClick={() => setMode('removed')}>🗑 Removed cases</div>}
         {mode !== 'removed' && <><span style={{ width: 1, height: 20, background: 'var(--line)' }} />
           <span className="muted" style={{ fontSize: 12 }}>Month:</span>
-          {[['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, lbl]) =>
+          {[['current', '📅 This month'], ['next', '🔜 Next month'], ['last', '🗄️ Last month'], ['', 'All months']].map(([v, lbl]) =>
             <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}</>}
         <div style={{ flex: 1 }} />
         {canDpr && <button className="btn" onClick={() => setDprOpen(true)} title="Bulk mark paid/unpaid from a bank DPR file">🏦 DPR update</button>}
@@ -4844,7 +4845,7 @@ function CycleMIS({ compact, bank, product, monthBucket }) {
         <b style={{ fontSize: compact ? 14 : 16 }}>🔄 Cycle-wise MIS</b>
         <span className="muted" style={{ fontSize: 12 }}>{scoped ? 'This portfolio, split by billing cycle.' : 'Every portfolio, split by billing cycle.'}</span>
         <div style={{ flex: 1 }} />
-        {!parentMonth && [['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, lbl]) =>
+        {!parentMonth && [['current', '📅 This month'], ['next', '🔜 Next month'], ['last', '🗄️ Last month'], ['', 'All months']].map(([v, lbl]) =>
           <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthBLocal(v)}>{lbl}</div>)}
       </div>
       {err && <div className="glass card" style={{ color: 'var(--bad)' }}>{err}</div>}
@@ -4998,7 +4999,7 @@ function MISView({ user }) {
           <MultiSelect label="Location" icon="📍" width={200} selected={branchSel} onChange={setBranchSel}
             options={sel.branches.map(b => ({ value: b, label: b }))} />}
         {/* Month-wise MIS — keep this-month and next-month figures cleanly separate. */}
-        {[['current', '📅 This month'], ['next', '🔜 Next month'], ['', 'All months']].map(([v, lbl]) =>
+        {[['current', '📅 This month'], ['next', '🔜 Next month'], ['last', '🗄️ Last month'], ['', 'All months']].map(([v, lbl]) =>
           <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
         {/* Cycle-wise MIS — every portfolio broken down by billing cycle. */}
         <div className={cx('chip', cycleView && 'on')} onClick={() => setCycleView(v => !v)} title="MIS analytics for each portfolio, per billing cycle">🔄 Cycle-wise MIS</div>
@@ -5172,7 +5173,7 @@ function FeedbackView({ user }) {
   const [prods, setProds] = useState(null);
   const [sel, setSel] = useState(null);
   const [day, setDay] = useState(istToday());
-  const [monthB, setMonthB] = useState('');           // '' all · current · next (period scope)
+  const [monthB, setMonthB] = useState('current');    // default THIS month · '' all · next · last (period scope)
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [filters, setFilters] = useState({});
@@ -5256,7 +5257,7 @@ function FeedbackView({ user }) {
         </select>
         <input type="date" className="input" style={{ maxWidth: 170 }} value={day} onChange={e => setDay(e.target.value)} />
         <span className="muted" style={{ fontSize: 12 }}>Month:</span>
-        {[['', 'All'], ['current', '📅 This'], ['next', '🔜 Next']].map(([v, lbl]) =>
+        {[['', 'All'], ['last', '🗄️ Last'], ['current', '📅 This'], ['next', '🔜 Next']].map(([v, lbl]) =>
           <div key={v || 'all'} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
         <input className="input" style={{ minWidth: 220 }} value={search} onChange={e => setSearch(e.target.value)}
           placeholder="🔍 Search name / phone / any column" />
@@ -5397,6 +5398,7 @@ function MyPerformance({ user }) {
         <select className="sv-btn" value={monthB} onChange={e => setMonthB(e.target.value)} title="Each month is a separate book">
           <option value="current">This month</option>
           <option value="next">Next month</option>
+          <option value="last">Last month</option>
           <option value="">All months</option>
         </select>
         {basePorts.length > 0 && <select className="sv-btn" value={bankF} onChange={e => { setBankF(e.target.value); setProductF(''); }} title="Filter by bank">
@@ -5847,6 +5849,7 @@ function SheetView({ user, config }) {
         <select className="sv-btn" value={monthB} onChange={e => setMonthB(e.target.value)} title="Each month is a separate book">
           <option value="current">This month</option>
           <option value="next">Next month</option>
+          <option value="last">Last month</option>
           <option value="">All months</option>
         </select>
         <div style={{ flex: 1 }} />

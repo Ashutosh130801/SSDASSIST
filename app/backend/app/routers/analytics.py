@@ -42,8 +42,11 @@ def _scope(q, user, branch=None, period=None):
 def dashboard(branch: str | None = None, month_bucket: str | None = None,
               db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     # Month-wise separation so a person's stats/analytics aren't merged across months.
-    from .cases import _current_period, _next_period
-    period = _current_period() if month_bucket == "current" else _next_period() if month_bucket == "next" else None
+    from .cases import _current_period, _next_period, _last_period
+    period = (_current_period() if month_bucket == "current"
+              else _next_period() if month_bucket == "next"
+              else _last_period() if month_bucket == "last"
+              else None)
     def sc(q):
         return _scope(q, user, branch, period=period)
     base = sc(db.query(models.Case))

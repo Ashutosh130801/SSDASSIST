@@ -131,6 +131,19 @@ def _next_period() -> str:
     return f"{d.year + 1:04d}-01" if d.month == 12 else f"{d.year:04d}-{d.month + 1:02d}"
 
 
+def _last_period() -> str:
+    """Previous month as 'YYYY-MM' (IST). Its cases are closed/archived; the 'Last month'
+    filter lets staff VIEW them read-only (closed cases stay locked for FOS/callers)."""
+    d = datetime.now(_IST_TZ)
+    return f"{d.year - 1:04d}-12" if d.month == 1 else f"{d.year:04d}-{d.month - 1:02d}"
+
+
+def _bucket_for_period(period) -> str | None:
+    """If a resolved period equals last month, report bucket='last' so _scope will unlock it
+    for non-admin viewers. (Reads only — nothing here changes case data.)"""
+    return "last" if period and period == _last_period() else None
+
+
 def _case_closed(case: models.Case) -> bool:
     if not case.close_date:
         return False
@@ -151,11 +164,16 @@ def _ensure_open(case: models.Case, user: models.User):
                                 detail="This case has closed for the month and is locked. Ask an admin if a change is needed.")
 
 
-def _scope(q, user: models.User, include_removed: bool = False):
+def _scope(q, user: models.User, include_removed: bool = False, bucket: str | None = None):
     """Restrict rows by role — FO sees own field cases, telecaller sees own queue,
     branch manager sees cases handled by staff in their branch, team lead sees cases
     handled by the FOS/callers who report to them. Removed (soft-deleted) cases are
-    hidden everywhere unless explicitly requested."""
+    hidden everywhere unless explicitly requested.
+
+    `bucket='last'` opens up the previous month for VIEWING only: normally past months are
+    hidden for non-admin, but when the user explicitly picks 'Last month' we show that month's
+    cases even though they're closed/locked/archived. Writes stay blocked — closed cases are
+    already locked for FOS/callers via _ensure_open."""
     if not include_removed:
         q = q.filter(models.Case.removed.isnot(True))
     # Monthly lifecycle: field/calling staff work the CURRENT month plus any NEXT-month
@@ -163,8 +181,12 @@ def _scope(q, user: models.User, include_removed: bool = False):
     # cases stay visible even after they close (cycle date / month-end) but closed ones are
     # locked. Past months become admin-only history. Cases with no period (legacy) stay on.
     if user.role not in ("admin", "techsupport"):
-        q = q.filter(or_(models.Case.period.is_(None),
-                         models.Case.period.in_([_current_period(), _next_period()])))
+        if bucket == "last":
+            # Explicit "Last month" view — restrict to (and reveal) the previous month only.
+            q = q.filter(models.Case.period == _last_period())
+        else:
+            q = q.filter(or_(models.Case.period.is_(None),
+                             models.Case.period.in_([_current_period(), _next_period()])))
     if user.role == "fos":
         # Own live cases + cases escalated away from them (kept visible but locked).
         return q.filter(or_(models.Case.assigned_fos_id == user.id,
@@ -302,7 +324,7 @@ def list_cases(
     limit: int = Query(500, le=5000),
     offset: int = 0,
 ):
-    q = _scope(db.query(models.Case), user)
+    q = _scope(db.query(models.Case), user, bucket=month_bucket)
     if caller_id:
         q = q.filter(models.Case.assigned_caller_id == caller_id)
     if fos_id:
@@ -327,6 +349,8 @@ def list_cases(
         q = q.filter(models.Case.period == _current_period())
     elif month_bucket == "next":
         q = q.filter(models.Case.period == _next_period())
+    elif month_bucket == "last":
+        q = q.filter(models.Case.period == _last_period())
     if closing_type:
         q = q.filter(models.Case.closing_type == closing_type)
     if closed is not None:
@@ -523,11 +547,13 @@ def portfolio_areas(bank: str | None = None, product: str | None = None, branch:
 
 
 def _period_bucket(month_bucket):
-    """'current' → this month, 'next' → next month, else None (all months)."""
+    """'current' → this month, 'next' → next month, 'last' → previous month, else None (all)."""
     if month_bucket == "current":
         return _current_period()
     if month_bucket == "next":
         return _next_period()
+    if month_bucket == "last":
+        return _last_period()
     return None
 
 
@@ -541,7 +567,7 @@ def _portfolio_rows(db, user, period=None):
         models.Case.branch_explicit, models.Case.period,
         models.Case.funding_amount, models.Case.total_outstanding, models.Case.enr,
         models.Case.principal_outstanding, models.Case.received_amount,
-    ), user)
+    ), user, bucket=_bucket_for_period(period))
     if period:
         q = q.filter(models.Case.period == period)
     return q.all()

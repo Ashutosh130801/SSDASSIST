@@ -188,9 +188,10 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
                 period: str | None = None, area: str | None = None, branch=None,
                 cycles: list | None = None, fos_ids: list | None = None,
                 caller_ids: list | None = None, paid: str | None = None) -> dict:
-    from .cases import propensity as _prop
+    from .cases import propensity as _prop, _bucket_for_period
     from sqlalchemy import func as _func
-    q = _scope(db.query(models.Case), user).filter(models.Case.bank == bank, models.Case.product == product)
+    q = _scope(db.query(models.Case), user, bucket=_bucket_for_period(period)).filter(
+        models.Case.bank == bank, models.Case.product == product)
     # branch may be a single value or a list — multiple branches combine into one overall MIS.
     branches = [branch] if isinstance(branch, str) and branch else (list(branch) if branch else [])
     if branches:
@@ -454,12 +455,14 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
 
 
 def _period_for(month_bucket: str | None) -> str | None:
-    """Map a 'current' / 'next' filter to a concrete 'YYYY-MM' period (None = all months)."""
-    from .cases import _current_period, _next_period
+    """Map a 'current' / 'next' / 'last' filter to a concrete 'YYYY-MM' period (None = all)."""
+    from .cases import _current_period, _next_period, _last_period
     if month_bucket == "current":
         return _current_period()
     if month_bucket == "next":
         return _next_period()
+    if month_bucket == "last":
+        return _last_period()
     return None
 
 
@@ -677,7 +680,8 @@ def mis_by_cycle(month_bucket: str | None = "current",
     leads see all their cases; a FOS or caller sees ONLY their own (via _scope). This powers
     the 'Cycle-wise MIS' view for managers and the cycle breakdown on a caller/FOS scorecard."""
     period = _period_for(month_bucket)
-    q = _scope(db.query(models.Case), user)
+    from .cases import _bucket_for_period
+    q = _scope(db.query(models.Case), user, bucket=_bucket_for_period(period))
     if period:
         q = q.filter(models.Case.period == period)
     cases = q.all()
