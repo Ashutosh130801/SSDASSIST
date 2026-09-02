@@ -276,6 +276,14 @@ class CaseOut(CaseBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
     status: str
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _status_default(cls, v):
+        # `status` is a required string here, but a few legacy/imported rows carry NULL status.
+        # One such row made FastAPI reject the whole /api/cases response (500 → Live Sheet
+        # "could not load"). Fall back to the model's own default so the field is always a string.
+        return v if v is not None else "new"
     paid_status: Optional[str]
     disposition: Optional[str]
     remarks: Optional[str]
