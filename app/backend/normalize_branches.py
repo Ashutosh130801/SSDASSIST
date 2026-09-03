@@ -44,6 +44,16 @@ def main() -> int:
                     help="Commit the changes. Without this flag the script only reports (dry run).")
     args = ap.parse_args()
 
+    # Bring the target DB's schema up to date first. An older ssd_local.db / Postgres file may be
+    # missing columns this build expects (e.g. cases.geo_lat, digipin) that the ORM will SELECT,
+    # which otherwise crashes with "no such column". This is the exact auto-migration the app runs
+    # on startup — safe and idempotent.
+    try:
+        from app.main import _ensure_columns
+        _ensure_columns()
+    except Exception as e:  # noqa: BLE001
+        print(f"(schema check skipped: {e})")
+
     db = SessionLocal()
     try:
         canon = branch_canon_map(db)  # UPPER(branch) -> canonical spelling
