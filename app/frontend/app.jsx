@@ -2627,7 +2627,7 @@ function TeamLeadOverviewModal({ lead, config, onClose }) {
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 920, width: '96%', maxHeight: '92vh', overflowY: 'auto' }}>
         <div className="section-h"><h3 style={{ margin: 0 }}>{lead.name}'s team{lead.branch ? ' · ' + lead.branch : ''}</h3>
           <div className="toolbar" style={{ gap: 6 }}>
-            {[['current', 'This month'], ['last', 'Last'], ['all', 'All']].map(([v, lbl]) =>
+            {[['current', 'This month'], ['next', 'Next'], ['last', 'Last'], ['all', 'All']].map(([v, lbl]) =>
               <button key={v} className={cx('btn sm', monthB === v && 'gold')} onClick={() => setMonthB(v)}>{lbl}</button>)}
             <button className="btn ghost sm" onClick={onClose}>✕</button>
           </div></div>
@@ -2784,11 +2784,11 @@ function StaffView({ config, user }) {
             <thead><tr><th>Code</th><th>Name</th><th>Role</th><th>Branch</th><th>Location</th><th>Phone</th><th></th></tr></thead>
             <tbody>{searchHits.map(u => <tr key={u.id}>
               <td className="mono">{u.emp_code || '—'}</td>
-              <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDashUser({ id: u.id, name: u.name, role: u.role, branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>{u.name}</b>
+              <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDashUser({ ...u })}>{u.name}</b>
                 {u.is_active === false && <span className="badge" style={{ marginLeft: 6 }}>inactive</span>}
                 <div><PersonPresence id={u.id} /></div></td>
               <td>{roleName(u.role)}</td><td className="muted">{u.branch || '—'}</td><td>{u.location || '—'}</td><td>{u.phone || '—'}</td>
-              <td style={{ whiteSpace: 'nowrap' }}><button className="btn sm" onClick={() => setDashUser({ id: u.id, name: u.name, role: u.role, branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>Performance</button> <ContactBtns phone={u.phone} /></td></tr>)}
+              <td style={{ whiteSpace: 'nowrap' }}><button className="btn sm" onClick={() => setDashUser({ ...u })}>Performance</button> <ContactBtns phone={u.phone} /></td></tr>)}
               {searchHits.length === 0 && <tr><td colSpan="7" className="muted" style={{ padding: 12 }}>No employees match “{q}”.</td></tr>}
             </tbody></table></div>
         </div>}
@@ -2822,14 +2822,14 @@ function StaffView({ config, user }) {
             <div className="tablewrap"><table>
               <thead><tr><th>Code</th><th>Name</th><th>{listRole === 'fos' ? 'Location' : 'Branch'}</th><th>Phone</th><th></th></tr></thead>
               <tbody>{roleList.map(u => <tr key={u.id}>
-                <td className="mono">{u.emp_code || (u.tl_emp_code || '—')}</td>
-                <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => listRole === 'teamlead' ? setTlOverview(u) : setDashUser({ id: u.id, name: u.name, role: listRole, branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>{u.name}</b>
+                <td className="mono">{listRole === 'teamlead' ? (u.tl_emp_code || u.emp_code || '—') : (u.emp_code || u.tl_emp_code || '—')}</td>
+                <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => listRole === 'teamlead' ? setTlOverview(u) : setDashUser({ ...u, role: listRole })}>{u.name}</b>
                   {u.also_team_lead && listRole !== 'teamlead' && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10 }}>+TL</span>}</td>
                 <td className="muted">{(listRole === 'fos' ? u.location : u.branch) || '—'}</td><td>{u.phone || '—'}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>
                   {listRole === 'teamlead'
                     ? <button className="btn sm gold" onClick={() => setTlOverview(u)}>👥 Team &amp; performance</button>
-                    : <button className="btn sm" onClick={() => setDashUser({ id: u.id, name: u.name, role: listRole, branch: u.branch, phone: u.phone, emp_code: u.emp_code })}>Performance</button>}
+                    : <button className="btn sm" onClick={() => setDashUser({ ...u, role: listRole })}>Performance</button>}
                   {' '}<ContactBtns phone={u.phone} /></td></tr>)}
                 {roleList.length === 0 && <tr><td colSpan="5" className="muted" style={{ padding: 12 }}>None here.</td></tr>}
               </tbody></table></div>
@@ -2930,7 +2930,7 @@ function StaffView({ config, user }) {
           <div className="tablewrap"><table>
             <thead><tr><th>Name</th><th>Role</th><th>Home branch</th><th>Cases here</th><th>Paid</th><th>Recovered</th><th>Pending</th><th></th></tr></thead>
             <tbody>{associates.map(a => <tr key={a.id}>
-              <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDashUser({ id: a.id, name: a.name, role: a.role, branch: a.home_branch, phone: a.phone, emp_code: a.emp_code })}>{a.name}</b>
+              <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDashUser({ ...a, branch: a.home_branch })}>{a.name}</b>
                 {a.emp_code && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10.5 }}>{a.emp_code}</span>}</td>
               <td><span className="badge allocated">{roleName(a.role)}</span></td>
               <td className="muted">{a.home_branch}</td>
@@ -2938,7 +2938,7 @@ function StaffView({ config, user }) {
               <td className="mono" style={{ color: 'var(--good)' }}>{money(a.received)}</td>
               <td className="mono" style={{ color: 'var(--warn)' }}>{money(a.pending)}</td>
               <td style={{ whiteSpace: 'nowrap' }}>
-                <button className="btn sm" onClick={() => setDashUser({ id: a.id, name: a.name, role: a.role, branch: a.home_branch, phone: a.phone, emp_code: a.emp_code })}>Performance</button>
+                <button className="btn sm" onClick={() => setDashUser({ ...a, branch: a.home_branch })}>Performance</button>
                 {' '}<ContactBtns phone={a.phone} /></td></tr>)}
             </tbody></table></div>
         </div>
@@ -3026,7 +3026,7 @@ function EmployeeDashboard({ u, config, onClose }) {
   const [trends, setTrends] = useState(null);
   const [monthB, setMonthB] = useState('current');   // profile opens on the CURRENT month by default
   const [tlView, setTlView] = useState(false);        // dual-role: show their Team-Lead view
-  const isTL = u.also_team_lead || u.role === 'teamlead';
+  const isTL = u.also_team_lead || !!u.tl_emp_code || u.role === 'teamlead';
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const mbq = '?month_bucket=' + monthB;
   const loadEmp = () => api('/api/team/user/' + u.id + '/dashboard' + mbq).then(setD).catch(e => setErr(e.message || 'Could not load'));
@@ -3045,7 +3045,7 @@ function EmployeeDashboard({ u, config, onClose }) {
           <PersonPresence id={u.id} style={{ marginTop: 2, display: 'inline-block' }} /></div>
           <div className="toolbar" style={{ gap: 6 }}>
             {isTL && <button className="btn sm gold" onClick={() => setTlView(true)} title="Their team & each member's performance">👥 Team Lead view</button>}
-            {[['current', 'This month'], ['last', 'Last'], ['all', 'All']].map(([v, lbl]) =>
+            {[['current', 'This month'], ['next', 'Next'], ['last', 'Last'], ['all', 'All']].map(([v, lbl]) =>
               <button key={v} className={cx('btn sm', monthB === v && 'gold')} onClick={() => setMonthB(v)}>{lbl}</button>)}
             <button className="btn ghost sm" onClick={onClose}>✕</button>
           </div></div>

@@ -586,8 +586,19 @@ def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get
                                         models.User.id != u.id).first():
             raise HTTPException(status_code=400, detail="That login email is already registered")
         u.email = new_email
+    _old_name = (u.name or "").strip()
     if (body.get("name") or "").strip():
         u.name = body["name"].strip()
+        # A person's name is snapshotted onto every case they handle (team_lead / caller_name /
+        # fos_name), so a rename would otherwise SPLIT their history in the MIS and hide their old
+        # cases from their scope. Re-stamp the new name onto all cases carrying the old one.
+        _new_name = u.name.strip()
+        if _new_name and _new_name.lower() != _old_name.lower():
+            from sqlalchemy import func as _func
+            for _col in (models.Case.team_lead, models.Case.caller_name, models.Case.fos_name):
+                db.query(models.Case).filter(
+                    _func.lower(_func.trim(_col)) == _old_name.lower()
+                ).update({_col: _new_name}, synchronize_session=False)
     old_role = u.role
     new_role = (body.get("role") or "").strip()
     if new_role:
