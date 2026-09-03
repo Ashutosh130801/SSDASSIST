@@ -303,8 +303,10 @@ def _prepare(content, default_bank, product, user, db):
                             detail="No account / card / loan number column found in the DPR.")
     field_cols = _detect_fields(headers)
     cols["fields"] = {attr: h for attr, (h, _k, _m) in field_cols.items()}
-    q = _scope(db.query(models.Case), user).filter(models.Case.bank == default_bank,
-                                                   models.Case.product == product)
+    # all_periods=True: a DPR for a just-closed month arrives days into the next month, so match
+    # cases across ALL periods (incl. closed portfolios), still within the uploader's own scope.
+    q = _scope(db.query(models.Case), user, all_periods=True).filter(models.Case.bank == default_bank,
+                                                                     models.Case.product == product)
     cases = [c for c in q.all() if c.removed is not True]
     lut = {}
     for c in cases:

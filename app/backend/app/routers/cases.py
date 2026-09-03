@@ -242,7 +242,8 @@ def _ensure_open(case: models.Case, user: models.User):
                                 detail="This case has closed for the month and is locked. Ask an admin if a change is needed.")
 
 
-def _scope(q, user: models.User, include_removed: bool = False, bucket: str | None = None):
+def _scope(q, user: models.User, include_removed: bool = False, bucket: str | None = None,
+           all_periods: bool = False):
     """Restrict rows by role — FO sees own field cases, telecaller sees own queue,
     branch manager sees cases handled by staff in their branch, team lead sees cases
     handled by the FOS/callers who report to them. Removed (soft-deleted) cases are
@@ -251,14 +252,18 @@ def _scope(q, user: models.User, include_removed: bool = False, bucket: str | No
     `bucket='last'` opens up the previous month for VIEWING only: normally past months are
     hidden for non-admin, but when the user explicitly picks 'Last month' we show that month's
     cases even though they're closed/locked/archived. Writes stay blocked — closed cases are
-    already locked for FOS/callers via _ensure_open."""
+    already locked for FOS/callers via _ensure_open.
+
+    `all_periods=True` drops the month gate entirely (still keeping per-user ownership scope).
+    Used by the DPR bulk update: bank payment reports for a just-closed month often arrive in the
+    first week of the next month, so DPR must be able to match a CLOSED portfolio's cases."""
     if not include_removed:
         q = q.filter(models.Case.removed.isnot(True))
     # Monthly lifecycle: field/calling staff work the CURRENT month plus any NEXT-month
     # data uploaded early (so it can be allocated & started ahead of time). This month's
     # cases stay visible even after they close (cycle date / month-end) but closed ones are
     # locked. Past months become admin-only history. Cases with no period (legacy) stay on.
-    if user.role not in ("admin", "techsupport"):
+    if user.role not in ("admin", "techsupport") and not all_periods:
         if bucket == "last":
             # Explicit "Last month" view — restrict to (and reveal) the previous month only.
             q = q.filter(models.Case.period == _last_period())
