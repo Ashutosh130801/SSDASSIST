@@ -138,6 +138,11 @@ def teamlead_case_filter(user: models.User):
         conds.append(func.lower(func.trim(models.Case.team_lead)) == name)
     if user.emp_code:
         conds.append(func.lower(func.trim(models.Case.team_lead)) == user.emp_code.strip().lower())
+    # Dual-role lead (a caller/FOS granted the team-lead hat): their team-lead identity on a sheet
+    # is their SECOND id, tl_emp_code (e.g. TL045), not their primary emp_code (TC.../FO...). Match
+    # it too, so cases stamped with their TL code are recognised without a manual re-allocate.
+    if getattr(user, "tl_emp_code", None):
+        conds.append(func.lower(func.trim(models.Case.team_lead)) == user.tl_emp_code.strip().lower())
     return or_(*conds) if conds else func.lower(models.Case.team_lead) == "\x00"  # match nothing
 
 

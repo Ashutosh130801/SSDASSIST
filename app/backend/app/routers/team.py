@@ -273,20 +273,25 @@ def performance(uid: int, db: Session = Depends(get_db),
 
 
 @router.get("/user/{uid}/dashboard")
-def employee_dashboard(uid: int, db: Session = Depends(get_db),
+def employee_dashboard(uid: int, month_bucket: str | None = "current", db: Session = Depends(get_db),
                        actor: models.User = Depends(get_current_user)):
     """A field officer's / telecaller's full personal analytics — assigned cases, collections,
-    trend, dispositions, PTP, activity and recent cases. Visible to self, branch manager, admin."""
+    trend, dispositions, PTP, activity and recent cases. Visible to self, branch manager, admin.
+    Scoped to one month by default (month_bucket=current); pass 'all' for the lifetime view."""
     u = db.query(models.User).filter(models.User.id == uid).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
     _guard_view(actor, u, db)
 
     from sqlalchemy import select
+    from .mis import _period_for
+    period = _period_for(month_bucket)                                    # None = all months
     esc = select(models.Case.id).where(models.Case.escalated.is_(True))    # escalated → not their perf
     is_caller = u.role == "telecaller"
     cq = db.query(models.Case).filter(models.Case.escalated.isnot(True), models.Case.removed.isnot(True))
     cq = cq.filter(models.Case.assigned_caller_id == uid) if is_caller else cq.filter(models.Case.assigned_fos_id == uid)
+    if period:
+        cq = cq.filter(models.Case.period == period)
     # A branch manager sees this person's performance ON THEIR BRANCH'S CASES only — so a
     # location-independent FOS shows the manager just their contribution to that branch.
     branch_scoped = actor.role == "manager" and u.branch != actor.branch
@@ -373,18 +378,23 @@ def employee_dashboard(uid: int, db: Session = Depends(get_db),
 
 
 @router.get("/user/{uid}/cases", response_model=list[schemas.CaseOut])
-def employee_cases(uid: int, db: Session = Depends(get_db),
+def employee_cases(uid: int, month_bucket: str | None = "current", db: Session = Depends(get_db),
                    actor: models.User = Depends(get_current_user)):
     """Every case assigned to this employee (as FOS or telecaller), tagged with today's
-    touch flags & propensity — for the clickable clusters on their dashboard."""
+    touch flags & propensity — for the clickable clusters on their dashboard. Scoped to one
+    month by default (month_bucket=current) so it matches the dashboard KPIs; 'all' = lifetime."""
     from .cases import _with_score, _mark_today
+    from .mis import _period_for
     u = db.query(models.User).filter(models.User.id == uid).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
     _guard_view(actor, u, db)
+    period = _period_for(month_bucket)
     q = db.query(models.Case).filter(models.Case.removed.isnot(True))
     q = q.filter(models.Case.assigned_caller_id == uid) if u.role == "telecaller" \
         else q.filter(models.Case.assigned_fos_id == uid)
+    if period:
+        q = q.filter(models.Case.period == period)
     return _mark_today(db, _with_score(q.order_by(models.Case.updated_at.desc()).all()))
 
 
@@ -469,11 +479,14 @@ def my_team(db: Session = Depends(get_db),
     return out
 
 
-def _overview_payload(db: Session, lead: models.User) -> dict:
+def _overview_payload(db: Session, lead: models.User, month_bucket: str | None = "current") -> dict:
     """Team-lead dashboard payload: overall team KPIs, per-member performance cards (with
     phone for calling), a 30-day team collection trend and a member leaderboard. Shared by
-    the lead's own /overview and the admin/manager/HO 'view this lead's team' endpoint."""
+    the lead's own /overview and the admin/manager/HO 'view this lead's team' endpoint.
+    Scoped to one month by default (month_bucket=current); 'all' = lifetime."""
     from .cases import teamlead_case_filter
+    from .mis import _period_for
+    period = _period_for(month_bucket)
     member_ids = _teamlead_member_ids(db, lead)
     members = []
     if member_ids:
@@ -482,9 +495,12 @@ def _overview_payload(db: Session, lead: models.User) -> dict:
 
     # The lead's cases are those the upload tagged with their name (not every case the
     # assigned FOS/caller happens to hold), minus escalated/removed.
-    cases = db.query(models.Case).filter(
+    _cq = db.query(models.Case).filter(
         models.Case.escalated.isnot(True), models.Case.removed.isnot(True),
-        teamlead_case_filter(lead)).all()
+        teamlead_case_filter(lead))
+    if period:
+        _cq = _cq.filter(models.Case.period == period)
+    cases = _cq.all()
 
     def paid(c):
         return (c.paid_status or "").upper() == "PAID"
@@ -544,14 +560,14 @@ def _overview_payload(db: Session, lead: models.User) -> dict:
 
 
 @router.get("/overview")
-def team_overview(db: Session = Depends(get_db),
+def team_overview(month_bucket: str | None = "current", db: Session = Depends(get_db),
                   lead: models.User = Depends(require_roles("teamlead"))):
     """The signed-in team lead's own team dashboard."""
-    return _overview_payload(db, lead)
+    return _overview_payload(db, lead, month_bucket)
 
 
 @router.get("/lead/{uid}/overview")
-def lead_overview(uid: int, db: Session = Depends(get_db),
+def lead_overview(uid: int, month_bucket: str | None = "current", db: Session = Depends(get_db),
                   actor: models.User = Depends(get_current_user)):
     """The SAME team dashboard a team lead sees for their own team — exposed to admin, head
     office and the lead's branch manager (and the lead themselves) so they can review a
@@ -564,4 +580,4 @@ def lead_overview(uid: int, db: Session = Depends(get_db),
     if actor.id != lead.id and actor.role not in ("admin", "headoffice"):
         if not (actor.role == "manager" and lead.branch == actor.branch):
             raise HTTPException(status_code=403, detail="Not allowed to view this team")
-    return _overview_payload(db, lead)
+    return _overview_payload(db, lead, month_bucket)

@@ -2614,17 +2614,23 @@ function TeamLeadView({ config, user }) {
 function TeamLeadOverviewModal({ lead, config, onClose }) {
   const [ov, setOv] = useState(null); const [err, setErr] = useState('');
   const [dashUser, setDashUser] = useState(null); const [perfUser, setPerfUser] = useState(null);
+  const [monthB, setMonthB] = useState('current');   // opens on the CURRENT month by default
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   useEffect(() => {
-    api('/api/team/lead/' + lead.id + '/overview').then(setOv).catch(e => setErr(e.message || 'Could not load'));
-  }, [lead.id]);
+    setOv(null);
+    api('/api/team/lead/' + lead.id + '/overview?month_bucket=' + monthB).then(setOv).catch(e => setErr(e.message || 'Could not load'));
+  }, [lead.id, monthB]);
   const k = ov && ov.kpis;
   const trend = ov && { labels: (ov.trend || []).map(t => t.date.slice(5)), datasets: [{ label: 'Collected ₹', data: (ov.trend || []).map(t => t.collected), borderColor: '#2563EB', backgroundColor: 'rgba(37,99,235,.15)', fill: true, tension: .35 }] };
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 920, width: '96%', maxHeight: '92vh', overflowY: 'auto' }}>
         <div className="section-h"><h3 style={{ margin: 0 }}>{lead.name}'s team{lead.branch ? ' · ' + lead.branch : ''}</h3>
-          <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+          <div className="toolbar" style={{ gap: 6 }}>
+            {[['current', 'This month'], ['last', 'Last'], ['all', 'All']].map(([v, lbl]) =>
+              <button key={v} className={cx('btn sm', monthB === v && 'gold')} onClick={() => setMonthB(v)}>{lbl}</button>)}
+            <button className="btn ghost sm" onClick={onClose}>✕</button>
+          </div></div>
         {err ? <div className="glass card" style={{ color: 'var(--bad)', padding: 16 }}>{err}</div> : !ov ? <Loader /> : <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))', gap: 10, marginBottom: 12 }}>
             <div className="glass card" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>Members</div><b>{k.members}</b><div className="muted" style={{ fontSize: 11 }}>{k.fos} FOS · {k.callers} callers</div></div>
@@ -3018,11 +3024,15 @@ function EmployeeDashboard({ u, config, onClose }) {
   const [route, setRoute] = useState(null); const [live, setLive] = useState(null);
   const [cases, setCases] = useState(null); const [cluster, setCluster] = useState('all'); const [drawer, setDrawer] = useState(null);
   const [trends, setTrends] = useState(null);
+  const [monthB, setMonthB] = useState('current');   // profile opens on the CURRENT month by default
+  const [tlView, setTlView] = useState(false);        // dual-role: show their Team-Lead view
+  const isTL = u.also_team_lead || u.role === 'teamlead';
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
-  const loadEmp = () => api('/api/team/user/' + u.id + '/dashboard').then(setD).catch(e => setErr(e.message || 'Could not load'));
-  const loadCases = () => api('/api/team/user/' + u.id + '/cases').then(setCases).catch(() => setCases([]));
+  const mbq = '?month_bucket=' + monthB;
+  const loadEmp = () => api('/api/team/user/' + u.id + '/dashboard' + mbq).then(setD).catch(e => setErr(e.message || 'Could not load'));
+  const loadCases = () => api('/api/team/user/' + u.id + '/cases' + mbq).then(setCases).catch(() => setCases([]));
   const loadTrends = () => api('/api/mis/employee-trends?user_id=' + u.id).then(r => setTrends(r.trends)).catch(() => setTrends(null));
-  useEffect(() => { loadEmp(); loadCases(); loadTrends(); }, [u.id]);
+  useEffect(() => { setD(null); loadEmp(); loadCases(); loadTrends(); }, [u.id, monthB]);
   useDataChanged(() => { loadEmp(); loadCases(); loadTrends(); });   // live: refreshes on any log
   const isFos = u.role === 'fos';
   const clFn = (EMP_CLUSTERS.find(x => x[0] === cluster) || EMP_CLUSTERS[0])[2];
@@ -3030,9 +3040,16 @@ function EmployeeDashboard({ u, config, onClose }) {
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 920, width: '96%' }}>
-        <div className="section-h"><div><h3 style={{ margin: 0 }}>{u.name} <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>· {roleName(u.role)}{u.branch ? ' · ' + u.branch : ''}</span></h3>
+        <div className="section-h"><div><h3 style={{ margin: 0 }}>{u.name} <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>· {roleName(u.role)}{u.branch ? ' · ' + u.branch : ''}</span>
+          {u.also_team_lead && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10 }}>+TL</span>}</h3>
           <PersonPresence id={u.id} style={{ marginTop: 2, display: 'inline-block' }} /></div>
-          <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+          <div className="toolbar" style={{ gap: 6 }}>
+            {isTL && <button className="btn sm gold" onClick={() => setTlView(true)} title="Their team & each member's performance">👥 Team Lead view</button>}
+            {[['current', 'This month'], ['last', 'Last'], ['all', 'All']].map(([v, lbl]) =>
+              <button key={v} className={cx('btn sm', monthB === v && 'gold')} onClick={() => setMonthB(v)}>{lbl}</button>)}
+            <button className="btn ghost sm" onClick={onClose}>✕</button>
+          </div></div>
+        {tlView && <TeamLeadOverviewModal lead={u} config={config} onClose={() => setTlView(false)} />}
         {err && <div style={{ color: 'var(--bad)' }}>{err}</div>}
         {!d ? <Loader /> : <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(120px,1fr))', gap: 10 }}>
