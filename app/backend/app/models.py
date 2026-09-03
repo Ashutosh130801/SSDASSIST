@@ -623,3 +623,17 @@ class Attendance(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     user = relationship("User", foreign_keys=[user_id])
+
+
+class ChatMessage(Base):
+    """In-app messaging: FOS <-> telecaller <-> office, plus FOS 'request callback' pings.
+    to_id NULL = posted to the office/team desk (privileged roles see it)."""
+    __tablename__ = "chat_messages"
+    id = Column(Integer, primary_key=True, index=True)
+    from_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    to_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=True)
+    body = Column(Text)
+    kind = Column(String(16), default="chat")     # chat | callback
+    read = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)

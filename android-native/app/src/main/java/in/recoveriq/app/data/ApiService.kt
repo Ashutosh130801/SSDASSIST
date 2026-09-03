@@ -352,4 +352,34 @@ interface ApiService {
     // --- Customer contact update (caller / head office) ---
     @PATCH("api/cases/{id}/contact-update")
     suspend fun contactUpdate(@Path("id") id: Int, @Body body: Map<String, String?>): Case
+
+    // --- Collaboration / ops (RTSB, To-Do, Live Monitor, Liner, Chat) ---
+    @GET("api/mis/rtsb")
+    suspend fun rtsb(@Query("month_bucket") monthBucket: String? = null,
+                     @Query("role") role: String? = null): Map<String, Any?>
+
+    @GET("api/todo/me")
+    suspend fun todoMe(): Map<String, Any?>
+
+    @GET("api/monitor/live")
+    suspend fun monitorLive(): Map<String, Any?>
+
+    @GET("api/liner")
+    suspend fun liner(@Query("fos_id") fosId: Int? = null): Map<String, Any?>
+
+    @GET("api/chat/contacts")
+    suspend fun chatContacts(): Map<String, Any?>
+
+    @GET("api/chat/thread")
+    suspend fun chatThread(@Query("with_id") withId: Int? = null,
+                           @Query("office") office: Boolean? = null): Map<String, Any?>
+
+    @POST("api/chat/send")
+    suspend fun chatSend(@Body body: Map<String, Any?>): Map<String, Any?>
+
+    @POST("api/chat/callback")
+    suspend fun chatCallback(@Body body: Map<String, Any?>): Map<String, Any?>
+
+    @GET("api/chat/unread")
+    suspend fun chatUnread(): Map<String, Any?>
 }

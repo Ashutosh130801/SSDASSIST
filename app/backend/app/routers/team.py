@@ -227,12 +227,16 @@ def delete_branch(name: str, reassign: str | None = None, db: Session = Depends(
     return {"ok": True, "moved_staff": n_staff, "moved_cases": n_cases, "to": target}
 
 
-def _window(db: Session, u: models.User, start):
+def _window(db: Session, u: models.User, start, case_ids=None):
+    """Activity in a time window. When case_ids is given, restrict to those cases so the
+    daily/weekly/monthly/overall cards honour the profile's month filter (None = all cases)."""
     from sqlalchemy import select
     esc = select(models.Case.id).where(models.Case.escalated.is_(True))   # exclude escalated work
     if u.role == "fos":
         q = db.query(models.Visit).filter(models.Visit.officer_id == u.id,
                                           ~models.Visit.case_id.in_(esc))
+        if case_ids is not None:
+            q = q.filter(models.Visit.case_id.in_(case_ids or [-1]))
         if start:
             q = q.filter(models.Visit.created_at >= start)
         items = q.all()
@@ -241,6 +245,8 @@ def _window(db: Session, u: models.User, start):
     # telecaller (and any calling role)
     q = db.query(models.CallLog).filter(models.CallLog.caller_id == u.id,
                                         ~models.CallLog.case_id.in_(esc))
+    if case_ids is not None:
+        q = q.filter(models.CallLog.case_id.in_(case_ids or [-1]))
     if start:
         q = q.filter(models.CallLog.created_at >= start)
     calls = q.all()
@@ -301,9 +307,11 @@ def employee_dashboard(uid: int, month_bucket: str | None = "current", db: Sessi
     case_ids = {c.id for c in cases}
     calls = db.query(models.CallLog).filter(models.CallLog.caller_id == uid, ~models.CallLog.case_id.in_(esc)).all()
     visits = db.query(models.Visit).filter(models.Visit.officer_id == uid, ~models.Visit.case_id.in_(esc)).all()
-    if branch_scoped:
-        calls = [cl for cl in calls if cl.case_id in case_ids]
-        visits = [v for v in visits if v.case_id in case_ids]
+    # Tie ALL activity (collections, calls, visits, trend, dispositions, PTP) to the same case set
+    # the KPIs use — i.e. the selected month's assigned cases — so the whole profile honours the
+    # month toggle instead of showing lifetime call/collection numbers next to 0 assigned cases.
+    calls = [cl for cl in calls if cl.case_id in case_ids]
+    visits = [v for v in visits if v.case_id in case_ids]
 
     def paid(c):
         return (c.paid_status or "").upper() == "PAID"
@@ -365,10 +373,10 @@ def employee_dashboard(uid: int, month_bucket: str | None = "current", db: Sessi
                  "total_enr": round(total_enr, 2), "recovered": round(recovered, 2),
                  "pending_amount": round(pending_amt, 2), "recovery_pct": pct(recovered, total_enr),
                  "cash_collected": cash},
-        "performance": {"daily": _window(db, u, datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)),
-                        "weekly": _window(db, u, datetime.now(timezone.utc) - timedelta(days=7)),
-                        "monthly": _window(db, u, datetime.now(timezone.utc) - timedelta(days=30)),
-                        "overall": _window(db, u, None)},
+        "performance": {"daily": _window(db, u, datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc), case_ids),
+                        "weekly": _window(db, u, datetime.now(timezone.utc) - timedelta(days=7), case_ids),
+                        "monthly": _window(db, u, datetime.now(timezone.utc) - timedelta(days=30), case_ids),
+                        "overall": _window(db, u, None, case_ids)},
         "trend": trend,
         "dispositions": dispositions,
         "ptp": {"total": len(ptp_cases), "kept": ptp_kept, "broken": ptp_broken, "kept_pct": pct(ptp_kept, len(ptp_cases))},

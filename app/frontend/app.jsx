@@ -3732,6 +3732,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
           {cur.phone && <a className="btn sm" href={'https://wa.me/' + String(cur.phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a>}
           {showCallFos && <a className="btn sm" href={'tel:' + cur.assigned_fos_phone} title={'Call the assigned field agent: ' + (cur.assigned_fos_name || '')}>🧑‍🔧 Call FOS</a>}
           {showCallCaller && <a className="btn sm" href={'tel:' + cur.assigned_caller_phone} title={'Call the assigned caller: ' + (cur.assigned_caller_name || '')}>☎️ Call caller</a>}
+          {window.__ssdRole === 'fos' && cur.assigned_caller_id && <button className="btn sm" title="Ping the assigned telecaller to call this customer" onClick={() => api('/api/chat/callback', { method: 'POST', body: { case_id: cur.id } }).then(() => toast('Callback requested — the caller has been notified')).catch(e => toast(e.message || 'Could not request callback', 'err'))}>📞 Request callback</button>}
           {canEscalate && <button className="btn sm" disabled={busy} onClick={escalate} title={cur.escalated ? 'Return to the FOS/caller pool' : 'Pull off the FOS/caller and own it (stays in MIS & feedback)'}>{cur.escalated ? '↩ Release' : '🚩 Escalate to me'}</button>}
           {canUndo && <button className="btn sm" disabled={busy} onClick={undoLast} title="Reverse the last payment, or restore the last edited field on this case">↶ Undo last</button>}
           <StatusBadge s={cur.status} /><PaidBadge s={cur.paid_status} /><PropBadge score={cur.propensity} />
@@ -7516,6 +7517,198 @@ function AttendanceDetail({ id, date, onClose }) {
   </div>;
 }
 
+/* ============================ RTSB scorecard ============================ */
+function RTSBView({ user }) {
+  const [d, setD] = useState(null); const [mb, setMb] = useState('current'); const [role, setRole] = useState('');
+  const [tab, setTab] = useState('pending');
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  useEffect(() => { setD(null); const p = new URLSearchParams({ month_bucket: mb }); if (role) p.set('role', role);
+    api('/api/mis/rtsb?' + p).then(setD).catch(() => setD({ people: [], totals: {}, achieved_list: [], pending_list: [] })); }, [mb, role]);
+  useDataChanged(() => { const p = new URLSearchParams({ month_bucket: mb }); if (role) p.set('role', role); api('/api/mis/rtsb?' + p).then(setD).catch(() => {}); });
+  if (!d) return <Loader />;
+  const list = tab === 'achieved' ? d.achieved_list : tab === 'all' ? d.people : d.pending_list;
+  const t = d.totals || {};
+  return <div>
+    <div className="toolbar" style={{ marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
+      <h2 style={{ margin: 0 }}>🎯 RTSB — target vs achievement</h2>
+      <div style={{ flex: 1 }} />
+      {[['current', 'This month'], ['next', 'Next'], ['last', 'Last'], ['all', 'All']].map(([v, l]) =>
+        <button key={v} className={cx('btn sm', mb === v && 'gold')} onClick={() => setMb(v)}>{l}</button>)}
+      <select className="input" style={{ maxWidth: 130, height: 34 }} value={role} onChange={e => setRole(e.target.value)}>
+        <option value="">All roles</option><option value="caller">Callers</option><option value="fos">Field agents</option></select>
+      <button className="btn sm" onClick={() => window.print()}>🖨 Print</button>
+      <button className="btn sm" title="Compose an email with this summary" onClick={() => {
+        const lines = (d.people || []).map(p => `${p.name} (${p.role === 'fos' ? 'Field' : 'Caller'}): ${p.pct_done}% — target ${money(p.target_enr)}, achieved ${money(p.achieved_enr)}, gap ${money(p.gap_enr)}`).join('%0D%0A');
+        const subj = encodeURIComponent(`RTSB scorecard (${mb})`);
+        window.location.href = `mailto:?subject=${subj}&body=RTSB — ${t.achieved || 0}/${t.people || 0} on target.%0D%0A%0D%0A${lines}`;
+      }}>✉ Email</button>
+    </div>
+    <div className="kpi-row" style={{ marginBottom: 10 }}>
+      <div className="glass card"><div className="k">People</div><b>{t.people || 0}</b></div>
+      <div className="glass card"><div className="k">Achieved</div><b style={{ color: 'var(--good)' }}>{t.achieved || 0}</b></div>
+      <div className="glass card"><div className="k">Not yet</div><b style={{ color: 'var(--warn)' }}>{t.pending || 0}</b></div>
+      <div className="glass card"><div className="k">Target ENR</div><b>{money(t.target_enr)}</b></div>
+      <div className="glass card"><div className="k">Achieved ENR</div><b style={{ color: 'var(--good)' }}>{money(t.achieved_enr)}</b></div>
+    </div>
+    <div className="toolbar" style={{ gap: 6, marginBottom: 8 }}>
+      {[['pending', `Not achieved (${(d.pending_list || []).length})`], ['achieved', `Achieved (${(d.achieved_list || []).length})`], ['all', `All (${(d.people || []).length})`]].map(([v, l]) =>
+        <button key={v} className={cx('chip', tab === v && 'on')} onClick={() => setTab(v)}>{l}</button>)}
+    </div>
+    <div className="glass card" style={{ padding: 6 }}><div className="tablewrap"><table>
+      <thead><tr><th>Name</th><th>Role</th><th>Cases</th><th>Paid</th><th>Target ₹</th><th>Achieved ₹</th><th>Gap ₹</th><th>% done</th></tr></thead>
+      <tbody>{list.length === 0 ? <tr><td colSpan={8} className="muted" style={{ textAlign: 'center', padding: 16 }}>No one here.</td></tr> :
+        list.map(p => <tr key={p.role + p.id}>
+          <td><b>{p.name}</b> {p.emp_code && <span className="muted" style={{ fontSize: 11 }}>{p.emp_code}</span>}</td>
+          <td>{p.role === 'fos' ? 'Field' : 'Caller'}</td><td>{p.cases}</td><td>{p.paid}</td>
+          <td>{money(p.target_enr)}</td><td style={{ color: 'var(--good)' }}>{money(p.achieved_enr)}</td>
+          <td style={{ color: 'var(--warn)' }}>{money(p.gap_enr)}</td>
+          <td><b style={{ color: p.achieved ? 'var(--good)' : p.pct_done >= 60 ? 'var(--gold)' : 'var(--warn)' }}>{p.pct_done}%</b></td>
+        </tr>)}</tbody></table></div></div>
+  </div>;
+}
+
+/* ============================ To-Do / Work Queue ============================ */
+function TodoView({ user }) {
+  const [d, setD] = useState(null); const [drawer, setDrawer] = useState(null);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const load = () => api('/api/todo/me').then(setD).catch(() => setD(null));
+  useEffect(() => { load(); }, []); useDataChanged(load);
+  if (!d) return <Loader />;
+  const isFos = user.role === 'fos';
+  const SEC = [
+    ['ptp_broken', '🔴 Broken PTPs (overdue)', 'var(--bad)'],
+    ['ptp_today', "🤝 Today's PTPs", 'var(--gold)'],
+    [isFos ? 'visits_pending' : 'calls_pending', isFos ? '📍 Visits pending' : '📞 Calls pending', 'var(--info)'],
+    ['paid_not_updated', '💰 Paid — status not updated', 'var(--good)'],
+  ];
+  const cb = d.callbacks || [];
+  return <div>
+    <h2 style={{ margin: '0 0 4px' }}>📋 My work queue — today</h2>
+    <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>Everything that needs action right now. Nothing slips through.</p>
+    {cb.length > 0 && <div className="glass card" style={{ padding: 10, marginBottom: 10, borderLeft: '3px solid var(--info)' }}>
+      <b style={{ fontSize: 13 }}>📞 Callback requests ({cb.length})</b>
+      {cb.map(c => <div key={c.id} style={{ fontSize: 12.5, padding: '4px 0', cursor: c.case_id ? 'pointer' : 'default' }} onClick={() => c.case_id && setDrawer(c.case_id)}>
+        <b>{c.from}</b> · {c.body} <span className="muted">{fmtTime(c.at)}</span></div>)}
+    </div>}
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 10 }}>
+      {SEC.map(([key, label, color]) => { const rows = d[key] || []; return (
+        <div key={key} className="glass card" style={{ padding: 10 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color, marginBottom: 6 }}>{label} · {rows.length}</div>
+          {rows.length === 0 ? <div className="muted" style={{ fontSize: 12 }}>Nothing pending 🎉</div> :
+            <div style={{ maxHeight: 260, overflow: 'auto' }}>{rows.slice(0, 50).map(c => <div key={c.id}
+              onClick={() => setDrawer(c.id)} style={{ padding: '5px 0', borderBottom: '1px solid var(--line)', cursor: 'pointer', fontSize: 12.5 }}>
+              <b>{c.customer || c.account}</b> <span className="muted">{c.bank} {c.product}</span>
+              <div className="muted" style={{ fontSize: 11 }}>Pending {money(c.pending)}{c.follow_up ? ' · due ' + c.follow_up : ''}</div>
+            </div>)}</div>}
+        </div>); })}
+    </div>
+    {drawer && <CaseDrawer c={{ id: drawer }} onClose={() => setDrawer(null)} onChanged={load} />}
+  </div>;
+}
+
+/* ============================ Live Monitor (war-room) ============================ */
+function MonitorView({ user }) {
+  const [d, setD] = useState(null);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const load = () => api('/api/monitor/live').then(setD).catch(() => setD(null));
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, []);
+  useDataChanged(load);
+  if (!d) return <Loader />;
+  const c = d.counters || {};
+  return <div>
+    <div className="toolbar" style={{ marginBottom: 10 }}><h2 style={{ margin: 0 }}>🖥️ Live Monitor</h2>
+      <span className="muted" style={{ fontSize: 12 }}>· live · updates every 15s</span></div>
+    <div className="kpi-row" style={{ marginBottom: 12 }}>
+      <div className="glass card"><div className="k">Online now</div><b style={{ color: 'var(--good)' }}>{c.online_now || 0}</b></div>
+      <div className="glass card"><div className="k">Calls today</div><b>{c.calls || 0}</b></div>
+      <div className="glass card"><div className="k">Visits today</div><b>{c.visits || 0}</b></div>
+      <div className="glass card"><div className="k">Payments</div><b style={{ color: 'var(--good)' }}>{c.paid_count || 0}</b></div>
+      <div className="glass card"><div className="k">Collected today</div><b style={{ color: 'var(--good)' }}>{money(c.collected)}</b></div>
+    </div>
+    <div className="glass card" style={{ padding: 10 }}>
+      <b style={{ fontSize: 13 }}>Live activity feed</b>
+      <div style={{ maxHeight: 460, overflow: 'auto', marginTop: 6 }}>
+        {(d.feed || []).length === 0 ? <div className="muted" style={{ fontSize: 12, padding: 8 }}>No activity yet today.</div> :
+          d.feed.map((f, i) => <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--line)', fontSize: 12.5 }}>
+            <span style={{ minWidth: 54 }} className="muted">{fmtTime(f.at)}</span>
+            <span>{f.type === 'call' ? '📞' : '📍'}</span><b style={{ minWidth: 130 }}>{f.who}</b>
+            <span style={{ color: 'var(--brand)', fontWeight: 600 }}>{f.detail}</span>
+            {f.amount > 0 && <span style={{ color: 'var(--good)', fontWeight: 700, marginLeft: 'auto' }}>{money(f.amount)}</span>}
+          </div>)}
+      </div>
+    </div>
+  </div>;
+}
+
+/* ============================ Printable Liner (beat-sheet) ============================ */
+function printLiner(fosId) {
+  api('/api/liner' + (fosId ? '?fos_id=' + fosId : '')).then(d => {
+    const rows = (d.cases || []).map((c, i) => `<tr><td>${i + 1}</td><td>${c.account || ''}</td><td>${c.customer || ''}</td>
+      <td>${c.phone || ''}</td><td>${(c.address || '').replace(/</g, '')}</td><td>${c.bank || ''} ${c.product || ''}</td>
+      <td>${c.bucket || ''}</td><td style="text-align:right">₹${Math.round(c.pending || 0).toLocaleString('en-IN')}</td><td></td></tr>`).join('');
+    const html = `<html><head><title>Beat sheet — ${d.fos.name}</title><style>
+      body{font-family:Arial,sans-serif;padding:16px;color:#111}h2{margin:0}table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+      th,td{border:1px solid #999;padding:4px 6px;text-align:left;vertical-align:top}th{background:#eee}
+      .meta{color:#555;font-size:12px;margin-top:2px}@media print{.noprint{display:none}}</style></head>
+      <body><h2>Daily beat-sheet — ${d.fos.name} ${d.fos.emp_code ? '(' + d.fos.emp_code + ')' : ''}</h2>
+      <div class="meta">${d.fos.branch || ''} · ${d.date} · ${d.count} accounts</div>
+      <button class="noprint" onclick="window.print()" style="margin-top:8px;padding:6px 12px">🖨 Print</button>
+      <table><thead><tr><th>#</th><th>Account</th><th>Customer</th><th>Phone</th><th>Address</th><th>Portfolio</th><th>Bkt</th><th>Pending</th><th>Remarks</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan=9>No open accounts.</td></tr>'}</tbody></table></body></html>`;
+    const w = window.open('', '_blank'); if (!w) { toast('Allow pop-ups to print the beat-sheet'); return; }
+    w.document.write(html); w.document.close(); setTimeout(() => { try { w.print(); } catch (e) {} }, 400);
+  }).catch(() => toast('Could not load the beat-sheet'));
+}
+
+/* ============================ Floating Chat widget ============================ */
+function ChatWidget({ user }) {
+  const [open, setOpen] = useState(false); const [unread, setUnread] = useState(0);
+  const [contacts, setContacts] = useState(null); const [active, setActive] = useState(null); // {id} or 'office'
+  const [msgs, setMsgs] = useState([]); const [text, setText] = useState('');
+  const endRef = React.useRef(null);
+  const pollUnread = () => api('/api/chat/unread').then(r => setUnread(r.unread || 0)).catch(() => {});
+  useEffect(() => { pollUnread(); const t = setInterval(pollUnread, 15000); return () => clearInterval(t); }, []);
+  useEffect(() => { if (open && !contacts) api('/api/chat/contacts').then(setContacts).catch(() => setContacts({ contacts: [] })); }, [open]);
+  const loadThread = () => { if (!active) return;
+    const p = active === 'office' ? 'office=true' : 'with_id=' + active.id;
+    api('/api/chat/thread?' + p).then(r => { setMsgs(r.messages || []); pollUnread(); setTimeout(() => endRef.current && endRef.current.scrollIntoView(), 30); }).catch(() => setMsgs([])); };
+  useEffect(() => { if (!active) return; loadThread(); const t = setInterval(loadThread, 8000); return () => clearInterval(t); }, [active]);
+  const send = () => { const b = text.trim(); if (!b) return; setText('');
+    const body = active === 'office' ? { office: true, body: b } : { to_id: active.id, body: b };
+    api('/api/chat/send', { method: 'POST', body }).then(() => loadThread()).catch(() => toast('Could not send')); };
+  return <>
+    <button onClick={() => setOpen(o => !o)} title="Messages"
+      style={{ position: 'fixed', right: 18, bottom: 'calc(76px + env(safe-area-inset-bottom, 0px))', zIndex: 2600, width: 50, height: 50, borderRadius: '50%', border: 'none', background: 'var(--brand,#2563EB)', color: '#fff', fontSize: 22, cursor: 'pointer', boxShadow: '0 8px 22px rgba(37,99,235,.4)' }}>
+      💬{unread > 0 && <span style={{ position: 'absolute', top: -2, right: -2, background: 'var(--bad,#DC2626)', color: '#fff', borderRadius: 10, fontSize: 11, fontWeight: 700, minWidth: 18, height: 18, lineHeight: '18px' }}>{unread}</span>}
+    </button>
+    {open && <div className="glass" style={{ position: 'fixed', right: 18, bottom: 'calc(134px + env(safe-area-inset-bottom,0px))', zIndex: 2600, width: 340, maxWidth: '92vw', height: 460, maxHeight: '70vh', borderRadius: 14, boxShadow: '0 14px 40px rgba(0,0,0,.22)', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--card,#fff)' }}>
+      <div className="section-h" style={{ padding: '8px 10px', margin: 0, borderBottom: '1px solid var(--line)' }}>
+        <b>{active ? (active === 'office' ? '🏢 Office desk' : (contacts && (contacts.contacts.find(c => c.id === active.id) || {}).name) || 'Chat') : '💬 Messages'}</b>
+        {active ? <button className="btn ghost sm" onClick={() => setActive(null)}>‹ Back</button> : <button className="btn ghost sm" onClick={() => setOpen(false)}>✕</button>}
+      </div>
+      {!active ? <div style={{ flex: 1, overflow: 'auto' }}>
+        <div onClick={() => setActive('office')} style={{ padding: '10px 12px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}><b>🏢 Office desk</b><div className="muted" style={{ fontSize: 11 }}>Message the office / your team</div></div>
+        {!contacts ? <Loader /> : (contacts.contacts || []).length === 0 ? <div className="muted" style={{ padding: 12, fontSize: 12 }}>No contacts on your shared cases yet.</div> :
+          contacts.contacts.map(c => <div key={c.id} onClick={() => setActive({ id: c.id })} style={{ padding: '10px 12px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}>
+            <b>{c.name}</b> <span className="muted" style={{ fontSize: 11 }}>{roleName(c.role)}</span></div>)}
+      </div> : <>
+        <div style={{ flex: 1, overflow: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {msgs.length === 0 ? <div className="muted" style={{ fontSize: 12, textAlign: 'center', marginTop: 20 }}>No messages yet. Say hello 👋</div> :
+            msgs.map(m => <div key={m.id} style={{ alignSelf: m.mine ? 'flex-end' : 'flex-start', maxWidth: '80%', background: m.mine ? 'var(--brand,#2563EB)' : 'var(--glass,#eef2ff)', color: m.mine ? '#fff' : 'inherit', padding: '6px 10px', borderRadius: 12, fontSize: 12.5 }}>
+              {!m.mine && active === 'office' && <div style={{ fontSize: 10, fontWeight: 700, opacity: .8 }}>{m.from}</div>}
+              {m.kind === 'callback' ? <b>{m.body}</b> : m.body}
+              <div style={{ fontSize: 9, opacity: .7, textAlign: 'right' }}>{fmtTime(m.at)}</div></div>)}
+          <div ref={endRef} />
+        </div>
+        <div style={{ display: 'flex', gap: 6, padding: 8, borderTop: '1px solid var(--line)' }}>
+          <input className="input" style={{ flex: 1 }} value={text} placeholder="Type a message…" onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') send(); }} />
+          <button className="btn gold sm" onClick={send}>Send</button>
+        </div>
+      </>}
+    </div>}
+  </>;
+}
+
 function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, onSwitchView }) {
   // Expose the viewer's role so shared perf components can hide peer comparisons from front-line staff.
   try { window.__ssdRole = user.role; } catch (e) {}
@@ -7542,7 +7735,11 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       if (native && user.role === 'fos' && !localStorage.getItem('ssd_trackonboard')) setTrackOnboard(true);
     } catch (e) {}
   }, []);
-  const title = view === 'attendance' ? 'Attendance' : (nav.find(n => n[0] === view) || [, , ''])[2];
+  const EXTRA_TITLE = { attendance: 'Attendance', todo: 'My Work Queue', rtsb: 'RTSB', monitor: 'Live Monitor' };
+  const title = EXTRA_TITLE[view] || (nav.find(n => n[0] === view) || [, , ''])[2];
+  const canMonitor = ['admin', 'manager', 'headoffice', 'teamlead', 'backend'].includes(user.role);
+  const canRtsb = ['admin', 'manager', 'headoffice', 'teamlead', 'backend'].includes(user.role);
+  const hasQueue = ['fos', 'telecaller', 'teamlead', 'manager', 'admin', 'headoffice', 'backend'].includes(user.role);
   const render = () => {
     switch (view) {
       case 'dashboard': return <Dashboard user={user} />;
@@ -7572,6 +7769,9 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'ai': return <AIAssist user={user} />;
       case 'security': return <SecurityView user={user} />;
       case 'attendance': return <AttendanceView user={user} />;
+      case 'todo': return <TodoView user={user} />;
+      case 'rtsb': return <RTSBView user={user} />;
+      case 'monitor': return <MonitorView user={user} />;
       case 'help': case 'support': return <SupportView user={user} />;
       default: return null;
     }
@@ -7597,8 +7797,14 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
         <div className="topbar">
           <h1>{title}</h1>
           {installEvt && <button className="btn sm gold" style={{ marginLeft: 'auto', marginRight: 10 }} onClick={onInstall}>⬇ Install app</button>}
+          <div style={{ marginLeft: installEvt ? 0 : 'auto', display: 'flex', gap: 4, marginRight: 6 }}>
+            {hasQueue && <button className="btn ghost sm" title="My work queue (To-Do)" onClick={() => setView('todo')} style={{ fontSize: 17, padding: '4px 8px', background: view === 'todo' ? 'rgba(37,99,235,.12)' : 'transparent' }}>📋</button>}
+            {canRtsb && <button className="btn ghost sm" title="RTSB — target vs achievement" onClick={() => setView('rtsb')} style={{ fontSize: 17, padding: '4px 8px', background: view === 'rtsb' ? 'rgba(37,99,235,.12)' : 'transparent' }}>🎯</button>}
+            {canMonitor && <button className="btn ghost sm" title="Live Monitor" onClick={() => setView('monitor')} style={{ fontSize: 17, padding: '4px 8px', background: view === 'monitor' ? 'rgba(37,99,235,.12)' : 'transparent' }}>🖥️</button>}
+            {user.role === 'fos' && <button className="btn ghost sm" title="Print my beat-sheet (liner)" onClick={() => printLiner()} style={{ fontSize: 17, padding: '4px 8px' }}>🖨</button>}
+          </div>
           <button className="btn ghost sm" title="Attendance" onClick={() => setView('attendance')}
-            style={{ marginLeft: installEvt ? 0 : 'auto', marginRight: 8, fontSize: 18, padding: '4px 8px', background: view === 'attendance' ? 'var(--gold-soft,rgba(37,99,235,.12))' : 'transparent' }}>🕐</button>
+            style={{ marginRight: 8, fontSize: 18, padding: '4px 8px', background: view === 'attendance' ? 'var(--gold-soft,rgba(37,99,235,.12))' : 'transparent' }}>🕐</button>
           <NotificationBell onOpenCase={setNotifCase} style={{ marginRight: 10 }} />
           <div className="usertag"><div className="avatar">{initials(user.name)}</div>
             <div><div style={{ fontWeight: 600, fontSize: 14 }}>{user.name}</div>
@@ -7623,6 +7829,8 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
         style={{ position: 'fixed', right: 18, bottom: 'calc(18px + env(safe-area-inset-bottom, 0px))', zIndex: 2500, width: 50, height: 50, borderRadius: '50%', border: '2px solid var(--gold,#C7A24A)', background: 'var(--navy,#0B234F)', color: 'var(--gold,#C7A24A)', fontSize: 22, fontWeight: 800, cursor: 'pointer', boxShadow: '0 8px 22px rgba(11,35,79,.35)' }}>?</button>
 
       {tour && <TourOverlay steps={tourSteps} go={setView} onClose={closeTour} />}
+      {/* Floating chat — stacked ABOVE the help/tour button (IRCTC/DISHA-style). */}
+      <ChatWidget user={user} />
       <PerfHost />
     </div>
   );

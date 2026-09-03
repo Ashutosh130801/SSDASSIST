@@ -724,6 +724,71 @@ def mis_by_cycle(month_bucket: str | None = "current",
     return {"month_bucket": month_bucket or "all", "portfolios": out}
 
 
+@router.get("/rtsb")
+def rtsb(month_bucket: str | None = "current", role: str | None = None,
+         bank: str | None = None, product: str | None = None,
+         db: Session = Depends(get_db),
+         user: models.User = Depends(require_roles("admin", "manager", "backend", "headoffice", "teamlead"))):
+    """RTSB scorecard — per person: assigned target (ENR × product %), achieved (paid ENR),
+    gap, and % of target done. Splits the team into target-achieved vs not-yet. Option A:
+    measures against the existing shared product-level target %."""
+    period = _period_for(month_bucket)
+    targets = {(t.bank, t.product): _f(t.target_pct) for t in
+               db.query(models.MisTarget).filter(models.MisTarget.emp_name == "*ALL*").all()}
+
+    q = _scope(db.query(models.Case), user).filter(models.Case.removed.isnot(True),
+                                                   models.Case.escalated.isnot(True))
+    if period:
+        q = q.filter(models.Case.period == period)
+    if bank:
+        q = q.filter(models.Case.bank == bank)
+    if product:
+        q = q.filter(models.Case.product == product)
+    cases = q.all()
+
+    names = {u.id: (u.name, u.emp_code) for u in db.query(models.User).all()}
+    rows: dict[tuple, dict] = {}
+    for c in cases:
+        enr = _f(c.enr)
+        tenr_share = enr * targets.get((c.bank, c.product), 0.0) / 100.0
+        for pid, prole in ((c.assigned_caller_id, "caller"), (c.assigned_fos_id, "fos")):
+            if not pid:
+                continue
+            if role in ("caller", "fos") and prole != role:
+                continue
+            r = rows.setdefault((pid, prole), {"enr": 0.0, "paid_enr": 0.0, "collected": 0.0,
+                                               "count": 0, "paid": 0, "tenr": 0.0})
+            r["enr"] += enr
+            r["tenr"] += tenr_share
+            r["count"] += 1
+            if _is_paid(c):
+                r["paid_enr"] += enr
+                r["paid"] += 1
+                r["collected"] += _f(c.received_amount)
+
+    people = []
+    for (pid, prole), r in rows.items():
+        nm, code = names.get(pid, (f"#{pid}", None))
+        tenr = r["tenr"]
+        pct_done = round(r["paid_enr"] / tenr * 100.0, 1) if tenr else 0.0
+        people.append({
+            "id": pid, "name": nm, "emp_code": code, "role": prole,
+            "cases": r["count"], "paid": r["paid"], "enr": round(r["enr"], 2),
+            "target_enr": round(tenr, 2), "achieved_enr": round(r["paid_enr"], 2),
+            "collected": round(r["collected"], 2),
+            "gap_enr": round(max(tenr - r["paid_enr"], 0), 2),
+            "pct_done": pct_done, "achieved": bool(tenr > 0 and pct_done >= 100.0),
+        })
+    people.sort(key=lambda x: x["pct_done"], reverse=True)
+    achieved = [p for p in people if p["achieved"]]
+    pending = [p for p in people if not p["achieved"]]
+    return {"month_bucket": month_bucket or "current",
+            "totals": {"people": len(people), "achieved": len(achieved), "pending": len(pending),
+                       "target_enr": round(sum(p["target_enr"] for p in people), 2),
+                       "achieved_enr": round(sum(p["achieved_enr"] for p in people), 2)},
+            "people": people, "achieved_list": achieved, "pending_list": pending}
+
+
 @router.put("/target")
 def set_target(body: dict = Body(...), db: Session = Depends(get_db),
                user: models.User = Depends(require_roles("admin", "manager", "backend", "headoffice"))):

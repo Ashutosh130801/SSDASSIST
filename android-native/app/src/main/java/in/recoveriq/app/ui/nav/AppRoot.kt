@@ -82,6 +82,10 @@ import `in`.recoveriq.app.ui.common.MyPerformanceScreen
 import `in`.recoveriq.app.ui.common.PortfolioScreen
 import `in`.recoveriq.app.ui.common.GuidedTour
 import `in`.recoveriq.app.ui.common.LogoLoader
+import `in`.recoveriq.app.ui.common.RtsbScreen
+import `in`.recoveriq.app.ui.common.TodoScreen
+import `in`.recoveriq.app.ui.common.MonitorScreen
+import `in`.recoveriq.app.ui.common.ChatFab
 import `in`.recoveriq.app.ui.common.TOUR_DESC
 import `in`.recoveriq.app.ui.common.TourPrefs
 import `in`.recoveriq.app.ui.detail.CaseDetailScreen
@@ -370,6 +374,8 @@ private fun HomeScaffold(
                 current.screen()
                 // Daily check-in gate + presence heartbeat + shift-end prompt (runs app-wide).
                 AttendanceGate(vm, user)
+                // Floating chat — stacked ABOVE the help/tour button (IRCTC/DISHA-style).
+                ChatFab(vm, user, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 84.dp))
                 // Floating help / tour button (bottom-right).
                 FloatingActionButton(
                     onClick = { showTour = true },
@@ -402,6 +408,10 @@ private fun navEntriesFor(
     val changeReqs = NavEntry("preqs", "Change Requests", Icons.Filled.Badge) { ChangeRequestsScreen(vm) }
     // Full MIS — only for roles the backend grants MIS access (admin, manager, backend, head office, team lead).
     val mis = NavEntry("mis", "MIS", Icons.Filled.Assessment) { MisScreen(vm, user) }
+    // Collaboration / ops sections
+    val todo = NavEntry("todo", "My Work Queue", Icons.Filled.Handshake) { TodoScreen(vm, user, onOpenCase) }
+    val rtsb = NavEntry("rtsb", "RTSB", Icons.Filled.EmojiEvents) { RtsbScreen(vm, user) }
+    val monitor = NavEntry("monitor", "Live Monitor", Icons.Filled.History) { MonitorScreen(vm, user) }
 
     return when (user.role) {
         "fos" -> listOf(
@@ -415,6 +425,7 @@ private fun navEntriesFor(
             NavEntry("fcases", "My Accounts", Icons.Filled.Receipt) { MyCasesScreen(vm, onOpenCase) },
             NavEntry("fmap", "Field Tracking", Icons.Filled.Map) { FieldTrackingScreen(vm) },
             NavEntry("myperf", "My Performance", Icons.Filled.EmojiEvents) { MyPerformanceScreen(vm, user) },
+            todo,
             profile, leave, security,
         )
         "telecaller" -> listOf(
@@ -422,19 +433,20 @@ private fun navEntriesFor(
             NavEntry("queue", "Calling", Icons.Filled.Phone) { CallQueueScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
             NavEntry("myperf", "My Performance", Icons.Filled.EmojiEvents) { MyPerformanceScreen(vm, user) },
+            todo,
             profile, leave, security,
         )
         "teamlead" -> listOf(
             NavEntry("tldash", "My Team", Icons.Filled.Groups) { TeamLeadDashboardScreen(vm, onOpenCase) },
             NavEntry("cases", "Team Accounts", Icons.Filled.Receipt) { PortfolioScreen(vm, onOpenCase) },
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
-            mis,
+            mis, rtsb, monitor, todo,
             profile, leave, security,
         )
         "manager" -> listOf(
             dashboard,
             NavEntry("cases", "Accounts", Icons.Filled.Receipt) { PortfolioScreen(vm, onOpenCase) },
-            mis,
+            mis, rtsb, monitor, todo,
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
             NavEntry("legal", "Litigation", Icons.Filled.Gavel) { LitigationScreen(vm) },
             NavEntry("map", "Field Tracking", Icons.Filled.Map) { LiveMapScreen(vm) },
@@ -450,7 +462,7 @@ private fun navEntriesFor(
         else -> listOfNotNull( // admin + head office + backend + support views
             dashboard,
             NavEntry("cases", "Accounts", Icons.Filled.Receipt) { PortfolioScreen(vm, onOpenCase) },
-            mis,
+            mis, rtsb, monitor, todo,
             NavEntry("ptp", "PTP Tracker", Icons.Filled.Handshake) { PtpTrackerScreen(vm, onOpenCase) },
             NavEntry("legal", "Litigation", Icons.Filled.Gavel) { LitigationScreen(vm) },
             NavEntry("map", "Field Tracking", Icons.Filled.Map) { LiveMapScreen(vm) },

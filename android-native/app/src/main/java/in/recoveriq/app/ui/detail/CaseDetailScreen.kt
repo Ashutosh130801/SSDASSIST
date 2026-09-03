@@ -126,6 +126,9 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     onPay = { showPay = true },
                     onLogCall = { showLogCall = true },
                     onLogVisit = { showVisit = true },
+                    onRequestCallback = if (user.isFieldAgent) {
+                        { scope.launch { runCatching { vm.repo.chatCallback(case.id, null) } } }
+                    } else null,
                 )
                 // Personal colour highlight — flag to review later (only you see your colours).
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -261,6 +264,7 @@ private fun Amount(label: String, value: Double, color: androidx.compose.ui.grap
 private fun ActionBar(
     case: Case, meId: Int, canPay: Boolean, canLogCall: Boolean, canLogVisit: Boolean,
     onPay: () -> Unit, onLogCall: () -> Unit, onLogVisit: () -> Unit,
+    onRequestCallback: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var showCallChoice by remember { mutableStateOf(false) }
@@ -292,6 +296,14 @@ private fun ActionBar(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (showFos) ActionBtn("Call FOS", Icons.Filled.Call, Modifier.weight(1f)) { Actions.dial(context, case.assignedFosPhone) }
             if (showCaller) ActionBtn("Call caller", Icons.Filled.Call, Modifier.weight(1f)) { Actions.dial(context, case.assignedCallerPhone) }
+        }
+    }
+    // FOS: ping the assigned telecaller to call this customer.
+    if (onRequestCallback != null && case.assignedCallerId != null) {
+        Spacer(Modifier.height(4.dp))
+        var cbSent by remember { mutableStateOf(false) }
+        OutlinedButton(onClick = { cbSent = true; onRequestCallback() }, enabled = !cbSent, modifier = Modifier.fillMaxWidth()) {
+            Text(if (cbSent) "✓ Callback requested" else "📞 Request callback")
         }
     }
     Spacer(Modifier.height(4.dp))

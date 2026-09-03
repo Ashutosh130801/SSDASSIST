@@ -278,4 +278,18 @@ class Repository(context: Context) {
     /** Caller / head office records the customer's latest address / phone (notifies the FOS). */
     suspend fun contactUpdate(caseId: Int, newAddress: String?, newPhone: String?): Case =
         Api.service.contactUpdate(caseId, mapOf("new_address" to newAddress, "new_phone" to newPhone))
+
+    // --- Collaboration / ops ---
+    suspend fun rtsb(monthBucket: String?, role: String?) =
+        Api.service.rtsb(monthBucket?.ifBlank { null }, role?.ifBlank { null })
+    suspend fun todoMe() = Api.service.todoMe()
+    suspend fun monitorLive() = Api.service.monitorLive()
+    suspend fun chatContacts() = Api.service.chatContacts()
+    suspend fun chatThread(withId: Int?, office: Boolean) =
+        Api.service.chatThread(withId, if (office) true else null)
+    suspend fun chatSend(body: Map<String, Any?>) = Api.service.chatSend(body)
+    suspend fun chatCallback(caseId: Int, note: String?) =
+        Api.service.chatCallback(mapOf("case_id" to caseId, "note" to note))
+    suspend fun chatUnread(): Int =
+        ((Api.service.chatUnread()["unread"] as? Number)?.toInt()) ?: 0
 }

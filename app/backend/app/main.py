@@ -14,7 +14,7 @@ from . import models  # noqa: F401  (register models)
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
                       team, mis, feedback, reminders, audit_log, archive, catalog, manpower,
-                      notifications, dpr, support, attendance)
+                      notifications, dpr, support, attendance, collab)
 
 settings = get_settings()
 
@@ -473,7 +473,7 @@ async def _security_headers(request, call_next):
 for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, devices,
           leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis, feedback,
           reminders, audit_log, archive, catalog, manpower, notifications, dpr, support,
-          attendance):
+          attendance, collab):
     app.include_router(r.router)
 
 
