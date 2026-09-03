@@ -64,6 +64,13 @@ def _ensure_columns():
             "flag_reason": "VARCHAR(160)",
             "branch_explicit": "BOOLEAN",
             "auto_debit": "BOOLEAN",
+            "geo_lat": "DOUBLE PRECISION",
+            "geo_lng": "DOUBLE PRECISION",
+            "geo_precision": "VARCHAR(12)",
+            "location_source": "VARCHAR(12)",
+            "location_updated_at": "TIMESTAMP",
+            "address_clean": "TEXT",
+            "digipin": "VARCHAR(15)",
         },
         "users": {
             "employment_type": "VARCHAR(30)",
@@ -116,6 +123,7 @@ def _ensure_columns():
         },
         "attendance": {
             "check_in_photo": "VARCHAR(255)",
+            "overtime_start_at": "TIMESTAMP",
         },
         "visits": {
             "distance_from_case_m": "FLOAT",
@@ -497,12 +505,11 @@ async def _attendance_sweeper():
 @app.get("/api/config")
 def config(db: Session = Depends(get_db)):
     from .products import catalog
-    from .routers.cases import _current_period, _next_period
+    from .routers.cases import _current_period, _next_period, branch_canon_map
     from . import models as _m
-    branches = sorted(
-        {(b or "").strip() for (b,) in db.query(_m.User.branch).distinct().all() if b and str(b).strip()}
-        | {(b or "").strip() for (b,) in db.query(_m.Case.branch).distinct().all() if b and str(b).strip()}
-    )
+    # One canonical spelling per branch (case-insensitive) so the upload dropdown never shows
+    # KADAPA and kadapa as two options; prefers the uppercase spelling.
+    branches = sorted(set(branch_canon_map(db).values()))
     return {
         "bank_products": catalog(db),
         "branches": branches,

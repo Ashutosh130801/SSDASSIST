@@ -253,10 +253,12 @@ fun LogVisitDialog(
     agentName: String? = null,
     caseLabel: String? = null,
     onDismiss: () -> Unit,
-    onConfirm: (VisitDraft) -> Unit,
+    onSubmit: suspend (VisitDraft) -> Boolean,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var submitting by remember { mutableStateOf(false) }
+    var submitError by remember { mutableStateOf<String?>(null) }
     val dispositions = listOf("Met customer", "Not available", "Paid", "Wrong address", "Person moved", "PTP")
     var disp by remember { mutableStateOf("Met customer") }
     var paid by remember { mutableStateOf(false) }
@@ -327,13 +329,17 @@ fun LogVisitDialog(
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!submitting) onDismiss() },   // don't let a tap-outside cancel mid-submit
         title = { Text("Log field visit") },
         text = {
             Column(
                 Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                submitError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelMedium)
+                }
                 Text(
                     when {
                         lat == null -> "Getting current location…"
@@ -395,20 +401,27 @@ fun LogVisitDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
+            TextButton(enabled = !submitting, onClick = {
                 val jpeg = photo?.let { bmp ->
                     ByteArrayOutputStream().use { out -> bmp.compress(Bitmap.CompressFormat.JPEG, 85, out); out.toByteArray() }
                 }
-                onConfirm(VisitDraft(
+                val draft = VisitDraft(
                     lat = lat, lng = lng, accuracy = acc,
                     personMoved = moved, paid = paid,
                     amount = amount.toDoubleOrNull() ?: 0.0,
                     disposition = disp, note = note.ifBlank { null }, photoJpeg = jpeg,
                     normStab = if (paid && isCreditCard) normStab else null,
                     ptpDate = if (!paid && disp == "PTP" && ptpDate.isNotBlank()) ptpDate else null,
-                ))
-            }) { Text("Save visit") }
+                )
+                scope.launch {
+                    submitting = true; submitError = null
+                    val ok = onSubmit(draft)          // suspend upload; true only on a confirmed save
+                    submitting = false
+                    if (ok) onDismiss()                // close only when the server confirmed it
+                    else submitError = "Couldn't submit — check your signal and tap Save again. Your entry is kept."
+                }
+            }) { Text(if (submitting) "Saving…" else "Save visit") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(enabled = !submitting, onClick = onDismiss) { Text("Cancel") } },
     )
 }

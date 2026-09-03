@@ -2125,6 +2125,7 @@ function LiveMap({ config }) {
         </select>
         <div style={{ flex: 1 }} />
         {routeActive.current && <button className="btn sm" onClick={() => { clearRoute(); setRouteInfo(null); refresh(); }}>✕ Clear route</button>}
+        <GeocodeButton />
         <button className="btn sm" onClick={openRoster}>🧑‍🤝‍🧑 FOS roster</button>
         <button className="btn sm" onClick={refresh}>↻ Refresh</button>
       </div>
@@ -3281,6 +3282,40 @@ function CaseCard({ c, onVisit, onNav, onDetails }) {
   );
 }
 
+/* Admin control: fill lat/long for cases that only have an address, in rate-limited batches, so
+   they pin on the field map. Self-gates — if the caller isn't an admin (/status 403s) it hides. */
+function GeocodeButton() {
+  const [st, setSt] = React.useState(null);      // {total, with_pin, remaining, configured}
+  const [hidden, setHidden] = React.useState(false);
+  const [running, setRunning] = React.useState(false);
+  const [msg, setMsg] = React.useState('');
+  const stop = React.useRef(false);
+  const loadStatus = () => api('/api/cases/geocode/status').then(setSt).catch(() => setHidden(true));
+  React.useEffect(() => { loadStatus(); }, []);
+  const run = async () => {
+    if (!st || !st.configured) { toast('Set LOCATIONIQ_KEY in the server .env, then restart the backend.'); return; }
+    setRunning(true); stop.current = false; let done = 0, failed = 0;
+    try {
+      // Loop batches until nothing's left (or Stop). Backend paces ~1 req/sec internally.
+      while (!stop.current) {
+        const r = await api('/api/cases/geocode?limit=25', { method: 'POST' });
+        done += r.geocoded || 0; failed += r.failed || 0;
+        setMsg(`Located ${done} · ${r.remaining} left${failed ? ` · ${failed} unresolved` : ''}`);
+        if (!r.processed || r.remaining === 0) break;
+      }
+    } catch (e) { setMsg('Stopped — ' + (e.message || 'error')); }
+    setRunning(false); loadStatus();
+  };
+  if (hidden || !st) return null;
+  return <>
+    {running
+      ? <><span className="badge" style={{ background: '#FEF3C7', color: '#92400E' }}>📍 {msg || 'Geocoding…'}</span>
+          <button className="btn sm" onClick={() => { stop.current = true; }}>Stop</button></>
+      : <button className="btn sm" title={`${st.with_pin} of ${st.total} cases pinned · ${st.remaining} need locating`}
+          onClick={run}>📍 Geocode addresses{st.remaining ? ` (${st.remaining})` : ''}</button>}
+  </>;
+}
+
 function FOLiveMap({ config }) {
   const mapEl = useRef(null); const map = useRef(null); const me = useRef(null); const acc = useRef(null);
   const route = useRef(null); const caseMarks = useRef([]); const watch = useRef(null);
@@ -3303,11 +3338,20 @@ function FOLiveMap({ config }) {
         cs.forEach(c => {
           if (c.latitude && c.longitude) {
             any = true;
+            // Exact/field-verified pins in gold; approximate (pincode/city centroid) in orange so
+            // the FOS knows it's a rough area, not a doorstep.
+            const approx = (c.location_source !== 'field') && ['pincode', 'city'].includes(c.geo_precision);
+            const fill = c.location_source === 'field' ? '#34D399' : (approx ? '#F59E0B' : '#E9C877');
             const m = new g.maps.Marker({ position: { lat: c.latitude, lng: c.longitude }, map: map.current, title: c.customer_name,
-              icon: { path: g.maps.SymbolPath.CIRCLE, scale: 8, fillColor: '#E9C877', fillOpacity: .95, strokeColor: '#B8893A', strokeWeight: 1.5 } });
+              icon: { path: g.maps.SymbolPath.CIRCLE, scale: 8, fillColor: fill, fillOpacity: .95, strokeColor: '#7c5b1e', strokeWeight: 1.5 } });
+            const precLbl = c.location_source === 'field' ? 'field-verified 📍'
+              : approx ? `approximate (${c.geo_precision})` : (c.geo_precision || 'located');
+            const dest = encodeURIComponent(c.address_clean || `${c.latitude},${c.longitude}`);
             const info = new g.maps.InfoWindow({ content:
               `<div style="color:#111;font-family:sans-serif;font-size:13px"><b>${(c.customer_name || '').replace(/</g, '')}</b><br>${c.bank || ''} · pending ₹${Math.round(c.pending_amount || 0)}<br>`
-              + `<a href="https://www.google.com/maps/dir/?api=1&destination=${c.latitude},${c.longitude}" target="_blank">Navigate ›</a></div>` });
+              + `<span style="color:#666">${precLbl}</span><br>`
+              + `<a href="https://www.google.com/maps/dir/?api=1&destination=${c.latitude},${c.longitude}" target="_blank">Navigate to pin ›</a>`
+              + `<br><a href="https://www.google.com/maps/search/?api=1&query=${dest}" target="_blank">Search address ›</a></div>` });
             m.addListener('click', () => info.open(map.current, m));
             caseMarks.current.push(m); b.extend({ lat: c.latitude, lng: c.longitude });
           }
@@ -7147,18 +7191,25 @@ function PersonPresence({ id, style }) {
 /* First-login-of-day check-in popup with GPS capture. */
 function CheckinModal({ user, shift, onDone, onSkip }) {
   const [busy, setBusy] = useState(false); const [geo, setGeo] = useState(null); const [locBusy, setLocBusy] = useState(true);
+  const [err, setErr] = useState('');
   useEffect(() => { getGeo().then(g => { setGeo(g); setLocBusy(false); }); }, []);
   const now = new Date();
   const greet = now.getHours() < 12 ? 'morning' : now.getHours() < 17 ? 'afternoon' : 'evening';
   const late = now.toTimeString().slice(0, 5) > (shift.late_after || '10:00');
   const doCheckin = async () => {
-    setBusy(true);
+    setBusy(true); setErr('');
     try {
-      const g = geo || await getGeo();
+      // Location is optional — never let a blocked/failed GPS lookup stop the check-in.
+      let g = geo;
+      if (!g) { try { g = await getGeo(); } catch (_) { g = null; } }
       const r = await api('/api/attendance/checkin', { method: 'POST', body: { lat: g && g.lat, lng: g && g.lng, platform: platformTag() } });
       toast(r.late ? 'Checked in — marked present (late).' : 'Checked in. Have a great day!');
       onDone(r.attendance);
-    } catch (e) { toast(e.message || 'Could not check in'); setBusy(false); }
+    } catch (e) {
+      // Show the real reason inline (not just a toast) so a stuck user can report exactly what failed.
+      setErr((e && e.message) ? e.message : 'Could not check in. Please check your connection and try again.');
+      setBusy(false);
+    }
   };
   return <div className="modal-bg" style={{ zIndex: 3000 }}>
     <div className="modal glass" style={{ maxWidth: 420, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
@@ -7169,7 +7220,8 @@ function CheckinModal({ user, shift, onDone, onSkip }) {
         <div className="stat-row"><span className="k">⏰ Time now</span><b>{now.toLocaleTimeString('en-IN', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', hour12: true })}{late && <span style={{ color: 'var(--warn)', marginLeft: 6, fontSize: 12 }}>late</span>}</b></div>
         <div className="stat-row"><span className="k">📍 Location</span><b style={{ fontSize: 12.5 }}>{locBusy ? 'Locating…' : geo ? `${geo.lat.toFixed(5)}, ${geo.lng.toFixed(5)}` : 'Unavailable'}</b></div>
       </div>
-      <button className="btn gold" style={{ width: '100%', padding: '13px', fontSize: 16, fontWeight: 700 }} disabled={busy} onClick={doCheckin}>{busy ? 'Checking in…' : '✓ Check in & start'}</button>
+      {err && <div style={{ background: '#FEF2F2', color: 'var(--bad)', border: '1px solid #FECACA', borderRadius: 8, padding: '8px 10px', fontSize: 12.5, marginBottom: 8, textAlign: 'left' }}>⚠️ {err}</div>}
+      <button className="btn gold" style={{ width: '100%', padding: '13px', fontSize: 16, fontWeight: 700 }} disabled={busy} onClick={doCheckin}>{busy ? 'Checking in…' : (err ? '↻ Retry check in' : '✓ Check in & start')}</button>
       <p className="muted" style={{ fontSize: 11, marginTop: 10 }}>Your check-in time and location are recorded for attendance. {onSkip && <a onClick={onSkip} style={{ cursor: 'pointer', color: 'var(--info)' }}>Not now</a>}</p>
     </div>
   </div>;
@@ -7181,6 +7233,7 @@ function AttendanceGate({ user, onLogout }) {
   const [today, setToday] = useState(null);
   const [showCheckin, setShowCheckin] = useState(false);
   const [overtime, setOvertime] = useState(false);
+  const [resumeMode, setResumeMode] = useState(false);   // prompt is a post-auto-checkout resume
   const callUntil = React.useRef(0);
   const lastInput = React.useRef(Date.now());
   useEffect(() => {
@@ -7201,8 +7254,11 @@ function AttendanceGate({ user, onLogout }) {
       const active = (document.visibilityState === 'visible' && (Date.now() - lastInput.current) < 180000) || Date.now() < callUntil.current;
       try {
         const r = await api('/api/attendance/heartbeat', { method: 'POST', body: { platform: platformTag(), active } });
-        if (r.auto_logout) { toast('Shift ended — you were auto checked-out.'); onLogout(); return; }
-        if (r.prompt_overtime) setOvertime(true);
+        // Only a true final logout (long inactivity) ends the session — NOT the 7pm auto-checkout,
+        // which just marks you offline while keeping you in the app so you can resume overtime.
+        if (r.auto_logout) { toast('Signed out after inactivity.'); onLogout(); return; }
+        if (r.prompt_overtime) { setResumeMode(!!r.resumed); setOvertime(true); }
+        else if (r.checked_out) { setOvertime(false); }   // auto checked-out & idle → dismiss any stale prompt
       } catch (e) { }
     };
     beat();
@@ -7210,17 +7266,28 @@ function AttendanceGate({ user, onLogout }) {
     return () => { stop = true; clearInterval(t); };
   }, [tracked]);
   if (!today) return null;
-  const doOvertime = async () => { await api('/api/attendance/overtime', { method: 'POST' }).catch(() => { }); setOvertime(false); toast('Overtime started — keep going!'); };
+  const doOvertime = async () => { await api('/api/attendance/overtime', { method: 'POST' }).catch(() => { }); setOvertime(false); toast(resumeMode ? 'Back online — overtime resumed.' : 'Overtime started — keep going!'); load(); };
   const doCheckout = async () => { const g = await getGeo(); await api('/api/attendance/checkout', { method: 'POST', body: { lat: g && g.lat, lng: g && g.lng } }).catch(() => { }); setOvertime(false); toast('Checked out. See you tomorrow!'); onLogout(); };
   return <>
-    {showCheckin && today.needs_checkin && <CheckinModal user={user} shift={today} onDone={() => { setShowCheckin(false); load(); }} onSkip={() => setShowCheckin(false)} />}
+    {showCheckin && today.needs_checkin && <CheckinModal user={user} shift={today}
+        onDone={(att) => { setShowCheckin(false); setToday(t => t ? { ...t, needs_checkin: false, attendance: att || t.attendance } : t); }}
+        onSkip={() => setShowCheckin(false)} />}
+    {/* Dismissed the popup but not checked in yet? A floating pill lets them check in any time
+        later — attendance is marked present, or late if past the allowed window (by time, same as before). */}
+    {today.needs_checkin && !showCheckin && <button onClick={() => setShowCheckin(true)}
+        title="Check in for today"
+        style={{ position: 'fixed', left: 16, bottom: 20, zIndex: 2500, padding: '10px 16px', borderRadius: 999,
+                 background: 'var(--brand)', color: '#fff', border: 'none', fontWeight: 700, fontSize: 14,
+                 boxShadow: '0 6px 18px rgba(0,0,0,.18)', cursor: 'pointer' }}>🕘 Check in</button>}
     {overtime && <div className="modal-bg" style={{ zIndex: 3000 }}>
       <div className="modal glass" style={{ maxWidth: 390, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
         <div style={{ fontSize: 38 }}>🌙</div>
-        <h3 style={{ margin: '6px 0' }}>Shift ended ({today.shift_end})</h3>
-        <p className="muted">Check out for the day, or continue working (overtime)? If there's no response you'll be auto checked-out in 5 minutes.</p>
+        <h3 style={{ margin: '6px 0' }}>{resumeMode ? 'Welcome back' : `Shift ended (${today.shift_end})`}</h3>
+        <p className="muted">{resumeMode
+          ? 'Your shift was auto checked-out. Press "Continue working" to go back on the clock — overtime is counted from now.'
+          : "Check out for the day, or continue working (overtime)? If there's no response you'll be auto checked-out in 5 minutes."}</p>
         <div className="toolbar" style={{ justifyContent: 'center', gap: 10, marginTop: 6 }}>
-          <button className="btn" onClick={doCheckout}>Check out</button>
+          <button className="btn" onClick={doCheckout}>{resumeMode ? "I'm done" : 'Check out'}</button>
           <button className="btn gold" onClick={doOvertime}>Continue working</button>
         </div>
       </div></div>}
@@ -7332,8 +7399,28 @@ function AttendanceView({ user }) {
 /* Per-person day detail — activity + check-in map point + their audit log for that day. */
 function AttendanceDetail({ id, date, onClose }) {
   const [d, setD] = useState(null); const [dt, setDt] = useState(date);
+  const [visits, setVisits] = useState(null);   // null = not opened, [] = loaded/empty
+  const [visLoad, setVisLoad] = useState(false);
+  const [calls, setCalls] = useState(null);
+  const [callLoad, setCallLoad] = useState(false);
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
-  useEffect(() => { api(`/api/attendance/user/${id}?date=${dt}`).then(setD).catch(() => setD(null)); }, [id, dt]);
+  useEffect(() => { setVisits(null); setCalls(null); api(`/api/attendance/user/${id}?date=${dt}`).then(setD).catch(() => setD(null)); }, [id, dt]);
+  const toggleVisits = () => {
+    if (visits !== null) { setVisits(null); return; }   // collapse
+    setCalls(null); setVisLoad(true);
+    api(`/api/attendance/user/${id}/visits?date=${dt}`)
+      .then(r => setVisits(r.visits || []))
+      .catch(() => setVisits([]))
+      .finally(() => setVisLoad(false));
+  };
+  const toggleCalls = () => {
+    if (calls !== null) { setCalls(null); return; }
+    setVisits(null); setCallLoad(true);
+    api(`/api/attendance/user/${id}/calls?date=${dt}`)
+      .then(r => setCalls(r.calls || []))
+      .catch(() => setCalls([]))
+      .finally(() => setCallLoad(false));
+  };
   return <div className="modal-bg" onClick={onClose} style={{ zIndex: 2600 }}>
     <div className="modal glass" style={{ maxWidth: 620, width: '96%' }} onClick={e => e.stopPropagation()}>
       {!d ? <Loader /> : <>
@@ -7345,12 +7432,12 @@ function AttendanceDetail({ id, date, onClose }) {
         <div className="kpi-row" style={{ marginBottom: 8 }}>
           <div className="glass card"><div className="k">Check-in</div><b>{fmtTime(d.row.check_in_at)}</b>{d.row.late && <div style={{ color: 'var(--warn)', fontSize: 11 }}>late</div>}</div>
           <div className="glass card"><div className="k">Check-out</div><b>{fmtTime(d.row.check_out_at)}</b></div>
-          <div className="glass card"><div className="k">Worked</div><b>{fmtDur(d.row.worked_seconds)}</b></div>
+          <div className="glass card"><div className="k">Worked</div><b>{fmtDur(d.row.worked_seconds)}</b>{d.row.overtime_seconds > 0 && <div style={{ color: 'var(--brand)', fontSize: 11 }}>incl. {fmtDur(d.row.overtime_seconds)} OT</div>}</div>
           <div className="glass card"><div className="k">Idle</div><b className="muted">{fmtDur(d.row.idle_seconds)}</b></div>
         </div>
         <div className="kpi-row" style={{ marginBottom: 8 }}>
-          {d.row.show_activity && <div className="glass card"><div className="k">Calls{d.row.team_total ? ' (team)' : ''}</div><b>{d.row.calls || 0}</b></div>}
-          {d.row.show_activity && <div className="glass card"><div className="k">Visits{d.row.team_total ? ' (team)' : ''}</div><b>{d.row.visits || 0}</b></div>}
+          {d.row.show_activity && <div className="glass card" onClick={(d.row.calls || 0) > 0 ? toggleCalls : undefined} style={(d.row.calls || 0) > 0 ? { cursor: 'pointer', outline: calls !== null ? '2px solid var(--brand)' : 'none' } : {}} title={(d.row.calls || 0) > 0 ? 'Click to see call logs' : ''}><div className="k">Calls{d.row.team_total ? ' (team)' : ''}{(d.row.calls || 0) > 0 ? ' 🔽' : ''}</div><b>{d.row.calls || 0}</b></div>}
+          {d.row.show_activity && <div className="glass card" onClick={(d.row.visits || 0) > 0 ? toggleVisits : undefined} style={(d.row.visits || 0) > 0 ? { cursor: 'pointer', outline: visits !== null ? '2px solid var(--brand)' : 'none' } : {}} title={(d.row.visits || 0) > 0 ? 'Click to see logged visits with photos' : ''}><div className="k">Visits{d.row.team_total ? ' (team)' : ''}{(d.row.visits || 0) > 0 ? ' 🔽' : ''}</div><b>{d.row.visits || 0}</b></div>}
           {d.row.show_activity && <div className="glass card"><div className="k">Collected{d.row.team_total ? ' (team)' : ''}</div><b style={{ color: 'var(--good)' }}>{money(d.row.collected)}</b></div>}
           <div className="glass card"><div className="k">Status</div><b style={{ color: ATT_COLOR[d.row.late ? 'L' : d.row.status] || '#64748B' }}>{d.row.late ? 'Present (late)' : (d.row.status || '').replace(/^\w/, c => c.toUpperCase())}</b></div>
         </div>
@@ -7360,6 +7447,46 @@ function AttendanceDetail({ id, date, onClose }) {
           <div className="muted" style={{ fontSize: 12, marginBottom: 3, fontWeight: 700 }}>📸 Check-in photo (GPS-tagged)</div>
           <a href={d.row.check_in_photo} target="_blank" rel="noreferrer"><img src={d.row.check_in_photo} alt="check-in" style={{ maxWidth: 240, maxHeight: 300, borderRadius: 10, border: '1px solid var(--line)', display: 'block' }} /></a>
           {d.row.check_in_lat != null && <div className="muted" style={{ fontSize: 11, marginTop: 3 }}>📍 {d.row.check_in_lat.toFixed(5)}, {d.row.check_in_lng.toFixed(5)} · captured {fmtTime(d.row.check_in_at)}</div>}
+        </div>}
+        {visits !== null && <div style={{ margin: '8px 0', padding: 8, background: 'var(--glass)', border: '1px solid var(--line)', borderRadius: 10 }}>
+          <div className="muted" style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>🗺 Logged visits ({visits.length}){visLoad ? ' · loading…' : ''}</div>
+          {visits.length === 0 ? <p className="muted" style={{ fontSize: 12, margin: 0 }}>No field visits logged this day.</p> :
+            <div style={{ maxHeight: 320, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {visits.map(v => <div key={v.id} style={{ display: 'flex', gap: 10, padding: 6, borderBottom: '1px solid var(--line)' }}>
+                {v.photo ? <a href={v.photo} target="_blank" rel="noreferrer"><img src={v.photo} alt="visit" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--line)' }} /></a>
+                  : <div style={{ width: 72, height: 72, borderRadius: 8, border: '1px dashed var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>📷</div>}
+                <div style={{ flex: 1, fontSize: 12.5 }}>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                    <b>{fmtTime(v.at)}</b>
+                    {v.disposition && <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--brand)' }}>{v.disposition}</span>}
+                    {v.amount > 0 && <span style={{ fontSize: 11, color: 'var(--good)', fontWeight: 700 }}>{money(v.amount)}</span>}
+                  </div>
+                  {v.case_label && <div className="muted" style={{ fontSize: 12 }}>{v.case_label}</div>}
+                  {v.note && <div style={{ fontSize: 12, marginTop: 2 }}>{v.note}</div>}
+                  <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                    {v.lat != null && <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${v.lat},${v.lng}`}>📍 view on map</a>}
+                    {v.distance_m != null && <span> · {v.distance_m}m from case</span>}
+                    {v.person_moved ? <span style={{ color: 'var(--warn)' }}> · moved</span> : ''}
+                  </div>
+                </div>
+              </div>)}
+            </div>}
+        </div>}
+        {calls !== null && <div style={{ margin: '8px 0', padding: 8, background: 'var(--glass)', border: '1px solid var(--line)', borderRadius: 10 }}>
+          <div className="muted" style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>📞 Call logs ({calls.length}){callLoad ? ' · loading…' : ''}</div>
+          {calls.length === 0 ? <p className="muted" style={{ fontSize: 12, margin: 0 }}>No calls logged this day.</p> :
+            <div style={{ maxHeight: 320, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {calls.map(c => <div key={c.id} style={{ padding: '5px 0', borderBottom: '1px solid var(--line)', fontSize: 12.5 }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                  <b>{fmtTime(c.at)}</b>
+                  {c.disposition && <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--brand)' }}>{c.disposition}</span>}
+                  {c.ptp_amount > 0 && <span style={{ fontSize: 11, color: 'var(--good)', fontWeight: 700 }}>PTP {money(c.ptp_amount)}</span>}
+                  {c.ptp_date && <span className="muted" style={{ fontSize: 11 }}>by {fmtDay(c.ptp_date)}</span>}
+                </div>
+                {c.case_label && <div className="muted" style={{ fontSize: 12 }}>{c.case_label}</div>}
+                {c.note && <div style={{ fontSize: 12, marginTop: 2 }}>{c.note}</div>}
+              </div>)}
+            </div>}
         </div>}
         <div className="muted" style={{ fontSize: 12, fontWeight: 700, margin: '4px 0' }}>Activity log ({d.audit.length})</div>
         <div style={{ maxHeight: 240, overflow: 'auto' }}>

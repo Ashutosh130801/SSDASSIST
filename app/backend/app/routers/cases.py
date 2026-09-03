@@ -23,37 +23,79 @@ def _needs_geocode(q):
         or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
 
 
+def apply_geocode(case: models.Case, res: dict) -> bool:
+    """Store a geocode result on a case. Always records the cleaned address + the geocoder's
+    guess (geo_lat/geo_lng/geo_precision) and a DIGIPIN; promotes it to the EFFECTIVE
+    latitude/longitude only when the case isn't already field-verified (FOS doorstep GPS wins).
+    Returns True if we got usable coordinates."""
+    from .. import digipin as _dp
+    if res.get("clean"):
+        case.address_clean = res["clean"]
+    if res.get("pincode") and not case.pincode:
+        case.pincode = res["pincode"]
+    lat, lng = res.get("lat"), res.get("lng")
+    if lat is None or lng is None:
+        return False
+    case.geo_lat, case.geo_lng = lat, lng
+    case.geo_precision = res.get("precision") or "locality"
+    # Don't clobber a field-captured location; otherwise this geocode is the effective pin.
+    if case.location_source != "field":
+        case.latitude, case.longitude = lat, lng
+        case.location_source = "geocoded"
+        case.location_updated_at = datetime.now(_IST_TZ)
+        case.digipin = _dp.encode(lat, lng)
+    return True
+
+
 @router.post("/geocode")
 def geocode(limit: int = 40, db: Session = Depends(get_db),
             admin: models.User = Depends(require_roles("admin"))):
-    """Fill in latitude/longitude for cases that only have an address/pincode,
-    so they show up as pins on the field map. Processes up to `limit` per call
-    (call again while `remaining` > 0). Uses the free OpenStreetMap (Nominatim)
-    geocoder — no API key needed. Nominatim asks for max ~1 request/second, so
-    this paces itself and is intentionally gentle."""
+    """Fill latitude/longitude for cases that only have an address/pincode, so they pin on the
+    field map. Processes up to `limit` per call — call again while `remaining` > 0 (the web
+    button loops this). Uses LocationIQ (LOCATIONIQ_KEY) with a cleaned address and a
+    pincode-centroid fallback; paces ~1 req/sec to respect the free-tier rate limit."""
+    from .. import geocode as _geo
+    if not _geo.has_key():
+        raise HTTPException(status_code=400,
+                            detail="Geocoding is not configured — set LOCATIONIQ_KEY in the server .env and restart.")
     import time
     cases = _needs_geocode(db.query(models.Case)).limit(limit).all()
-    geocoded, failed = 0, 0
-    headers = {"User-Agent": "RecoverIQ/1.0 (collections app; contact admin)"}
-    with httpx.Client(timeout=15, headers=headers) as client:
-        for c in cases:
-            parts = [p for p in [c.address, c.pincode] if p]
-            query = (" ".join(parts) + " India").strip()
-            try:
-                r = client.get("https://nominatim.openstreetmap.org/search",
-                               params={"q": query, "format": "json", "limit": 1, "countrycodes": "in"})
-                data = r.json()
-                if isinstance(data, list) and data:
-                    c.latitude, c.longitude = float(data[0]["lat"]), float(data[0]["lon"])
-                    geocoded += 1
-                else:
-                    failed += 1
-            except Exception:
+    geocoded = failed = 0
+    # One AI pass over the whole chunk first (splits glued words, normalizes short forms like
+    # Vizag->Visakhapatnam, drops noise). Best-effort — falls back to the deterministic cleaner.
+    clean_map = {}
+    if _geo.llm_available():
+        items = [{"id": c.id, "raw": ", ".join(str(p) for p in (c.address, c.address2, c.pincode) if p)}
+                 for c in cases]
+        clean_map = _geo.llm_clean_batch(items)
+    with httpx.Client(timeout=15) as client:
+        for i, c in enumerate(cases):
+            if i:
+                time.sleep(1.0)                          # pace between cases (rate limit)
+            res = _geo.geocode_one(client, c.address, c.address2, c.pincode,
+                                   pre_clean=clean_map.get(c.id))
+            if apply_geocode(c, res):
+                geocoded += 1
+            else:
                 failed += 1
-            time.sleep(1)  # respect Nominatim's ~1 req/sec usage policy
     db.commit()
     remaining = _needs_geocode(db.query(models.Case)).count()
-    return {"geocoded": geocoded, "failed": failed, "remaining": remaining}
+    return {"geocoded": geocoded, "failed": failed, "remaining": remaining,
+            "processed": len(cases)}
+
+
+@router.get("/geocode/status")
+def geocode_status(db: Session = Depends(get_db),
+                   admin: models.User = Depends(require_roles("admin"))):
+    """Counts for the admin geocode progress UI: how many cases still need a pin, and how many
+    total have addresses to work with."""
+    from .. import geocode as _geo
+    total = db.query(models.Case).filter(models.Case.removed.isnot(True)).count()
+    with_pin = db.query(models.Case).filter(models.Case.removed.isnot(True),
+                                            models.Case.latitude.isnot(None)).count()
+    remaining = _needs_geocode(db.query(models.Case).filter(models.Case.removed.isnot(True))).count()
+    return {"total": total, "with_pin": with_pin, "remaining": remaining,
+            "configured": _geo.has_key()}
 
 
 @router.delete("/all")
@@ -142,6 +184,37 @@ def _bucket_for_period(period) -> str | None:
     """If a resolved period equals last month, report bucket='last' so _scope will unlock it
     for non-admin viewers. (Reads only — nothing here changes case data.)"""
     return "last" if period and period == _last_period() else None
+
+
+def branch_canon_map(db) -> dict:
+    """Map UPPERCASE(branch) -> the one canonical spelling to use, so 'KADAPA' and 'kadapa'
+    collapse to a single branch. Preference when variants exist: an all-uppercase spelling
+    (per the house rule 'if uppercase is there, use uppercase'); otherwise the alphabetically
+    first existing spelling. Built from both Case.branch and User.branch."""
+    names = set()
+    for (b,) in db.query(models.Case.branch).distinct().all():
+        if b and str(b).strip():
+            names.add(str(b).strip())
+    for (b,) in db.query(models.User.branch).distinct().all():
+        if b and str(b).strip():
+            names.add(str(b).strip())
+    groups: dict = {}
+    for n in names:
+        groups.setdefault(n.upper(), []).append(n)
+    out = {}
+    for up, variants in groups.items():
+        out[up] = next((v for v in variants if v.isupper()), None) or sorted(variants)[0]
+    return out
+
+
+def canonical_branch(db, name):
+    """Return the canonical spelling for a branch name (case-insensitive). If the branch already
+    exists in any case-variant, reuse that spelling so a new upload joins the SAME portfolio
+    instead of splitting into a case-duplicate. A genuinely new branch is returned trimmed as-is."""
+    if not name or not str(name).strip():
+        return name
+    n = str(name).strip()
+    return branch_canon_map(db).get(n.upper(), n)
 
 
 def _case_closed(case: models.Case) -> bool:

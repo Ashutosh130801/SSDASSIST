@@ -243,6 +243,10 @@ class CaseBase(BaseModel):
     pincode: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    geo_precision: Optional[str] = None       # rooftop / locality / pincode / city / none
+    location_source: Optional[str] = None     # 'geocoded' | 'field'
+    address_clean: Optional[str] = None       # cleaned address for display + navigate
+    digipin: Optional[str] = None
     bucket: Optional[str] = None
     cycle: Optional[str] = None
     month: Optional[str] = None

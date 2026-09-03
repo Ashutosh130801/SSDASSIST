@@ -188,23 +188,24 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     agentName = user.name,
                     caseLabel = "Case #${case.id}" + (case.customerName?.let { " • $it" } ?: ""),
                     onDismiss = { showVisit = false },
-                    onConfirm = { v ->
-                        scope.launch {
-                            val ok = runCatching {
-                                vm.repo.createVisit(
-                                    caseId = caseId, lat = v.lat, lng = v.lng, accuracy = v.accuracy,
-                                    personMoved = v.personMoved, paid = v.paid, amount = v.amount,
-                                    disposition = v.disposition, note = v.note, photoJpeg = v.photoJpeg,
-                                    normStab = v.normStab, ptpDate = v.ptpDate,
-                                )
-                            }.isSuccess
-                            showVisit = false; refresh++
-                            if (ok) {
-                                // Open WhatsApp's contact picker so the agent can forward the
-                                // visit summary + geotagged photo to anyone (office/colleague/self).
-                                Actions.shareVisit(context, buildVisitMessage(case, user, v), v.photoJpeg)
-                            }
+                    onSubmit = { v ->
+                        // Returns true only on a confirmed save. The dialog stays open (with an
+                        // error) on failure so the agent can retry — no more silent lost logs.
+                        val ok = runCatching {
+                            vm.repo.createVisit(
+                                caseId = caseId, lat = v.lat, lng = v.lng, accuracy = v.accuracy,
+                                personMoved = v.personMoved, paid = v.paid, amount = v.amount,
+                                disposition = v.disposition, note = v.note, photoJpeg = v.photoJpeg,
+                                normStab = v.normStab, ptpDate = v.ptpDate,
+                            )
+                        }.isSuccess
+                        if (ok) {
+                            refresh++
+                            // Open WhatsApp's contact picker so the agent can forward the
+                            // visit summary + geotagged photo to anyone (office/colleague/self).
+                            Actions.shareVisit(context, buildVisitMessage(case, user, v), v.photoJpeg)
                         }
+                        ok
                     },
                 )
             }

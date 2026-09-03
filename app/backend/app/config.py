@@ -16,6 +16,15 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
 
+    # LocationIQ geocoding (address -> lat/long). Free tier key from locationiq.com.
+    # Swappable: set google_maps_api_key later to move geocoding to Google (see memory note).
+    locationiq_key: str = ""
+
+    # OpenRouter (OpenAI-compatible) for the AI address-cleaning step. If set, it's used in
+    # preference to Gemini. Pick any model on openrouter.ai; a small cheap one is plenty here.
+    openrouter_api_key: str = ""
+    openrouter_model: str = "openai/gpt-4o-mini"
+
     location_ping_seconds: int = 3
 
     # Product branding (shown on login + sidebar). Change to your own brand.

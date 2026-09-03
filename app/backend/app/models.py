@@ -123,8 +123,17 @@ class Case(Base):
     new_phone = Column(String(20))
     new_contact_by = Column(String(120))          # who last updated it (name)
     new_contact_at = Column(DateTime)             # when
-    latitude = Column(Float)
+    latitude = Column(Float)                      # EFFECTIVE pin used everywhere (field GPS if known, else geocoded)
     longitude = Column(Float)
+    # Geocoding provenance (address -> lat/long) so the map can show exact vs approximate, and so
+    # the field-captured GPS can override the geocoded guess without losing it.
+    geo_lat = Column(Float)                        # geocoder's result (kept even after a field fix)
+    geo_lng = Column(Float)
+    geo_precision = Column(String(12))            # rooftop / locality / pincode / city / none
+    location_source = Column(String(12))          # 'geocoded' | 'field' (FOS doorstep GPS)
+    location_updated_at = Column(DateTime)
+    address_clean = Column(Text)                  # cleaned, readable address used for geocoding + navigate
+    digipin = Column(String(15))                  # India Post DIGIPIN for the effective location
 
     # bucket / cycle
     bucket = Column(String(30))                  # 3RD BKT / X-BKT
@@ -606,6 +615,7 @@ class Attendance(Base):
     idle_seconds = Column(Integer, default=0)        # heartbeat-attributed idle time
     overtime = Column(Boolean, default=False)        # chose to keep working past shift end
     overtime_seconds = Column(Integer, default=0)
+    overtime_start_at = Column(DateTime(timezone=True), nullable=True)  # when "Continue working" was pressed
 
     last_platform = Column(String(10))               # last device seen that day
     note = Column(String(240), nullable=True)

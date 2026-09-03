@@ -19,11 +19,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import `in`.recoveriq.app.ui.common.Actions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+import `in`.recoveriq.app.data.Case
 import `in`.recoveriq.app.data.RoutePoint
 import `in`.recoveriq.app.data.TodayRoute
 import `in`.recoveriq.app.ui.AuthViewModel
@@ -45,6 +48,11 @@ import org.osmdroid.views.overlay.Polyline
 fun FieldTrackingScreen(vm: AuthViewModel) {
     val scope = rememberCoroutineScope()
     var route by remember { mutableStateOf<TodayRoute?>(null) }
+    // My allocated cases (loaded once) — shown as pins so I can see where to go, not just my trail.
+    var cases by remember { mutableStateOf<List<Case>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        cases = runCatching { vm.repo.myCases() }.getOrDefault(emptyList())
+    }
     // Live refresh: re-pull my route every few seconds so the pin moves as I do.
     LaunchedEffect(Unit) {
         while (true) {
@@ -53,8 +61,9 @@ fun FieldTrackingScreen(vm: AuthViewModel) {
         }
     }
     val r = route
+    val located = cases.count { it.latitude != null && it.longitude != null }
     Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-        SectionTitle("My route today (live)", Modifier.padding(top = 12.dp, start = 4.dp))
+        SectionTitle("My route + allocated cases", Modifier.padding(top = 12.dp, start = 4.dp))
         Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             InfoCard(Modifier.weight(1f)) {
                 Text("${r?.count ?: 0}", fontWeight = FontWeight.Bold, color = BrandBlue,
@@ -66,9 +75,19 @@ fun FieldTrackingScreen(vm: AuthViewModel) {
                     style = MaterialTheme.typography.titleLarge)
                 Text("Distance", style = MaterialTheme.typography.labelSmall, color = Muted)
             }
+            InfoCard(Modifier.weight(1f)) {
+                Text("$located", fontWeight = FontWeight.Bold, color = BrandBlue,
+                    style = MaterialTheme.typography.titleLarge)
+                Text("Cases on map", style = MaterialTheme.typography.labelSmall, color = Muted)
+            }
         }
         Box(Modifier.fillMaxWidth().padding(top = 10.dp).height(440.dp)) {
-            LiveRouteMap(r?.points ?: emptyList(), scope, Modifier.fillMaxSize())
+            LiveRouteMap(r?.points ?: emptyList(), cases, scope, Modifier.fillMaxSize())
+        }
+        if (cases.isNotEmpty() && located == 0) {
+            Text("No case locations yet — an admin needs to run \"Geocode addresses\" so your cases pin on the map.",
+                style = MaterialTheme.typography.labelSmall, color = Muted,
+                modifier = Modifier.padding(top = 6.dp, start = 4.dp))
         }
     }
 }
@@ -77,12 +96,14 @@ fun FieldTrackingScreen(vm: AuthViewModel) {
 private class RouteMapHolder {
     var rider: Marker? = null
     var centered = false
+    var caseMarkers: List<Marker>? = null      // built once from the allocated cases
 }
 
 @Composable
-private fun LiveRouteMap(points: List<RoutePoint>, scope: CoroutineScope, modifier: Modifier) {
+private fun LiveRouteMap(points: List<RoutePoint>, cases: List<Case>, scope: CoroutineScope, modifier: Modifier) {
     val lineColor = BrandBlue.toArgb()
     val holder = remember { RouteMapHolder() }
+    val context = LocalContext.current
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
@@ -90,13 +111,38 @@ private fun LiveRouteMap(points: List<RoutePoint>, scope: CoroutineScope, modifi
             MapView(ctx).apply {
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
-                controller.setZoom(15.0)
+                controller.setZoom(13.0)
                 controller.setCenter(points.lastOrNull()?.let { GeoPoint(it.lat, it.lng) }
+                    ?: cases.firstOrNull { it.latitude != null && it.longitude != null }
+                        ?.let { GeoPoint(it.latitude!!, it.longitude!!) }
                     ?: GeoPoint(20.5937, 78.9629))
             }
         },
         update = { map ->
             map.overlays.clear()
+            // Build the allocated-case pins once, then just re-add them each refresh (cheap, no thrash).
+            if (holder.caseMarkers == null) {
+                holder.caseMarkers = cases.filter { it.latitude != null && it.longitude != null }.map { c ->
+                    Marker(map).apply {
+                        position = GeoPoint(c.latitude!!, c.longitude!!)
+                        val approx = c.locationSource != "field" &&
+                            (c.geoPrecision == "pincode" || c.geoPrecision == "city")
+                        title = (c.customerName ?: "Case #${c.id}") + if (approx) "  (approx)" else ""
+                        snippet = listOfNotNull(
+                            c.bank,
+                            "Pending ₹${c.pendingAmount.toInt()}",
+                            "Tap to navigate",
+                        ).joinToString(" · ")
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                        setOnMarkerClickListener { m, _ ->
+                            m.showInfoWindow()
+                            Actions.navigate(context, c.latitude, c.longitude, c.customerName)
+                            true
+                        }
+                    }
+                }
+            }
+            holder.caseMarkers?.forEach { map.overlays.add(it) }
             val geo = points.map { GeoPoint(it.lat, it.lng) }
             if (geo.isNotEmpty()) {
                 val line = Polyline().apply {

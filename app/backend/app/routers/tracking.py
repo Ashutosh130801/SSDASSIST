@@ -35,9 +35,43 @@ def _authorize_officer_view(db: Session, viewer: models.User, officer_id: int):
     raise HTTPException(status_code=403, detail="Not allowed")
 
 
+# Server-side ping coalescer. Field apps send a keep-alive ping every few seconds even while the
+# officer stands still, which floods the DB's single SQLite writer and slows other writes (e.g. a
+# visit submit) to a crawl. We only need to STORE a new point when the officer has actually moved,
+# or once every _PING_MIN_GAP_S so presence stays fresh. When a ping is "stationary + too soon" we
+# skip the DB write entirely and just echo it back. Movement (>= _PING_MIN_MOVE_M) is always stored,
+# so route history keeps full detail. In-memory only (best-effort); harmless on Postgres too.
+_PING_LAST: dict[int, tuple] = {}          # officer_id -> (epoch_seconds, lat, lng)
+_PING_MIN_GAP_S = 12.0                       # while stationary, store at most one ping per 12s
+_PING_MIN_MOVE_M = 25.0                      # always store if moved at least 25 m
+
+
+def _ping_moved_m(a_lat, a_lng, b_lat, b_lng) -> float:
+    import math
+    r = 6371000.0
+    p1, p2 = math.radians(a_lat), math.radians(b_lat)
+    dphi = math.radians(b_lat - a_lat)
+    dl = math.radians(b_lng - a_lng)
+    h = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(h))
+
+
 @router.post("/ping", response_model=schemas.PingOut)
 def ping(body: schemas.PingCreate, db: Session = Depends(get_db),
          user: models.User = Depends(require_roles("fos", "admin"))):
+    import time as _time
+    now = _time.time()
+    prev = _PING_LAST.get(user.id)
+    if (prev and body.latitude is not None and body.longitude is not None
+            and (now - prev[0]) < _PING_MIN_GAP_S
+            and _ping_moved_m(prev[1], prev[2], body.latitude, body.longitude) < _PING_MIN_MOVE_M):
+        # Stationary and pinged again too soon — skip the write, just acknowledge. (Don't refresh
+        # the timestamp, so a real write still lands once _PING_MIN_GAP_S has elapsed.)
+        return {
+            "id": 0, "officer_id": user.id, "latitude": body.latitude, "longitude": body.longitude,
+            "accuracy": body.accuracy, "active_case_id": body.active_case_id,
+            "created_at": datetime.now(timezone.utc),
+        }
     p = models.LocationPing(
         officer_id=user.id, latitude=body.latitude, longitude=body.longitude,
         accuracy=body.accuracy, speed=body.speed, active_case_id=body.active_case_id,
@@ -45,6 +79,8 @@ def ping(body: schemas.PingCreate, db: Session = Depends(get_db),
     db.add(p)
     db.commit()
     db.refresh(p)
+    if body.latitude is not None and body.longitude is not None:
+        _PING_LAST[user.id] = (now, body.latitude, body.longitude)
     return p
 
 

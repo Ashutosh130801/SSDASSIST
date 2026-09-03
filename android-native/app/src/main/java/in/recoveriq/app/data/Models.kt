@@ -165,6 +165,10 @@ data class Case(
     val pincode: String? = null,
     val latitude: Double? = null,
     val longitude: Double? = null,
+    @Json(name = "geo_precision") val geoPrecision: String? = null,     // rooftop/locality/pincode/city
+    @Json(name = "location_source") val locationSource: String? = null, // geocoded | field
+    @Json(name = "address_clean") val addressClean: String? = null,
+    val digipin: String? = null,
     val bucket: String? = null,
     val cycle: String? = null,
     val month: String? = null,

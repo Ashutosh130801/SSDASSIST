@@ -87,6 +87,11 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                  fos_overrides: str | None = Form(None),
                  admin: models.User = Depends(require_roles("admin", "backend", "headoffice")), db: Session = Depends(get_db)):
     content = await file.read()
+    # Snap the chosen/typed branch to its canonical spelling so 'kadapa' joins the existing
+    # 'KADAPA' portfolio instead of creating a case-duplicate split. New branches pass through.
+    if branch and str(branch).strip():
+        from .cases import canonical_branch
+        branch = canonical_branch(db, branch)
     # HR may assign a FOS to specific cases at upload time (for rows the sheet left blank/unknown).
     # fos_overrides is a JSON map { account_no: FOS emp_code }.
     import json as _json

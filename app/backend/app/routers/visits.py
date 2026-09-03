@@ -83,8 +83,14 @@ async def create_visit(
         from .. import paymath
         paymath.recompute(case)
     if latitude and longitude and location_correct:
+        # FOS confirmed the doorstep location — this GPS becomes the case's canonical pin
+        # (overrides the geocoded guess, which we keep in geo_lat/geo_lng). DIGIPIN follows.
+        from .. import digipin as _dp
         case.latitude = latitude
         case.longitude = longitude
+        case.location_source = "field"
+        case.location_updated_at = datetime.now(IST)
+        case.digipin = _dp.encode(latitude, longitude)
 
     # Roll the case forward so it re-surfaces on the right day and sinks in today's view.
     try:
