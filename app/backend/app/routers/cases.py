@@ -739,7 +739,7 @@ def portfolio_banks(month_bucket: str | None = None, db: Session = Depends(get_d
     scoped to `month_bucket` (current/next/all) so the whole section is one month at a time."""
     agg: dict = {}
     prods: dict = {}
-    for b, p, s, br, bexp, per, fund, tos, enr, pos, recv in _portfolio_rows(db, user, _period_bucket(month_bucket)):
+    for b, p, s, br, bexp, per, fund, tos, enr, pos, recv, _pstat in _portfolio_rows(db, user, _period_bucket(month_bucket)):
         base = float(fund or 0) or float(tos or 0) or float(enr or 0) or float(pos or 0)
         rc = float(recv or 0)
         bank = b or "—"
