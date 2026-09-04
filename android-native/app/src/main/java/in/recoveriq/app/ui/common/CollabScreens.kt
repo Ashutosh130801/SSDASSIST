@@ -11,9 +11,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -69,6 +71,30 @@ private fun Any?.d(): Double = (this as? Number)?.toDouble() ?: 0.0
 private fun Any?.i(): Int = (this as? Number)?.toInt() ?: 0
 private fun Any?.s(): String = this?.toString() ?: ""
 private fun rupee(v: Double) = "₹" + "%,.0f".format(v)
+
+private fun roleLabel(r: String) = when (r) {
+    "fos" -> "Field Agent"; "telecaller" -> "Tele-caller"; "teamlead" -> "Team Lead"
+    "manager" -> "Manager"; "headoffice" -> "Head Office"; "backend" -> "Back Office"
+    "hr" -> "HR"; "admin" -> "Admin"; else -> r.replaceFirstChar { it.uppercase() }
+}
+
+// WhatsApp-style short time for the chat list ("now", "9:41 AM", "Mon", "12 Aug").
+private fun chatWhen(iso: String?): String {
+    if (iso.isNullOrBlank()) return ""
+    return try {
+        val t = java.time.OffsetDateTime.parse(iso).toInstant().toEpochMilli()
+        val now = System.currentTimeMillis()
+        val mins = (now - t) / 60000
+        when {
+            mins < 1 -> "now"
+            mins < 1440 && java.text.SimpleDateFormat("yyyyMMdd").format(java.util.Date(t)) ==
+                java.text.SimpleDateFormat("yyyyMMdd").format(java.util.Date(now)) ->
+                java.text.SimpleDateFormat("h:mm a").format(java.util.Date(t))
+            mins < 10080 -> java.text.SimpleDateFormat("EEE").format(java.util.Date(t))
+            else -> java.text.SimpleDateFormat("d MMM").format(java.util.Date(t))
+        }
+    } catch (_: Exception) { "" }
+}
 
 private val MONTHS = listOf("current" to "This month", "next" to "Next", "last" to "Last", "all" to "All")
 
@@ -259,29 +285,92 @@ fun ChatFab(vm: AuthViewModel, user: User, modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun Avatar(name: String, office: Boolean = false) {
+    Box(Modifier.size(40.dp).background(if (office) BrandBlue else Color(0xFFEFF3FF), CircleShape),
+        contentAlignment = Alignment.Center) {
+        Text(if (office) "🏢" else name.trim().take(1).uppercase().ifBlank { "?" },
+            color = if (office) Color.White else BrandBlue, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+    }
+}
+
+@Composable
 private fun ChatPanel(vm: AuthViewModel, user: User, onClose: () -> Unit) {
     // active = Pair(id?, office)
     var active by remember { mutableStateOf<Pair<Int?, Boolean>?>(null) }
     var activeName by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxWidth().height(480.dp).padding(12.dp)) {
+    var query by remember { mutableStateOf("") }
+    var roleF by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth().height(540.dp).padding(12.dp)) {
         if (active == null) {
             Text("💬 Messages", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = TextDark)
             Spacer(Modifier.height(6.dp))
-            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF3FF)),
-                modifier = Modifier.fillMaxWidth().clickable { active = null to true; activeName = "Office desk" }) {
-                Column(Modifier.padding(12.dp)) { Text("🏢 Office desk", fontWeight = FontWeight.SemiBold, color = TextDark)
-                    Text("Message the office / your team", color = Muted, fontSize = 11.sp) }
-            }
+            OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Search name or ID…") }, singleLine = true,
+                leadingIcon = { Text("🔍") })
             Spacer(Modifier.height(6.dp))
             AsyncContent(block = { vm.repo.chatContacts() }) { d, _ ->
-                val contacts = d["contacts"].l()
-                if (contacts.isEmpty()) Text("No contacts on your shared cases yet.", color = Muted, fontSize = 12.sp)
+                val contacts = d["contacts"].l().map { it.m() }
+                val roles = d["roles"].l().map { it.s() }
+                val office = d["office"].m()
+                val term = query.trim().lowercase()
+                val list = contacts.filter { c ->
+                    (roleF.isBlank() || c["role"].s() == roleF) &&
+                        (term.isBlank() || c["name"].s().lowercase().contains(term) ||
+                            c["emp_code"].s().lowercase().contains(term))
+                }
+                // Role filter chips
+                if (roles.isNotEmpty()) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(selected = roleF.isBlank(), onClick = { roleF = "" }, label = { Text("All") })
+                        roles.forEach { r ->
+                            FilterChip(selected = roleF == r, onClick = { roleF = r }, label = { Text(roleLabel(r)) })
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    items(contacts) { cc -> val c = cc.m()
+                    // Office desk row (with last-message preview)
+                    item {
+                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF3FF)),
+                            modifier = Modifier.fillMaxWidth().clickable { active = null to true; activeName = "Office desk" }) {
+                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Avatar("", office = true); Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("Office desk", fontWeight = FontWeight.SemiBold, color = TextDark)
+                                    Text(office["last"].s().ifBlank { "Broadcast to the whole office" },
+                                        color = Muted, fontSize = 11.sp, maxLines = 1)
+                                }
+                                Text(chatWhen(office["last_at"] as? String), color = Muted, fontSize = 10.sp)
+                            }
+                        }
+                    }
+                    if (list.isEmpty()) item {
+                        Text(if (term.isNotBlank() || roleF.isNotBlank()) "No one matches that search."
+                             else "No contacts in your scope yet.", color = Muted, fontSize = 12.sp,
+                             modifier = Modifier.padding(8.dp))
+                    }
+                    items(list) { c ->
+                        val unread = c["unread"].i()
                         Card(colors = CardDefaults.cardColors(containerColor = CardWhite),
                             modifier = Modifier.fillMaxWidth().clickable { active = c["id"].i() to false; activeName = c["name"].s() }) {
-                            Column(Modifier.padding(10.dp)) { Text(c["name"].s(), fontWeight = FontWeight.SemiBold, color = TextDark)
-                                Text(c["role"].s(), color = Muted, fontSize = 11.sp) }
+                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Avatar(c["name"].s()); Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text(c["name"].s(), fontWeight = FontWeight.SemiBold, color = TextDark, maxLines = 1)
+                                        Text(chatWhen(c["last_at"] as? String), color = Muted, fontSize = 10.sp)
+                                    }
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically) {
+                                        Text(c["last"].s().ifBlank { roleLabel(c["role"].s()) },
+                                            color = Muted, fontSize = 11.5.sp, maxLines = 1, modifier = Modifier.weight(1f))
+                                        if (unread > 0) Box(Modifier.background(Good, CircleShape).padding(horizontal = 6.dp, vertical = 1.dp)) {
+                                            Text(unread.toString(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

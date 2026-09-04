@@ -498,16 +498,21 @@ def _activity(db, uid, is_fos, ids):
     submit. FOS → visits logged + how many of those visits recorded a payment + distinct cases
     visited. Caller → calls logged + distinct cases contacted."""
     if not ids:
-        return {"visits": 0, "visits_paid": 0, "visited": 0} if is_fos else {"calls": 0, "contacted": 0}
+        return {"visits": 0, "visits_paid": 0, "visited": 0, "collected": 0.0} if is_fos \
+            else {"calls": 0, "contacted": 0, "collected": 0.0}
     if is_fos:
         rows = db.query(models.Visit.case_id, models.Visit.paid, models.Visit.amount_collected).filter(
             models.Visit.officer_id == uid, models.Visit.case_id.in_(ids)).all()
         visited = {r[0] for r in rows}
         paid = sum(1 for r in rows if (r[1] or (float(r[2] or 0) > 0)))
-        return {"visits": len(rows), "visits_paid": paid, "visited": len(visited)}
-    rows = db.query(models.CallLog.case_id).filter(
+        # rupees collected via their visit logs only (event-based, not the case balance)
+        collected = round(sum(float(r[2] or 0) for r in rows if float(r[2] or 0) > 0), 2)
+        return {"visits": len(rows), "visits_paid": paid, "visited": len(visited), "collected": collected}
+    rows = db.query(models.CallLog.case_id, models.CallLog.disposition, models.CallLog.ptp_amount).filter(
         models.CallLog.caller_id == uid, models.CallLog.case_id.in_(ids)).all()
-    return {"calls": len(rows), "contacted": len({r[0] for r in rows})}
+    # rupees collected via their call-log payments only (PAYMENT / PAID dispositions)
+    collected = round(sum(float(r[2] or 0) for r in rows if (r[1] or "") in ("PAYMENT", "PAID")), 2)
+    return {"calls": len(rows), "contacted": len({r[0] for r in rows}), "collected": collected}
 
 
 def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | None,

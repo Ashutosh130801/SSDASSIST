@@ -7692,36 +7692,89 @@ function printLiner(fosId) {
 }
 
 /* ============================ Floating Chat widget ============================ */
+// WhatsApp-style relative time for the chat list ("now", "3m", "9:41", "Mon", "12 Aug").
+function chatWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso); const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const diffMin = Math.floor((now - d) / 60000);
+  if (diffMin < 1) return 'now';
+  if (sameDay) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const diffDays = Math.floor((now - d) / 86400000);
+  if (diffDays < 7) return d.toLocaleDateString([], { weekday: 'short' });
+  return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
 function ChatWidget({ user }) {
   const [open, setOpen] = useState(false); const [unread, setUnread] = useState(0);
   const [contacts, setContacts] = useState(null); const [active, setActive] = useState(null); // {id} or 'office'
   const [msgs, setMsgs] = useState([]); const [text, setText] = useState('');
+  const [q, setQ] = useState(''); const [roleF, setRoleF] = useState('');
   const endRef = React.useRef(null);
   const pollUnread = () => api('/api/chat/unread').then(r => setUnread(r.unread || 0)).catch(() => {});
+  const loadContacts = () => api('/api/chat/contacts').then(setContacts).catch(() => setContacts({ contacts: [], roles: [] }));
   useEffect(() => { pollUnread(); const t = setInterval(pollUnread, 15000); return () => clearInterval(t); }, []);
-  useEffect(() => { if (open && !contacts) api('/api/chat/contacts').then(setContacts).catch(() => setContacts({ contacts: [] })); }, [open]);
+  // Refresh the chat list whenever the panel is open and on the list screen (keeps previews/unread live).
+  useEffect(() => { if (!open) return; loadContacts(); const t = setInterval(() => { if (!active) loadContacts(); }, 12000); return () => clearInterval(t); }, [open, active]);
   const loadThread = () => { if (!active) return;
     const p = active === 'office' ? 'office=true' : 'with_id=' + active.id;
     api('/api/chat/thread?' + p).then(r => { setMsgs(r.messages || []); pollUnread(); setTimeout(() => endRef.current && endRef.current.scrollIntoView(), 30); }).catch(() => setMsgs([])); };
   useEffect(() => { if (!active) return; loadThread(); const t = setInterval(loadThread, 8000); return () => clearInterval(t); }, [active]);
+  const openThread = (a) => { setActive(a); setMsgs([]); };
   const send = () => { const b = text.trim(); if (!b) return; setText('');
     const body = active === 'office' ? { office: true, body: b } : { to_id: active.id, body: b };
     api('/api/chat/send', { method: 'POST', body }).then(() => loadThread()).catch(() => toast('Could not send')); };
+
+  const roles = (contacts && contacts.roles) || [];
+  const all = (contacts && contacts.contacts) || [];
+  const term = q.trim().toLowerCase();
+  const list = all.filter(c => (!roleF || c.role === roleF) &&
+    (!term || (c.name || '').toLowerCase().includes(term) || (c.emp_code || '').toLowerCase().includes(term)));
+  const office = (contacts && contacts.office) || {};
+  const activeName = active === 'office' ? '🏢 Office desk'
+    : (active && all.find(c => c.id === active.id) || {}).name || 'Chat';
+  const avatar = (name, role) => <div style={{ width: 38, height: 38, borderRadius: '50%', flex: '0 0 38px', background: 'var(--glass,#eef2ff)', color: 'var(--brand,#2563EB)', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>{(name || '?').trim().charAt(0).toUpperCase()}</div>;
+
   return <>
     <button onClick={() => setOpen(o => !o)} title="Messages"
       style={{ position: 'fixed', right: 18, bottom: 'calc(76px + env(safe-area-inset-bottom, 0px))', zIndex: 2600, width: 50, height: 50, borderRadius: '50%', border: 'none', background: 'var(--brand,#2563EB)', color: '#fff', fontSize: 22, cursor: 'pointer', boxShadow: '0 8px 22px rgba(37,99,235,.4)' }}>
       💬{unread > 0 && <span style={{ position: 'absolute', top: -2, right: -2, background: 'var(--bad,#DC2626)', color: '#fff', borderRadius: 10, fontSize: 11, fontWeight: 700, minWidth: 18, height: 18, lineHeight: '18px' }}>{unread}</span>}
     </button>
-    {open && <div className="glass" style={{ position: 'fixed', right: 18, bottom: 'calc(134px + env(safe-area-inset-bottom,0px))', zIndex: 2600, width: 340, maxWidth: '92vw', height: 460, maxHeight: '70vh', borderRadius: 14, boxShadow: '0 14px 40px rgba(0,0,0,.22)', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--card,#fff)' }}>
-      <div className="section-h" style={{ padding: '8px 10px', margin: 0, borderBottom: '1px solid var(--line)' }}>
-        <b>{active ? (active === 'office' ? '🏢 Office desk' : (contacts && (contacts.contacts.find(c => c.id === active.id) || {}).name) || 'Chat') : '💬 Messages'}</b>
+    {open && <div className="glass" style={{ position: 'fixed', right: 18, bottom: 'calc(134px + env(safe-area-inset-bottom,0px))', zIndex: 2600, width: 360, maxWidth: '94vw', height: 520, maxHeight: '76vh', borderRadius: 14, boxShadow: '0 14px 40px rgba(0,0,0,.22)', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--card,#fff)' }}>
+      <div className="section-h" style={{ padding: '8px 10px', margin: 0, borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <b>{active ? activeName : '💬 Messages'}</b>
         {active ? <button className="btn ghost sm" onClick={() => setActive(null)}>‹ Back</button> : <button className="btn ghost sm" onClick={() => setOpen(false)}>✕</button>}
       </div>
-      {!active ? <div style={{ flex: 1, overflow: 'auto' }}>
-        <div onClick={() => setActive('office')} style={{ padding: '10px 12px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}><b>🏢 Office desk</b><div className="muted" style={{ fontSize: 11 }}>Message the office / your team</div></div>
-        {!contacts ? <Loader /> : (contacts.contacts || []).length === 0 ? <div className="muted" style={{ padding: 12, fontSize: 12 }}>No contacts on your shared cases yet.</div> :
-          contacts.contacts.map(c => <div key={c.id} onClick={() => setActive({ id: c.id })} style={{ padding: '10px 12px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}>
-            <b>{c.name}</b> <span className="muted" style={{ fontSize: 11 }}>{roleName(c.role)}</span></div>)}
+      {!active ? <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {/* search + role filter */}
+        <div style={{ display: 'flex', gap: 6, padding: 8, borderBottom: '1px solid var(--line)' }}>
+          <input className="input sm" style={{ flex: 1 }} value={q} placeholder="🔍 Search name or ID…" onChange={e => setQ(e.target.value)} />
+          <select className="input sm" style={{ width: 120 }} value={roleF} onChange={e => setRoleF(e.target.value)}>
+            <option value="">All roles</option>
+            {roles.map(r => <option key={r} value={r}>{roleName(r)}</option>)}
+          </select>
+        </div>
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          <div onClick={() => openThread('office')} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 12px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}>
+            <div style={{ width: 38, height: 38, borderRadius: '50%', flex: '0 0 38px', background: 'var(--brand,#2563EB)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>🏢</div>
+            <div style={{ flex: 1, minWidth: 0 }}><b>Office desk</b><div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{office.last || 'Broadcast to the whole office'}</div></div>
+            {office.last_at && <span className="muted" style={{ fontSize: 10 }}>{chatWhen(office.last_at)}</span>}
+          </div>
+          {!contacts ? <Loader /> : list.length === 0 ? <div className="muted" style={{ padding: 12, fontSize: 12 }}>{term || roleF ? 'No one matches that search.' : 'No contacts in your scope yet.'}</div> :
+            list.map(c => <div key={c.id} onClick={() => openThread({ id: c.id })} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 12px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}>
+              {avatar(c.name, c.role)}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                  <b style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</b>
+                  <span className="muted" style={{ fontSize: 10, flex: '0 0 auto' }}>{chatWhen(c.last_at)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, alignItems: 'center' }}>
+                  <span className="muted" style={{ fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.last || <em style={{ opacity: .7 }}>{roleName(c.role)}</em>}</span>
+                  {c.unread > 0 && <span style={{ background: 'var(--good,#16a34a)', color: '#fff', borderRadius: 10, fontSize: 10, fontWeight: 700, minWidth: 18, height: 18, lineHeight: '18px', textAlign: 'center', flex: '0 0 auto', padding: '0 5px' }}>{c.unread}</span>}
+                </div>
+              </div>
+            </div>)}
+        </div>
       </div> : <>
         <div style={{ flex: 1, overflow: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {msgs.length === 0 ? <div className="muted" style={{ fontSize: 12, textAlign: 'center', marginTop: 20 }}>No messages yet. Say hello 👋</div> :

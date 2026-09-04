@@ -200,6 +200,7 @@ private fun ProductCards(vm: AuthViewModel, bank: String, monthB: String, onPick
                     val sub = listOfNotNull(p.segment, if (p.branchSplit) "📍 ${p.branches.size} locations" else null).joinToString(" · ")
                     if (sub.isNotBlank()) Text(sub, color = Muted, style = MaterialTheme.typography.labelSmall)
                     MoneyRow(p.received, p.pending)
+                    PaidUnpaidLine(p.paid, p.unpaid)
                     if (p.branchSplit) Text("Tap to choose a location →", color = Muted,
                         style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
                 }, onClick = { onPick(p) })
@@ -221,9 +222,18 @@ private fun BranchCards(product: ProductSummary, onPick: (String) -> Unit) {
                 }
                 Text(product.product, color = Muted, style = MaterialTheme.typography.labelSmall)
                 MoneyRow(br.received, br.pending)
+                PaidUnpaidLine(br.paid, br.unpaid)
             }, onClick = { onPick(br.branch) })
         }
     }
+}
+
+// Per-portfolio settlement split shown on product & location cards (matches web "✓ N paid · N unpaid").
+@Composable
+private fun PaidUnpaidLine(paid: Int, unpaid: Int) {
+    if (paid == 0 && unpaid == 0) return
+    Text("✓ $paid paid · $unpaid unpaid", color = Good,
+        style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
 }
 
 @Composable
@@ -344,6 +354,10 @@ private fun PerformanceDialog(vm: AuthViewModel, empId: Int, role: String, onDis
                             else "📞 Contacted ${d.activity.contacted} cases · ☎️ ${d.activity.calls} calls logged",
                             style = MaterialTheme.typography.bodySmall, color = Muted,
                         )
+                        // Rupees collected purely via their own call/visit logs (event-based).
+                        if (d.activity.collected > 0)
+                            Text("💵 Collected (call+visit logs): ${money(d.activity.collected)}",
+                                style = MaterialTheme.typography.bodySmall, color = Good, fontWeight = FontWeight.SemiBold)
                         TrendStrip(d.trends, "Cash collected — FTD / MTD / LMTD / Overall")
                         d.portfolios.forEach { PerfPortfolioRow(it, d.asFos) }
                         if (d.portfolios.isEmpty()) Text("No cases in this period.", color = Muted)

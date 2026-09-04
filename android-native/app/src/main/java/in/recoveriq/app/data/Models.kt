@@ -773,6 +773,8 @@ data class BranchBucket(
     val count: Int = 0,
     val received: Double = 0.0,
     val pending: Double = 0.0,
+    val paid: Int = 0,
+    val unpaid: Int = 0,
     @Json(name = "count_current") val countCurrent: Int = 0,
     @Json(name = "count_next") val countNext: Int = 0,
 )
@@ -787,6 +789,8 @@ data class ProductSummary(
     val count: Int = 0,
     val received: Double = 0.0,
     val pending: Double = 0.0,
+    val paid: Int = 0,
+    val unpaid: Int = 0,
     @Json(name = "count_current") val countCurrent: Int = 0,
     @Json(name = "count_next") val countNext: Int = 0,
     val branches: List<BranchBucket> = emptyList(),
@@ -815,6 +819,7 @@ data class PerfTotals(
 data class PerfActivity(
     val calls: Int = 0, val contacted: Int = 0,
     val visits: Int = 0, @Json(name = "visits_paid") val visitsPaid: Int = 0, val visited: Int = 0,
+    val collected: Double = 0.0,   // rupees collected via their own call/visit logs (event-based)
 )
 
 // One row in the portfolio-wise leaderboard (peers on the same portfolio, ranked by paid ENR).

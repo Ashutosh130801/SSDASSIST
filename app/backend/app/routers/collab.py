@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..deps import get_current_user
 from .. import models
-from .cases import _scope, _IST_TZ
+from .cases import _scope, _IST_TZ, _scope_user_ids
 from .notifications import push
 
 router = APIRouter(prefix="/api", tags=["collab"])
@@ -191,37 +191,91 @@ _OFFICE_ROLES = ("admin", "manager", "headoffice", "teamlead", "backend", "hr")
 
 
 def _contacts_for(db, user):
-    """People this user can message: for FOS/caller their partner(s) on shared cases + office;
-    for office roles, their scoped staff. Everyone can reach the 'Office' desk."""
+    """People this user can message. Scoped by role so the directory matches who they oversee:
+      • admin / head office / back office / HR  → everyone (whole org)
+      • manager                                 → everyone in their branch (all roles)
+      • team lead                               → their team (callers + FOS on their cases)
+      • FOS / caller                            → their case partner(s) + their team lead
+    Everyone can also reach the shared 'Office' desk."""
+    role = user.role
+    active = models.User.is_active == True  # noqa: E712
     people = {}
-    if user.role in ("fos", "telecaller"):
-        col = models.Case.assigned_fos_id if user.role == "fos" else models.Case.assigned_caller_id
-        other = models.Case.assigned_caller_id if user.role == "fos" else models.Case.assigned_fos_id
+
+    if role in ("admin", "headoffice", "backend", "hr"):
+        # Full directory — every active staff member.
+        for u in db.query(models.User).filter(active).all():
+            people[u.id] = u
+
+    elif role == "manager":
+        # Everyone in the manager's branch, regardless of role (callers, FOS, team leads…).
+        for u in db.query(models.User).filter(active, models.User.branch == user.branch).all():
+            people[u.id] = u
+
+    elif role == "teamlead":
+        # The team lead's own team — callers + FOS assigned to cases carrying their name.
+        ids = _scope_user_ids(db, user)
+        for u in db.query(models.User).filter(models.User.id.in_(ids or [-1]), active).all():
+            people[u.id] = u
+
+    else:  # fos / telecaller
+        col = models.Case.assigned_fos_id if role == "fos" else models.Case.assigned_caller_id
+        other = models.Case.assigned_caller_id if role == "fos" else models.Case.assigned_fos_id
         ids = [i for (i,) in _scope(db.query(other), user).filter(col == user.id).distinct().all() if i]
-        for u in db.query(models.User).filter(models.User.id.in_(ids or [-1])).all():
+        for u in db.query(models.User).filter(models.User.id.in_(ids or [-1]), active).all():
             people[u.id] = u
-        if user.team_lead_id:
+        if user.team_lead_id:  # their own team lead, even if not sharing a live case right now
             tl = db.query(models.User).get(user.team_lead_id)
-            if tl:
+            if tl and tl.is_active:
                 people[tl.id] = tl
-    else:
-        q = _scope(db.query(models.Case), user)
-        ids = set()
-        for fid, cid in q.with_entities(models.Case.assigned_fos_id, models.Case.assigned_caller_id).all():
-            if fid:
-                ids.add(fid)
-            if cid:
-                ids.add(cid)
-        for u in db.query(models.User).filter(models.User.id.in_(ids or {-1}), models.User.is_active == True).all():  # noqa: E712
-            people[u.id] = u
-    out = [{"id": u.id, "name": u.name, "role": u.role, "emp_code": u.emp_code} for u in people.values() if u.id != user.id]
-    out.sort(key=lambda x: x["name"] or "")
+
+    out = [{"id": u.id, "name": u.name, "role": u.role, "emp_code": u.emp_code}
+           for u in people.values() if u.id != user.id]
+    out.sort(key=lambda x: (x["role"] or "", x["name"] or ""))
     return out
 
 
 @router.get("/chat/contacts")
 def chat_contacts(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    return {"office": True, "contacts": _contacts_for(db, user)}
+    """WhatsApp-style chat list: every person in scope + the shared Office desk, each carrying
+    its last-message preview, time, and unread count. Threads with recent activity float to the
+    top; the rest follow alphabetically so a fresh chat can still be started."""
+    contacts = _contacts_for(db, user)
+    ids = [c["id"] for c in contacts]
+
+    # All 1:1 messages between me and any scoped contact, newest first.
+    convo = (db.query(models.ChatMessage)
+             .filter(or_(
+                 and_(models.ChatMessage.from_id == user.id, models.ChatMessage.to_id.in_(ids or [-1])),
+                 and_(models.ChatMessage.from_id.in_(ids or [-1]), models.ChatMessage.to_id == user.id)))
+             .order_by(models.ChatMessage.created_at.desc()).all())
+    last_by = {}      # partner_id -> (body, at, mine)
+    unread_by = {}    # partner_id -> count of their unread msgs to me
+    for m in convo:
+        partner = m.to_id if m.from_id == user.id else m.from_id
+        if partner not in last_by:
+            last_by[partner] = (m.body, m.created_at, m.from_id == user.id)
+        if m.to_id == user.id and not m.read:
+            unread_by[partner] = unread_by.get(partner, 0) + 1
+
+    for c in contacts:
+        body, at, mine = last_by.get(c["id"], (None, None, False))
+        c["last"] = (("You: " if mine else "") + body) if body else None
+        c["last_at"] = at.isoformat() if at else None
+        c["unread"] = unread_by.get(c["id"], 0)
+    # Recent conversations first (newest at top); never-messaged contacts after, alphabetically.
+    messaged = sorted([c for c in contacts if c["last_at"]], key=lambda x: x["last_at"], reverse=True)
+    fresh = sorted([c for c in contacts if not c["last_at"]], key=lambda x: (x["name"] or "").lower())
+    contacts = messaged + fresh
+
+    # Office desk summary (shared broadcast channel — no per-user read state).
+    om = (db.query(models.ChatMessage).filter(models.ChatMessage.to_id.is_(None))
+          .order_by(models.ChatMessage.created_at.desc()).first())
+    uname = {i: n for (i, n) in db.query(models.User.id, models.User.name).all()}
+    office = {"last": (f"{uname.get(om.from_id, '—')}: {om.body}" if om else None),
+              "last_at": om.created_at.isoformat() if om and om.created_at else None}
+
+    roles = sorted({c["role"] for c in contacts if c.get("role")})
+    return {"office": office, "contacts": contacts, "roles": roles}
 
 
 @router.get("/chat/thread")
