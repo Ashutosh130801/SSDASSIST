@@ -7705,90 +7705,132 @@ function chatWhen(iso) {
   return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
 }
 
+// WhatsApp palette (kept local to the chat widget so it looks like WhatsApp regardless of app theme).
+const WA = { teal: '#075E54', header: '#008069', green: '#25D366', out: '#D9FDD3', inBub: '#FFFFFF',
+  bg: '#EFEAE2', panel: '#FFFFFF', tick: '#53BDEB' };
+
 function ChatWidget({ user }) {
   const [open, setOpen] = useState(false); const [unread, setUnread] = useState(0);
-  const [contacts, setContacts] = useState(null); const [active, setActive] = useState(null); // {id} or 'office'
+  const [contacts, setContacts] = useState(null);
+  const [active, setActive] = useState(null);   // {id} or 'office' → thread open
+  const [picker, setPicker] = useState(false);  // "new chat" contact-picker screen
   const [msgs, setMsgs] = useState([]); const [text, setText] = useState('');
-  const [q, setQ] = useState(''); const [roleF, setRoleF] = useState('');
+  const [q, setQ] = useState('');                // search on conversation list
+  const [pq, setPq] = useState(''); const [roleF, setRoleF] = useState(''); // picker search + role filter
   const endRef = React.useRef(null);
   const pollUnread = () => api('/api/chat/unread').then(r => setUnread(r.unread || 0)).catch(() => {});
   const loadContacts = () => api('/api/chat/contacts').then(setContacts).catch(() => setContacts({ contacts: [], roles: [] }));
   useEffect(() => { pollUnread(); const t = setInterval(pollUnread, 15000); return () => clearInterval(t); }, []);
-  // Refresh the chat list whenever the panel is open and on the list screen (keeps previews/unread live).
   useEffect(() => { if (!open) return; loadContacts(); const t = setInterval(() => { if (!active) loadContacts(); }, 12000); return () => clearInterval(t); }, [open, active]);
   const loadThread = () => { if (!active) return;
     const p = active === 'office' ? 'office=true' : 'with_id=' + active.id;
     api('/api/chat/thread?' + p).then(r => { setMsgs(r.messages || []); pollUnread(); setTimeout(() => endRef.current && endRef.current.scrollIntoView(), 30); }).catch(() => setMsgs([])); };
   useEffect(() => { if (!active) return; loadThread(); const t = setInterval(loadThread, 8000); return () => clearInterval(t); }, [active]);
-  const openThread = (a) => { setActive(a); setMsgs([]); };
+  const openThread = (a) => { setActive(a); setPicker(false); setMsgs([]); };
   const send = () => { const b = text.trim(); if (!b) return; setText('');
     const body = active === 'office' ? { office: true, body: b } : { to_id: active.id, body: b };
-    api('/api/chat/send', { method: 'POST', body }).then(() => loadThread()).catch(() => toast('Could not send')); };
+    api('/api/chat/send', { method: 'POST', body }).then(() => { loadThread(); loadContacts(); }).catch(() => toast('Could not send')); };
 
   const roles = (contacts && contacts.roles) || [];
   const all = (contacts && contacts.contacts) || [];
-  const term = q.trim().toLowerCase();
-  const list = all.filter(c => (!roleF || c.role === roleF) &&
-    (!term || (c.name || '').toLowerCase().includes(term) || (c.emp_code || '').toLowerCase().includes(term)));
   const office = (contacts && contacts.office) || {};
-  const activeName = active === 'office' ? '🏢 Office desk'
+  // Main screen = existing conversations only (people/office you've already chatted with), like WhatsApp.
+  const term = q.trim().toLowerCase();
+  const convos = all.filter(c => c.last_at &&
+    (!term || (c.name || '').toLowerCase().includes(term)));
+  const hasOffice = office && office.last_at && (!term || 'office'.includes(term) || 'office desk'.includes(term));
+  // Picker screen = full directory with its own search + role filter.
+  const pterm = pq.trim().toLowerCase();
+  const pickList = all.filter(c => (!roleF || c.role === roleF) &&
+    (!pterm || (c.name || '').toLowerCase().includes(pterm) || (c.emp_code || '').toLowerCase().includes(pterm)));
+  const activeName = active === 'office' ? 'Office desk'
     : (active && all.find(c => c.id === active.id) || {}).name || 'Chat';
-  const avatar = (name, role) => <div style={{ width: 38, height: 38, borderRadius: '50%', flex: '0 0 38px', background: 'var(--glass,#eef2ff)', color: 'var(--brand,#2563EB)', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>{(name || '?').trim().charAt(0).toUpperCase()}</div>;
+  const activeRole = active === 'office' ? 'Broadcast to the whole office'
+    : roleName((active && all.find(c => c.id === active.id) || {}).role || '');
+  const Avatar = ({ name, office: off, size = 42 }) => <div style={{ width: size, height: size, borderRadius: '50%', flex: `0 0 ${size}px`, background: off ? WA.teal : '#DFE5E7', color: off ? '#fff' : '#5B6B72', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.42 }}>{off ? '🏢' : (name || '?').trim().charAt(0).toUpperCase()}</div>;
+
+  const Row = ({ onClick, name, off, last, at, unread: un, sub }) =>
+    <div onClick={onClick} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '9px 14px', cursor: 'pointer', borderBottom: '1px solid #F0F0F0' }}>
+      <Avatar name={name} office={off} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+          <span style={{ fontWeight: 600, color: '#111B21', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+          {at && <span style={{ fontSize: 11, color: un ? WA.header : '#667781', flex: '0 0 auto', fontWeight: un ? 700 : 400 }}>{chatWhen(at)}</span>}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontSize: 12.5, color: '#667781', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{last || sub}</span>
+          {un > 0 && <span style={{ background: WA.green, color: '#fff', borderRadius: 11, fontSize: 11, fontWeight: 700, minWidth: 20, height: 20, lineHeight: '20px', textAlign: 'center', flex: '0 0 auto', padding: '0 6px' }}>{un}</span>}
+        </div>
+      </div>
+    </div>;
 
   return <>
     <button onClick={() => setOpen(o => !o)} title="Messages"
-      style={{ position: 'fixed', right: 18, bottom: 'calc(76px + env(safe-area-inset-bottom, 0px))', zIndex: 2600, width: 50, height: 50, borderRadius: '50%', border: 'none', background: 'var(--brand,#2563EB)', color: '#fff', fontSize: 22, cursor: 'pointer', boxShadow: '0 8px 22px rgba(37,99,235,.4)' }}>
+      style={{ position: 'fixed', right: 18, bottom: 'calc(76px + env(safe-area-inset-bottom, 0px))', zIndex: 2600, width: 50, height: 50, borderRadius: '50%', border: 'none', background: WA.header, color: '#fff', fontSize: 22, cursor: 'pointer', boxShadow: '0 8px 22px rgba(0,128,105,.4)' }}>
       💬{unread > 0 && <span style={{ position: 'absolute', top: -2, right: -2, background: 'var(--bad,#DC2626)', color: '#fff', borderRadius: 10, fontSize: 11, fontWeight: 700, minWidth: 18, height: 18, lineHeight: '18px' }}>{unread}</span>}
     </button>
-    {open && <div className="glass" style={{ position: 'fixed', right: 18, bottom: 'calc(134px + env(safe-area-inset-bottom,0px))', zIndex: 2600, width: 360, maxWidth: '94vw', height: 520, maxHeight: '76vh', borderRadius: 14, boxShadow: '0 14px 40px rgba(0,0,0,.22)', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--card,#fff)' }}>
-      <div className="section-h" style={{ padding: '8px 10px', margin: 0, borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <b>{active ? activeName : '💬 Messages'}</b>
-        {active ? <button className="btn ghost sm" onClick={() => setActive(null)}>‹ Back</button> : <button className="btn ghost sm" onClick={() => setOpen(false)}>✕</button>}
-      </div>
-      {!active ? <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {/* search + role filter */}
-        <div style={{ display: 'flex', gap: 6, padding: 8, borderBottom: '1px solid var(--line)' }}>
-          <input className="input sm" style={{ flex: 1 }} value={q} placeholder="🔍 Search name or ID…" onChange={e => setQ(e.target.value)} />
-          <select className="input sm" style={{ width: 120 }} value={roleF} onChange={e => setRoleF(e.target.value)}>
-            <option value="">All roles</option>
-            {roles.map(r => <option key={r} value={r}>{roleName(r)}</option>)}
-          </select>
-        </div>
-        <div style={{ flex: 1, overflow: 'auto' }}>
-          <div onClick={() => openThread('office')} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 12px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}>
-            <div style={{ width: 38, height: 38, borderRadius: '50%', flex: '0 0 38px', background: 'var(--brand,#2563EB)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>🏢</div>
-            <div style={{ flex: 1, minWidth: 0 }}><b>Office desk</b><div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{office.last || 'Broadcast to the whole office'}</div></div>
-            {office.last_at && <span className="muted" style={{ fontSize: 10 }}>{chatWhen(office.last_at)}</span>}
+    {open && <div style={{ position: 'fixed', right: 18, bottom: 'calc(134px + env(safe-area-inset-bottom,0px))', zIndex: 2600, width: 370, maxWidth: '95vw', height: 560, maxHeight: '80vh', borderRadius: 12, boxShadow: '0 14px 40px rgba(0,0,0,.28)', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: WA.panel }}>
+
+      {active ? (/* ================= THREAD (chat) ================= */
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: WA.header, color: '#fff' }}>
+            <span onClick={() => setActive(null)} style={{ cursor: 'pointer', fontSize: 20, lineHeight: 1 }}>‹</span>
+            <Avatar name={activeName} office={active === 'office'} size={34} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activeName}</div>
+              <div style={{ fontSize: 10.5, opacity: .85, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activeRole}</div>
+            </div>
           </div>
-          {!contacts ? <Loader /> : list.length === 0 ? <div className="muted" style={{ padding: 12, fontSize: 12 }}>{term || roleF ? 'No one matches that search.' : 'No contacts in your scope yet.'}</div> :
-            list.map(c => <div key={c.id} onClick={() => openThread({ id: c.id })} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 12px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}>
-              {avatar(c.name, c.role)}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
-                  <b style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</b>
-                  <span className="muted" style={{ fontSize: 10, flex: '0 0 auto' }}>{chatWhen(c.last_at)}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, alignItems: 'center' }}>
-                  <span className="muted" style={{ fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.last || <em style={{ opacity: .7 }}>{roleName(c.role)}</em>}</span>
-                  {c.unread > 0 && <span style={{ background: 'var(--good,#16a34a)', color: '#fff', borderRadius: 10, fontSize: 10, fontWeight: 700, minWidth: 18, height: 18, lineHeight: '18px', textAlign: 'center', flex: '0 0 auto', padding: '0 5px' }}>{c.unread}</span>}
-                </div>
-              </div>
-            </div>)}
-        </div>
-      </div> : <>
-        <div style={{ flex: 1, overflow: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {msgs.length === 0 ? <div className="muted" style={{ fontSize: 12, textAlign: 'center', marginTop: 20 }}>No messages yet. Say hello 👋</div> :
-            msgs.map(m => <div key={m.id} style={{ alignSelf: m.mine ? 'flex-end' : 'flex-start', maxWidth: '80%', background: m.mine ? 'var(--brand,#2563EB)' : 'var(--glass,#eef2ff)', color: m.mine ? '#fff' : 'inherit', padding: '6px 10px', borderRadius: 12, fontSize: 12.5 }}>
-              {!m.mine && active === 'office' && <div style={{ fontSize: 10, fontWeight: 700, opacity: .8 }}>{m.from}</div>}
-              {m.kind === 'callback' ? <b>{m.body}</b> : m.body}
-              <div style={{ fontSize: 9, opacity: .7, textAlign: 'right' }}>{fmtTime(m.at)}</div></div>)}
-          <div ref={endRef} />
-        </div>
-        <div style={{ display: 'flex', gap: 6, padding: 8, borderTop: '1px solid var(--line)' }}>
-          <input className="input" style={{ flex: 1 }} value={text} placeholder="Type a message…" onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') send(); }} />
-          <button className="btn gold sm" onClick={send}>Send</button>
-        </div>
-      </>}
+          <div style={{ flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 4, background: WA.bg, backgroundImage: 'radial-gradient(rgba(0,0,0,.03) 1px, transparent 0)', backgroundSize: '18px 18px' }}>
+            {msgs.length === 0 ? <div style={{ fontSize: 12, textAlign: 'center', marginTop: 20, color: '#667781', background: '#fff', alignSelf: 'center', padding: '5px 12px', borderRadius: 8 }}>No messages yet. Say hello 👋</div> :
+              msgs.map(m => <div key={m.id} style={{ alignSelf: m.mine ? 'flex-end' : 'flex-start', maxWidth: '82%', background: m.mine ? WA.out : WA.inBub, color: '#111B21', padding: '5px 9px 4px', borderRadius: 8, fontSize: 13, boxShadow: '0 1px 0 rgba(0,0,0,.08)', position: 'relative' }}>
+                {!m.mine && active === 'office' && <div style={{ fontSize: 10.5, fontWeight: 700, color: WA.header }}>{m.from}</div>}
+                {m.kind === 'callback' ? <b>{m.body}</b> : m.body}
+                <span style={{ fontSize: 9.5, color: '#667781', float: 'right', margin: '3px 0 0 8px' }}>{fmtTime(m.at)}{m.mine ? ' ✓✓' : ''}</span></div>)}
+            <div ref={endRef} />
+          </div>
+          <div style={{ display: 'flex', gap: 6, padding: 8, background: '#F0F2F5', alignItems: 'center' }}>
+            <input style={{ flex: 1, border: 'none', borderRadius: 20, padding: '9px 14px', fontSize: 13, outline: 'none' }} value={text} placeholder="Type a message" onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') send(); }} />
+            <button onClick={send} style={{ width: 40, height: 40, borderRadius: '50%', border: 'none', background: WA.header, color: '#fff', fontSize: 17, cursor: 'pointer', flex: '0 0 40px' }}>➤</button>
+          </div>
+        </>
+      ) : picker ? (/* ================= NEW CHAT (contact picker) ================= */
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: WA.header, color: '#fff' }}>
+            <span onClick={() => { setPicker(false); setPq(''); setRoleF(''); }} style={{ cursor: 'pointer', fontSize: 20 }}>‹</span>
+            <b style={{ fontSize: 15 }}>Select contact</b>
+          </div>
+          <div style={{ padding: 8, borderBottom: '1px solid #eee' }}>
+            <input style={{ width: '100%', border: '1px solid #e5e7eb', borderRadius: 20, padding: '8px 14px', fontSize: 13, outline: 'none' }} value={pq} placeholder="🔍 Search name or ID…" onChange={e => setPq(e.target.value)} />
+          </div>
+          <div style={{ display: 'flex', gap: 6, padding: '6px 10px', overflowX: 'auto', borderBottom: '1px solid #f0f0f0' }}>
+            {['', ...roles].map(r => <button key={r || 'all'} onClick={() => setRoleF(r)} style={{ flex: '0 0 auto', border: 'none', borderRadius: 14, padding: '4px 12px', fontSize: 12, cursor: 'pointer', background: roleF === r ? WA.header : '#E9EDEF', color: roleF === r ? '#fff' : '#3B4A54' }}>{r ? roleName(r) : 'All'}</button>)}
+          </div>
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            <Row onClick={() => openThread('office')} name="Office desk" off last={office.last} at={office.last_at} sub="Broadcast to the whole office" />
+            {!contacts ? <Loader /> : pickList.length === 0 ? <div style={{ padding: 14, fontSize: 12.5, color: '#667781' }}>{pterm || roleF ? 'No one matches that search.' : 'No contacts in your scope yet.'}</div> :
+              pickList.map(c => <Row key={c.id} onClick={() => openThread({ id: c.id })} name={c.name} at={null} sub={roleName(c.role)} />)}
+          </div>
+        </>
+      ) : (/* ================= CHATS (conversation list) ================= */
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: WA.header, color: '#fff' }}>
+            <b style={{ fontSize: 17 }}>Chats</b>
+            <span onClick={() => setOpen(false)} style={{ cursor: 'pointer', fontSize: 16 }}>✕</span>
+          </div>
+          <div style={{ padding: 8, background: WA.panel }}>
+            <input style={{ width: '100%', border: 'none', background: '#F0F2F5', borderRadius: 20, padding: '8px 14px', fontSize: 13, outline: 'none' }} value={q} placeholder="🔍 Search chats" onChange={e => setQ(e.target.value)} />
+          </div>
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {hasOffice && <Row onClick={() => openThread('office')} name="Office desk" off last={office.last} at={office.last_at} sub="Office broadcast" />}
+            {!contacts ? <Loader /> :
+              (convos.length === 0 && !hasOffice) ? <div style={{ padding: 20, textAlign: 'center', color: '#667781', fontSize: 13 }}>No conversations yet.<br />Tap the button below to start a chat.</div> :
+              convos.map(c => <Row key={c.id} onClick={() => openThread({ id: c.id })} name={c.name} last={c.last} at={c.last_at} unread={c.unread} sub={roleName(c.role)} />)}
+          </div>
+          <button onClick={() => { setPicker(true); loadContacts(); }} title="New chat"
+            style={{ position: 'absolute', right: 16, bottom: 16, width: 52, height: 52, borderRadius: '50%', border: 'none', background: WA.header, color: '#fff', fontSize: 24, cursor: 'pointer', boxShadow: '0 6px 16px rgba(0,0,0,.25)' }}>✎</button>
+        </>
+      )}
     </div>}
   </>;
 }

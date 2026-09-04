@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.horizontalScroll
@@ -284,103 +285,140 @@ fun ChatFab(vm: AuthViewModel, user: User, modifier: Modifier = Modifier) {
     }
 }
 
+// WhatsApp palette — kept local so the chat looks like WhatsApp regardless of the app's blue theme.
+private val WaHeader = Color(0xFF008069)
+private val WaTeal = Color(0xFF075E54)
+private val WaOut = Color(0xFFD9FDD3)
+private val WaBg = Color(0xFFEFEAE2)
+
 @Composable
-private fun Avatar(name: String, office: Boolean = false) {
-    Box(Modifier.size(40.dp).background(if (office) BrandBlue else Color(0xFFEFF3FF), CircleShape),
+private fun Avatar(name: String, office: Boolean = false, small: Boolean = false) {
+    val sz = if (small) 34.dp else 44.dp
+    Box(Modifier.size(sz).background(if (office) WaTeal else Color(0xFFDFE5E7), CircleShape),
         contentAlignment = Alignment.Center) {
         Text(if (office) "🏢" else name.trim().take(1).uppercase().ifBlank { "?" },
-            color = if (office) Color.White else BrandBlue, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            color = if (office) Color.White else Color(0xFF5B6B72), fontWeight = FontWeight.Bold,
+            fontSize = if (small) 15.sp else 18.sp)
+    }
+}
+
+@Composable
+private fun ConvRow(name: String, office: Boolean, last: String, at: String?, unread: Int, sub: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Avatar(name, office = office); Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(name, fontWeight = FontWeight.SemiBold, color = Color(0xFF111B21), maxLines = 1)
+                if (!at.isNullOrBlank()) Text(chatWhen(at), color = if (unread > 0) WaHeader else Muted,
+                    fontSize = 10.sp, fontWeight = if (unread > 0) FontWeight.Bold else FontWeight.Normal)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically) {
+                Text(last.ifBlank { sub }, color = Muted, fontSize = 12.5.sp, maxLines = 1, modifier = Modifier.weight(1f))
+                if (unread > 0) Box(Modifier.background(Color(0xFF25D366), CircleShape).padding(horizontal = 6.dp, vertical = 1.dp)) {
+                    Text(unread.toString(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
     }
 }
 
 @Composable
 private fun ChatPanel(vm: AuthViewModel, user: User, onClose: () -> Unit) {
-    // active = Pair(id?, office)
     var active by remember { mutableStateOf<Pair<Int?, Boolean>?>(null) }
     var activeName by remember { mutableStateOf("") }
-    var query by remember { mutableStateOf("") }
+    var activeRole by remember { mutableStateOf("") }
+    var picker by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }   // conversation-list search
+    var pq by remember { mutableStateOf("") }       // picker search
     var roleF by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxWidth().height(540.dp).padding(12.dp)) {
-        if (active == null) {
-            Text("💬 Messages", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = TextDark)
-            Spacer(Modifier.height(6.dp))
-            OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Search name or ID…") }, singleLine = true,
-                leadingIcon = { Text("🔍") })
-            Spacer(Modifier.height(6.dp))
-            AsyncContent(block = { vm.repo.chatContacts() }) { d, _ ->
-                val contacts = d["contacts"].l().map { it.m() }
-                val roles = d["roles"].l().map { it.s() }
-                val office = d["office"].m()
-                val term = query.trim().lowercase()
-                val list = contacts.filter { c ->
-                    (roleF.isBlank() || c["role"].s() == roleF) &&
-                        (term.isBlank() || c["name"].s().lowercase().contains(term) ||
-                            c["emp_code"].s().lowercase().contains(term))
+    val open: (Int?, Boolean, String, String) -> Unit = { id, off, nm, rl ->
+        active = id to off; activeName = nm; activeRole = rl; picker = false
+    }
+    Column(Modifier.fillMaxWidth().height(560.dp)) {
+        when {
+            // ================= THREAD =================
+            active != null -> {
+                Row(Modifier.fillMaxWidth().background(WaHeader).padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("‹", color = Color.White, fontSize = 24.sp, modifier = Modifier.clickable { active = null })
+                    Spacer(Modifier.width(8.dp)); Avatar(activeName, office = active!!.second, small = true)
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(activeName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1)
+                        Text(activeRole, color = Color.White.copy(alpha = 0.85f), fontSize = 10.5.sp, maxLines = 1)
+                    }
                 }
-                // Role filter chips
-                if (roles.isNotEmpty()) {
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        FilterChip(selected = roleF.isBlank(), onClick = { roleF = "" }, label = { Text("All") })
-                        roles.forEach { r ->
-                            FilterChip(selected = roleF == r, onClick = { roleF = r }, label = { Text(roleLabel(r)) })
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
+                ChatThread(vm, active!!.first, active!!.second)
+            }
+            // ================= NEW CHAT (picker) =================
+            picker -> {
+                Row(Modifier.fillMaxWidth().background(WaHeader).padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("‹", color = Color.White, fontSize = 24.sp, modifier = Modifier.clickable { picker = false; pq = ""; roleF = "" })
+                    Spacer(Modifier.width(8.dp)); Text("Select contact", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    // Office desk row (with last-message preview)
-                    item {
-                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF3FF)),
-                            modifier = Modifier.fillMaxWidth().clickable { active = null to true; activeName = "Office desk" }) {
-                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Avatar("", office = true); Spacer(Modifier.width(10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text("Office desk", fontWeight = FontWeight.SemiBold, color = TextDark)
-                                    Text(office["last"].s().ifBlank { "Broadcast to the whole office" },
-                                        color = Muted, fontSize = 11.sp, maxLines = 1)
-                                }
-                                Text(chatWhen(office["last_at"] as? String), color = Muted, fontSize = 10.sp)
-                            }
-                        }
+                OutlinedTextField(value = pq, onValueChange = { pq = it }, modifier = Modifier.fillMaxWidth().padding(8.dp),
+                    placeholder = { Text("Search name or ID…") }, singleLine = true, leadingIcon = { Text("🔍") })
+                AsyncContent(block = { vm.repo.chatContacts() }) { d, _ ->
+                    val contacts = d["contacts"].l().map { it.m() }
+                    val roles = d["roles"].l().map { it.s() }
+                    val office = d["office"].m()
+                    val term = pq.trim().lowercase()
+                    val list = contacts.filter { c ->
+                        (roleF.isBlank() || c["role"].s() == roleF) &&
+                            (term.isBlank() || c["name"].s().lowercase().contains(term) ||
+                                c["emp_code"].s().lowercase().contains(term))
                     }
-                    if (list.isEmpty()) item {
-                        Text(if (term.isNotBlank() || roleF.isNotBlank()) "No one matches that search."
-                             else "No contacts in your scope yet.", color = Muted, fontSize = 12.sp,
-                             modifier = Modifier.padding(8.dp))
-                    }
-                    items(list) { c ->
-                        val unread = c["unread"].i()
-                        Card(colors = CardDefaults.cardColors(containerColor = CardWhite),
-                            modifier = Modifier.fillMaxWidth().clickable { active = c["id"].i() to false; activeName = c["name"].s() }) {
-                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Avatar(c["name"].s()); Spacer(Modifier.width(10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text(c["name"].s(), fontWeight = FontWeight.SemiBold, color = TextDark, maxLines = 1)
-                                        Text(chatWhen(c["last_at"] as? String), color = Muted, fontSize = 10.sp)
-                                    }
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically) {
-                                        Text(c["last"].s().ifBlank { roleLabel(c["role"].s()) },
-                                            color = Muted, fontSize = 11.5.sp, maxLines = 1, modifier = Modifier.weight(1f))
-                                        if (unread > 0) Box(Modifier.background(Good, CircleShape).padding(horizontal = 6.dp, vertical = 1.dp)) {
-                                            Text(unread.toString(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                }
-                            }
+                    if (roles.isNotEmpty()) {
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FilterChip(selected = roleF.isBlank(), onClick = { roleF = "" }, label = { Text("All") })
+                            roles.forEach { r -> FilterChip(selected = roleF == r, onClick = { roleF = r }, label = { Text(roleLabel(r)) }) }
                         }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    LazyColumn {
+                        item { ConvRow("Office desk", true, office["last"].s(), null, 0, "Broadcast to the whole office") { open(null, true, "Office desk", "Office broadcast") } }
+                        if (list.isEmpty()) item {
+                            Text(if (term.isNotBlank() || roleF.isNotBlank()) "No one matches that search." else "No contacts in your scope yet.",
+                                color = Muted, fontSize = 12.sp, modifier = Modifier.padding(14.dp))
+                        }
+                        items(list) { c -> ConvRow(c["name"].s(), false, "", null, 0, roleLabel(c["role"].s())) { open(c["id"].i(), false, c["name"].s(), roleLabel(c["role"].s())) } }
                     }
                 }
             }
-        } else {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = { active = null }) { Text("‹ Back") }
-                Spacer(Modifier.width(8.dp)); Text(activeName, fontWeight = FontWeight.Bold, color = TextDark)
+            // ================= CHATS (conversation list) =================
+            else -> {
+                Row(Modifier.fillMaxWidth().background(WaHeader).padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Chats", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("✕", color = Color.White, fontSize = 16.sp, modifier = Modifier.clickable { onClose() })
+                }
+                OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth().padding(8.dp),
+                    placeholder = { Text("Search chats") }, singleLine = true, leadingIcon = { Text("🔍") })
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    AsyncContent(block = { vm.repo.chatContacts() }) { d, _ ->
+                        val contacts = d["contacts"].l().map { it.m() }
+                        val office = d["office"].m()
+                        val term = query.trim().lowercase()
+                        val convos = contacts.filter { !(it["last_at"] as? String).isNullOrBlank() &&
+                            (term.isBlank() || it["name"].s().lowercase().contains(term)) }
+                        val hasOffice = !(office["last_at"] as? String).isNullOrBlank()
+                        LazyColumn(Modifier.fillMaxSize()) {
+                            if (hasOffice) item { ConvRow("Office desk", true, office["last"].s(), office["last_at"] as? String, 0, "Office broadcast") { open(null, true, "Office desk", "Office broadcast") } }
+                            if (convos.isEmpty() && !hasOffice) item {
+                                Text("No conversations yet.\nTap the pencil button to start a chat.", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(20.dp))
+                            }
+                            items(convos) { c -> ConvRow(c["name"].s(), false, c["last"].s(), c["last_at"] as? String, c["unread"].i(), roleLabel(c["role"].s())) { open(c["id"].i(), false, c["name"].s(), roleLabel(c["role"].s())) } }
+                        }
+                    }
+                    // New-chat FAB
+                    FloatingActionButton(onClick = { picker = true }, containerColor = WaHeader, contentColor = Color.White,
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)) { Text("✎", fontSize = 22.sp) }
+                }
             }
-            ChatThread(vm, active!!.first, active!!.second)
         }
     }
 }
@@ -392,17 +430,23 @@ private fun ChatThread(vm: AuthViewModel, withId: Int?, office: Boolean) {
     val scope = rememberCoroutineScope()
     LaunchedEffect(withId, office) { while (true) { delay(8000); tick++ } }
     Column(Modifier.fillMaxSize()) {
-        Box(Modifier.weight(1f)) {
+        Box(Modifier.weight(1f).fillMaxWidth().background(WaBg)) {
             AsyncContent(key = "$withId|$office|$tick", block = { vm.repo.chatThread(withId, office) }) { d, _ ->
                 val msgs = d["messages"].l()
-                LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (msgs.isEmpty()) item { Text("No messages yet. Say hello 👋", color = Muted, fontSize = 12.sp) }
+                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    if (msgs.isEmpty()) item {
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            Text("No messages yet. Say hello 👋", color = Color(0xFF667781), fontSize = 12.sp,
+                                modifier = Modifier.background(Color.White, RoundedCornerShape(8.dp)).padding(horizontal = 12.dp, vertical = 5.dp))
+                        }
+                    }
                     items(msgs) { mm -> val m = mm.m(); val mine = m["mine"] == true
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
-                            Card(colors = CardDefaults.cardColors(containerColor = if (mine) BrandBlue else Color(0xFFEFF3FF))) {
-                                Column(Modifier.padding(8.dp)) {
-                                    if (!mine && office) Text(m["from"].s(), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (mine) Color.White else Muted)
-                                    Text(m["body"].s(), color = if (mine) Color.White else TextDark, fontSize = 13.sp)
+                            Box(Modifier.widthIn(max = 260.dp).background(if (mine) WaOut else Color.White, RoundedCornerShape(8.dp)).padding(horizontal = 9.dp, vertical = 5.dp)) {
+                                Column {
+                                    if (!mine && office) Text(m["from"].s(), fontSize = 10.5.sp, fontWeight = FontWeight.Bold, color = WaHeader)
+                                    Text(m["body"].s(), color = Color(0xFF111B21), fontSize = 13.sp)
                                 }
                             }
                         }
@@ -410,15 +454,16 @@ private fun ChatThread(vm: AuthViewModel, withId: Int?, office: Boolean) {
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().background(Color(0xFFF0F2F5)).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.weight(1f),
-                placeholder = { Text("Type a message…") }, singleLine = true)
+                placeholder = { Text("Type a message") }, singleLine = true)
             Spacer(Modifier.width(6.dp))
-            Button(onClick = {
-                val b = text.trim(); if (b.isEmpty()) return@Button; text = ""
-                val body: Map<String, Any?> = if (office) mapOf("office" to true, "body" to b) else mapOf("to_id" to withId, "body" to b)
-                scope.launch { try { vm.repo.chatSend(body); tick++ } catch (_: Exception) {} }
-            }) { Text("Send") }
+            Box(Modifier.size(44.dp).background(WaHeader, CircleShape).clickable {
+                val b = text.trim(); if (b.isNotEmpty()) { text = ""
+                    val body: Map<String, Any?> = if (office) mapOf("office" to true, "body" to b) else mapOf("to_id" to withId, "body" to b)
+                    scope.launch { try { vm.repo.chatSend(body); tick++ } catch (_: Exception) {} }
+                }
+            }, contentAlignment = Alignment.Center) { Text("➤", color = Color.White, fontSize = 17.sp) }
         }
     }
 }
