@@ -335,6 +335,10 @@ def employee_dashboard(uid: int, month_bucket: str | None = "current", db: Sessi
     pay_events = [(d_ist(cl.created_at), _d(cl.ptp_amount)) for cl in calls if (cl.disposition or "") in ("PAYMENT", "PAID")]
     pay_events += [(d_ist(v.created_at), _d(v.amount_collected)) for v in visits if _d(v.amount_collected) > 0]
     cash = round(sum(a for d, a in pay_events), 2)
+    # What this person actually collected — from THEIR call-log payments + visit-log payments only
+    # (credited to them), split so a team lead / manager / HO / admin can judge real collection effort.
+    collected_calls = round(sum(_d(cl.ptp_amount) for cl in calls if (cl.disposition or "") in ("PAYMENT", "PAID")), 2)
+    collected_visits = round(sum(_d(v.amount_collected) for v in visits if _d(v.amount_collected) > 0), 2)
 
     trend = []
     for i in range(29, -1, -1):
@@ -372,7 +376,9 @@ def employee_dashboard(uid: int, month_bucket: str | None = "current", db: Sessi
         "kpis": {"assigned": len(cases), "resolved": resolved, "pending_count": len(cases) - resolved,
                  "total_enr": round(total_enr, 2), "recovered": round(recovered, 2),
                  "pending_amount": round(pending_amt, 2), "recovery_pct": pct(recovered, total_enr),
-                 "cash_collected": cash},
+                 "cash_collected": cash,
+                 "collected_calls": collected_calls, "collected_visits": collected_visits,
+                 "collected_logs": round(collected_calls + collected_visits, 2)},
         "performance": {"daily": _window(db, u, datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc), case_ids),
                         "weekly": _window(db, u, datetime.now(timezone.utc) - timedelta(days=7), case_ids),
                         "monthly": _window(db, u, datetime.now(timezone.utc) - timedelta(days=30), case_ids),

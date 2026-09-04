@@ -649,7 +649,7 @@ def _portfolio_rows(db, user, period=None):
         models.Case.bank, models.Case.product, models.Case.segment, models.Case.branch,
         models.Case.branch_explicit, models.Case.period,
         models.Case.funding_amount, models.Case.total_outstanding, models.Case.enr,
-        models.Case.principal_outstanding, models.Case.received_amount,
+        models.Case.principal_outstanding, models.Case.received_amount, models.Case.paid_status,
     ), user, bucket=_bucket_for_period(period))
     if period:
         q = q.filter(models.Case.period == period)
@@ -657,7 +657,8 @@ def _portfolio_rows(db, user, period=None):
 
 
 def _blank(d):
-    return {"count": 0, "pending": 0.0, "received": 0.0, "count_current": 0, "count_next": 0, **d}
+    return {"count": 0, "pending": 0.0, "received": 0.0, "count_current": 0, "count_next": 0,
+            "paid": 0, "unpaid": 0, **d}
 
 
 @router.get("/product-summary")
@@ -669,13 +670,15 @@ def product_summary(month_bucket: str | None = None, db: Session = Depends(get_d
     NOT split a portfolio. `month_bucket` (current/next/all) scopes the whole section to one month."""
     cur, nxt = _current_period(), _next_period()
     agg: dict = {}
-    for b, p, s, br, bexp, per, fund, tos, enr, pos, recv in _portfolio_rows(db, user, _period_bucket(month_bucket)):
+    for b, p, s, br, bexp, per, fund, tos, enr, pos, recv, pstat in _portfolio_rows(db, user, _period_bucket(month_bucket)):
         base = float(fund or 0) or float(tos or 0) or float(enr or 0) or float(pos or 0)   # funding → TOS → ENR → POS
         rc = float(recv or 0)
         pend = max(0.0, base - rc)
+        is_paid = (pstat or "").upper() == "PAID"
         key = (b, p)
         d = agg.setdefault(key, _blank({"segment": s, "branch_split": False, "branches": {}}))
         d["count"] += 1; d["received"] += rc; d["pending"] += pend
+        d["paid" if is_paid else "unpaid"] += 1
         if per == cur: d["count_current"] += 1
         elif per == nxt: d["count_next"] += 1
         if bexp:
@@ -684,6 +687,7 @@ def product_summary(month_bucket: str | None = None, db: Session = Depends(get_d
         bk = (br or "").strip() or "— No location —"
         bd = d["branches"].setdefault(bk, _blank({"branch": bk}))
         bd["count"] += 1; bd["received"] += rc; bd["pending"] += pend
+        bd["paid" if is_paid else "unpaid"] += 1
         if per == cur: bd["count_current"] += 1
         elif per == nxt: bd["count_next"] += 1
     out = []

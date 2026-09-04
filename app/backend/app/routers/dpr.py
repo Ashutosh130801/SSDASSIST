@@ -290,8 +290,10 @@ def _ns_val(v):
     return None
 
 
-def _prepare(content, default_bank, product, user, db):
-    """Read + detect + match. Returns (cols, items) where each item is a classified row."""
+def _prepare(content, default_bank, product, user, db, month_bucket=None):
+    """Read + detect + match. Returns (cols, items) where each item is a classified row.
+    When month_bucket is given (current/next/last/YYYY-MM), only that month's cases are matched —
+    so a DPR can be pinned to one month's portfolio when the same account exists in several."""
     try:
         headers, rows = _read_rows(content)
     except Exception as e:
@@ -307,6 +309,11 @@ def _prepare(content, default_bank, product, user, db):
     # cases across ALL periods (incl. closed portfolios), still within the uploader's own scope.
     q = _scope(db.query(models.Case), user, all_periods=True).filter(models.Case.bank == default_bank,
                                                                      models.Case.product == product)
+    if month_bucket:
+        from .mis import _period_for
+        _per = _period_for(month_bucket) if month_bucket in ("current", "next", "last", "all") else month_bucket
+        if _per:
+            q = q.filter(models.Case.period == _per)
     cases = [c for c in q.all() if c.removed is not True]
     lut = {}
     for c in cases:
@@ -351,10 +358,10 @@ def _prepare(content, default_bank, product, user, db):
 
 @router.post("/preview")
 async def dpr_preview(file: UploadFile = File(...), default_bank: str = Form(...),
-                      product: str = Form(...), db: Session = Depends(get_db),
+                      product: str = Form(...), month_bucket: str = Form(None), db: Session = Depends(get_db),
                       user: models.User = Depends(require_roles(*DPR_ROLES))):
     content = await file.read()
-    cols, items = _prepare(content, default_bank, product, user, db)
+    cols, items = _prepare(content, default_bank, product, user, db, month_bucket)
     counts = {"mark_paid": 0, "extra_paid": 0, "mark_unpaid": 0, "no_change": 0, "unmatched": 0}
     for it in items:
         counts[it["action"]] = counts.get(it["action"], 0) + 1
@@ -374,17 +381,17 @@ async def dpr_preview(file: UploadFile = File(...), default_bank: str = Form(...
     counts["collected_preview"] = round(net, 2)
     public = [{k: v for k, v in it.items() if not k.startswith("_")} for it in items]
     return {"bank": default_bank, "product": product, "detected": cols,
-            "total": len(items), "counts": counts,
+            "total": len(items), "parsed": len(items), "counts": counts,
             "rows": public[:500], "capped": len(public) > 500}
 
 
 @router.post("/commit")
 async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...),
-                     product: str = Form(...), db: Session = Depends(get_db),
+                     product: str = Form(...), month_bucket: str = Form(None), db: Session = Depends(get_db),
                      user: models.User = Depends(require_roles(*DPR_ROLES))):
     import datetime as _dt
     content = await file.read()
-    cols, items = _prepare(content, default_bank, product, user, db)
+    cols, items = _prepare(content, default_bank, product, user, db, month_bucket)
     paid_n = unpaid_n = extra_n = unmatched_n = fields_n = nochange_n = 0
     collected_total = Decimal(0)      # net cash moved by this DPR (positive collections − reversals)
     touched, changes = [], []          # `changes` → stored on the ONE audit entry for the full drill-down
@@ -401,10 +408,14 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
         db.add(models.CallLog(case_id=case.id, caller_id=credit, disposition="PAYMENT",
                               ptp_amount=amt, note=note))
 
+    not_paid = []   # DPR rows that did NOT end as PAID — so the user can see exactly which are missing
     for it in items:
         act = it["action"]
         if act == "unmatched":
             unmatched_n += 1
+            not_paid.append({"account": it.get("key"), "customer": it.get("name"),
+                             "amount": float(it.get("amount") or 0), "status": "—",
+                             "reason": "unmatched — no case with this number in this portfolio"})
             continue
         case = it["_case"]
         # Snapshot the collection base BEFORE any full-sync field overwrite, so a balance/TOS
@@ -453,6 +464,10 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
             change.update({"new_status": new_status, "delta": float(add), "new_received": float(new_recv),
                            "auto_debit": is_autodebit})
             paid_n += 1; _touch(case)
+            if (new_status or "").upper() != "PAID":   # collected but below settlement → PARTIAL, not PAID
+                not_paid.append({"account": it["key"], "customer": case.customer_name,
+                                 "amount": float(add), "status": new_status,
+                                 "reason": f"collected ₹{float(add):.0f} but below the {ns or 'settlement'} amount — marked {new_status}"})
 
         elif act == "extra_paid" and amt is not None:
             # Already paid + DPR paid again with an amount → a NEW extra collection ADDED on top
@@ -506,7 +521,13 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
     from .realtime import notify_data_changed
     notify_data_changed(default_bank, product)
     _mark_today(db, touched)
+    # paid rows that actually ended as PAID (vs collected-but-PARTIAL, which sit in not_paid)
+    partial_n = sum(1 for r in not_paid if r["status"] not in ("—",))
+    paid_final = max(0, paid_n - partial_n)
     return {"bank": default_bank, "product": product, "total": len(items),
-            "paid": paid_n, "extra_paid": extra_n, "unpaid": unpaid_n,
+            "parsed": len(items),                    # rows read from the DPR file
+            "paid": paid_n, "paid_final": paid_final, "partial": partial_n,
+            "extra_paid": extra_n, "unpaid": unpaid_n,
             "no_change": nochange_n, "unmatched": unmatched_n,
-            "field_updates": fields_n, "collected": float(collected_total)}
+            "field_updates": fields_n, "collected": float(collected_total),
+            "not_paid": not_paid}          # exact rows that did NOT end as PAID (unmatched + partial)

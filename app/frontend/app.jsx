@@ -1172,12 +1172,13 @@ function AddProductModal({ presetBank, onClose, onAdded }) {
 function DprModal({ onClose, onDone }) {
   const [cat, setCat] = useState(null);
   const [bank, setBank] = useState(''); const [product, setProduct] = useState('');
+  const [month, setMonth] = useState('');   // '' = all months (bank DPRs often arrive after month-end)
   const [file, setFile] = useState(null);
   const [prev, setPrev] = useState(null); const [res, setRes] = useState(null);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
   useEffect(() => { api('/api/config').then(c => setCat(c.bank_products)).catch(() => {}); }, []);
   const products = (cat && bank && cat.products[bank]) || [];
-  const form = () => { const f = new FormData(); f.append('file', file); f.append('default_bank', bank); f.append('product', product); return f; };
+  const form = () => { const f = new FormData(); f.append('file', file); f.append('default_bank', bank); f.append('product', product); if (month) f.append('month_bucket', month); return f; };
   const changes = prev ? (prev.counts.mark_paid + (prev.counts.extra_paid || 0) + prev.counts.mark_unpaid + (prev.counts.field_updates || 0)) : 0;
   const doPreview = async () => {
     if (!file || !bank || !product) return; setErr(''); setBusy(true); setRes(null);
@@ -1203,6 +1204,13 @@ function DprModal({ onClose, onDone }) {
           <div className="field"><label>Product</label>
             <select className="input" value={product} onChange={e => { setProduct(e.target.value); setPrev(null); }} disabled={!bank}>
               <option value="">— select —</option>{products.map(pp => <option key={pp} value={pp}>{pp}</option>)}</select></div>
+          <div className="field"><label>Month <span className="muted" style={{ fontWeight: 400 }}>(which portfolio month this DPR is for)</span></label>
+            <select className="input" value={month} onChange={e => { setMonth(e.target.value); setPrev(null); }}>
+              <option value="">All months (match anywhere)</option>
+              <option value="last">Last month</option>
+              <option value="current">This month</option>
+              <option value="next">Next month</option>
+            </select></div>
         </div>
         <div className="field"><label>DPR file (.xlsx)</label>
           <input className="input" type="file" accept=".xlsx,.xls" onChange={e => { setFile(e.target.files[0]); setPrev(null); setRes(null); }} /></div>
@@ -1234,7 +1242,27 @@ function DprModal({ onClose, onDone }) {
           {prev.capped && <div className="muted" style={{ fontSize: 11 }}>Showing the first 500 rows.</div>}
         </div>}
         {res && <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid var(--good)' }}>
-          <b>Done.</b> <span className="muted" style={{ fontSize: 13 }}>{res.paid} marked paid · {res.extra_paid || 0} extra collection · {res.unpaid} reversed · {res.field_updates || 0} field updates · {res.unmatched} unmatched (of {res.total} rows). Net cash {INR2(res.collected || 0)}.</span>
+          <b>Done.</b> <span className="muted" style={{ fontSize: 13 }}>
+            <b>{res.parsed != null ? res.parsed : res.total}</b> rows parsed from the file · <b style={{ color: 'var(--good)' }}>{res.paid_final != null ? res.paid_final : res.paid}</b> now PAID
+            {res.partial ? <> · <b style={{ color: 'var(--warn)' }}>{res.partial}</b> partial (below settlement)</> : null}
+            {' '}· {res.extra_paid || 0} extra · {res.unpaid} reversed · {res.field_updates || 0} field updates · <b style={{ color: 'var(--bad)' }}>{res.unmatched}</b> unmatched. Net cash {INR2(res.collected || 0)}.</span>
+          {(res.not_paid || []).length > 0 && <div style={{ marginTop: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>⚠️ {res.not_paid.length} row{res.not_paid.length === 1 ? '' : 's'} did NOT end as PAID
+              <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => {
+                const rows = [['Account', 'Customer', 'Amount', 'Status', 'Reason'],
+                  ...res.not_paid.map(r => [r.account || '', r.customer || '', r.amount || 0, r.status || '', r.reason || ''])];
+                const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+                const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+                a.download = `dpr-not-paid-${res.bank}-${res.product}.csv`.replace(/\s+/g, '_'); a.click();
+              }}>⬇ Download list</button></div>
+            <div className="tablewrap" style={{ maxHeight: 220, overflow: 'auto' }}><table>
+              <thead><tr><th>Account</th><th>Customer</th><th>Amount</th><th>Status</th><th>Why not paid</th></tr></thead>
+              <tbody>{res.not_paid.slice(0, 300).map((r, i) => <tr key={i}>
+                <td className="mono">{r.account || '—'}</td><td>{r.customer || '—'}</td>
+                <td className="mono">{r.amount ? INR2(r.amount) : '—'}</td>
+                <td style={{ color: r.status === '—' ? 'var(--bad)' : 'var(--warn)' }}>{r.status || '—'}</td>
+                <td style={{ fontSize: 11.5 }}>{r.reason}</td></tr>)}</tbody></table></div>
+          </div>}
           <div className="toolbar" style={{ marginTop: 8 }}><button className="btn" onClick={onClose}>Close</button></div></div>}
       </div>
     </div>
@@ -1809,6 +1837,7 @@ function CasesView({ user }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 14 }}>
                     <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(br.received)}</b></div>
                     <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(br.pending)}</b></div></div>
+                  <div style={{ fontSize: 11.5, marginTop: 8 }}><span style={{ color: 'var(--good)' }}>✓ {br.paid || 0} paid</span> · <span style={{ color: 'var(--warn)' }}>{br.unpaid || 0} unpaid</span></div>
                 </div>))}
             </div>
           </div>
@@ -1829,6 +1858,7 @@ function CasesView({ user }) {
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
                       <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(c.received)}</b></div>
                       <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(c.pending)}</b></div></div>
+                    <div style={{ fontSize: 11.5, marginTop: 8 }}><span style={{ color: 'var(--good)' }}>✓ {c.paid || 0} paid</span> · <span style={{ color: 'var(--warn)' }}>{c.unpaid || 0} unpaid</span></div>
                     {c.branch_split && <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>Tap to choose a location →</div>}
                   </div>))}
               </div>}
@@ -3059,6 +3089,7 @@ function EmployeeDashboard({ u, config, onClose }) {
             <EKpi label="Recovered" val={money(d.kpis.recovered)} color="var(--good)" />
             <EKpi label="Recovery %" val={d.kpis.recovery_pct + '%'} />
             <EKpi label="Cash coll" val={money(d.kpis.cash_collected)} />
+            {d.kpis.collected_logs != null && <EKpi label="Collected (call+visit)" val={money(d.kpis.collected_logs)} color="var(--good)" />}
           </div>
           {trends && <TrendStrip trends={trends} title="Cash collected — FTD / MTD / LMTD / Overall" />}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 10, marginTop: 12 }}>
