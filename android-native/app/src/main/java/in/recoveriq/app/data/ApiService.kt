@@ -377,6 +377,19 @@ interface ApiService {
     @POST("api/chat/send")
     suspend fun chatSend(@Body body: Map<String, Any?>): Map<String, Any?>
 
+    @POST("api/chat/request")
+    suspend fun chatRequest(@Body body: Map<String, Any?>): Map<String, Any?>
+
+    @GET("api/chat/requests")
+    suspend fun chatRequests(): Map<String, Any?>
+
+    @POST("api/chat/request/{id}/decide")
+    suspend fun chatRequestDecide(@retrofit2.http.Path("id") id: Int,
+                                  @Body body: Map<String, Any?>): Map<String, Any?>
+
+    @POST("api/chat/broadcast")
+    suspend fun chatBroadcast(@Body body: Map<String, Any?>): Map<String, Any?>
+
     @POST("api/chat/callback")
     suspend fun chatCallback(@Body body: Map<String, Any?>): Map<String, Any?>
 

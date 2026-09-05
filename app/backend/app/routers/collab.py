@@ -190,66 +190,93 @@ def liner(fos_id: int | None = None, db: Session = Depends(get_db),
 _OFFICE_ROLES = ("admin", "manager", "headoffice", "teamlead", "backend", "hr")
 
 
-def _contacts_for(db, user):
-    """People this user can message. Scoped by role so the directory matches who they oversee:
-      • admin / head office / back office / HR  → everyone (whole org)
-      • manager                                 → everyone in their branch (all roles)
-      • team lead                               → their team (callers + FOS on their cases)
-      • FOS / caller                            → their case partner(s) + their team lead
-    Everyone can also reach the shared 'Office' desk."""
+def _hr_ids(db):
+    return {i for (i,) in db.query(models.User.id).filter(
+        models.User.role == "hr", models.User.is_active == True).all()}  # noqa: E712
+
+
+def _ho_ids(db):
+    return {i for (i,) in db.query(models.User.id).filter(
+        models.User.role == "headoffice", models.User.is_active == True).all()}  # noqa: E712
+
+
+def _direct_ids(db, user):
+    """User ids this user may chat with DIRECTLY (no request needed). EVERYONE can reach HR.
+    Within-team scoping still applies to FOS / callers / team leads / managers. Head Office is
+    NOT here for lower tiers — reaching HO is request-based (see _approved_ho)."""
     role = user.role
     active = models.User.is_active == True  # noqa: E712
-    people = {}
-
+    ids = set()
     if role in ("admin", "headoffice", "backend", "hr"):
-        # Full directory — every active staff member.
-        for u in db.query(models.User).filter(active).all():
-            people[u.id] = u
-
+        ids = {i for (i,) in db.query(models.User.id).filter(active).all()}   # reach everyone
     elif role == "manager":
-        # Everyone in the manager's branch, regardless of role (callers, FOS, team leads…).
-        for u in db.query(models.User).filter(active, models.User.branch == user.branch).all():
-            people[u.id] = u
-
+        ids = {i for (i,) in db.query(models.User.id).filter(active, models.User.branch == user.branch).all()}
     elif role == "teamlead":
-        # The team lead's own team — callers + FOS assigned to cases carrying their name.
-        ids = _scope_user_ids(db, user)
-        for u in db.query(models.User).filter(models.User.id.in_(ids or [-1]), active).all():
-            people[u.id] = u
-
-    else:  # fos / telecaller
+        ids = set(_scope_user_ids(db, user))
+    else:  # fos / telecaller → case partner(s) + their team lead
         col = models.Case.assigned_fos_id if role == "fos" else models.Case.assigned_caller_id
         other = models.Case.assigned_caller_id if role == "fos" else models.Case.assigned_fos_id
-        ids = [i for (i,) in _scope(db.query(other), user).filter(col == user.id).distinct().all() if i]
-        for u in db.query(models.User).filter(models.User.id.in_(ids or [-1]), active).all():
-            people[u.id] = u
-        if user.team_lead_id:  # their own team lead, even if not sharing a live case right now
-            tl = db.query(models.User).get(user.team_lead_id)
-            if tl and tl.is_active:
-                people[tl.id] = tl
+        ids = {i for (i,) in _scope(db.query(other), user).filter(col == user.id).distinct().all() if i}
+        if user.team_lead_id:
+            ids.add(user.team_lead_id)
+    ids |= _hr_ids(db)          # EVERYONE can contact HR directly
+    ids.discard(user.id)
+    return ids
 
-    out = [{"id": u.id, "name": u.name, "role": u.role, "emp_code": u.emp_code}
-           for u in people.values() if u.id != user.id]
-    out.sort(key=lambda x: (x["role"] or "", x["name"] or ""))
-    return out
+
+def _approved_ho(db, user):
+    """HO members this user has an APPROVED chat request with."""
+    return {r.to_id for r in db.query(models.ChatRequest).filter(
+        models.ChatRequest.from_id == user.id, models.ChatRequest.status == "approved").all()}
+
+
+def _pending_ho(db, user):
+    return {r.to_id for r in db.query(models.ChatRequest).filter(
+        models.ChatRequest.from_id == user.id, models.ChatRequest.status == "pending").all()}
+
+
+def _thread_partners(db, user):
+    """Everyone this user has exchanged a 1:1 message with — so a reply is ALWAYS possible even
+    if the sender is outside the user's normal directory (fixes 'HO messaged me but I can't reply')."""
+    ids = set()
+    for a, b in db.query(models.ChatMessage.from_id, models.ChatMessage.to_id).filter(
+            or_(models.ChatMessage.from_id == user.id, models.ChatMessage.to_id == user.id)).all():
+        if a and a != user.id:
+            ids.add(a)
+        if b and b != user.id:
+            ids.add(b)
+    return ids
+
+
+def _can_chat(db, user, target_id):
+    if not target_id or target_id == user.id:
+        return False
+    return (target_id in _direct_ids(db, user)
+            or target_id in _approved_ho(db, user)
+            or target_id in _thread_partners(db, user))   # reply-back
 
 
 @router.get("/chat/contacts")
 def chat_contacts(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    """WhatsApp-style chat list: every person in scope + the shared Office desk, each carrying
-    its last-message preview, time, and unread count. Threads with recent activity float to the
-    top; the rest follow alphabetically so a fresh chat can still be started."""
-    contacts = _contacts_for(db, user)
-    ids = [c["id"] for c in contacts]
+    """WhatsApp-style chat list. Directory = team scope + HR (direct) + every Head Office member
+    (locked until an approved request) + anyone who has already messaged you (reply-back). Each
+    contact carries its last-message preview, time, unread count, and lock/pending state."""
+    direct = _direct_ids(db, user)
+    ho = _ho_ids(db)
+    approved = _approved_ho(db, user)
+    pending = _pending_ho(db, user)
+    threads = _thread_partners(db, user)
+    dir_ids = (direct | ho | threads)
+    dir_ids.discard(user.id)
+    users = {u.id: u for u in db.query(models.User).filter(
+        models.User.id.in_(dir_ids or {-1})).all()}
 
-    # All 1:1 messages between me and any scoped contact, newest first.
+    # last message + unread across ALL of my 1:1 threads (not just directory) → replies show up.
     convo = (db.query(models.ChatMessage)
-             .filter(or_(
-                 and_(models.ChatMessage.from_id == user.id, models.ChatMessage.to_id.in_(ids or [-1])),
-                 and_(models.ChatMessage.from_id.in_(ids or [-1]), models.ChatMessage.to_id == user.id)))
+             .filter(models.ChatMessage.to_id.isnot(None),
+                     or_(models.ChatMessage.from_id == user.id, models.ChatMessage.to_id == user.id))
              .order_by(models.ChatMessage.created_at.desc()).all())
-    last_by = {}      # partner_id -> (body, at, mine)
-    unread_by = {}    # partner_id -> count of their unread msgs to me
+    last_by, unread_by = {}, {}
     for m in convo:
         partner = m.to_id if m.from_id == user.id else m.from_id
         if partner not in last_by:
@@ -257,25 +284,32 @@ def chat_contacts(db: Session = Depends(get_db), user: models.User = Depends(get
         if m.to_id == user.id and not m.read:
             unread_by[partner] = unread_by.get(partner, 0) + 1
 
-    for c in contacts:
-        body, at, mine = last_by.get(c["id"], (None, None, False))
-        c["last"] = (("You: " if mine else "") + body) if body else None
-        c["last_at"] = at.isoformat() if at else None
-        c["unread"] = unread_by.get(c["id"], 0)
-    # Recent conversations first (newest at top); never-messaged contacts after, alphabetically.
+    contacts = []
+    for uid, u in users.items():
+        allowed = (uid in direct) or (uid in approved) or (uid in threads)
+        body, at, mine = last_by.get(uid, (None, None, False))
+        contacts.append({
+            "id": uid, "name": u.name, "role": u.role, "emp_code": u.emp_code,
+            "locked": (u.role == "headoffice") and not allowed,   # needs an approved request
+            "pending": uid in pending,
+            "last": (("You: " if mine else "") + body) if body else None,
+            "last_at": at.isoformat() if at else None,
+            "unread": unread_by.get(uid, 0),
+        })
     messaged = sorted([c for c in contacts if c["last_at"]], key=lambda x: x["last_at"], reverse=True)
     fresh = sorted([c for c in contacts if not c["last_at"]], key=lambda x: (x["name"] or "").lower())
     contacts = messaged + fresh
 
-    # Office desk summary (shared broadcast channel — no per-user read state).
     om = (db.query(models.ChatMessage).filter(models.ChatMessage.to_id.is_(None))
           .order_by(models.ChatMessage.created_at.desc()).first())
     uname = {i: n for (i, n) in db.query(models.User.id, models.User.name).all()}
     office = {"last": (f"{uname.get(om.from_id, '—')}: {om.body}" if om else None),
               "last_at": om.created_at.isoformat() if om and om.created_at else None}
-
     roles = sorted({c["role"] for c in contacts if c.get("role")})
-    return {"office": office, "contacts": contacts, "roles": roles}
+    # people this user may broadcast to (direct contacts + approved HO), for the broadcast composer
+    can_broadcast = user.role in ("admin", "manager", "headoffice", "teamlead", "backend", "hr")
+    return {"office": office, "contacts": contacts, "roles": roles,
+            "pending_requests": len(pending), "can_broadcast": can_broadcast}
 
 
 @router.get("/chat/thread")
@@ -292,7 +326,6 @@ def chat_thread(with_id: int | None = None, office: bool = False,
     else:
         raise HTTPException(status_code=400, detail="with_id or office required")
     msgs = q.order_by(models.ChatMessage.created_at.asc()).limit(300).all()
-    # mark messages TO me as read
     now_read = [m for m in msgs if m.to_id == user.id and not m.read]
     for m in now_read:
         m.read = True
@@ -301,7 +334,7 @@ def chat_thread(with_id: int | None = None, office: bool = False,
     uname = {i: n for (i, n) in db.query(models.User.id, models.User.name).all()}
     return {"messages": [{"id": m.id, "from_id": m.from_id, "from": uname.get(m.from_id, "—"),
                           "to_id": m.to_id, "mine": m.from_id == user.id, "body": m.body,
-                          "kind": m.kind, "case_id": m.case_id,
+                          "kind": m.kind, "case_id": m.case_id, "read": bool(m.read),
                           "at": m.created_at.isoformat() if m.created_at else None} for m in msgs]}
 
 
@@ -313,20 +346,115 @@ def chat_send(body: dict = Body(...), db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="Message is empty")
     to_id = body.get("to_id")
     office = bool(body.get("office"))
-    m = models.ChatMessage(from_id=user.id, to_id=(None if office else int(to_id) if to_id else None),
+    if not office:
+        if not to_id:
+            raise HTTPException(status_code=400, detail="No recipient")
+        if not _can_chat(db, user, int(to_id)):
+            raise HTTPException(status_code=403,
+                                detail="You need Head Office to approve your chat request first.")
+    m = models.ChatMessage(from_id=user.id, to_id=(None if office else int(to_id)),
                            case_id=body.get("case_id"), body=text[:2000], kind="chat")
     db.add(m)
-    # ping the recipient's notification bell (office message → all office roles)
     if office:
         for (uid,) in db.query(models.User.id).filter(models.User.role.in_(_OFFICE_ROLES),
                                                       models.User.is_active == True).all():  # noqa: E712
             if uid != user.id:
                 push(db, uid, f"💬 {user.name} (office)", text[:120], ntype="chat", by_name=user.name)
-    elif to_id:
+    else:
         push(db, int(to_id), f"💬 {user.name}", text[:120], case_id=body.get("case_id"),
              ntype="chat", by_name=user.name)
     db.commit()
     return {"ok": True, "id": m.id}
+
+
+# ---- Request-to-chat with Head Office ----
+
+@router.post("/chat/request")
+def chat_request(body: dict = Body(...), db: Session = Depends(get_db),
+                 user: models.User = Depends(get_current_user)):
+    """A lower-tier user asks a Head Office member for permission to chat. HO must approve."""
+    to_id = body.get("to_id")
+    target = db.query(models.User).get(int(to_id)) if to_id else None
+    if not target or target.role != "headoffice":
+        raise HTTPException(status_code=400, detail="Chat requests are only for Head Office.")
+    if target.id in _direct_ids(db, user) or target.id in _approved_ho(db, user):
+        return {"ok": True, "already": True}
+    if db.query(models.ChatRequest).filter(models.ChatRequest.from_id == user.id,
+                                           models.ChatRequest.to_id == target.id,
+                                           models.ChatRequest.status == "pending").first():
+        return {"ok": True, "pending": True}
+    r = models.ChatRequest(from_id=user.id, to_id=target.id, note=(body.get("note") or "")[:300])
+    db.add(r)
+    db.commit()
+    push(db, target.id, f"🔓 Chat request — {user.name}",
+         (body.get("note") or "Wants permission to chat with you."), ntype="chat_request", by_name=user.name)
+    from .realtime import notify_user
+    notify_user(target.id, {"type": "chat_request", "from": user.name})
+    return {"ok": True}
+
+
+@router.get("/chat/requests")
+def chat_requests(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Head office / admin: pending chat requests awaiting my approval."""
+    if user.role not in ("headoffice", "admin"):
+        return {"requests": []}
+    q = db.query(models.ChatRequest).filter(models.ChatRequest.status == "pending")
+    if user.role == "headoffice":
+        q = q.filter(models.ChatRequest.to_id == user.id)
+    rows = q.order_by(models.ChatRequest.created_at.desc()).all()
+    umap = {i: (n, c) for (i, n, c) in db.query(models.User.id, models.User.name, models.User.emp_code).all()}
+    return {"requests": [{
+        "id": r.id, "from_id": r.from_id,
+        "from": umap.get(r.from_id, ("—", None))[0], "emp_code": umap.get(r.from_id, ("", None))[1],
+        "note": r.note, "at": r.created_at.isoformat() if r.created_at else None} for r in rows]}
+
+
+@router.post("/chat/request/{rid}/decide")
+def chat_request_decide(rid: int, body: dict = Body(default={}), db: Session = Depends(get_db),
+                        user: models.User = Depends(get_current_user)):
+    r = db.query(models.ChatRequest).get(rid)
+    if not r:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if user.role not in ("headoffice", "admin") or (user.role == "headoffice" and r.to_id != user.id):
+        raise HTTPException(status_code=403, detail="Not allowed")
+    approve = bool(body.get("approve"))
+    r.status = "approved" if approve else "declined"
+    r.decided_at = datetime.now(timezone.utc)
+    db.commit()
+    push(db, r.from_id, "✅ Chat approved" if approve else "Chat request declined",
+         (f"You can now message {user.name}." if approve else "Head office declined your chat request."),
+         ntype="chat", by_name=user.name)
+    from .realtime import notify_user
+    notify_user(r.from_id, {"type": "chat_request_decided", "approved": approve})
+    return {"ok": True}
+
+
+# ---- Broadcast to selected people ----
+
+@router.post("/chat/broadcast")
+def chat_broadcast(body: dict = Body(...), db: Session = Depends(get_db),
+                   user: models.User = Depends(get_current_user)):
+    """Send one message to several selected people at once. Each recipient gets it as a 1:1
+    'broadcast' message + a pop-up on their working screen (via the realtime channel) + bell."""
+    if user.role not in ("admin", "manager", "headoffice", "teamlead", "backend", "hr"):
+        raise HTTPException(status_code=403, detail="You're not allowed to broadcast.")
+    text = (body.get("body") or "").strip()
+    ids = [int(x) for x in (body.get("to_ids") or []) if x]
+    if not text:
+        raise HTTPException(status_code=400, detail="Message is empty")
+    if not ids:
+        raise HTTPException(status_code=400, detail="Pick at least one recipient")
+    from .realtime import notify_user
+    sent = 0
+    for uid in set(ids):
+        if uid == user.id:
+            continue
+        db.add(models.ChatMessage(from_id=user.id, to_id=uid, body=text[:2000], kind="broadcast"))
+        push(db, uid, f"📢 Broadcast — {user.name}", text[:120], ntype="broadcast", by_name=user.name)
+        notify_user(uid, {"type": "broadcast", "from": user.name, "body": text[:500]})
+        sent += 1
+    db.commit()
+    return {"ok": True, "sent": sent}
 
 
 @router.post("/chat/callback")

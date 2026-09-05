@@ -33,6 +33,10 @@ object Realtime {
     private val _notification = MutableSharedFlow<NotificationItem>(extraBufferCapacity = 16)
     val notification: SharedFlow<NotificationItem> = _notification
 
+    // A broadcast the office sent to this user → the app pops it on the working screen (from, body).
+    private val _broadcast = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 8)
+    val broadcast: SharedFlow<Pair<String, String>> = _broadcast
+
     private var socket: WebSocket? = null
     private var wantConnected = false
 
@@ -76,6 +80,8 @@ object Realtime {
                             if (id > 0) _openCase.tryEmit(id)
                         }
                         "data_changed", "case_update" -> _dataChanged.tryEmit(System.currentTimeMillis())
+                        "broadcast" -> _broadcast.tryEmit(
+                            obj.optString("from").ifEmpty { "Head Office" } to obj.optString("body"))
                         "notification" -> {
                             val n = obj.optJSONObject("notification")
                             if (n != null) _notification.tryEmit(

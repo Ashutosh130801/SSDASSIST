@@ -27,7 +27,9 @@ import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SpaceDashboard
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -204,6 +206,24 @@ private fun MainNav(
                 n.title ?: "Update", n.body ?: "",
             )
         }
+    }
+    // Head-office broadcast → pop it on the working screen (and post a phone notification too).
+    var broadcast by remember { mutableStateOf<Pair<String, String>?>(null) }
+    LaunchedEffect(Unit) {
+        Realtime.broadcast.collect { (from, body) ->
+            broadcast = from to body
+            `in`.recoveriq.app.Notifier.show(
+                appCtx, System.currentTimeMillis().toInt(), "📢 $from", body,
+            )
+        }
+    }
+    broadcast?.let { (from, body) ->
+        AlertDialog(
+            onDismissRequest = { broadcast = null },
+            confirmButton = { TextButton(onClick = { broadcast = null }) { Text("Got it") } },
+            title = { Text("📢 $from") },
+            text = { Text(body) },
+        )
     }
 
     // Offer an in-app update if a newer build is published to the server.

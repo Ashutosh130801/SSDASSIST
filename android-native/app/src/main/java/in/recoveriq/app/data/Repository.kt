@@ -288,6 +288,9 @@ class Repository(context: Context) {
     suspend fun chatThread(withId: Int?, office: Boolean) =
         Api.service.chatThread(withId, if (office) true else null)
     suspend fun chatSend(body: Map<String, Any?>) = Api.service.chatSend(body)
+    suspend fun chatRequest(toId: Int) = Api.service.chatRequest(mapOf("to_id" to toId))
+    suspend fun chatBroadcast(toIds: List<Int>, body: String) =
+        Api.service.chatBroadcast(mapOf("to_ids" to toIds, "body" to body))
     suspend fun chatCallback(caseId: Int, note: String?) =
         Api.service.chatCallback(mapOf("case_id" to caseId, "note" to note))
     suspend fun chatUnread(): Int =

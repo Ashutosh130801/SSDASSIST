@@ -637,3 +637,16 @@ class ChatMessage(Base):
     kind = Column(String(16), default="chat")     # chat | callback
     read = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class ChatRequest(Base):
+    """A lower-tier user (FOS/caller/TL/manager) asking to chat with a Head Office member.
+    Chatting with HO is request-based: HO must approve before the two can message freely."""
+    __tablename__ = "chat_requests"
+    id = Column(Integer, primary_key=True, index=True)
+    from_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)   # requester
+    to_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)     # the HO member
+    status = Column(String(12), default="pending", index=True)   # pending | approved | declined
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)

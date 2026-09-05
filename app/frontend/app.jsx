@@ -4062,6 +4062,7 @@ function AIAssist({ user }) {
 function PTPTracker() {
   const [data, setData] = useState(null); const [bank, setBank] = useState(''); const [product, setProduct] = useState(''); const [drawer, setDrawer] = useState(null);
   const [err, setErr] = useState(''); const [search, setSearch] = useState('');
+  const [seg, setSeg] = useState('');   // '' = all; else overdue / today / upcoming (click a chip to filter)
   const [dFrom, setDFrom] = useState(''); const [dTo, setDTo] = useState('');   // promise-date calendar range
   const [callerF, setCallerF] = useState(''); const [fosF, setFosF] = useState('');   // caller / FOS filters
   const [opts, setOpts] = useState({ banks: [], products: [] });
@@ -4092,9 +4093,10 @@ function PTPTracker() {
   return (
     <div>
       <div className="toolbar">
-        <span className="badge unpaid">{data.counts.overdue} overdue</span>
-        <span className="badge partial">{data.counts.today} due today</span>
-        <span className="badge ptp">{data.counts.upcoming} upcoming</span>
+        {[['overdue', 'unpaid', `${data.counts.overdue} overdue`], ['today', 'partial', `${data.counts.today} due today`], ['upcoming', 'ptp', `${data.counts.upcoming} upcoming`]].map(([k, cls, lbl]) =>
+          <span key={k} className={cx('badge', cls)} onClick={() => setSeg(seg === k ? '' : k)} title="Click to filter"
+            style={{ cursor: 'pointer', boxShadow: seg === k ? '0 0 0 2px currentColor' : 'none', opacity: (seg && seg !== k) ? 0.45 : 1 }}>{lbl}</span>)}
+        {seg && <button className="btn ghost sm" onClick={() => setSeg('')}>✕ show all</button>}
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search name / account / card / phone"
           style={{ minWidth: 230, border: '1px solid var(--stroke-soft)', borderRadius: 10, padding: '7px 10px', fontSize: 13 }} />
         {search && <button className="btn ghost sm" onClick={() => setSearch('')}>✕</button>}
@@ -4115,9 +4117,12 @@ function PTPTracker() {
         <button className="btn sm" onClick={load}>↻</button>
       </div>
       {visible.length === 0 ? <p className="muted">{search ? `No promises match "${search}".` : 'No active promises to pay right now.'}</p> :
-        groups.map(([key, label, cls]) => {
+        groups.filter(([key]) => !seg || key === seg).map(([key, label, cls]) => {
           const rows = visible.filter(r => r.bucket === key);
-          if (!rows.length) return null;
+          if (!rows.length) return <div key={key} className="glass card" style={{ marginBottom: 14 }}>
+            <div className="section-h"><h3 style={{ fontSize: 15 }}><span className={cx('badge', cls)}>{label}</span>
+              <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}> · 0</span></h3></div>
+            <p className="muted" style={{ padding: '4px 2px' }}>No {label.toLowerCase()} promises.</p></div>;
           return <div key={key} className="glass card" style={{ marginBottom: 14 }}>
             <div className="section-h"><h3 style={{ fontSize: 15 }}><span className={cx('badge', cls)}>{label}</span>
               <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}> · {rows.length}</span></h3></div>
@@ -4903,6 +4908,7 @@ function useDataChanged(cb) {
         ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
         ws.onmessage = e => { try { const m = JSON.parse(e.data);
           if (m.type === 'notification') { try { window.dispatchEvent(new CustomEvent('ssd-notif', { detail: m.notification })); } catch (_) {} return; }
+          if (m.type === 'broadcast') { try { window.dispatchEvent(new CustomEvent('ssd-broadcast', { detail: m })); } catch (_) {} return; }
           if (m.type === 'data_changed' || m.type === 'case_update') { clearTimeout(timer); timer = setTimeout(() => ref.current(m), 700); } } catch (_) {} };
         ws.onclose = () => { if (!stop) setTimeout(connect, 3000); };
       } catch (_) { if (!stop) setTimeout(connect, 3000); }
@@ -7725,6 +7731,26 @@ function chatWhen(iso) {
 const WA = { teal: '#075E54', header: '#008069', green: '#25D366', out: '#D9FDD3', inBub: '#FFFFFF',
   bg: '#EFEAE2', panel: '#FFFFFF', tick: '#53BDEB' };
 
+// Full-screen pop-up shown to every recipient of a broadcast, on whatever screen they're working.
+function BroadcastPopup() {
+  const [msg, setMsg] = useState(null);
+  useEffect(() => {
+    const h = (e) => { const d = e.detail || {}; setMsg({ from: d.from || 'Head Office', body: d.body || '' }); };
+    window.addEventListener('ssd-broadcast', h);
+    return () => window.removeEventListener('ssd-broadcast', h);
+  }, []);
+  if (!msg) return null;
+  return <div onClick={() => setMsg(null)} style={{ position: 'fixed', inset: 0, zIndex: 4000, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+    <div onClick={e => e.stopPropagation()} style={{ maxWidth: 420, width: '100%', background: '#fff', borderRadius: 16, overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,.35)' }}>
+      <div style={{ background: WA.header, color: '#fff', padding: '14px 18px', fontWeight: 800, fontSize: 16 }}>📢 Broadcast — {msg.from}</div>
+      <div style={{ padding: 18, fontSize: 15, lineHeight: 1.5, color: '#111B21', whiteSpace: 'pre-wrap' }}>{msg.body}</div>
+      <div style={{ padding: '0 18px 16px', textAlign: 'right' }}>
+        <button onClick={() => setMsg(null)} style={{ border: 'none', borderRadius: 10, padding: '9px 18px', background: WA.header, color: '#fff', fontWeight: 700, cursor: 'pointer' }}>Got it</button>
+      </div>
+    </div>
+  </div>;
+}
+
 function ChatWidget({ user }) {
   const [open, setOpen] = useState(false); const [unread, setUnread] = useState(0);
   const [contacts, setContacts] = useState(null);
@@ -7742,10 +7768,20 @@ function ChatWidget({ user }) {
     const p = active === 'office' ? 'office=true' : 'with_id=' + active.id;
     api('/api/chat/thread?' + p).then(r => { setMsgs(r.messages || []); pollUnread(); setTimeout(() => endRef.current && endRef.current.scrollIntoView(), 30); }).catch(() => setMsgs([])); };
   useEffect(() => { if (!active) return; loadThread(); const t = setInterval(loadThread, 8000); return () => clearInterval(t); }, [active]);
-  const openThread = (a) => { setActive(a); setPicker(false); setMsgs([]); };
+  const [bcast, setBcast] = useState(false); const [bsel, setBsel] = useState([]); const [btext, setBtext] = useState(''); const [bq, setBq] = useState('');
+  const openThread = (a) => { setActive(a); setPicker(false); setBcast(false); setMsgs([]); };
   const send = () => { const b = text.trim(); if (!b) return; setText('');
     const body = active === 'office' ? { office: true, body: b } : { to_id: active.id, body: b };
-    api('/api/chat/send', { method: 'POST', body }).then(() => { loadThread(); loadContacts(); }).catch(() => toast('Could not send')); };
+    api('/api/chat/send', { method: 'POST', body }).then(() => { loadThread(); loadContacts(); }).catch(e => toast(e.message || 'Could not send', 'err')); };
+  // Head-office chat is request-based: locked HO contacts must be approved before chatting.
+  const requestChat = (c) => api('/api/chat/request', { method: 'POST', body: { to_id: c.id } })
+    .then(r => { toast(r.already ? 'You can chat now.' : r.pending ? 'Request already pending.' : 'Request sent to Head Office.'); loadContacts(); })
+    .catch(e => toast(e.message || 'Could not send request', 'err'));
+  const onPick = (c) => { if (c.locked) { if (!c.pending) requestChat(c); else toast('Request pending Head Office approval.'); return; } openThread({ id: c.id }); };
+  const sendBroadcast = () => { const t = btext.trim(); if (!t) { toast('Type a message', 'err'); return; } if (!bsel.length) { toast('Pick at least one person', 'err'); return; }
+    api('/api/chat/broadcast', { method: 'POST', body: { to_ids: bsel, body: t } })
+      .then(r => { toast(`Broadcast sent to ${r.sent}.`); setBcast(false); setBsel([]); setBtext(''); setBq(''); loadContacts(); })
+      .catch(e => toast(e.message || 'Could not broadcast', 'err')); };
 
   const roles = (contacts && contacts.roles) || [];
   const all = (contacts && contacts.contacts) || [];
@@ -7802,12 +7838,39 @@ function ChatWidget({ user }) {
               msgs.map(m => <div key={m.id} style={{ alignSelf: m.mine ? 'flex-end' : 'flex-start', maxWidth: '82%', background: m.mine ? WA.out : WA.inBub, color: '#111B21', padding: '5px 9px 4px', borderRadius: 8, fontSize: 13, boxShadow: '0 1px 0 rgba(0,0,0,.08)', position: 'relative' }}>
                 {!m.mine && active === 'office' && <div style={{ fontSize: 10.5, fontWeight: 700, color: WA.header }}>{m.from}</div>}
                 {m.kind === 'callback' ? <b>{m.body}</b> : m.body}
-                <span style={{ fontSize: 9.5, color: '#667781', float: 'right', margin: '3px 0 0 8px' }}>{fmtTime(m.at)}{m.mine ? ' ✓✓' : ''}</span></div>)}
+                <span style={{ fontSize: 9.5, color: '#667781', float: 'right', margin: '3px 0 0 8px' }}>{fmtTime(m.at)}
+                  {m.mine && <span style={{ color: m.read ? WA.tick : '#8696a0', fontWeight: 700 }}> ✓✓</span>}</span></div>)}
             <div ref={endRef} />
           </div>
           <div style={{ display: 'flex', gap: 6, padding: 8, background: '#F0F2F5', alignItems: 'center' }}>
             <input style={{ flex: 1, border: 'none', borderRadius: 20, padding: '9px 14px', fontSize: 13, outline: 'none' }} value={text} placeholder="Type a message" onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') send(); }} />
             <button onClick={send} style={{ width: 40, height: 40, borderRadius: '50%', border: 'none', background: WA.header, color: '#fff', fontSize: 17, cursor: 'pointer', flex: '0 0 40px' }}>➤</button>
+          </div>
+        </>
+      ) : bcast ? (/* ================= BROADCAST (select many) ================= */
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: WA.header, color: '#fff' }}>
+            <span onClick={() => { setBcast(false); setBq(''); }} style={{ cursor: 'pointer', fontSize: 20 }}>‹</span>
+            <b style={{ fontSize: 15, flex: 1 }}>📢 Broadcast{bsel.length ? ` · ${bsel.length} selected` : ''}</b>
+          </div>
+          <div style={{ padding: 8, borderBottom: '1px solid #eee' }}>
+            <input style={{ width: '100%', border: '1px solid #e5e7eb', borderRadius: 20, padding: '8px 14px', fontSize: 13, outline: 'none' }} value={bq} placeholder="🔍 Search people…" onChange={e => setBq(e.target.value)} />
+          </div>
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {(all.filter(c => !c.locked && (!bq.trim() || (c.name || '').toLowerCase().includes(bq.trim().toLowerCase()) || (c.emp_code || '').toLowerCase().includes(bq.trim().toLowerCase())))).map(c => {
+              const on = bsel.includes(c.id);
+              return <div key={c.id} onClick={() => setBsel(on ? bsel.filter(x => x !== c.id) : [...bsel, c.id])} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 14px', cursor: 'pointer', borderBottom: '1px solid #F0F0F0', background: on ? 'rgba(0,128,105,.06)' : 'transparent' }}>
+                <input type="checkbox" checked={on} readOnly style={{ width: 17, height: 17 }} />
+                <Avatar name={c.name} size={34} />
+                <div style={{ flex: 1, minWidth: 0 }}><span style={{ fontWeight: 600, color: '#111B21' }}>{c.name}</span>
+                  <div style={{ fontSize: 11.5, color: '#667781' }}>{roleName(c.role)}</div></div>
+              </div>;
+            })}
+          </div>
+          <div style={{ padding: 8, background: '#F0F2F5', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <textarea value={btext} onChange={e => setBtext(e.target.value)} placeholder="Broadcast message…" rows={2}
+              style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: '8px 12px', fontSize: 13, outline: 'none', resize: 'none' }} />
+            <button onClick={sendBroadcast} style={{ border: 'none', borderRadius: 10, padding: '9px', background: WA.header, color: '#fff', fontWeight: 700, cursor: 'pointer' }}>Send to {bsel.length || 0} {bsel.length === 1 ? 'person' : 'people'}</button>
           </div>
         </>
       ) : picker ? (/* ================= NEW CHAT (contact picker) ================= */
@@ -7825,19 +7888,27 @@ function ChatWidget({ user }) {
           <div style={{ flex: 1, overflow: 'auto' }}>
             <Row onClick={() => openThread('office')} name="Office desk" off last={office.last} at={office.last_at} sub="Broadcast to the whole office" />
             {!contacts ? <Loader /> : pickList.length === 0 ? <div style={{ padding: 14, fontSize: 12.5, color: '#667781' }}>{pterm || roleF ? 'No one matches that search.' : 'No contacts in your scope yet.'}</div> :
-              pickList.map(c => <Row key={c.id} onClick={() => openThread({ id: c.id })} name={c.name} at={null} sub={roleName(c.role)} />)}
+              pickList.map(c => <div key={c.id} onClick={() => onPick(c)} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '9px 14px', cursor: 'pointer', borderBottom: '1px solid #F0F0F0' }}>
+                <Avatar name={c.name} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ fontWeight: 600, color: '#111B21' }}>{c.name}</span>
+                  <div style={{ fontSize: 12, color: '#667781' }}>{roleName(c.role)}{c.emp_code ? ` · ${c.emp_code}` : ''}</div>
+                </div>
+                {c.locked && <span style={{ fontSize: 11.5, fontWeight: 700, color: c.pending ? 'var(--warn,#b45309)' : WA.header, background: c.pending ? 'rgba(180,83,9,.1)' : 'rgba(0,128,105,.1)', borderRadius: 12, padding: '3px 9px', flex: '0 0 auto' }}>{c.pending ? '⏳ Requested' : '🔒 Request'}</span>}
+              </div>)}
           </div>
         </>
       ) : (/* ================= CHATS (conversation list) ================= */
         <>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: WA.header, color: '#fff' }}>
-            <b style={{ fontSize: 17 }}>Chats</b>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 14px', background: WA.header, color: '#fff' }}>
+            <b style={{ fontSize: 17, flex: 1 }}>Chats</b>
+            {contacts && contacts.can_broadcast && <span onClick={() => setBcast(true)} title="Broadcast to selected people" style={{ cursor: 'pointer', fontSize: 17 }}>📢</span>}
             <span onClick={() => setOpen(false)} style={{ cursor: 'pointer', fontSize: 16 }}>✕</span>
           </div>
           <div style={{ padding: 8, background: WA.panel }}>
             <input style={{ width: '100%', border: 'none', background: '#F0F2F5', borderRadius: 20, padding: '8px 14px', fontSize: 13, outline: 'none' }} value={q} placeholder="🔍 Search chats" onChange={e => setQ(e.target.value)} />
           </div>
-          <div style={{ flex: 1, overflow: 'auto' }}>
+          <div style={{ flex: 1, overflow: 'auto', background: 'linear-gradient(180deg,#F7FAF9,#EFEAE2)' }}>
             {hasOffice && <Row onClick={() => openThread('office')} name="Office desk" off last={office.last} at={office.last_at} sub="Office broadcast" />}
             {!contacts ? <Loader /> :
               (convos.length === 0 && !hasOffice) ? <div style={{ padding: 20, textAlign: 'center', color: '#667781', fontSize: 13 }}>No conversations yet.<br />Tap the button below to start a chat.</div> :
@@ -7973,6 +8044,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       {tour && <TourOverlay steps={tourSteps} go={setView} onClose={closeTour} />}
       {/* Floating chat — stacked ABOVE the help/tour button (IRCTC/DISHA-style). */}
       <ChatWidget user={user} />
+      <BroadcastPopup />
       <PerfHost />
     </div>
   );

@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -326,15 +327,25 @@ private fun ConvRow(name: String, office: Boolean, last: String, at: String?, un
 
 @Composable
 private fun ChatPanel(vm: AuthViewModel, user: User, onClose: () -> Unit) {
+    val scope = rememberCoroutineScope()
     var active by remember { mutableStateOf<Pair<Int?, Boolean>?>(null) }
     var activeName by remember { mutableStateOf("") }
     var activeRole by remember { mutableStateOf("") }
     var picker by remember { mutableStateOf(false) }
+    var bcast by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }   // conversation-list search
     var pq by remember { mutableStateOf("") }       // picker search
     var roleF by remember { mutableStateOf("") }
+    var reload by remember { mutableIntStateOf(0) }         // bump to refetch contacts
+    var bsel by remember { mutableStateOf(setOf<Int>()) }   // broadcast recipients
+    var btext by remember { mutableStateOf("") }
+    var bq by remember { mutableStateOf("") }
+    val canBroadcast = user.role in setOf("admin", "manager", "headoffice", "teamlead", "backend", "hr")
     val open: (Int?, Boolean, String, String) -> Unit = { id, off, nm, rl ->
-        active = id to off; activeName = nm; activeRole = rl; picker = false
+        active = id to off; activeName = nm; activeRole = rl; picker = false; bcast = false
+    }
+    val requestChat: (Int) -> Unit = { id ->
+        scope.launch { runCatching { vm.repo.chatRequest(id) }; reload++ }
     }
     Column(Modifier.fillMaxWidth().height(560.dp)) {
         when {
@@ -361,7 +372,7 @@ private fun ChatPanel(vm: AuthViewModel, user: User, onClose: () -> Unit) {
                 }
                 OutlinedTextField(value = pq, onValueChange = { pq = it }, modifier = Modifier.fillMaxWidth().padding(8.dp),
                     placeholder = { Text("Search name or ID…") }, singleLine = true, leadingIcon = { Text("🔍") })
-                AsyncContent(block = { vm.repo.chatContacts() }) { d, _ ->
+                AsyncContent(key = reload, block = { vm.repo.chatContacts() }) { d, _ ->
                     val contacts = d["contacts"].l().map { it.m() }
                     val roles = d["roles"].l().map { it.s() }
                     val office = d["office"].m()
@@ -385,20 +396,87 @@ private fun ChatPanel(vm: AuthViewModel, user: User, onClose: () -> Unit) {
                             Text(if (term.isNotBlank() || roleF.isNotBlank()) "No one matches that search." else "No contacts in your scope yet.",
                                 color = Muted, fontSize = 12.sp, modifier = Modifier.padding(14.dp))
                         }
-                        items(list) { c -> ConvRow(c["name"].s(), false, "", null, 0, roleLabel(c["role"].s())) { open(c["id"].i(), false, c["name"].s(), roleLabel(c["role"].s())) } }
+                        items(list) { c ->
+                            val locked = c["locked"] == true
+                            val pend = c["pending"] == true
+                            Row(Modifier.fillMaxWidth().clickable {
+                                if (locked) { if (!pend) requestChat(c["id"].i()) } else open(c["id"].i(), false, c["name"].s(), roleLabel(c["role"].s()))
+                            }.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Avatar(c["name"].s()); Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(c["name"].s(), fontWeight = FontWeight.SemiBold, color = Color(0xFF111B21), maxLines = 1)
+                                    Text(roleLabel(c["role"].s()) + (c["emp_code"].s().let { if (it.isNotBlank()) " · $it" else "" }),
+                                        color = Muted, fontSize = 11.5.sp, maxLines = 1)
+                                }
+                                if (locked) Text(if (pend) "⏳ Requested" else "🔒 Request",
+                                    color = if (pend) Warn else WaHeader, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+            // ================= BROADCAST (select many) =================
+            bcast -> {
+                Row(Modifier.fillMaxWidth().background(WaHeader).padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("‹", color = Color.White, fontSize = 24.sp, modifier = Modifier.clickable { bcast = false; bq = "" })
+                    Spacer(Modifier.width(8.dp))
+                    Text("📢 Broadcast" + (if (bsel.isNotEmpty()) " · ${bsel.size} selected" else ""),
+                        color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+                OutlinedTextField(value = bq, onValueChange = { bq = it }, modifier = Modifier.fillMaxWidth().padding(8.dp),
+                    placeholder = { Text("Search people…") }, singleLine = true, leadingIcon = { Text("🔍") })
+                Box(Modifier.weight(1f).fillMaxWidth().background(WaBg)) {
+                    AsyncContent(block = { vm.repo.chatContacts() }) { d, _ ->
+                        val term = bq.trim().lowercase()
+                        val list = d["contacts"].l().map { it.m() }.filter {
+                            it["locked"] != true && (term.isBlank() || it["name"].s().lowercase().contains(term) || it["emp_code"].s().lowercase().contains(term))
+                        }
+                        LazyColumn(Modifier.fillMaxSize()) {
+                            items(list) { c ->
+                                val id = c["id"].i(); val on = bsel.contains(id)
+                                Row(Modifier.fillMaxWidth().clickable { bsel = if (on) bsel - id else bsel + id }
+                                    .background(if (on) Color(0x1400A884) else Color.Transparent)
+                                    .padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    androidx.compose.material3.Checkbox(checked = on, onCheckedChange = { bsel = if (on) bsel - id else bsel + id })
+                                    Spacer(Modifier.width(6.dp)); Avatar(c["name"].s(), small = true); Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(c["name"].s(), fontWeight = FontWeight.SemiBold, color = Color(0xFF111B21), maxLines = 1)
+                                        Text(roleLabel(c["role"].s()), color = Muted, fontSize = 11.sp, maxLines = 1)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Column(Modifier.fillMaxWidth().background(Color(0xFFF0F2F5)).padding(8.dp)) {
+                    OutlinedTextField(value = btext, onValueChange = { btext = it }, modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Broadcast message…") }, maxLines = 3)
+                    Spacer(Modifier.height(6.dp))
+                    Button(onClick = {
+                        val t = btext.trim(); val ids = bsel.toList()
+                        if (t.isNotEmpty() && ids.isNotEmpty()) scope.launch {
+                            runCatching { vm.repo.chatBroadcast(ids, t) }
+                            bcast = false; bsel = emptySet(); btext = ""; bq = ""
+                        }
+                    }, enabled = btext.isNotBlank() && bsel.isNotEmpty(), modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = WaHeader)) {
+                        Text("Send to ${bsel.size} ${if (bsel.size == 1) "person" else "people"}", color = Color.White)
                     }
                 }
             }
             // ================= CHATS (conversation list) =================
             else -> {
                 Row(Modifier.fillMaxWidth().background(WaHeader).padding(horizontal = 14.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Chats", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("Chats", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                    if (canBroadcast) Text("📢", color = Color.White, fontSize = 17.sp,
+                        modifier = Modifier.clickable { bcast = true }.padding(end = 14.dp))
                     Text("✕", color = Color.White, fontSize = 16.sp, modifier = Modifier.clickable { onClose() })
                 }
                 OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth().padding(8.dp),
                     placeholder = { Text("Search chats") }, singleLine = true, leadingIcon = { Text("🔍") })
-                Box(Modifier.weight(1f).fillMaxWidth()) {
+                Box(Modifier.weight(1f).fillMaxWidth().background(WaBg)) {
                     AsyncContent(block = { vm.repo.chatContacts() }) { d, _ ->
                         val contacts = d["contacts"].l().map { it.m() }
                         val office = d["office"].m()
@@ -447,6 +525,9 @@ private fun ChatThread(vm: AuthViewModel, withId: Int?, office: Boolean) {
                                 Column {
                                     if (!mine && office) Text(m["from"].s(), fontSize = 10.5.sp, fontWeight = FontWeight.Bold, color = WaHeader)
                                     Text(m["body"].s(), color = Color(0xFF111B21), fontSize = 13.sp)
+                                    if (mine) Text("✓✓", fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                                        color = if (m["read"] == true) Color(0xFF53BDEB) else Color(0xFF8696A0),
+                                        modifier = Modifier.align(Alignment.End))
                                 }
                             }
                         }
