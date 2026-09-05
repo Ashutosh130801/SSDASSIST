@@ -7732,8 +7732,58 @@ const WA = { teal: '#075E54', header: '#008069', green: '#25D366', out: '#D9FDD3
   bg: '#EFEAE2', panel: '#FFFFFF', tick: '#53BDEB' };
 
 // Full-screen pop-up shown to every recipient of a broadcast, on whatever screen they're working.
+/* Notification sound — a short synthesized chime (no audio file needed, works offline).
+   Browsers block audio until the user interacts, so we lazily create/resume the context and
+   also unlock it on the first tap/keypress. 'broadcast' = two-note ding, 'chat' = soft single tone. */
+let ssdAudioCtx = null;
+function ssdUnlockAudio() {
+  try { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    ssdAudioCtx = ssdAudioCtx || new AC(); if (ssdAudioCtx.state === 'suspended') ssdAudioCtx.resume(); } catch (_) {}
+}
+function ssdChime(kind) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    ssdAudioCtx = ssdAudioCtx || new AC();
+    const ctx = ssdAudioCtx; if (ctx.state === 'suspended') ctx.resume();
+    const now = ctx.currentTime;
+    const notes = kind === 'broadcast' ? [880, 1174.7] : [659.3];
+    notes.forEach((f, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = 'sine'; o.frequency.value = f;
+      const t = now + i * 0.16;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(t); o.stop(t + 0.24);
+    });
+  } catch (_) {}
+}
+
+/* OS/desktop notification (Windows/macOS/Linux notification center). Requires the user to
+   grant permission once. We only fire it when the tab is NOT focused, so people looking at
+   the app don't get a redundant desktop toast on top of the in-app popup. */
+function ssdOsNotify(title, body) {
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    if (!document.hidden) return;   // tab is focused → in-app UI already shows it
+    const n = new Notification(title || 'RecoverIQ', { body: body || '', icon: 'assets/logo.png', tag: 'recoveriq' });
+    n.onclick = () => { try { window.focus(); n.close(); } catch (_) {} };
+  } catch (_) {}
+}
+function ssdAskNotifyPermission() {
+  try { if (('Notification' in window) && Notification.permission === 'default') Notification.requestPermission().catch(() => {}); } catch (_) {}
+}
+
 function BroadcastPopup() {
   const [msg, setMsg] = useState(null);
+  // Unlock audio playback + request desktop-notification permission on first user interaction.
+  useEffect(() => {
+    const onGesture = () => { ssdUnlockAudio(); ssdAskNotifyPermission(); };
+    window.addEventListener('pointerdown', onGesture);
+    window.addEventListener('keydown', onGesture);
+    return () => { window.removeEventListener('pointerdown', onGesture); window.removeEventListener('keydown', onGesture); };
+  }, []);
   // Listen for broadcasts dispatched by whatever screen's useDataChanged socket is live…
   useEffect(() => {
     const h = (e) => { const d = e.detail || {}; setMsg({ from: d.from || 'Head Office', body: d.body || '' }); };
@@ -7741,19 +7791,35 @@ function BroadcastPopup() {
     return () => window.removeEventListener('ssd-broadcast', h);
   }, []);
   // …but also keep our OWN always-on socket so the pop-up appears on ANY working screen,
-  // even ones that don't mount useDataChanged (Attendance, Chat, etc.).
+  // even ones that don't mount useDataChanged (Attendance, Chat, etc.). This socket is also
+  // the single source for notification sounds (broadcast + incoming chat message).
   useEffect(() => {
     let stop = false, ws, retry;
     const connect = () => {
       try {
         ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
         ws.onmessage = e => { try { const m = JSON.parse(e.data);
-          if (m.type === 'broadcast') setMsg({ from: m.from || 'Head Office', body: m.body || '' }); } catch (_) {} };
+          if (m.type === 'broadcast') { setMsg({ from: m.from || 'Head Office', body: m.body || '' }); ssdChime('broadcast'); ssdOsNotify('📢 Broadcast — ' + (m.from || 'Head Office'), m.body || ''); window.dispatchEvent(new Event('ssd-chat-refresh')); }
+          else if (m.type === 'notification' && m.notification) { const n = m.notification;
+            if (n.type === 'chat') { ssdChime('chat'); window.dispatchEvent(new Event('ssd-chat-refresh')); }
+            ssdOsNotify(n.title || 'RecoverIQ', n.body || ''); } } catch (_) {} };
         ws.onclose = () => { if (!stop) retry = setTimeout(connect, 3000); };
       } catch (_) { if (!stop) retry = setTimeout(connect, 3000); }
     };
     connect();
     return () => { stop = true; clearTimeout(retry); try { ws && ws.close(); } catch (_) {} };
+  }, []);
+  // Tab-title unread badge (WhatsApp-web style: "(3) RecoverIQ…").
+  useEffect(() => {
+    let stop = false;
+    const base = document.title.replace(/^\(\d+\)\s*/, '');
+    const apply = (n) => { document.title = n > 0 ? `(${n}) ${base}` : base; };
+    const refresh = () => api('/api/chat/unread').then(r => { if (!stop) apply(r.unread || 0); }).catch(() => {});
+    refresh();
+    const t = setInterval(refresh, 10000);
+    window.addEventListener('focus', refresh);
+    window.addEventListener('ssd-chat-refresh', refresh);
+    return () => { stop = true; clearInterval(t); window.removeEventListener('focus', refresh); window.removeEventListener('ssd-chat-refresh', refresh); document.title = base; };
   }, []);
   if (!msg) return null;
   return <div onClick={() => setMsg(null)} style={{ position: 'fixed', inset: 0, zIndex: 4000, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
