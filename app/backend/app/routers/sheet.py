@@ -103,10 +103,22 @@ async def update_cell(case_id: int, body: CellUpdate, db: Session = Depends(get_
                      detail=f"{body.field} edited in live sheet")
         audit.stamp_case(case, user)
 
-    if body.field == "received_amount":
-        case.pending_amount = (Decimal(case.funding_amount or 0) - Decimal(case.received_amount or 0))
-        if Decimal(case.received_amount or 0) >= Decimal(case.funding_amount or 0) > 0:
-            case.paid_status = "PAID"
+    # Money edits flow through the single source of truth (paymath) so pending and
+    # PAID / PARTIAL / UNPAID stay correct for EVERY product — funding, TOS, ENR, POS and
+    # NORM/STAB settlement — not just funding-based ones. A change to the collected amount also
+    # drops a dated PAYMENT event so the money shows in the trend / FTD-MTD windows exactly like a
+    # DPR update or a field collection (this closes the "reflected today, gone tomorrow" gap).
+    _MONEY_FIELDS = {"received_amount", "funding_amount", "total_outstanding", "enr",
+                     "principal_outstanding", "norm_amount", "stab_amount", "auto_debit", "norm_stab"}
+    if body.field in _MONEY_FIELDS:
+        from .. import paymath
+        if body.field == "received_amount":
+            _delta = Decimal(case.received_amount or 0) - Decimal(str(old_val or 0))
+            if abs(_delta) >= Decimal("0.5"):     # positive = collection, negative = correction/reversal
+                _credit = case.assigned_caller_id or case.assigned_fos_id or user.id
+                db.add(models.CallLog(case_id=case.id, caller_id=_credit, disposition="PAYMENT",
+                                      ptp_amount=_delta, note=f"Live-sheet collection edit (by {user.name})"))
+        paymath.recompute(case)
 
     # PL/BL MIS base is TOS — keep ENR mirrored to it so the MIS updates live on a TOS edit.
     if body.field == "total_outstanding" and (case.segment or "") == "PL/BL":

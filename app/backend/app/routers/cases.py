@@ -851,6 +851,7 @@ def update_case(case_id: int, body: schemas.CaseUpdate, db: Session = Depends(ge
         "assigned_fos_id": "Assigned FOS", "assigned_caller_id": "Assigned caller",
     }
     change_msgs = []
+    _old_recv = Decimal(str(case.received_amount or 0))   # snapshot for the dated payment event
     # Audit every field that actually changes; assignment changes get a clearer action.
     for k, v in data.items():
         old = getattr(case, k, None)
@@ -868,14 +869,18 @@ def update_case(case_id: int, body: schemas.CaseUpdate, db: Session = Depends(ge
             if k in NOTIFY_FIELDS:
                 change_msgs.append(f"{NOTIFY_FIELDS[k]}: {old or '—'} → {v or '—'}")
     audit.stamp_case(case, user)
-    # keep pending consistent when received changes — use the same collection base
-    # (funding → TOS → ENR) as record_payment, and never let pending go below zero.
-    if "received_amount" in data:
-        pend = _pay_base_total(case) - Decimal(case.received_amount or 0)
-        case.pending_amount = pend if pend > 0 else Decimal(0)
-        if Decimal(case.received_amount or 0) > 0 and case.pending_amount <= 0:
-            case.paid_status = "PAID"
-            case.status = "paid"
+    # Money change → single source of truth (honours NORM/STAB settlement, PARTIAL, auto-debit)
+    # and drop a dated PAYMENT event for the delta so the collection shows in the trend / FTD-MTD.
+    if any(f in data for f in ("received_amount", "funding_amount", "total_outstanding", "enr",
+                               "principal_outstanding", "norm_amount", "stab_amount", "auto_debit", "norm_stab")):
+        from .. import paymath
+        if "received_amount" in data:
+            _delta = Decimal(str(case.received_amount or 0)) - _old_recv
+            if abs(_delta) >= Decimal("0.5"):
+                _credit = case.assigned_caller_id or case.assigned_fos_id or user.id
+                db.add(models.CallLog(case_id=case.id, caller_id=_credit, disposition="PAYMENT",
+                                      ptp_amount=_delta, note=f"Case edit collection change (by {user.name})"))
+        paymath.recompute(case)
     if change_msgs:
         from .notifications import notify_case_change
         notify_case_change(db, case, user, "; ".join(change_msgs))
@@ -1200,12 +1205,13 @@ def undo_last(case_id: int, db: Session = Depends(get_db),
         amt = Decimal(str(undoable[-1].ptp_amount))
         new_recv = Decimal(case.received_amount or 0) - amt
         case.received_amount = new_recv if new_recv > 0 else Decimal(0)
-        pend = _pay_base_total(case) - Decimal(case.received_amount or 0)
-        case.pending_amount = pend if pend > 0 else Decimal(0)
         if Decimal(case.received_amount or 0) <= 0:
-            case.paid_status, case.status, case.norm_stab = "UNPAID", "allocated", None
-        elif case.pending_amount > 0:
-            case.paid_status, case.status = "PARTIAL", "allocated"
+            case.norm_stab = None          # nothing left collected → drop any settlement tag
+            case.auto_debit = False
+        # Single source of truth: a NORM/STAB case still at/above its settlement stays PAID; only
+        # below it becomes PARTIAL (the old base-minus-received rule wrongly downgraded settled cases).
+        from .. import paymath
+        paymath.recompute(case)
         credit_id = case.assigned_caller_id or case.assigned_fos_id or actor.id
         db.add(models.CallLog(case_id=case.id, caller_id=credit_id, disposition="PAYMENT",
                               ptp_amount=(-amt), note=f"Undo: reversed payment ₹{amt}"))

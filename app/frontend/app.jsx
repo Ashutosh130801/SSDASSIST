@@ -3612,21 +3612,29 @@ const DISPOS_CALL = ['RTP', 'PTP', 'RNR', 'SWITCHED OFF', 'WRONG NUMBER', 'BUSY'
 function CallModal({ c, onClose, onDone }) {
   const [dispo, setDispo] = useState('PTP'); const [amt, setAmt] = useState('');
   const [ptpDate, setPtpDate] = useState(''); const [followDate, setFollowDate] = useState('');
-  const [paidAmt, setPaidAmt] = useState(''); const [note, setNote] = useState(''); const [normStab, setNormStab] = useState('STAB');
+  const [paidAmt, setPaidAmt] = useState(''); const [note, setNote] = useState(''); const [autoDebit, setAutoDebit] = useState(false);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
   const isPTP = dispo === 'PTP';   // RTP = Refuse to Pay is not a promise
-  const isPaid = dispo === 'PAID'; const isCC = c.segment === 'Credit Card';
+  const isPaid = dispo === 'PAID';
+  // The system decides PAID vs PARTIAL from the amount vs the settlement — the caller never picks
+  // NORM/STAB. A ₹0 PAID is only allowed as an explicit auto-debit / e-NACH settlement.
+  const paidNum = parseFloat(paidAmt || '0') || 0;
+  const settleTarget = Number(c.settle_target || 0);
+  const belowSettle = isPaid && paidNum > 0 && settleTarget > 0 && paidNum < settleTarget;
+  const zeroPaid = isPaid && paidNum <= 0;
   const save = async () => {
+    if (zeroPaid && !autoDebit) { setErr('Enter the amount collected, or tick auto-debit for a ₹0 settlement.'); return; }
     setErr(''); setBusy(true);
     const body = { case_id: c.id, disposition: dispo, note };
     if (isPTP) { body.ptp_amount = amt || '0'; body.ptp_date = ptpDate || null; }
-    else if (isPaid) { body.paid_amount = paidAmt || '0'; if (isCC) body.norm_stab = normStab; }
+    else if (isPaid) { body.paid_amount = paidAmt || '0'; }   // caller does NOT choose NORM/STAB
     else { body.follow_up_date = followDate || null; }
     try { await api('/api/calls', { method: 'POST', body });
-      toast(isPaid ? 'Marked paid — removed from queue.' : 'Call logged.'); onDone();
+      toast(isPaid ? (belowSettle ? 'Recorded as partial payment.' : 'Payment recorded.') : 'Call logged.'); onDone();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
-  const outcome = isPaid ? 'This case will leave the queue.'
+  const outcome = isPaid ? (belowSettle ? 'Below settlement — recorded as partial, stays in the queue.'
+      : zeroPaid ? 'Auto-debit settlement — marked paid at ₹0.' : 'Marked paid — leaves the queue.')
     : isPTP ? (ptpDate ? `Re-queues on ${ptpDate} (PTP).` : 'Set a PTP date to schedule the callback.')
     : (followDate ? `Scheduled to call back on ${followDate}.` : 'Stays due — will reappear tomorrow if not scheduled.');
   return (
@@ -3645,11 +3653,14 @@ function CallModal({ c, onClose, onDone }) {
           <div className="field"><label>PTP amount (₹)</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} /></div>
           <div className="field"><label>PTP date</label><input className="input" type="date" value={ptpDate} onChange={e => setPtpDate(e.target.value)} /></div>
         </div>}
-        {isPaid && <div className="grid2" style={{ gridTemplateColumns: isCC ? '1fr 1fr' : '1fr' }}>
+        {isPaid && <div>
           <div className="field"><label>Amount collected (₹)</label>
             <input className="input" type="number" value={paidAmt} onChange={e => setPaidAmt(e.target.value)} placeholder="0.00" /></div>
-          {isCC && <div className="field"><label>Paid at (credit card)</label>
-            <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option><option>ROLLBACK</option></select></div>}
+          {belowSettle && <div style={{ fontSize: 12, color: 'var(--warn)', marginTop: -4, marginBottom: 8 }}>
+            Below the settlement ({INR2(settleTarget)}) — this will be recorded as a <b>partial payment</b>.</div>}
+          {zeroPaid && <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={autoDebit} onChange={e => setAutoDebit(e.target.checked)} />
+            Auto-debit / e-NACH settlement (₹0 collected — settles from the customer's account)</label>}
         </div>}
         {!isPTP && !isPaid && <div className="field"><label>Schedule next call (optional)</label>
           <input className="input" type="date" value={followDate} onChange={e => setFollowDate(e.target.value)} /></div>}
@@ -3711,10 +3722,13 @@ function CaseDrawer({ c, onClose, onChanged }) {
     api('/api/templates/log', { method: 'POST', body: { case_id: c.id, channel: 'whatsapp', text: msg } }).then(() => { toast('Message logged'); refresh(); }).catch(() => {});
   };
   const logCall = async () => {
+    // Caller does NOT choose NORM/STAB — the amount decides PAID vs PARTIAL. A ₹0 auto-debit
+    // settlement is done from the Payment tab, not here, to avoid an accidental ₹0 settle.
+    if (isPaid && !(parseFloat(amt || '0') > 0)) { toast('Enter the amount collected (use the Payment tab for a ₹0 auto-debit).', 'err'); return; }
     setBusy(true);
     const body = { case_id: c.id, disposition: dispo, note: callNote };
     if (isPTP) { body.ptp_amount = amt || '0'; body.ptp_date = ptpDate || null; }
-    else if (isPaid) { body.paid_amount = amt || '0'; if (isCC) body.norm_stab = normStab; }
+    else if (isPaid) { body.paid_amount = amt || '0'; }   // caller does NOT choose NORM/STAB
     else { body.follow_up_date = followDate || null; }
     try { await api('/api/calls', { method: 'POST', body }); toast('Call logged.');
       setCallNote(''); await refresh(); onChanged && onChanged();
@@ -3863,9 +3877,10 @@ function CaseDrawer({ c, onClose, onChanged }) {
           {isPTP && <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
             <div className="field"><label>PTP amount (₹)</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} /></div>
             <div className="field"><label>PTP date</label><input className="input" type="date" value={ptpDate} onChange={e => setPtpDate(e.target.value)} /></div></div>}
-          {isPaid && <div className="grid2" style={{ gridTemplateColumns: isCC ? '1fr 1fr' : '1fr' }}>
-            <div className="field"><label>Amount collected (₹)</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} /></div>
-            {isCC && <div className="field"><label>Paid at (credit card)</label><select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option><option>ROLLBACK</option></select></div>}</div>}
+          {isPaid && <div>
+            <div className="field"><label>Amount collected (₹)</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} placeholder="0.00" /></div>
+            {Number(cur.settle_target || 0) > 0 && parseFloat(amt || '0') > 0 && parseFloat(amt) < Number(cur.settle_target) &&
+              <div style={{ fontSize: 12, color: 'var(--warn)', marginTop: -2 }}>Below the settlement ({INR2(Number(cur.settle_target))}) — this will be recorded as a <b>partial payment</b>. For a ₹0 auto-debit settlement, use the Payment tab.</div>}</div>}
           {!isPTP && !isPaid && <div className="field"><label>Schedule next call (optional)</label><input className="input" type="date" value={followDate} onChange={e => setFollowDate(e.target.value)} /></div>}
           <div className="field"><label>Note</label><textarea className="input" value={callNote} onChange={e => setCallNote(e.target.value)} /></div>
           <button className="btn gold block" onClick={logCall} disabled={busy || cur.closed}>Save call</button>
@@ -5131,6 +5146,7 @@ function MISView({ user }) {
         {/* KPIs + projection */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12 }}>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total cases</div><b style={{ fontSize: 20 }}>{d.overall.count}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Paid · Unpaid</div><b style={{ fontSize: 20 }}><span style={{ color: 'var(--good)' }}>{d.overall.paid}</span> <span className="muted" style={{ fontSize: 14 }}>·</span> <span style={{ color: 'var(--bad)' }}>{d.overall.unpaid}</span></b><div className="muted" style={{ fontSize: 11 }}>{d.overall.count ? Math.round((d.overall.paid / d.overall.count) * 100) : 0}% paid</div></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total {d.base_label || 'ENR'}</div><b style={{ fontSize: 20 }}>{money(d.overall.enr)}</b></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Paid {d.base_label || 'ENR'}</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(d.overall.paid_enr)}</b></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total POS</div><b style={{ fontSize: 20 }}>{money(d.overall.pos)}</b><div className="muted" style={{ fontSize: 11 }}>principal outstanding</div></div>

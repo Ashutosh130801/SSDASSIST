@@ -54,17 +54,38 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
         case.flag_reason = None
 
     if disp == "PAID":
+        from .. import paymath
         amt = Decimal(str(body.paid_amount or 0))
-        if amt > 0:
+        if amt < 0:
+            amt = Decimal(0)
+        if amt == 0:
+            # A ₹0 PAID is only valid as an auto-debit / e-NACH settlement (the amount debits
+            # straight from the customer's account). Cash stays 0; the case still settles as PAID.
+            case.auto_debit = True
+        else:
             case.received_amount = (Decimal(case.received_amount or 0) + amt)
-            case.pending_amount = (Decimal(case.funding_amount or 0) - Decimal(case.received_amount or 0))
-        case.paid_status = "PAID"
-        case.status = "paid"
-        case.follow_up_date = None                        # out of the queue
-        # Credit-card cases record whether the customer paid at NORM or STAB level.
-        if body.norm_stab:
-            ns = body.norm_stab.upper()
-            case.norm_stab = "ROLLBACK" if "ROLL" in ns else ("STAB" if "STAB" in ns else ("NORM" if "NORM" in ns else case.norm_stab))
+            # The caller does NOT choose NORM vs STAB. Auto-tag to the settlement level the running
+            # total actually reaches; below the lower of the two it stays untagged so paymath marks
+            # it PARTIAL (a below-settlement amount is NEVER counted as full cash).
+            n = Decimal(case.norm_amount or 0)
+            s = Decimal(case.stab_amount or 0)
+            if n > 0 or s > 0:
+                recv = Decimal(case.received_amount or 0)
+                if n > 0 and recv >= n:
+                    case.norm_stab = "NORM"
+                elif s > 0 and recv >= s:
+                    case.norm_stab = "STAB"
+                else:
+                    case.norm_stab = None                 # below the lowest settlement → PARTIAL
+        # Single source of truth: sets paid_status (PAID/PARTIAL/UNPAID), pending, and status.
+        new_status = paymath.recompute(case)
+        # The call log IS the dated money event — store the ACTUAL collected amount on it so the
+        # collection shows in FTD/MTD/LMTD, the trend, the caller's collected KPI and the leaderboard.
+        call.ptp_amount = amt
+        call.disposition = "PAID" if new_status == "PAID" else "PAYMENT"
+        if new_status != "PAID":                          # partial payment → keep it in the queue
+            case.status = "callback"
+            case.follow_up_date = body.follow_up_date or body.ptp_date
     elif disp == "PTP":                                    # RTP = Refuse to Pay is NOT a promise
         case.status = "ptp"
         case.follow_up_date = body.ptp_date or body.follow_up_date   # re-queues on the promised date

@@ -472,6 +472,7 @@ data class AttRow(
 data class MeToday(
     val tracked: Boolean = false,
     @Json(name = "needs_checkin") val needsCheckin: Boolean = false,
+    @Json(name = "after_hours") val afterHours: Boolean = false,   // logged in past shift end, not checked in
     @Json(name = "shift_start") val shiftStart: String = "09:00",
     @Json(name = "shift_end") val shiftEnd: String = "19:00",
     @Json(name = "late_after") val lateAfter: String = "10:00",

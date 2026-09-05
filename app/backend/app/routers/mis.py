@@ -260,8 +260,12 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
     def _caller_label(c):
         return _person_label(c.assigned_caller_id) or (c.caller_name or "").strip() or "— No caller —"
 
-    by_fos = _group(cases, _fos_label, lambda c: c.assigned_fos_id)
-    by_caller_g = _group(cases, _caller_label, lambda c: c.assigned_caller_id)
+    # Per-PERSON pivots exclude escalated cases (they were pulled off the FOS/caller, so they must
+    # not count in that person's performance — same rule as the individual scorecard & RTSB).
+    # Portfolio-level tables (area / category / DPD / overall) keep every case.
+    cases_own = [c for c in cases if not getattr(c, "escalated", False)]
+    by_fos = _group(cases_own, _fos_label, lambda c: c.assigned_fos_id)
+    by_caller_g = _group(cases_own, _caller_label, lambda c: c.assigned_caller_id)
     leaderboard = _leaderboard(by_fos)                 # FOS performance vs the one target
     caller_leaderboard = _leaderboard(by_caller_g)     # caller performance vs the same target
 
@@ -525,7 +529,10 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
     id_attr = "assigned_fos_id" if is_fos else "assigned_caller_id"
     period = _period_for(month_bucket)
 
-    myq = db.query(models.Case).filter(id_col == target.id, models.Case.removed.isnot(True))
+    # Escalated cases were pulled off this person → excluded from their scorecard (matches the
+    # MIS per-person pivots, RTSB and the Team-section dashboard).
+    myq = db.query(models.Case).filter(id_col == target.id, models.Case.removed.isnot(True),
+                                       models.Case.escalated.isnot(True))
     if period:
         myq = myq.filter(models.Case.period == period)
     if bank_f:
@@ -560,8 +567,10 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
         tenr = round(a["enr"] * tgt / 100.0, 2)
 
         # the whole portfolio (same bank/product/branch/month) — to rank me against peers
+        # (escalated cases excluded so peer ranking matches everyone's escalation-free scorecard)
         pq = db.query(models.Case).filter(models.Case.bank == bank, models.Case.product == product,
-                                          models.Case.removed.isnot(True), id_col.isnot(None))
+                                          models.Case.removed.isnot(True), models.Case.escalated.isnot(True),
+                                          id_col.isnot(None))
         pq = pq.filter(models.Case.branch == branch) if branch else \
              pq.filter((models.Case.branch.is_(None)) | (models.Case.branch == ""))
         if period:

@@ -206,17 +206,6 @@ private fun MainNav(
         }
     }
 
-    // Field officers are signed out at 7pm each day (checked while the app is open).
-    if (user.isFieldAgent) {
-        LaunchedEffect(Unit) {
-            while (true) {
-                val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-                if (hour >= 19) { vm.logout(); break }
-                kotlinx.coroutines.delay(60_000)
-            }
-        }
-    }
-
     // Offer an in-app update if a newer build is published to the server.
     `in`.recoveriq.app.UpdateGate()
 
@@ -226,6 +215,12 @@ private fun MainNav(
         ForcePasswordChangeScreen(vm, onChanged = { mustChange = false })
         return
     }
+
+    // NOTE: the old crude "log out at 7pm" loop was removed. Shift-end handling is owned by the
+    // heartbeat-driven AttendanceGate (mounted in the home scaffold): it prompts "Continue working"
+    // for checked-in FOS, auto-logs-out only after inactivity, and does NOTHING for someone who
+    // logged in after hours without checking in — they can work (activity is recorded) with no
+    // attendance and no overtime. This also removes the first-login-after-7pm bounce.
 
     NavHost(navController = nav, startDestination = "home") {
         composable("home") {

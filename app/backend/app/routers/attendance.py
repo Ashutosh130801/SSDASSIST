@@ -301,9 +301,14 @@ def _work_end(db: Session, uid: int, u: models.User, start, end, a=None):
 def my_today(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     a = _today_row(db, user.id)
     ss, se, la = _shift(user.role)
+    not_checked_in = _tracked(user) and (a is None or a.check_in_at is None)
+    # Past shift end, a fresh check-in won't be recorded → don't nag; flag it as after-hours so the
+    # app lets the person work (activity only) without prompting check-in or overtime.
+    after_hours = not_checked_in and _ist_now().time() > _hm(se)
     return {
         "tracked": _tracked(user),
-        "needs_checkin": _tracked(user) and (a is None or a.check_in_at is None),
+        "needs_checkin": not_checked_in and not after_hours,
+        "after_hours": after_hours,
         "shift_start": ss, "shift_end": se, "late_after": la,
         "attendance": _row_out(db, user, a, _ist_today()),
         "server_time": _ist_now().isoformat(),
@@ -316,9 +321,14 @@ def _apply_checkin(db: Session, user: models.User, lat, lng, platform: str, phot
     today = _ist_today()
     a = _today_row(db, user.id)
     if a and a.check_in_at:
-        return a, True
+        return a, True, False
     ss, se, la = _shift(user.role)
     now = presence.now_utc()
+    # A FIRST check-in after the shift-end window is NOT marked present. The person is treated as
+    # after-hours: their activity (calls/visits) still records normally, but nothing is written to
+    # attendance — no present, no late, no overtime.
+    if _ist_now().time() > _hm(se):
+        return None, False, True
     late = (_ist_now().time() > _hm(la)) and not getattr(user, "ho_manager", False)
     if a is None:
         a = models.Attendance(user_id=user.id, date=today)
@@ -339,7 +349,7 @@ def _apply_checkin(db: Session, user: models.User, lat, lng, platform: str, phot
                         + (" · photo" if photo_ref else ""))
     db.commit()
     db.refresh(a)
-    return a, False
+    return a, False, False
 
 
 @router.post("/checkin")
@@ -347,7 +357,10 @@ def checkin(body: dict = Body(default={}), db: Session = Depends(get_db),
             user: models.User = Depends(get_current_user)):
     if not _tracked(user):
         raise HTTPException(status_code=400, detail="Admins are not tracked for attendance.")
-    a, already = _apply_checkin(db, user, body.get("lat"), body.get("lng"), body.get("platform") or "web")
+    a, already, after_hours = _apply_checkin(db, user, body.get("lat"), body.get("lng"), body.get("platform") or "web")
+    if after_hours:
+        return {"ok": False, "after_hours": True,
+                "detail": "After work hours — attendance isn't recorded now, but your activity is still logged."}
     return {"ok": True, "already": already, "late": bool(a.late),
             "attendance": _row_out(db, user, a, _ist_today())}
 
@@ -373,7 +386,10 @@ async def checkin_with_photo(file: UploadFile = File(...), lat: str | None = For
             return float(v)
         except (TypeError, ValueError):
             return None
-    a, already = _apply_checkin(db, user, _f(lat), _f(lng), platform, photo_ref=ref)
+    a, already, after_hours = _apply_checkin(db, user, _f(lat), _f(lng), platform, photo_ref=ref)
+    if after_hours:
+        return {"ok": False, "after_hours": True,
+                "detail": "After work hours — attendance isn't recorded now, but your activity is still logged."}
     return {"ok": True, "already": already, "late": bool(a.late),
             "attendance": _row_out(db, user, a, _ist_today())}
 
