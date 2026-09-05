@@ -7734,10 +7734,26 @@ const WA = { teal: '#075E54', header: '#008069', green: '#25D366', out: '#D9FDD3
 // Full-screen pop-up shown to every recipient of a broadcast, on whatever screen they're working.
 function BroadcastPopup() {
   const [msg, setMsg] = useState(null);
+  // Listen for broadcasts dispatched by whatever screen's useDataChanged socket is live…
   useEffect(() => {
     const h = (e) => { const d = e.detail || {}; setMsg({ from: d.from || 'Head Office', body: d.body || '' }); };
     window.addEventListener('ssd-broadcast', h);
     return () => window.removeEventListener('ssd-broadcast', h);
+  }, []);
+  // …but also keep our OWN always-on socket so the pop-up appears on ANY working screen,
+  // even ones that don't mount useDataChanged (Attendance, Chat, etc.).
+  useEffect(() => {
+    let stop = false, ws, retry;
+    const connect = () => {
+      try {
+        ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
+        ws.onmessage = e => { try { const m = JSON.parse(e.data);
+          if (m.type === 'broadcast') setMsg({ from: m.from || 'Head Office', body: m.body || '' }); } catch (_) {} };
+        ws.onclose = () => { if (!stop) retry = setTimeout(connect, 3000); };
+      } catch (_) { if (!stop) retry = setTimeout(connect, 3000); }
+    };
+    connect();
+    return () => { stop = true; clearTimeout(retry); try { ws && ws.close(); } catch (_) {} };
   }, []);
   if (!msg) return null;
   return <div onClick={() => setMsg(null)} style={{ position: 'fixed', inset: 0, zIndex: 4000, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
