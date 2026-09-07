@@ -3741,6 +3741,10 @@ function CaseDrawer({ c, onClose, onChanged }) {
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
   const meRole = (store.u || {}).role; const meId = (store.u || {}).id;
+  // Field officers may log a PHONE outcome (e.g. a PTP before visiting) but never book money on a
+  // call — collections go through a field visit. So they get a PTP-only call tab and no payment tab.
+  const ptpOnly = meRole === 'fos';
+  const callDispos = ptpOnly ? DISPOS_CALL.filter(d => d !== 'PAID') : DISPOS_CALL;
   const canEscalate = ['admin', 'manager', 'backend', 'teamlead'].includes(meRole);
   const showCallFos = cur.assigned_fos_phone && cur.assigned_fos_id !== meId;
   const showCallCaller = cur.assigned_caller_phone && cur.assigned_caller_id !== meId;
@@ -3866,14 +3870,15 @@ function CaseDrawer({ c, onClose, onChanged }) {
         {cur.closed && <div className="glass card" style={{ background: '#f3f4f6', color: '#374151', fontSize: 13, padding: '8px 12px', marginBottom: 8 }}>
           🔒 This case has <b>closed for the month</b>{cur.close_date ? ` (on ${cur.close_date})` : ''} and is locked. It stays visible for reference; an admin can still make changes.</div>}
         <div className="toolbar">
-          <div className={cx('chip', tab === 'call' && 'on')} onClick={() => setTab('call')}>📞 Log call</div>
-          <div className={cx('chip', tab === 'pay' && 'on')} onClick={() => setTab('pay')}>💰 Record payment</div>
+          <div className={cx('chip', tab === 'call' && 'on')} onClick={() => setTab('call')}>{ptpOnly ? '📞 Log phone outcome' : '📞 Log call'}</div>
+          {!ptpOnly && <div className={cx('chip', tab === 'pay' && 'on')} onClick={() => setTab('pay')}>💰 Record payment</div>}
           <div className={cx('chip', tab === 'msg' && 'on')} onClick={() => setTab('msg')}>💬 Message</div>
           <div className={cx('chip', tab === 'hist' && 'on')} onClick={() => setTab('hist')}>🕘 History</div>
         </div>
         {tab === 'call' && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
+          {ptpOnly && <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>Phone call before a visit — record a promise-to-pay. Collections are booked from a field visit.</div>}
           <div className="field"><label>Disposition</label>
-            <select className="input" value={dispo} onChange={e => setDispo(e.target.value)}>{DISPOS_CALL.map(d => <option key={d}>{d}</option>)}</select></div>
+            <select className="input" value={dispo} onChange={e => setDispo(e.target.value)}>{callDispos.map(d => <option key={d}>{d}</option>)}</select></div>
           {isPTP && <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
             <div className="field"><label>PTP amount (₹)</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} /></div>
             <div className="field"><label>PTP date</label><input className="input" type="date" value={ptpDate} onChange={e => setPtpDate(e.target.value)} /></div></div>}
@@ -3885,7 +3890,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
           <div className="field"><label>Note</label><textarea className="input" value={callNote} onChange={e => setCallNote(e.target.value)} /></div>
           <button className="btn gold block" onClick={logCall} disabled={busy || cur.closed}>Save call</button>
         </div>}
-        {tab === 'pay' && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
+        {tab === 'pay' && !ptpOnly && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
           <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
             <div className="field"><label>Amount (₹)</label><input className="input" type="number" value={payAmt} onChange={e => setPayAmt(e.target.value)} placeholder="0.00" /></div>
             <div className="field"><label>Mode</label><select className="input" value={payMode} onChange={e => setPayMode(e.target.value)}>

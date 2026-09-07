@@ -59,23 +59,30 @@ fun PaymentDialog(maxAmount: Double, isCreditCard: Boolean, onDismiss: () -> Uni
 }
 
 @Composable
-fun LogCallDialog(isCreditCard: Boolean, onDismiss: () -> Unit, onConfirm: (CallCreate) -> Unit) {
-    val dispositions = listOf("PTP", "RTP", "PAID", "CALLBACK", "NO_CONTACT", "WRONG_NUMBER", "REFUSED")
+fun LogCallDialog(isCreditCard: Boolean, phonePtpOnly: Boolean = false,
+                  onDismiss: () -> Unit, onConfirm: (CallCreate) -> Unit) {
+    // Field officers logging a phone outcome can't book a payment (collections go through a field
+    // visit), so PAID is removed from their disposition list — they can still record a phone PTP.
+    val dispositions = if (phonePtpOnly)
+        listOf("PTP", "RTP", "CALLBACK", "NO_CONTACT", "WRONG_NUMBER", "REFUSED")
+    else listOf("PTP", "RTP", "PAID", "CALLBACK", "NO_CONTACT", "WRONG_NUMBER", "REFUSED")
     var disp by remember { mutableStateOf("PTP") }
     var amount by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var normStab by remember { mutableStateOf("STAB") }
     var dateIso by remember { mutableStateOf(DateUtil.plusDaysIso(1)) }
 
-    val showAmount = disp == "PTP" || disp == "RTP" || disp == "PAID"
+    val showAmount = disp == "PTP" || disp == "RTP" || (disp == "PAID" && !phonePtpOnly)
     val showDate = disp == "PTP" || disp == "RTP" || disp == "CALLBACK"
     val amt = amount.toDoubleOrNull() ?: 0.0
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Log call outcome") },
+        title = { Text(if (phonePtpOnly) "Log phone outcome" else "Log call outcome") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (phonePtpOnly) Text("Phone call before visit — record a promise-to-pay. Collections are booked from a field visit.",
+                    style = MaterialTheme.typography.labelSmall, color = MutedDim)
                 Text("Disposition", style = MaterialTheme.typography.labelSmall, color = MutedDim)
                 ChipRow(dispositions, disp) { disp = it }
 

@@ -121,7 +121,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     case = case,
                     meId = user.id,
                     canPay = !lockedForMe,
-                    canLogCall = !lockedForMe && (user.isTelecaller || user.isAdmin || user.isManager),
+                    canLogCall = !lockedForMe && (user.isTelecaller || user.isAdmin || user.isManager || user.isFieldAgent),
                     canLogVisit = !lockedForMe && user.isFieldAgent,
                     onPay = { showPay = true },
                     onLogCall = { showLogCall = true },
@@ -176,6 +176,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
             if (showLogCall) {
                 LogCallDialog(
                     isCreditCard = isCC,
+                    phonePtpOnly = user.isFieldAgent,
                     onDismiss = { showLogCall = false },
                     onConfirm = { call ->
                         scope.launch {

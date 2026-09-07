@@ -30,12 +30,24 @@ def _contacted_today(case) -> bool:
 
 @router.post("", response_model=schemas.CallOut)
 def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
-             user: models.User = Depends(require_roles("telecaller", "admin"))):
+             user: models.User = Depends(require_roles("telecaller", "admin", "fos"))):
     case = db.query(models.Case).filter(models.Case.id == body.case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     if user.role == "telecaller" and case.assigned_caller_id != user.id:
         raise HTTPException(status_code=403, detail="This case is not in your queue")
+    # Field officers may log a PHONE call outcome (e.g. a PTP they got before visiting), but only on
+    # their own cases, only non-payment dispositions — collections are booked via a field visit, not
+    # a call. This keeps money attribution clean (call payments → caller, visit collection → FOS).
+    disp_in = (body.disposition or "").upper()
+    if user.role == "fos":
+        if case.assigned_fos_id != user.id:
+            raise HTTPException(status_code=403, detail="This case is not assigned to you")
+        if getattr(case, "escalated", False):
+            raise HTTPException(status_code=403, detail="This case is escalated — handled by your lead")
+        if disp_in == "PAID":
+            raise HTTPException(status_code=403,
+                                detail="Field officers can't book a payment on a call — log a field visit to record a collection.")
     from .cases import _ensure_open
     _ensure_open(case, user)
 

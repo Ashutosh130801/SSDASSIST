@@ -124,6 +124,20 @@ private fun stampCheckinPhoto(file: java.io.File, lat: Double?, lng: Double?, na
     return baos.toByteArray()
 }
 
+/** Turn a failed check-in into a human message — surfaces the server's `detail` (e.g. "Photo too
+ *  large", "After work hours") or a network hint, instead of silently re-showing the dialog. */
+private fun checkinErrMsg(t: Throwable?): String = when (t) {
+    is retrofit2.HttpException -> {
+        val body = runCatching { t.response()?.errorBody()?.string() }.getOrNull()
+        val detail = body?.let { runCatching { org.json.JSONObject(it).optString("detail") }.getOrNull() }
+            ?.takeIf { it.isNotBlank() }
+        detail ?: "Couldn't check in (error ${t.code()}). Please try again."
+    }
+    is java.io.IOException -> "Network problem — check your connection and try again."
+    null -> "Couldn't check in. Please try again."
+    else -> t.message ?: "Couldn't check in. Please try again."
+}
+
 @SuppressLint("MissingPermission")
 private fun lastKnownLatLng(ctx: Context): Pair<Double, Double>? {
     return try {
@@ -166,6 +180,7 @@ fun AttendanceGate(vm: AuthViewModel, user: User) {
     var showCheckin by remember { mutableStateOf(false) }
     var showOvertime by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var checkinErr by remember { mutableStateOf<String?>(null) }
     val isFos = user.role == "fos"
     var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
     var photoLoc by remember { mutableStateOf<Pair<Double, Double>?>(null) }
@@ -216,19 +231,30 @@ fun AttendanceGate(vm: AuthViewModel, user: User) {
                         if (photoBytes == null) Text("A GPS-tagged check-in photo is required.",
                             color = Warn, style = MaterialTheme.typography.labelSmall)
                     }
+                    if (checkinErr != null) Text(checkinErr!!, color = Warn,
+                        style = MaterialTheme.typography.labelSmall)
                 }
             },
             confirmButton = {
                 Button(enabled = !busy && (!isFos || photoBytes != null), onClick = {
-                    busy = true
+                    busy = true; checkinErr = null
                     scope.launch {
-                        if (isFos && photoBytes != null) {
+                        val res = if (isFos && photoBytes != null) {
                             runCatching { vm.repo.attCheckinPhoto(photoBytes!!, photoLoc?.first, photoLoc?.second) }
                         } else {
                             val loc = lastKnownLatLng(ctx)
                             runCatching { vm.repo.attCheckin(loc?.first, loc?.second) }
                         }
-                        busy = false; showCheckin = false; photoBytes = null; reload()
+                        busy = false
+                        if (res.isSuccess) {
+                            // Trust the check-in response — close and refresh once. Do NOT re-derive
+                            // "needs check-in" from a follow-up read (that was the loop).
+                            showCheckin = false; photoBytes = null; checkinErr = null
+                            me = runCatching { vm.repo.attMeToday() }.getOrNull()
+                        } else {
+                            // Keep the dialog open WITH the real reason instead of silently flashing back.
+                            checkinErr = checkinErrMsg(res.exceptionOrNull())
+                        }
                     }
                 }) { Text(if (busy) "Checking in…" else if (isFos) "Check in with photo" else "Check in") }
             },
