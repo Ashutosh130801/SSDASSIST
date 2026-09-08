@@ -393,6 +393,47 @@ def _clear_random_allocations():
         db.close()
 
 
+def _cleanup_dpr_overcredit():
+    """One-time cleanup after the DPR rework (snapshot-reconcile model). The OLD DPR always ADDED
+    the amount (and, for 'paid, no amount', added the full base) — so partially-paid settlement
+    cases got over-credited past their settlement, inflating cash. Here we UNDO that overshoot:
+    for every settlement (NORM/STAB) case whose received exceeds the settlement max (NORM if set,
+    else STAB), cap received at that max, then recompute (re-tag NORM/STAB + status + pending under
+    the new rules). Plain cases and correctly-sized cases are untouched. Runs ONCE (marker file).
+    Going forward, re-uploading the current DPR file per portfolio SETS received = the cumulative
+    total, self-correcting anything this pass can't perfectly reconstruct."""
+    import os
+    from decimal import Decimal
+    from .database import SessionLocal
+    from . import models as _m, paymath as _pm
+    marker = os.path.join(os.path.dirname(__file__), "..", ".dpr_cleanup_v1")
+    if os.path.exists(marker):
+        return
+    db = SessionLocal()
+    try:
+        capped = 0
+        for c in db.query(_m.Case).filter(_m.Case.removed.isnot(True)).yield_per(500):
+            n = Decimal(str(c.norm_amount or 0)); s = Decimal(str(c.stab_amount or 0))
+            if n <= 0 and s <= 0:
+                continue                              # plain case → no settlement ceiling
+            ceiling = n if n > 0 else s               # the most that counts as settlement
+            recv = Decimal(str(c.received_amount or 0))
+            if ceiling > 0 and recv > ceiling:
+                c.received_amount = ceiling           # undo the double-count overshoot
+                capped += 1
+            _pm.recompute(c)                          # re-tag NORM/STAB + status + pending
+        db.commit()
+        try:
+            with open(marker, "w") as _f:
+                _f.write("done")
+        except Exception:
+            pass
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 _backfill_emp_codes()
 _backfill_norm_stab()
 _fix_negative_pending()
@@ -401,6 +442,7 @@ _backfill_dual_role_flag()
 _reset_rtp_promises()
 _fix_dup_tl_codes()
 _clear_random_allocations()
+_cleanup_dpr_overcredit()
 
 
 def _maybe_seed():

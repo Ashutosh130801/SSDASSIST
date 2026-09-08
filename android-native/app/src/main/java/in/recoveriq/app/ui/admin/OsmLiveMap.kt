@@ -28,10 +28,19 @@ private class LiveOverlayHolder {
     val trails = HashMap<Int, Polyline>()
     val last = HashMap<Int, GeoPoint>()
     var centered = false
+    // Route-history overlay (drawn when a specific officer's day is opened)
+    var route: Polyline? = null
+    val routeMarks = ArrayList<Marker>()
+    var routeSig: String = ""
 }
 
 @Composable
-fun OsmLiveMap(officers: List<OfficerLocation>, scope: CoroutineScope, modifier: Modifier = Modifier) {
+fun OsmLiveMap(
+    officers: List<OfficerLocation>,
+    scope: CoroutineScope,
+    modifier: Modifier = Modifier,
+    routePoints: List<GeoPoint> = emptyList(),
+) {
     val holder = remember { LiveOverlayHolder() }
     val liveColor = Color.rgb(0x16, 0xA3, 0x4A)   // green = live
     AndroidView(
@@ -41,6 +50,17 @@ fun OsmLiveMap(officers: List<OfficerLocation>, scope: CoroutineScope, modifier:
             MapView(ctx).apply {
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
+                // Lock to a single world copy so the map can't be flung into infinite repeats,
+                // and clamp scrolling/zoom to the real world bounds.
+                isHorizontalMapRepetitionEnabled = false
+                isVerticalMapRepetitionEnabled = false
+                setScrollableAreaLimitLatitude(
+                    org.osmdroid.views.MapView.getTileSystem().maxLatitude,
+                    org.osmdroid.views.MapView.getTileSystem().minLatitude, 0,
+                )
+                setScrollableAreaLimitLongitude(-180.0, 180.0, 0)
+                minZoomLevel = 3.0
+                maxZoomLevel = 19.0
                 controller.setZoom(if (officers.isEmpty()) 5.0 else 12.0)
                 controller.setCenter(
                     officers.firstOrNull()?.let { GeoPoint(it.latitude, it.longitude) }
@@ -49,6 +69,32 @@ fun OsmLiveMap(officers: List<OfficerLocation>, scope: CoroutineScope, modifier:
             }
         },
         update = { map ->
+            // ---- route-history overlay: redraw only when the point set changes ----
+            val sig = if (routePoints.isEmpty()) "" else
+                "${routePoints.size}:${routePoints.first().latitude},${routePoints.first().longitude}:" +
+                    "${routePoints.last().latitude},${routePoints.last().longitude}"
+            if (sig != holder.routeSig) {
+                holder.route?.let { map.overlays.remove(it) }; holder.route = null
+                holder.routeMarks.forEach { map.overlays.remove(it) }; holder.routeMarks.clear()
+                if (routePoints.size >= 2) {
+                    val line = Polyline().apply {
+                        outlinePaint.color = Color.rgb(0x25, 0x63, 0xEB)
+                        outlinePaint.strokeWidth = 7f
+                        setPoints(routePoints)
+                    }
+                    map.overlays.add(0, line); holder.route = line
+                    val s = fosPin(map, routePoints.first(), Color.rgb(0x16, 0xA3, 0x4A), live = true, label = "S")
+                    val e = fosPin(map, routePoints.last(), Color.rgb(0xDC, 0x26, 0x26), live = false, label = "E")
+                    holder.routeMarks.add(s); holder.routeMarks.add(e)
+                    map.overlays.add(s); map.overlays.add(e)
+                    // Fit the day's route into view.
+                    val lats = routePoints.map { it.latitude }; val lngs = routePoints.map { it.longitude }
+                    val bb = org.osmdroid.util.BoundingBox(lats.maxOrNull()!!, lngs.maxOrNull()!!,
+                        lats.minOrNull()!!, lngs.minOrNull()!!)
+                    map.post { runCatching { map.zoomToBoundingBox(bb.increaseByScale(1.4f), true, 60) } }
+                }
+                holder.routeSig = sig
+            }
             val liveIds = HashSet<Int>()
             officers.forEach { o ->
                 liveIds.add(o.officerId)

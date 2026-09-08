@@ -336,23 +336,59 @@ def _prepare(content, default_bank, product, user, db, month_bucket=None):
                           "amount": float(amount or 0),
                           "reason": "no case with this number in this portfolio"})
             continue
+        # ---- SNAPSHOT RECONCILE ----
+        # The DPR is the CURRENT status of every case; the amount is the CUMULATIVE total collected
+        # to date. So we reconcile the case to it (set received = amount, up OR down) and count only
+        # the DELTA as new cash. Unchanged rows do nothing. PL/BL is different: its DPR carries the
+        # daily OD-NORM / OD-STAB targets + status, never a cash amount.
+        prev = Decimal(match.received_amount or 0)
         already = (match.paid_status or "").upper() == "PAID"
-        if paid and already:
-            act = "extra_paid"      # already paid + DPR paid again → NEW extra collection, added on top
-        elif paid:
-            act = "mark_paid"       # unpaid → paid: collect the DPR amount
-        elif already:
-            act = "mark_unpaid"     # paid → unpaid/fail/reversed: revert with the amount change
+        is_plbl = (match.segment or "") == "PL/BL"
+        status_txt = str(r.get(cols["status"]) or "").strip().upper() if cols["status"] else ""
+        explicit_unpaid = any(x in status_txt for x in
+                              ("UNPAID", "BOUNCE", "FAIL", "REVERS", "RETURN", "DISHON", "REJECT", "NACHFAIL"))
+        has_amt = amount is not None
+        field_ups = _proposed_fields(match, r, field_cols)   # incl. OD NORM/STAB → norm_amount/stab_amount
+
+        if is_plbl:
+            # PL/BL: update OD targets (via field sync) + the paid/unpaid flag. NO cash from DPR.
+            mode = "plbl"
+            if explicit_unpaid:
+                act = "plbl_unpaid"
+            elif paid and status_txt:
+                act = "plbl_paid"
+            else:
+                act = "plbl_update"   # just OD-value / field refresh, no status change
+            target = prev; delta = Decimal(0)
+        elif explicit_unpaid:
+            # Failed / bounced / reversed → back the case out to zero.
+            mode = "reverse"; target = Decimal(0); delta = -prev
+            act = "reverse" if prev > 0 else "no_change"
+        elif paid and not has_amt:
+            # Paid with NO amount = auto-debit / e-NACH → mark PAID as-is, add no cash.
+            mode = "autodebit"; target = prev; delta = Decimal(0)
+            act = "no_change" if (already and getattr(match, "auto_debit", False)) else "mark_paid"
+        elif has_amt:
+            # Reconcile the case's collected total to the DPR amount (cumulative).
+            mode = "reconcile"; target = amount; delta = target - prev
+            if delta == 0:
+                act = "no_change"
+            elif prev <= 0 and target > 0:
+                act = "mark_paid"
+            elif delta > 0:
+                act = "extra"
+            else:
+                act = "reduce"
         else:
-            act = "no_change"       # unpaid → unpaid: nothing to pay (only field sync, if any)
-        field_ups = _proposed_fields(match, r, field_cols)
+            mode = "nochange"; target = prev; delta = Decimal(0); act = "no_change"
+
         items.append({"action": act, "case_id": match.id, "key": keyshow,
                       "customer": match.customer_name, "amount": float(amount or 0),
-                      "norm_stab": ns, "current": match.paid_status,
-                      # a paid row with an explicit ₹0 amount = auto-debit settlement
-                      "auto_debit": bool(paid and amount is not None and amount == 0),
+                      "target": float(target), "delta": float(delta), "norm_stab": ns,
+                      "current": match.paid_status,
                       "updates": {k: str(v) for k, v in field_ups.items()},
-                      "_case": match, "_amount": amount, "_ns": ns, "_fields": field_ups})
+                      "_case": match, "_amount": amount, "_ns": ns, "_fields": field_ups,
+                      "_mode": mode, "_target": target, "_delta": delta, "_paid": paid})
     return cols, items
 
 
@@ -362,35 +398,28 @@ async def dpr_preview(file: UploadFile = File(...), default_bank: str = Form(...
                       user: models.User = Depends(require_roles(*DPR_ROLES))):
     content = await file.read()
     cols, items = _prepare(content, default_bank, product, user, db, month_bucket)
-    counts = {"mark_paid": 0, "extra_paid": 0, "mark_unpaid": 0, "no_change": 0, "unmatched": 0}
+    counts = {"mark_paid": 0, "extra": 0, "reduce": 0, "reverse": 0, "no_change": 0, "unmatched": 0,
+              "plbl_paid": 0, "plbl_unpaid": 0, "plbl_update": 0}
     for it in items:
         counts[it["action"]] = counts.get(it["action"], 0) + 1
     counts["field_updates"] = sum(len(it.get("_fields") or {}) for it in items)
     counts["rows_with_updates"] = sum(1 for it in items if it.get("_fields"))
-    # Net cash this DPR will move: + collections / extra, − reversals (a reversal backs out the
-    # case's current received amount).
+    # Net cash = the sum of DELTAS this DPR will move (reconcile up/down, reversals negative).
+    # PL/BL rows and unchanged rows move ₹0. Only these deltas hit FTD.
     net = 0.0
-    amount_total = 0.0          # raw sum of every amount printed in the file (the "amount column")
-    excluded = 0.0              # amounts shown but NOT booked to net cash (unmatched + unpaid-with-amount)
-    unmatched_rows = []         # the exact rows that couldn't be posted, so the gap is never a mystery
+    amount_total = 0.0          # raw sum of the file's amount column (the number a user eyeballs)
+    unmatched_rows = []
     for it in items:
-        a, amt, c = it["action"], float(it.get("amount") or 0), it.get("_case")
-        amount_total += amt
-        if a == "mark_paid":
-            net += amt if amt > 0 else float(_pay_base_total(c) or 0)
-        elif a == "extra_paid":
-            net += amt
-        elif a == "mark_unpaid" and c is not None:
-            net -= float(c.received_amount or 0)
-        elif a == "unmatched":
-            excluded += amt
-            unmatched_rows.append({"key": it.get("key"), "name": it.get("name"), "amount": amt})
-        elif a == "no_change" and amt > 0:
-            # a row carrying an amount whose status still reads unpaid → nothing is booked
-            excluded += amt
+        amount_total += float(it.get("amount") or 0)
+        if it["action"] == "unmatched":
+            unmatched_rows.append({"key": it.get("key"), "name": it.get("name"),
+                                   "amount": float(it.get("amount") or 0)})
+        else:
+            net += float(it.get("_delta") or 0)
+    excluded = round(amount_total - net, 2)   # printed-but-not-booked (unmatched, no-change, PL/BL)
     counts["collected_preview"] = round(net, 2)
     counts["amount_total"] = round(amount_total, 2)
-    counts["excluded_amount"] = round(excluded, 2)
+    counts["excluded_amount"] = excluded if excluded > 0 else 0.0
     public = [{k: v for k, v in it.items() if not k.startswith("_")} for it in items]
     return {"bank": default_bank, "product": product, "detected": cols,
             "total": len(items), "parsed": len(items), "counts": counts,
@@ -416,14 +445,16 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
     def _log_payment(case, amt, note):
         """Record the cash movement as a PAYMENT event (what FTD/MTD/Overall + feedback read),
         credited to the case's caller (else FOS, else the uploader) — so it lands on the right
-        person's numbers everywhere."""
+        person's numbers everywhere. The note carries the uploader so History shows who ran the DPR."""
         credit = case.assigned_caller_id or case.assigned_fos_id or user.id
         db.add(models.CallLog(case_id=case.id, caller_id=credit, disposition="PAYMENT",
-                              ptp_amount=amt, note=note))
+                              ptp_amount=amt, note=f"{note} · via DPR by {user.name}"))
 
+    reduce_n = plbl_n = 0
     not_paid = []   # DPR rows that did NOT end as PAID — so the user can see exactly which are missing
+    from .. import paymath
     for it in items:
-        act = it["action"]
+        act = it["action"]; mode = it.get("_mode")
         if act == "unmatched":
             unmatched_n += 1
             not_paid.append({"account": it.get("key"), "customer": it.get("name"),
@@ -431,18 +462,17 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
                              "reason": "unmatched — no case with this number in this portfolio"})
             continue
         case = it["_case"]
-        # Snapshot the collection base BEFORE any full-sync field overwrite, so a balance/TOS
-        # column in the DPR can't corrupt how much is treated as paid / still pending.
-        base = _pay_base_total(case)
         old_status = case.paid_status or "UNPAID"
         prev_recv = Decimal(case.received_amount or 0)
-        amt = it["_amount"] if (it["_amount"] and it["_amount"] > 0) else None
         ns = it["_ns"]
+        delta = Decimal(str(it.get("_delta") or 0))
+        target = Decimal(str(it.get("_target") or 0))
         change = {"case_id": case.id, "key": it["key"], "customer": case.customer_name,
                   "action": act, "old_status": old_status, "amount": float(it["_amount"] or 0),
                   "norm_stab": ns}
 
-        # Full-sync of any other recognised columns (contact, bucket, TOS, etc.) — value-only.
+        # Full-sync recognised columns (contact, bucket, TOS, and for PL/BL the OD-NORM/OD-STAB
+        # → norm_amount/stab_amount) — value-only, blanks never wipe.
         ups = it.get("_fields") or {}
         if ups:
             for attr, val in ups.items():
@@ -453,68 +483,79 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
             fields_n += len(ups)
             change["fields"] = {k: str(v) for k, v in ups.items()}
 
-        from .. import paymath
-        # A paid DPR row with an EXPLICIT ₹0 amount = an auto-debit / e-NACH settlement: mark the
-        # case PAID, but collect nothing (cash stays 0, pending stays the full balance). A paid row
-        # with no amount at all still means "settle the full outstanding" (unchanged behaviour).
-        is_autodebit = (it["_amount"] is not None and it["_amount"] == 0)
-        if act == "mark_paid":
-            if is_autodebit:
+        if mode == "plbl":
+            # PL/BL: OD targets already synced above; DPR only sets the paid/unpaid flag. NO cash,
+            # NO dated event — PL/BL cash comes solely from call-log + visit collections.
+            if act == "plbl_paid":
                 case.auto_debit = True
-                add = Decimal(0)
-            else:
-                add = amt if amt is not None else base   # amt = the >0 amount, else full base
-            new_recv = prev_recv + add
-            case.received_amount = new_recv
-            if ns:
-                case.norm_stab = ns
-            # auto_debit → PAID at ₹0; otherwise a NORM/STAB case is PAID only once its settlement
-            # is reached (below → PARTIAL), and plain cases PAID once the outstanding is met.
+            elif act == "plbl_unpaid":
+                case.auto_debit = False
             new_status = paymath.recompute(case)
-            _log_payment(case, add, ("DPR: auto-debit settlement (₹0)" if is_autodebit
-                                     else f"DPR: paid ₹{add}") + (f" ({ns})" if ns else ""))
-            collected_total += add
-            change.update({"new_status": new_status, "delta": float(add), "new_received": float(new_recv),
-                           "auto_debit": is_autodebit})
-            paid_n += 1; _touch(case)
-            if (new_status or "").upper() != "PAID":   # collected but below settlement → PARTIAL, not PAID
-                not_paid.append({"account": it["key"], "customer": case.customer_name,
-                                 "amount": float(add), "status": new_status,
-                                 "reason": f"collected ₹{float(add):.0f} but below the {ns or 'settlement'} amount — marked {new_status}"})
+            change.update({"new_status": new_status, "delta": 0.0})
+            plbl_n += 1; _touch(case)
 
-        elif act == "extra_paid" and amt is not None:
-            # Already paid + DPR paid again with an amount → a NEW extra collection ADDED on top
-            # (customer paid more on their own). Collected amount rises everywhere.
-            new_recv = prev_recv + amt
-            case.received_amount = new_recv
-            if ns:
-                case.norm_stab = ns
-            new_status = paymath.recompute(case)
-            _log_payment(case, amt, f"DPR updated collection: extra ₹{amt}" + (f" ({ns})" if ns else ""))
-            collected_total += amt
-            change.update({"new_status": new_status, "delta": float(amt), "new_received": float(new_recv),
-                           "extra": True})
-            extra_n += 1; _touch(case)
-
-        elif act == "mark_unpaid":
-            # Paid → unpaid / fail / reversed: revert status and back out the collected amount.
-            case.received_amount = Decimal(0)
-            case.pending_amount = base
-            case.paid_status, case.status, case.norm_stab = "UNPAID", "allocated", None
-            case.auto_debit = False   # a reversal / bounce clears any auto-debit settlement
+        elif mode == "reverse":
+            # DPR says UNPAID on a case that had collection → payment failed → back it out to ₹0.
             if prev_recv > 0:
-                _log_payment(case, (-prev_recv), "DPR: reversed (marked unpaid)")
+                _log_payment(case, -prev_recv, "DPR: reversed (payment failed / marked unpaid)")
                 collected_total -= prev_recv
-            change.update({"new_status": "UNPAID", "delta": float(-prev_recv), "new_received": 0.0})
+            case.received_amount = Decimal(0)
+            case.auto_debit = False
+            new_status = paymath.recompute(case)
+            change.update({"new_status": new_status, "delta": float(-prev_recv), "new_received": 0.0})
             unpaid_n += 1; _touch(case)
 
-        else:
-            # no_change (unpaid→unpaid) or extra_paid with no amount → only the field sync, if any.
+        elif mode == "autodebit":
+            # Paid, no amount = auto-debit / e-NACH → mark PAID as-is, collect nothing.
+            case.auto_debit = True
+            new_status = paymath.recompute(case)
+            change.update({"new_status": new_status, "delta": 0.0, "new_received": float(prev_recv),
+                           "auto_debit": True})
+            paid_n += 1; _touch(case)
+
+        elif mode == "reconcile":
+            # Snapshot: set the collected total to the DPR's cumulative amount (up OR down); the
+            # DELTA is the only new cash and the only thing that hits FTD. paymath auto-tags NORM/STAB.
+            case.auto_debit = False
+            case.received_amount = target
+            new_status = paymath.recompute(case)
+            if delta != 0:
+                _log_payment(case, delta, f"DPR reconciled: total ₹{target} (Δ {delta})")
+                collected_total += delta
+            if delta > 0 and prev_recv <= 0:
+                paid_n += 1
+            elif delta > 0:
+                extra_n += 1
+            elif delta < 0:
+                reduce_n += 1
+            change.update({"new_status": new_status, "delta": float(delta), "new_received": float(target)})
+            _touch(case)
+            if (new_status or "").upper() != "PAID" and target > 0:
+                not_paid.append({"account": it["key"], "customer": case.customer_name,
+                                 "amount": float(target), "status": new_status,
+                                 "reason": f"collected ₹{float(target):.0f} but below the settlement — marked {new_status}"})
+
+        else:  # no_change
             if ups:
                 nochange_n += 1; _touch(case); change["new_status"] = old_status
             else:
                 continue
 
+        # Per-case audit attributed to the UPLOADER (not the credited caller) so the case
+        # History shows who ran the DPR + exactly what changed.
+        new_status = change.get("new_status", old_status)
+        cdelta = change.get("delta", 0.0)
+        bits = []
+        if new_status and new_status != old_status:
+            bits.append(f"{old_status} → {new_status}")
+        if cdelta:
+            bits.append(f"Δ ₹{float(cdelta):.0f}")
+        if change.get("fields"):
+            bits.append(", ".join(f"{k}={v}" for k, v in change["fields"].items()))
+        audit.record(db, user, "dpr_update", case,
+                     field=act, old=old_status, new=new_status,
+                     detail=f"DPR {act}" + (": " + " · ".join(bits) if bits else "")
+                            + f" (uploaded by {user.name})")
         audit.stamp_case(case, user)
         changes.append(change)
 
@@ -522,10 +563,11 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
     # activity screen can open the same detail you saw in the preview.
     audit.record(db, user, "import", None, entity_type="import",
                  detail=f"DPR update {default_bank}/{product}: {paid_n} paid, {extra_n} extra, "
-                        f"{unpaid_n} reversed, {fields_n} field updates · net ₹{collected_total}",
+                        f"{reduce_n} reduced, {unpaid_n} reversed, {plbl_n} PL/BL, "
+                        f"{fields_n} field updates · net ₹{collected_total}",
                  meta={"dpr": True, "bank": default_bank, "product": product,
-                       "paid": paid_n, "extra_paid": extra_n, "unpaid": unpaid_n,
-                       "no_change": nochange_n, "unmatched": unmatched_n,
+                       "paid": paid_n, "extra": extra_n, "reduce": reduce_n, "unpaid": unpaid_n,
+                       "plbl": plbl_n, "no_change": nochange_n, "unmatched": unmatched_n,
                        "field_updates": fields_n, "collected": float(collected_total),
                        "changes": changes})
     db.commit()
@@ -534,13 +576,13 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
     from .realtime import notify_data_changed
     notify_data_changed(default_bank, product)
     _mark_today(db, touched)
-    # paid rows that actually ended as PAID (vs collected-but-PARTIAL, which sit in not_paid)
     partial_n = sum(1 for r in not_paid if r["status"] not in ("—",))
     paid_final = max(0, paid_n - partial_n)
     return {"bank": default_bank, "product": product, "total": len(items),
-            "parsed": len(items),                    # rows read from the DPR file
+            "parsed": len(items),
             "paid": paid_n, "paid_final": paid_final, "partial": partial_n,
-            "extra_paid": extra_n, "unpaid": unpaid_n,
+            "extra": extra_n, "extra_paid": extra_n, "reduce": reduce_n,
+            "unpaid": unpaid_n, "plbl": plbl_n,
             "no_change": nochange_n, "unmatched": unmatched_n,
             "field_updates": fields_n, "collected": float(collected_total),
-            "not_paid": not_paid}          # exact rows that did NOT end as PAID (unmatched + partial)
+            "not_paid": not_paid}

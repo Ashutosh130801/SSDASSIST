@@ -473,6 +473,204 @@ def route_csv(officer_id: int, date: str, db: Session = Depends(get_db),
     )
 
 
+@router.get("/available-dates")
+def available_dates(officer_ids: str = "all", branch: str | None = None,
+                    days: int = RETENTION_DAYS, db: Session = Depends(get_db),
+                    viewer: models.User = Depends(require_roles(*HISTORY_ROLES))):
+    """Union of IST calendar days (last `days`) on which any of the given officers recorded a
+    route — powers the multi-date picker in the bulk export panel."""
+    fq = db.query(models.User.id).filter(models.User.role == "fos")
+    if viewer.role == "manager" and viewer.branch:
+        fq = fq.filter(models.User.branch == viewer.branch)
+    elif viewer.role == "teamlead":
+        from .cases import _scope_user_ids
+        fq = fq.filter(models.User.id.in_(list(_scope_user_ids(db, viewer)) or [-1]))
+    if branch:
+        fq = fq.filter(models.User.branch == branch)
+    if officer_ids and officer_ids != "all":
+        want = {int(x) for x in officer_ids.split(",") if x.strip().isdigit()}
+        fq = fq.filter(models.User.id.in_(want or {-1}))
+    oids = [r[0] for r in fq.all()]
+    if not oids:
+        return []
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = (db.query(models.LocationPing.created_at)
+            .filter(models.LocationPing.officer_id.in_(oids),
+                    models.LocationPing.created_at >= since).all())
+    return sorted({_as_utc(r[0]).astimezone(IST).strftime("%Y-%m-%d") for r in rows}, reverse=True)
+
+
+@router.get("/export")
+def export_routes(officer_ids: str = "all", dates: str = "all", branch: str | None = None,
+                  days: int = RETENTION_DAYS, db: Session = Depends(get_db),
+                  viewer: models.User = Depends(require_roles(*HISTORY_ROLES))):
+    """Multi-officer, multi-date route + visit export as ONE Excel workbook.
+
+    `officer_ids` = comma-separated user ids, or 'all'. `dates` = comma-separated YYYY-MM-DD,
+    or 'all' (every day in the last `days` on which any selected officer recorded a route).
+    Layout: one worksheet per date; within a sheet each officer is a stacked block — a name +
+    route-summary header row, then that officer's field-visit table.
+    """
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    # ---- resolve the officer set (scoped to what the viewer may see) ----
+    fq = db.query(models.User).filter(models.User.role == "fos")
+    if viewer.role == "manager" and viewer.branch:
+        fq = fq.filter(models.User.branch == viewer.branch)
+    elif viewer.role == "teamlead":
+        from .cases import _scope_user_ids
+        fq = fq.filter(models.User.id.in_(list(_scope_user_ids(db, viewer)) or [-1]))
+    if branch:
+        fq = fq.filter(models.User.branch == branch)
+    if officer_ids and officer_ids != "all":
+        want = {int(x) for x in officer_ids.split(",") if x.strip().isdigit()}
+        fq = fq.filter(models.User.id.in_(want or {-1}))
+    officers = fq.order_by(models.User.name).all()
+    if not officers:
+        raise HTTPException(status_code=404, detail="No field officers match the selection")
+    for o in officers:                                  # enforce per-officer visibility
+        _authorize_officer_view(db, viewer, o.id)
+    oids = [o.id for o in officers]
+
+    # ---- resolve the date set ----
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    if dates and dates != "all":
+        date_list = sorted({x.strip() for x in dates.split(",") if x.strip()})
+    else:
+        pings = (db.query(models.LocationPing.created_at)
+                 .filter(models.LocationPing.officer_id.in_(oids),
+                         models.LocationPing.created_at >= since).all())
+        date_list = sorted({_as_utc(p[0]).astimezone(IST).strftime("%Y-%m-%d") for p in pings})
+    if not date_list:
+        raise HTTPException(status_code=404, detail="No route data for the selection")
+
+    def _day_bounds(dstr):
+        y, m, d = (int(x) for x in dstr.split("-"))
+        s = datetime(y, m, d, 0, 0, tzinfo=IST).astimezone(timezone.utc)
+        return s, s + timedelta(days=1)
+
+    def as_ist_hm(dt):
+        if dt and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(IST).strftime("%H:%M") if dt else ""
+
+    VIS_COLS = ["#", "Time", "Customer", "Account", "Bank", "Product", "Phone",
+                "Disposition", "Paid", "Amount", "N/S", "Off-loc", "Distance (m)", "Note"]
+    hdr_fill = PatternFill("solid", fgColor="1F4E79")
+    name_fill = PatternFill("solid", fgColor="DDEBF7")
+    col_fill = PatternFill("solid", fgColor="F2F2F2")
+    white_bold = Font(bold=True, color="FFFFFF")
+    name_font = Font(bold=True, size=12, color="1F4E79")
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    total_visits = 0
+    for dstr in date_list:
+        start_utc, end_utc = _day_bounds(dstr)
+        ws = wb.create_sheet(title=dstr[:31])
+        row = 1
+        # per-day pings & visits for all officers in two queries
+        day_pings = (db.query(models.LocationPing)
+                     .filter(models.LocationPing.officer_id.in_(oids),
+                             models.LocationPing.created_at >= start_utc,
+                             models.LocationPing.created_at < end_utc)
+                     .order_by(models.LocationPing.created_at.asc()).all())
+        pings_by_off = {}
+        for p in day_pings:
+            pings_by_off.setdefault(p.officer_id, []).append(p)
+        day_visits = (db.query(models.Visit)
+                      .filter(models.Visit.officer_id.in_(oids),
+                              models.Visit.created_at >= start_utc,
+                              models.Visit.created_at < end_utc)
+                      .order_by(models.Visit.created_at.asc()).all())
+        vis_by_off = {}
+        for v in day_visits:
+            vis_by_off.setdefault(v.officer_id, []).append(v)
+        cids = list({v.case_id for v in day_visits})
+        cases = {c.id: c for c in db.query(models.Case).filter(models.Case.id.in_(cids)).all()} if cids else {}
+
+        for o in officers:
+            ps = pings_by_off.get(o.id, [])
+            vs = vis_by_off.get(o.id, [])
+            if not ps and not vs:
+                continue                                # nothing this day for this officer — skip
+            cleaned = clean_route(ps) or ps
+            dist = 0.0
+            for a, b in zip(cleaned, cleaned[1:]):
+                dist += _haversine_km((a.latitude, a.longitude), (b.latitude, b.longitude))
+            first = as_ist_hm(ps[0].created_at) if ps else "—"
+            last = as_ist_hm(ps[-1].created_at) if ps else "—"
+            collected = round(sum(float(v.amount_collected or 0) for v in vs), 2)
+
+            # ---- officer name header ----
+            c0 = ws.cell(row=row, column=1,
+                         value=f"{o.name}"
+                               + (f"  ·  {o.emp_code}" if o.emp_code else "")
+                               + (f"  ·  {o.branch}" if o.branch else ""))
+            c0.font = name_font
+            for cc in range(1, len(VIS_COLS) + 1):
+                ws.cell(row=row, column=cc).fill = name_fill
+            row += 1
+            # ---- route summary line ----
+            ws.cell(row=row, column=1,
+                    value=f"Route: {dist:.2f} km · {len(ps)} points · {first}–{last}   |   "
+                          f"Visits: {len(vs)} · Collected ₹{collected:.0f}").font = Font(italic=True, size=10)
+            row += 1
+            # ---- visits table ----
+            for i, col in enumerate(VIS_COLS, start=1):
+                cell = ws.cell(row=row, column=i, value=col)
+                cell.font = white_bold
+                cell.fill = hdr_fill
+                cell.alignment = Alignment(horizontal="center")
+            row += 1
+            if vs:
+                for idx, v in enumerate(vs, start=1):
+                    c = cases.get(v.case_id)
+                    off_loc = (v.distance_from_case_m is not None and v.distance_from_case_m > 300)
+                    vals = [idx, as_ist_hm(v.created_at),
+                            c.customer_name if c else "", c.account_no if c else "",
+                            c.bank if c else "", c.product if c else "", c.phone if c else "",
+                            v.disposition or "", "Yes" if v.paid else "",
+                            float(v.amount_collected or 0), (c.norm_stab if c else "") or "",
+                            "Yes" if off_loc else "", v.distance_from_case_m or "", v.note or ""]
+                    for i, val in enumerate(vals, start=1):
+                        ws.cell(row=row, column=i, value=val)
+                    row += 1
+                    total_visits += 1
+            else:
+                ws.cell(row=row, column=1, value="No field visits logged this day.").font = Font(italic=True, color="808080")
+                row += 1
+            row += 1                                     # blank spacer between officers
+
+        if row == 1:                                     # nobody had data this day
+            ws.cell(row=1, column=1, value="No route or visit data for any selected officer on this date.")
+        # column widths
+        widths = [5, 7, 22, 16, 12, 14, 14, 14, 6, 10, 6, 8, 12, 40]
+        for i, w in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        ws.freeze_panes = "A1"
+
+    if not wb.sheetnames:
+        ws = wb.create_sheet("Export")
+        ws.cell(row=1, column=1, value="No data for the selected officers and dates.")
+
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    n_off, n_day = len(officers), len(date_list)
+    fname = (f"route_export_{n_off}fos_{n_day}days_{date_list[0]}_to_{date_list[-1]}.xlsx"
+             if n_day > 1 else f"route_export_{n_off}fos_{date_list[0]}.xlsx")
+    from .. import audit as _audit
+    _audit.record(db, viewer, "download", None, entity_type="download",
+                  detail=f"Bulk route export — {n_off} officer(s) × {n_day} day(s) "
+                         f"({date_list[0]}…{date_list[-1]}), {total_visits} visit rows")
+    db.commit()
+    return StreamingResponse(
+        out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @router.get("/me/today")
 def my_today(db: Session = Depends(get_db),
              user: models.User = Depends(require_roles("fos", "admin"))):

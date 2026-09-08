@@ -70,26 +70,21 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
         amt = Decimal(str(body.paid_amount or 0))
         if amt < 0:
             amt = Decimal(0)
+        n = Decimal(case.norm_amount or 0)
+        s = Decimal(case.stab_amount or 0)
+        is_settle = (n > 0 or s > 0)
         if amt == 0:
             # A ₹0 PAID is only valid as an auto-debit / e-NACH settlement (the amount debits
             # straight from the customer's account). Cash stays 0; the case still settles as PAID.
             case.auto_debit = True
         else:
             case.received_amount = (Decimal(case.received_amount or 0) + amt)
-            # The caller does NOT choose NORM vs STAB. Auto-tag to the settlement level the running
-            # total actually reaches; below the lower of the two it stays untagged so paymath marks
-            # it PARTIAL (a below-settlement amount is NEVER counted as full cash).
-            n = Decimal(case.norm_amount or 0)
-            s = Decimal(case.stab_amount or 0)
-            if n > 0 or s > 0:
-                recv = Decimal(case.received_amount or 0)
-                if n > 0 and recv >= n:
-                    case.norm_stab = "NORM"
-                elif s > 0 and recv >= s:
-                    case.norm_stab = "STAB"
-                else:
-                    case.norm_stab = None                 # below the lowest settlement → PARTIAL
-        # Single source of truth: sets paid_status (PAID/PARTIAL/UNPAID), pending, and status.
+            # Settlement (NORM/STAB) cases: the caller does NOT choose the tag — paymath.recompute
+            # auto-tags from the running total and forces PARTIAL below the lower settlement.
+            # No-NORM/STAB cases have no "partial", so the caller MAY freely tag NORM/STAB/PAID.
+            if not is_settle and body.norm_stab:
+                case.norm_stab = body.norm_stab
+        # Single source of truth: sets paid_status (PAID/PARTIAL/UNPAID), pending, status + auto-tag.
         new_status = paymath.recompute(case)
         # The call log IS the dated money event — store the ACTUAL collected amount on it so the
         # collection shows in FTD/MTD/LMTD, the trend, the caller's collected KPI and the leaderboard.

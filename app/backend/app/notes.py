@@ -27,9 +27,22 @@ def _people(db, people=None):
             for u in db.query(models.User.id, models.User.name, models.User.role).all()}
 
 
-def case_notes_map(db, case_ids, limit=None, people=None):
+# Audit actions that represent a real change to surface in the notes/feedback history
+# (calls, visits and payments already come from their own logs, so they're excluded here).
+_EDIT_ACTIONS = {"cell_edit", "edit", "field_edit", "dpr_update", "new_phone", "new_address",
+                 "reassign", "deallocate", "transfer", "escalate", "unpaid"}
+_EDIT_LABELS = {"cell_edit": "Live-sheet edit", "edit": "Edit", "field_edit": "Field update",
+                "dpr_update": "DPR update", "new_phone": "Phone updated",
+                "new_address": "Address updated", "reassign": "Reassigned",
+                "deallocate": "Deallocated", "transfer": "Transferred",
+                "escalate": "Escalated", "unpaid": "Marked unpaid"}
+
+
+def case_notes_map(db, case_ids, limit=None, people=None, include_edits=False):
     """Batch: {case_id: [notes]} for many cases in just two queries (no N+1).
-    Each note = {at, when, by, role, source, disposition, text}, newest first."""
+    Each note = {at, when, by, role, source, disposition, text}, newest first.
+    include_edits=True also merges live-sheet / DPR / reassignment edits from the audit trail
+    so the bank-feedback Remarks History and case history show every change and who made it."""
     ids = [i for i in set(case_ids or []) if i]
     if not ids:
         return {}
@@ -55,6 +68,24 @@ def case_notes_map(db, case_ids, limit=None, people=None):
         out[cl.case_id].append({"at": cl.created_at, "when": _when(cl.created_at), "by": nm,
                                 "role": role or "telecaller", "source": "call",
                                 "disposition": disp, "text": txt})
+
+    if include_edits:
+        for a in db.query(models.AuditLog).filter(
+                models.AuditLog.case_id.in_(ids),
+                models.AuditLog.action.in_(list(_EDIT_ACTIONS))).all():
+            act = (a.action or "").lower()
+            if a.detail:
+                txt = a.detail
+            elif a.field:
+                old = a.old_value if a.old_value not in (None, "") else "—"
+                new = a.new_value if a.new_value not in (None, "") else "—"
+                txt = f"{a.field}: {old} → {new}"
+            else:
+                txt = _EDIT_LABELS.get(act, act)
+            out[a.case_id].append({"at": a.at, "when": _when(a.at),
+                                   "by": a.actor_name or "—", "role": a.actor_role or "",
+                                   "source": "edit", "disposition": _EDIT_LABELS.get(act, act),
+                                   "text": txt})
 
     def _key(e):
         return e["at"] or datetime.min.replace(tzinfo=timezone.utc)

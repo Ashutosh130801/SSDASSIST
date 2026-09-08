@@ -196,7 +196,7 @@ def get_feedback(bank: str, product: str, day: str | None = None, branch: str | 
         db.commit()
     # Full merged notes/remarks history (all time, newest first) per case for the History column.
     from ..notes import case_notes_map, join_notes
-    nmap = case_notes_map(db, ids)
+    nmap = case_notes_map(db, ids, include_edits=True)
     out_rows = []
     for e, c in rows:
         r = _row(e, c)

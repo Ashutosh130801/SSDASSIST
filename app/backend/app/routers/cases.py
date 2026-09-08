@@ -1413,6 +1413,32 @@ def timeline(case_id: int, db: Session = Depends(get_db),
                    "detail": cl.note or cl.disposition or "", "amount": float(cl.ptp_amount or 0),
                    "ptp_date": cl.ptp_date.isoformat() if cl.ptp_date else None})
 
+    # Every other mutation on this case — live-sheet cell edits, reassigns, DPR updates,
+    # escalations, contact changes — from the audit trail, so History shows who did what.
+    # (Visits/calls/payments already come from their own tables above; skip those actions.)
+    _AUDIT_TITLES = {
+        "cell_edit": "Live-sheet edit", "edit": "Edited", "field_edit": "Field updated",
+        "dpr_update": "DPR update", "reassign": "Reassigned", "deallocate": "Deallocated",
+        "transfer": "Transferred", "escalate": "Escalated", "restore": "Restored",
+        "delete": "Removed", "unpaid": "Marked unpaid", "flag": "Flagged",
+        "new_phone": "Phone updated", "new_address": "Address updated",
+    }
+    _AUDIT_SKIP = {"payment", "paid", "call", "visit", "import", "download", "login"}
+    for a in db.query(models.AuditLog).filter(models.AuditLog.case_id == case_id).all():
+        act = (a.action or "").lower()
+        if act in _AUDIT_SKIP:
+            continue
+        if a.field and (a.old_value is not None or a.new_value is not None):
+            detail = f"{a.field}: {a.old_value if a.old_value not in (None, '') else '—'} → " \
+                     f"{a.new_value if a.new_value not in (None, '') else '—'}"
+            if a.detail and a.detail not in detail:
+                detail = a.detail
+        else:
+            detail = a.detail or act
+        ev.append({"type": "edit", "at": a.at, "by": a.actor_name or users.get(a.actor_id),
+                   "role": a.actor_role, "title": _AUDIT_TITLES.get(act, act.replace("_", " ").title() or "Change"),
+                   "field": a.field, "old": a.old_value, "new": a.new_value, "detail": detail})
+
     from datetime import datetime, timezone
     ev.sort(key=lambda e: e["at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return ev

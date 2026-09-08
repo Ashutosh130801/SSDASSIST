@@ -242,8 +242,11 @@ function _buildMapsShim() {
   class GMap {
     constructor(el, opts) {
       opts = opts || {};
-      this._map = L.map(el, { zoomControl: true }).setView(_toLL(opts.center) || [17.72, 83.30], opts.zoom || 11);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(this._map);
+      // Lock the map to a single world copy so it can't be panned off into infinite repeats.
+      const WORLD = L.latLngBounds([-85, -180], [85, 180]);
+      this._map = L.map(el, { zoomControl: true, worldCopyJump: false, minZoom: 3,
+        maxBounds: WORLD, maxBoundsViscosity: 1.0 }).setView(_toLL(opts.center) || [17.72, 83.30], opts.zoom || 11);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, noWrap: true, bounds: WORLD, attribution: '&copy; OpenStreetMap' }).addTo(this._map);
       const m = this._map;
       const fix = () => { try { m.invalidateSize(); } catch (e) {} };
       [120, 350, 700, 1200].forEach(t => setTimeout(fix, t));   // re-measure once the container has real height
@@ -360,7 +363,13 @@ function drawRouteLeaflet(gmap, pts, opts) {
   const out = { layers: [], path: [], points: [] };
   if (!L || !gmap || !gmap._map) return out;
   const lm = gmap._map;
-  const P = (pts || []).map(p => ({ lat: p.latitude, lng: p.longitude, t: toMs(p.created_at || p.last_seen || p.at) }))
+  // Remove any route drawn earlier on this map (from any caller) so a redraw / officer-switch
+  // can never leave a stale second route with its own green "S" start marker behind.
+  if (lm._ssdRoute) { lm._ssdRoute.forEach(function (l) { try { lm.removeLayer(l); } catch (e) {} }); }
+  lm._ssdRoute = [];
+  const P = (pts || []).map(p => ({ lat: (p.latitude != null ? p.latitude : p.lat),
+                                    lng: (p.longitude != null ? p.longitude : p.lng),
+                                    t: toMs(p.created_at || p.last_seen || p.recorded_at || p.at || p.time) }))
     .filter(p => p.lat != null && p.lng != null && !isNaN(p.lat) && !isNaN(p.lng));
   if (!P.length) return out;
   out.points = P; out.path = P.map(p => [p.lat, p.lng]);
@@ -425,6 +434,7 @@ function drawRouteLeaflet(gmap, pts, opts) {
   out.layers.push(badge(P[0], 'S', '#16A34A'));
   if (!opts.noEnd) out.layers.push(badge(P[P.length - 1], 'E', '#DC2626'));
   if (opts.fit !== false) { try { lm.fitBounds(L.latLngBounds(out.path), { padding: [50, 50] }); } catch (e) {} }
+  lm._ssdRoute = out.layers;   // track for one-shot cleanup on the next draw
   return out;
 }
 
@@ -1179,7 +1189,7 @@ function DprModal({ onClose, onDone }) {
   useEffect(() => { api('/api/config').then(c => setCat(c.bank_products)).catch(() => {}); }, []);
   const products = (cat && bank && cat.products[bank]) || [];
   const form = () => { const f = new FormData(); f.append('file', file); f.append('default_bank', bank); f.append('product', product); if (month) f.append('month_bucket', month); return f; };
-  const changes = prev ? (prev.counts.mark_paid + (prev.counts.extra_paid || 0) + prev.counts.mark_unpaid + (prev.counts.field_updates || 0)) : 0;
+  const changes = prev ? ((prev.counts.mark_paid || 0) + (prev.counts.extra || 0) + (prev.counts.reduce || 0) + (prev.counts.reverse || 0) + (prev.counts.plbl_paid || 0) + (prev.counts.plbl_unpaid || 0) + (prev.counts.plbl_update || 0) + (prev.counts.field_updates || 0)) : 0;
   const doPreview = async () => {
     if (!file || !bank || !product) return; setErr(''); setBusy(true); setRes(null);
     try { setPrev(await api('/api/dpr/preview', { method: 'POST', form: form() })); }
@@ -1191,7 +1201,7 @@ function DprModal({ onClose, onDone }) {
       toast(`DPR applied — ${r.paid} paid, ${r.unpaid} reversed.`); onDone && onDone();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
-  const badge = (a) => ({ mark_paid: ['✓ Mark paid', 'var(--good)'], extra_paid: ['➕ Extra collection', 'var(--info)'], mark_unpaid: ['↩ Reverse (unpaid)', 'var(--warn)'], no_change: ['• No change', 'var(--ink-dim)'], unmatched: ['⚠ Unmatched', 'var(--bad)'] }[a] || [a, '']);
+  const badge = (a) => ({ mark_paid: ['✓ Mark paid', 'var(--good)'], extra: ['➕ Extra (↑)', 'var(--info)'], reduce: ['➖ Reduced (↓)', 'var(--warn)'], reverse: ['↩ Reversed (failed)', 'var(--bad)'], no_change: ['• No change', 'var(--ink-dim)'], unmatched: ['⚠ Unmatched', 'var(--bad)'], plbl_paid: ['✓ PL/BL paid', 'var(--good)'], plbl_unpaid: ['↩ PL/BL unpaid', 'var(--warn)'], plbl_update: ['↻ PL/BL OD update', 'var(--info)'] }[a] || [a, '']);
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 720 }}>
@@ -1221,9 +1231,11 @@ function DprModal({ onClose, onDone }) {
         </div>}
         {prev && !res && <div className="glass card" style={{ marginTop: 8 }}>
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 13, marginBottom: 6 }}>
-            <span><b style={{ color: 'var(--good)' }}>{prev.counts.mark_paid}</b> to mark paid</span>
-            <span><b style={{ color: 'var(--info)' }}>{prev.counts.extra_paid || 0}</b> extra collection</span>
-            <span><b style={{ color: 'var(--warn)' }}>{prev.counts.mark_unpaid}</b> to reverse</span>
+            <span><b style={{ color: 'var(--good)' }}>{prev.counts.mark_paid || 0}</b> to mark paid</span>
+            <span><b style={{ color: 'var(--info)' }}>{prev.counts.extra || 0}</b> extra (↑)</span>
+            <span><b style={{ color: 'var(--warn)' }}>{prev.counts.reduce || 0}</b> reduced (↓)</span>
+            <span><b style={{ color: 'var(--bad)' }}>{prev.counts.reverse || 0}</b> reversed</span>
+            {((prev.counts.plbl_paid || 0) + (prev.counts.plbl_unpaid || 0) + (prev.counts.plbl_update || 0)) > 0 && <span><b style={{ color: 'var(--info)' }}>{(prev.counts.plbl_paid || 0) + (prev.counts.plbl_unpaid || 0) + (prev.counts.plbl_update || 0)}</b> PL/BL</span>}
             <span><b style={{ color: 'var(--ink-dim)' }}>{prev.counts.no_change || 0}</b> no change</span>
             <span><b style={{ color: 'var(--bad)' }}>{prev.counts.unmatched}</b> unmatched</span>
             <span><b style={{ color: 'var(--info)' }}>{prev.counts.field_updates || 0}</b> field updates{prev.counts.rows_with_updates ? ` (${prev.counts.rows_with_updates} rows)` : ''}</span>
@@ -1256,7 +1268,7 @@ function DprModal({ onClose, onDone }) {
           <b>Done.</b> <span className="muted" style={{ fontSize: 13 }}>
             <b>{res.parsed != null ? res.parsed : res.total}</b> rows parsed from the file · <b style={{ color: 'var(--good)' }}>{res.paid_final != null ? res.paid_final : res.paid}</b> now PAID
             {res.partial ? <> · <b style={{ color: 'var(--warn)' }}>{res.partial}</b> partial (below settlement)</> : null}
-            {' '}· {res.extra_paid || 0} extra · {res.unpaid} reversed · {res.field_updates || 0} field updates · <b style={{ color: 'var(--bad)' }}>{res.unmatched}</b> unmatched. Net cash {INR2(res.collected || 0)}.</span>
+            {' '}· {res.extra || res.extra_paid || 0} extra · {res.reduce || 0} reduced · {res.unpaid} reversed{res.plbl ? ` · ${res.plbl} PL/BL` : ''} · {res.field_updates || 0} field updates · <b style={{ color: 'var(--bad)' }}>{res.unmatched}</b> unmatched. Net cash {INR2(res.collected || 0)}.</span>
           {(res.not_paid || []).length > 0 && <div style={{ marginTop: 10 }}>
             <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>⚠️ {res.not_paid.length} row{res.not_paid.length === 1 ? '' : 's'} did NOT end as PAID
               <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => {
@@ -1999,6 +2011,36 @@ function LiveMap({ config }) {
   const [showReport, setShowReport] = useState(false); const [drawerCase, setDrawerCase] = useState(null);
   const [rosterOpen, setRosterOpen] = useState(false); const [roster, setRoster] = useState(null); const [rosterDate, setRosterDate] = useState('');
   const [rosterQ, setRosterQ] = useState('');
+  // ---- Bulk multi-FOS / multi-date route + visits export ----
+  const [expOpen, setExpOpen] = useState(false); const [expFosList, setExpFosList] = useState(null);
+  const [expFos, setExpFos] = useState(() => new Set()); const [expDatesList, setExpDatesList] = useState(null);
+  const [expDates, setExpDates] = useState(() => new Set()); const [expQ, setExpQ] = useState(''); const [expBusy, setExpBusy] = useState(false);
+  const openExport = () => {
+    setExpOpen(true); setExpFos(new Set()); setExpDates(new Set()); setExpDatesList(null); setExpQ('');
+    if (expFosList === null) api('/api/tracking/roster').then(r => {
+      const all = [...(r.active || []), ...(r.inactive || [])].sort((a, b) => String(a.name || '').localeCompare(b.name || ''));
+      setExpFosList(all);
+    }).catch(() => setExpFosList([]));
+    loadExpDates(new Set());   // start with the union of all officers' dates
+  };
+  // Refresh the available-dates union whenever the chosen officer set changes.
+  const loadExpDates = useCallback((ids) => {
+    setExpDatesList(null); setExpDates(new Set());
+    const q = (ids && ids.size) ? '?officer_ids=' + [...ids].join(',') : '';
+    api('/api/tracking/available-dates' + q).then(setExpDatesList).catch(() => setExpDatesList([]));
+  }, []);
+  const toggleExpFos = (id) => { const n = new Set(expFos); n.has(id) ? n.delete(id) : n.add(id); setExpFos(n); loadExpDates(n); };
+  const _expFilter = o => { const q = expQ.trim().toLowerCase(); if (!q) return true;
+    return [o.name, o.emp_code, o.branch].some(v => (v || '').toString().toLowerCase().includes(q)); };
+  const runExport = () => {
+    setExpBusy(true);
+    const p = new URLSearchParams();
+    p.set('officer_ids', expFos.size ? [...expFos].join(',') : 'all');
+    p.set('dates', expDates.size ? [...expDates].join(',') : 'all');
+    if (branch) p.set('branch', branch);
+    const stamp = new Date().toISOString().slice(0, 10);
+    download('/api/tracking/export?' + p.toString(), `route_export_${stamp}.xlsx`).finally(() => { setExpBusy(false); setExpOpen(false); });
+  };
   const _rmatch = o => { const q = rosterQ.trim().toLowerCase(); if (!q) return true;
     return [o.name, o.emp_code, o.branch, o.location, o.phone].some(v => (v || '').toString().toLowerCase().includes(q)); };
   const loadRoster = useCallback((d) => {
@@ -2168,6 +2210,7 @@ function LiveMap({ config }) {
         {routeActive.current && <button className="btn sm" onClick={() => { clearRoute(); setRouteInfo(null); refresh(); }}>✕ Clear route</button>}
         <GeocodeButton />
         <button className="btn sm" onClick={openRoster}>🧑‍🤝‍🧑 FOS roster</button>
+        <button className="btn sm gold" onClick={openExport}>⬇ Export routes</button>
         <button className="btn sm" onClick={refresh}>↻ Refresh</button>
       </div>
       {status === 'nokey' && <div className="glass card" style={{ marginBottom: 12, color: 'var(--warn)' }}>
@@ -2273,6 +2316,63 @@ function LiveMap({ config }) {
                 </div>)}
             </div>
           </div>}
+        </div>
+      </div>}
+
+      {expOpen && <div className="modal-bg" onClick={() => !expBusy && setExpOpen(false)}>
+        <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 720, width: '96%' }}>
+          <div className="section-h"><h3>Export routes & visits — Excel</h3>
+            <button className="btn ghost sm" onClick={() => !expBusy && setExpOpen(false)}>✕</button></div>
+          <p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>
+            Pick any officers and any dates (or leave a side empty for <b>all</b>). One workbook: a sheet per date,
+            each officer stacked with their name, route summary and visit log.
+          </p>
+          <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            {/* Officers */}
+            <div className="glass card" style={{ padding: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <b>Officers {expFos.size ? `(${expFos.size})` : '(all)'}</b>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button className="btn ghost sm" onClick={() => { const all = new Set((expFosList || []).map(o => o.id)); setExpFos(all); loadExpDates(all); }}>All</button>
+                  <button className="btn ghost sm" onClick={() => { setExpFos(new Set()); loadExpDates(new Set()); }}>None</button>
+                </div>
+              </div>
+              <input className="input" value={expQ} onChange={e => setExpQ(e.target.value)}
+                placeholder="🔍 Name / ID / branch" style={{ marginBottom: 6 }} />
+              <div style={{ maxHeight: 300, overflow: 'auto' }}>
+                {expFosList === null ? <Loader /> : expFosList.length === 0 ? <p className="muted" style={{ fontSize: 12 }}>No field officers.</p> :
+                  expFosList.filter(_expFilter).map(o => <label key={o.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--stroke-soft)', cursor: 'pointer', fontSize: 13 }}>
+                    <input type="checkbox" checked={expFos.has(o.id)} onChange={() => toggleExpFos(o.id)} />
+                    <span><b>{o.name}</b> <span className="muted" style={{ fontSize: 11 }}>{o.emp_code || ''} · {o.branch || '—'}</span></span>
+                  </label>)}
+              </div>
+            </div>
+            {/* Dates */}
+            <div className="glass card" style={{ padding: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <b>Dates {expDates.size ? `(${expDates.size})` : '(all)'}</b>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button className="btn ghost sm" onClick={() => setExpDates(new Set(expDatesList || []))}>All</button>
+                  <button className="btn ghost sm" onClick={() => setExpDates(new Set())}>None</button>
+                </div>
+              </div>
+              <p className="muted" style={{ fontSize: 11, margin: '0 0 6px' }}>Days with recorded routes {expFos.size ? 'for the selected officers' : '(any officer)'}, last 3 months.</p>
+              <div style={{ maxHeight: 336, overflow: 'auto' }}>
+                {expDatesList === null ? <Loader /> : expDatesList.length === 0 ? <p className="muted" style={{ fontSize: 12 }}>No route dates.</p> :
+                  expDatesList.map(d => <label key={d} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--stroke-soft)', cursor: 'pointer', fontSize: 13 }}>
+                    <input type="checkbox" checked={expDates.has(d)} onChange={() => { const n = new Set(expDates); n.has(d) ? n.delete(d) : n.add(d); setExpDates(n); }} />
+                    <span>{d}</span>
+                  </label>)}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, gap: 8 }}>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {(expFos.size || 'All')} officer(s) × {(expDates.size || 'all')} date(s)
+            </span>
+            <button className="btn gold" disabled={expBusy || (expDatesList && expDatesList.length === 0)} onClick={runExport}>
+              {expBusy ? 'Preparing…' : '⬇ Download Excel'}</button>
+          </div>
         </div>
       </div>}
 
@@ -3692,7 +3792,7 @@ function histIcon(d) {
   if (s.includes('RNR') || s.includes('NO ANSWER') || s.includes('SWITCH')) return '📵';
   return '📞';
 }
-const TL_ICON = { created: '🆕', allocated: '📌', visit: '📍', call: '📞', payment: '💰' };
+const TL_ICON = { created: '🆕', allocated: '📌', visit: '📍', call: '📞', payment: '💰', edit: '✏️' };
 
 // Personal review-highlight palette (color key → display hex). Shared web-wide.
 const REVIEW_SWATCHES = [['red', '#EF4444'], ['amber', '#F59E0B'], ['green', '#22C55E'], ['blue', '#3B82F6'], ['purple', '#8B5CF6'], ['pink', '#EC4899'], ['grey', '#94A3B8']];
@@ -3729,6 +3829,10 @@ function CaseDrawer({ c, onClose, onChanged }) {
   };
   const isPTP = dispo === 'PTP';   // RTP = Refuse to Pay is not a promise
   const isPaid = dispo === 'PAID'; const isCC = cur.segment === 'Credit Card';
+  // No-NORM/STAB cases have no "partial" — the person may freely mark NORM/STAB/PAID. Settlement
+  // cases (with a NORM/STAB target) are auto-tagged by amount and locked, so no manual choice.
+  const noSettle = !((Number(cur.norm_amount) || 0) > 0 || (Number(cur.stab_amount) || 0) > 0);
+  const showNS = isCC || noSettle;
   const refresh = () => Promise.all([
     api(`/api/cases/${c.id}`).then(setCur).catch(() => {}),
     api(`/api/cases/${c.id}/timeline`).then(setHist).catch(() => setHist([])),
@@ -3755,7 +3859,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
   };
   const recordPay = async () => {
     if (!payAuto && !payAmt) return; setBusy(true);
-    try { const updated = await api(`/api/cases/${c.id}/payment`, { method: 'POST', body: { amount: payAmt || '0', mode: payAuto ? 'Auto-debit' : payMode, note: payNote, norm_stab: isCC ? normStab : null, auto_debit: payAuto } });
+    try { const updated = await api(`/api/cases/${c.id}/payment`, { method: 'POST', body: { amount: payAmt || '0', mode: payAuto ? 'Auto-debit' : payMode, note: payNote, norm_stab: showNS ? normStab : null, auto_debit: payAuto } });
       setCur(updated); setPayAmt(''); setPayNote(''); setPayAuto(false); toast(payAuto ? 'Auto-debit settlement recorded.' : 'Payment recorded.'); await refresh(); onChanged && onChanged();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
@@ -3915,8 +4019,8 @@ function CaseDrawer({ c, onClose, onChanged }) {
             <div className="field"><label>Amount (₹)</label><input className="input" type="number" value={payAmt} onChange={e => setPayAmt(e.target.value)} placeholder="0.00" /></div>
             <div className="field"><label>Mode</label><select className="input" value={payMode} onChange={e => setPayMode(e.target.value)}>
               <option>UPI</option><option>Cash</option><option>Bank Transfer</option><option>Cheque</option><option>BBPS</option></select></div></div>
-          {isCC && <div className="field"><label>Paid at (credit card)</label>
-            <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option><option>ROLLBACK</option></select></div>}
+          {showNS && <div className="field"><label>{isCC ? 'Paid at (credit card)' : 'Settlement status (no NORM/STAB target — choose)'}</label>
+            <select className="input" value={normStab} onChange={e => setNormStab(e.target.value)}><option>STAB</option><option>NORM</option>{isCC && <option>ROLLBACK</option>}</select></div>}
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, margin: '2px 0 6px' }}>
             <input type="checkbox" checked={payAuto} onChange={e => setPayAuto(e.target.checked)} />
             Auto-debit / e-NACH settlement <span className="muted" style={{ fontSize: 11.5 }}>(marks PAID even at ₹0 — not counted as cash)</span></label>

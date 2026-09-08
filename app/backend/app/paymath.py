@@ -84,9 +84,26 @@ def compute_status(case) -> str:
     return "PARTIAL"
 
 
+def autotag(case) -> None:
+    """For a settlement (NORM/STAB) case, derive the NORM/STAB tag from the CUMULATIVE received —
+    the amount decides, never a manual pick: received >= norm -> NORM, else >= stab -> STAB, else
+    below the lower threshold -> no tag (PARTIAL). Plain (no norm/stab) cases are left untouched so
+    a user's free NORM/STAB/PAID choice on them is preserved. Skipped when auto_debit settles at ₹0."""
+    if getattr(case, "auto_debit", False) or not is_settlement(case):
+        return
+    n, s, recv = norm_amt(case), stab_amt(case), _d(getattr(case, "received_amount", 0))
+    if n > 0 and recv >= n:
+        case.norm_stab = "NORM"
+    elif s > 0 and recv >= s:
+        case.norm_stab = "STAB"
+    else:
+        case.norm_stab = None            # below the lower of the two -> partial, no tag
+
+
 def recompute(case) -> str:
     """Apply the money maths to a case in place: set paid_status, pending_amount, and (only when
     it flips into/out of PAID) the working status / follow-up. Returns the new paid_status."""
+    autotag(case)                         # amount-derived NORM/STAB before status is computed
     st = compute_status(case)
     recv = _d(getattr(case, "received_amount", 0))
     pend = base_total(case) - recv
