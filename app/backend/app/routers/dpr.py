@@ -370,18 +370,31 @@ async def dpr_preview(file: UploadFile = File(...), default_bank: str = Form(...
     # Net cash this DPR will move: + collections / extra, − reversals (a reversal backs out the
     # case's current received amount).
     net = 0.0
+    amount_total = 0.0          # raw sum of every amount printed in the file (the "amount column")
+    excluded = 0.0              # amounts shown but NOT booked to net cash (unmatched + unpaid-with-amount)
+    unmatched_rows = []         # the exact rows that couldn't be posted, so the gap is never a mystery
     for it in items:
         a, amt, c = it["action"], float(it.get("amount") or 0), it.get("_case")
+        amount_total += amt
         if a == "mark_paid":
             net += amt if amt > 0 else float(_pay_base_total(c) or 0)
         elif a == "extra_paid":
             net += amt
         elif a == "mark_unpaid" and c is not None:
             net -= float(c.received_amount or 0)
+        elif a == "unmatched":
+            excluded += amt
+            unmatched_rows.append({"key": it.get("key"), "name": it.get("name"), "amount": amt})
+        elif a == "no_change" and amt > 0:
+            # a row carrying an amount whose status still reads unpaid → nothing is booked
+            excluded += amt
     counts["collected_preview"] = round(net, 2)
+    counts["amount_total"] = round(amount_total, 2)
+    counts["excluded_amount"] = round(excluded, 2)
     public = [{k: v for k, v in it.items() if not k.startswith("_")} for it in items]
     return {"bank": default_bank, "product": product, "detected": cols,
             "total": len(items), "parsed": len(items), "counts": counts,
+            "unmatched_rows": unmatched_rows,
             "rows": public[:500], "capped": len(public) > 500}
 
 

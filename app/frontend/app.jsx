@@ -1229,6 +1229,17 @@ function DprModal({ onClose, onDone }) {
             <span><b style={{ color: 'var(--info)' }}>{prev.counts.field_updates || 0}</b> field updates{prev.counts.rows_with_updates ? ` (${prev.counts.rows_with_updates} rows)` : ''}</span>
             {prev.counts.collected_preview ? <span>net cash <b style={{ color: 'var(--good)' }}>{INR2(prev.counts.collected_preview)}</b></span> : null}
           </div>
+          {(prev.counts.excluded_amount > 0 || prev.counts.amount_total) ? <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+            Amount column total <b>{INR2(prev.counts.amount_total || 0)}</b>
+            {prev.counts.excluded_amount > 0 ? <> · net cash is <b style={{ color: 'var(--good)' }}>{INR2(prev.counts.collected_preview || 0)}</b> because <b style={{ color: 'var(--bad)' }}>{INR2(prev.counts.excluded_amount)}</b> won't post ({prev.counts.unmatched || 0} unmatched{(prev.unmatched_rows && prev.unmatched_rows.length) ? '' : ''}) — money with no case to land on.</> : ' — all of it posts.'}
+          </div> : null}
+          {prev.unmatched_rows && prev.unmatched_rows.length > 0 && <div style={{ background: 'rgba(220,38,38,.07)', border: '1px solid rgba(220,38,38,.25)', borderRadius: 10, padding: '8px 10px', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--bad)', marginBottom: 4 }}>⚠ Unmatched — excluded from net cash ({INR2(prev.counts.excluded_amount || 0)})</div>
+            {prev.unmatched_rows.slice(0, 20).map((u, i) => <div key={i} style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+              <span className="mono">{u.key || '—'} <span className="muted">{u.name || ''}</span></span>
+              <b className="mono">{u.amount ? INR2(u.amount) : '—'}</b></div>)}
+            {prev.unmatched_rows.length > 20 && <div className="muted" style={{ fontSize: 11 }}>+ {prev.unmatched_rows.length - 20} more</div>}
+          </div>}
           <div className="muted" style={{ fontSize: 11.5, marginBottom: 4 }}>Match/pay → key: {prev.detected.keys.join(', ') || '—'} · amount: {prev.detected.amount || '—'} · status: {prev.detected.status || '—'} · norm/stab: {prev.detected.ns || '—'}</div>
           {prev.detected.fields && Object.keys(prev.detected.fields).length > 0 &&
             <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>Other columns synced → {Object.entries(prev.detected.fields).map(([f, h]) => `${f} (${h})`).join(' · ')}</div>}
