@@ -3706,6 +3706,14 @@ function CaseDrawer({ c, onClose, onChanged }) {
   const [payAmt, setPayAmt] = useState(''); const [payMode, setPayMode] = useState('UPI'); const [payNote, setPayNote] = useState(''); const [normStab, setNormStab] = useState('STAB'); const [payAuto, setPayAuto] = useState(false);
   const [ncAddr, setNcAddr] = useState(''); const [ncPhone, setNcPhone] = useState(''); const [ncEdit, setNcEdit] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [dialerOn, setDialerOn] = useState(false); const [dialing, setDialing] = useState(false);
+  useEffect(() => { api('/api/integration/status').then(s => setDialerOn(!!(s.dialer && s.dialer.connected))).catch(() => {}); }, []);
+  const dialViaDialer = async () => {
+    setDialing(true);
+    try { const r = await api('/api/integration/click-to-call', { method: 'POST', body: { case_id: c.id } });
+      toast('Dialing via ' + (r.dialer || 'dialer') + '…');
+    } catch (e) { toast(e.message || 'Dialer call failed', 'err'); } finally { setDialing(false); }
+  };
   const saveContact = async () => {
     if (!ncAddr.trim() && !ncPhone.trim()) { toast('Enter a new address and/or phone', 'err'); return; }
     setBusy(true);
@@ -3789,6 +3797,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
         </div>
         <div className="toolbar" style={{ margin: '12px 0' }}>
           {cur.phone && <CallMenu phone={cur.phone} label="Call customer" gold />}
+          {cur.phone && dialerOn && <button className="btn sm" onClick={dialViaDialer} disabled={dialing} title="Place the call through the connected Autodialer" style={{ background: 'rgba(16,185,129,.12)', borderColor: 'rgba(16,185,129,.4)' }}>{dialing ? '📞 Dialing…' : '📞 Call via dialer'}</button>}
           {cur.phone && <a className="btn sm" href={'https://wa.me/' + String(cur.phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a>}
           {showCallFos && <a className="btn sm" href={'tel:' + cur.assigned_fos_phone} title={'Call the assigned field agent: ' + (cur.assigned_fos_name || '')}>🧑‍🔧 Call FOS</a>}
           {showCallCaller && <a className="btn sm" href={'tel:' + cur.assigned_caller_phone} title={'Call the assigned caller: ' + (cur.assigned_caller_name || '')}>☎️ Call caller</a>}
@@ -7054,14 +7063,70 @@ function SupportView({ user }) {
   );
 }
 
+/* Connections — pair RecoverIQ with the standalone Autodialer (and later AI-Voice). Admin/HO only.
+   When a dialer here is connected + healthy, case screens get a "Call via dialer" button. */
+function ConnectionsView({ user }) {
+  const [rows, setRows] = useState(null);
+  const [form, setForm] = useState({ name: '', base_url: '', api_key: '', branch: '' });
+  const [busy, setBusy] = useState(false);
+  const load = () => api('/api/integration/connections').then(d => setRows(d.connections || [])).catch(() => setRows([]));
+  useEffect(() => { load(); }, []);
+  const add = async () => {
+    if (!form.name || !form.base_url || !form.api_key) { toast('Name, URL and key are required', 'err'); return; }
+    setBusy(true);
+    try { const c = await api('/api/integration/connections', { method: 'POST', body: form });
+      setForm({ name: '', base_url: '', api_key: '', branch: '' }); await load();
+      api('/api/integration/connections/' + c.id + '/test', { method: 'POST' }).then(load).catch(() => {});
+      toast('Connection added — testing…');
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  const test = (id) => api('/api/integration/connections/' + id + '/test', { method: 'POST' })
+    .then(r => { toast(r.ok ? 'Reachable ✓' : 'Not reachable', r.ok ? 'ok' : 'err'); load(); }).catch(e => toast(e.message, 'err'));
+  const toggle = (id) => api('/api/integration/connections/' + id + '/toggle', { method: 'POST' }).then(load);
+  const del = (id) => { if (window.confirm('Remove this connection?')) api('/api/integration/connections/' + id, { method: 'DELETE' }).then(load); };
+  const dot = (s) => s === 'ok' ? 'var(--good)' : s === 'down' ? 'var(--bad)' : 'var(--ink-dim)';
+  return (
+    <div className="stack">
+      <div className="glass card">
+        <div className="section-h"><h3>🔌 Connections</h3></div>
+        <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>Connect the standalone <b>Autodialer</b> (and later the AI-Voice agent). These are separate products — RecoverIQ pushes call queues to them and shows their calls/PTP back here. When a dialer is connected and healthy, a <b>Call via dialer</b> button appears on cases.</p>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="field"><label>Name</label><input className="input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Hyderabad dialer" /></div>
+          <div className="field"><label>Base URL</label><input className="input" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="https://100.x.y.z:8090" /></div>
+          <div className="field"><label>API key (shared secret)</label><input className="input" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder="paste the dialer's integration key" /></div>
+          <div className="field"><label>Branch (optional)</label><input className="input" value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })} placeholder="leave blank for all branches" /></div>
+        </div>
+        <button className="btn gold" onClick={add} disabled={busy}>{busy ? 'Adding…' : '+ Add connection'}</button>
+      </div>
+      <div className="glass card">
+        {rows === null ? <div className="muted">Loading…</div> : rows.length === 0 ? <div className="muted">No connections yet. Add your Autodialer above.</div> :
+          <div className="tablewrap"><table>
+            <thead><tr><th>Status</th><th>Name</th><th>URL</th><th>Key</th><th>Branch</th><th>Enabled</th><th></th></tr></thead>
+            <tbody>{rows.map(c => <tr key={c.id}>
+              <td><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 9, height: 9, borderRadius: '50%', background: dot(c.status) }}></span>{c.status}</span></td>
+              <td><b>{c.name}</b> <span className="muted" style={{ fontSize: 11 }}>{c.kind}</span></td>
+              <td className="mono" style={{ fontSize: 12 }}>{c.base_url}</td>
+              <td className="mono" style={{ fontSize: 12 }}>{c.api_key_masked}</td>
+              <td>{c.branch || '—'}</td>
+              <td>{c.enabled ? 'Yes' : 'No'}</td>
+              <td style={{ whiteSpace: 'nowrap' }}>
+                <button className="btn ghost sm" onClick={() => test(c.id)}>Test</button>{' '}
+                <button className="btn ghost sm" onClick={() => toggle(c.id)}>{c.enabled ? 'Disable' : 'Enable'}</button>{' '}
+                <button className="btn ghost sm" onClick={() => del(c.id)}>Remove</button></td>
+            </tr>)}</tbody></table></div>}
+      </div>
+    </div>
+  );
+}
+
 const NAV = {
-  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['audit', '📜', 'Audit Log'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['security', '🔒', 'Security']],
   hr: [['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
   it: [['attendance', '🕐', 'Attendance'], ['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
   staff: [['attendance', '🕐', 'Attendance'], ['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
@@ -7175,6 +7240,7 @@ const TOUR_DESC = {
   escalations: 'Escalations — hard or high-value cases pulled up for special attention.',
   records: 'Activity — a live log of every call, visit and payment.',
   audit: 'Audit Log — a full trail of every change made in the system.',
+  connections: 'Connections — pair the standalone Autodialer (and AI-Voice) so calls run from within RecoverIQ.',
   archive: 'Monthly Archive — closed months, kept for reference.',
   templates: 'Communication — WhatsApp / SMS message templates.',
   devices: 'Devices — approve or block the devices your staff log in from.',
@@ -8079,6 +8145,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'ptp': return <PTPTracker />;
       case 'ai': return <AIAssist user={user} />;
       case 'security': return <SecurityView user={user} />;
+      case 'connections': return <ConnectionsView user={user} />;
       case 'attendance': return <AttendanceView user={user} />;
       case 'todo': return <TodoView user={user} />;
       case 'rtsb': return <RTSBView user={user} />;

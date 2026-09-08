@@ -181,6 +181,9 @@ fun AttendanceGate(vm: AuthViewModel, user: User) {
     var showOvertime by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var checkinErr by remember { mutableStateOf<String?>(null) }
+    // Once the user has checked in or dismissed this session, never auto-pop the dialog again —
+    // the persistent "Check in" pill remains for a manual later check-in. Kills any reopen loop.
+    var handled by remember { mutableStateOf(false) }
     val isFos = user.role == "fos"
     var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
     var photoLoc by remember { mutableStateOf<Pair<Double, Double>?>(null) }
@@ -198,7 +201,7 @@ fun AttendanceGate(vm: AuthViewModel, user: User) {
 
     suspend fun reload() {
         me = runCatching { vm.repo.attMeToday() }.getOrNull()
-        if (me?.needsCheckin == true) showCheckin = true
+        if (me?.needsCheckin == true && !handled) showCheckin = true
     }
     LaunchedEffect(Unit) { reload() }
 
@@ -216,7 +219,7 @@ fun AttendanceGate(vm: AuthViewModel, user: User) {
     if (showCheckin && me?.needsCheckin == true) {
         val m = me!!
         AlertDialog(
-            onDismissRequest = { showCheckin = false },
+            onDismissRequest = { handled = true; showCheckin = false },
             title = { Text("Check in") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -249,7 +252,7 @@ fun AttendanceGate(vm: AuthViewModel, user: User) {
                         if (res.isSuccess) {
                             // Trust the check-in response — close and refresh once. Do NOT re-derive
                             // "needs check-in" from a follow-up read (that was the loop).
-                            showCheckin = false; photoBytes = null; checkinErr = null
+                            handled = true; showCheckin = false; photoBytes = null; checkinErr = null
                             me = runCatching { vm.repo.attMeToday() }.getOrNull()
                         } else {
                             // Keep the dialog open WITH the real reason instead of silently flashing back.
@@ -258,7 +261,7 @@ fun AttendanceGate(vm: AuthViewModel, user: User) {
                     }
                 }) { Text(if (busy) "Checking in…" else if (isFos) "Check in with photo" else "Check in") }
             },
-            dismissButton = { TextButton(onClick = { showCheckin = false }) { Text("Not now") } },
+            dismissButton = { TextButton(onClick = { handled = true; showCheckin = false }) { Text("Not now") } },
         )
     }
 

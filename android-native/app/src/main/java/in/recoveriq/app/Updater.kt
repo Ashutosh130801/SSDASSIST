@@ -130,7 +130,8 @@ fun UpdateGate() {
             text = {
                 Text(
                     "A new version (${i.versionName.ifBlank { "v${i.versionCode}" }}) is ready." +
-                        if (i.notes.isNotBlank()) "\n\n${i.notes}" else "",
+                        (if (i.notes.isNotBlank()) "\n\n${i.notes}" else "") +
+                        "\n\nIf this keeps appearing after updating, uninstall the app once and reinstall the latest version.",
                 )
             },
             confirmButton = {

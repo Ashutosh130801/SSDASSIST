@@ -650,3 +650,23 @@ class ChatRequest(Base):
     note = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
     decided_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class DialerConnection(Base):
+    """A connected external Autodialer (a separate, standalone product). RecoverIQ pushes call
+    queues to it and ingests call/PTP events back. Several can exist (e.g. one per branch). The
+    shared api_key authenticates the dialer's calls into RecoverIQ's integration endpoints and
+    RecoverIQ's calls out to the dialer. The same table shape will serve the AI-Voice product
+    later (kind = 'dialer' | 'aivoice')."""
+    __tablename__ = "dialer_connections"
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String(16), default="dialer", index=True)   # dialer | aivoice
+    name = Column(String(80), nullable=False)
+    base_url = Column(String(255), nullable=False)            # e.g. https://100.x.y.z:8090
+    api_key = Column(String(120), nullable=False)             # shared secret (both directions)
+    branch = Column(String(40), nullable=True)               # optional branch scoping
+    enabled = Column(Boolean, default=True, index=True)
+    status = Column(String(16), default="unknown")           # ok | down | unknown
+    capabilities = Column(JSON, nullable=True)
+    last_seen = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
