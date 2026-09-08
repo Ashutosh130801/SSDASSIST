@@ -27,6 +27,20 @@ class Settings(BaseSettings):
 
     location_ping_seconds: int = 3
 
+    # In-app WebRTC voice calling (staff↔staff over the chat). Self-hosted coturn provides STUN+TURN
+    # for NAT traversal. Leave blank to use only public STUN (works on many networks, not all).
+    #   STUN_URL=stun:your.server:3478
+    #   TURN_URL=turn:your.server:3478   TURN_USER=recoveriq   TURN_PASSWORD=<secret>
+    stun_url: str = "stun:stun.l.google.com:19302"
+    turn_url: str = ""
+    # Preferred: a shared secret (matches eturnal's `secret` / coturn `static-auth-secret`).
+    # The server mints short-lived per-user TURN credentials from it — nothing static is shipped.
+    turn_secret: str = ""
+    turn_ttl_seconds: int = 3600
+    # Fallback: a fixed username/password (only used if turn_secret is blank).
+    turn_user: str = ""
+    turn_password: str = ""
+
     # Product branding (shown on login + sidebar). Change to your own brand.
     brand_name: str = "RecoverIQ"
     brand_tagline: str = "Collections & Recovery Intelligence"

@@ -149,6 +149,15 @@ async def ws_endpoint(ws: WebSocket):
             if t in ("editing", "editing_stop") and cid:
                 await manager.set_editing(int(cid), user_id, uname, urole,
                                           msg.get("field"), editing=(t == "editing"))
+            elif t == "call":
+                # WebRTC voice-call signaling relay (staff↔staff). Forward the frame to the
+                # target user's sockets, stamped with who it's from. sub: invite|answer|ice|reject|end
+                to_id = msg.get("to_id")
+                if to_id:
+                    await manager.send_to_user(int(to_id), {
+                        "type": "call", "sub": msg.get("sub"), "from_id": user_id,
+                        "from_name": uname, "data": msg.get("data"),
+                    })
     except WebSocketDisconnect:
         manager.disconnect(ws, user_id)
     except Exception:

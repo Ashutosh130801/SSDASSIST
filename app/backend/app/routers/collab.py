@@ -19,6 +19,27 @@ from .notifications import push
 
 router = APIRouter(prefix="/api", tags=["collab"])
 
+
+@router.get("/rtc/ice")
+def rtc_ice(user: models.User = Depends(get_current_user)):
+    """ICE servers (STUN + self-hosted TURN) for the in-app WebRTC voice call. TURN is only
+    included when configured — it's the relay that makes calls connect across strict NATs."""
+    from ..config import get_settings
+    import time, hmac, hashlib, base64
+    s = get_settings()
+    servers = []
+    if s.stun_url:
+        servers.append({"urls": s.stun_url})
+    if s.turn_url and s.turn_secret:
+        # Time-limited credential (coturn/eturnal shared-secret scheme): username = "<expiry>:<uid>",
+        # password = base64(HMAC-SHA1(secret, username)). Expires so a leaked cred is useless later.
+        username = f"{int(time.time()) + int(s.turn_ttl_seconds or 3600)}:{user.id}"
+        pw = base64.b64encode(hmac.new(s.turn_secret.encode(), username.encode(), hashlib.sha1).digest()).decode()
+        servers.append({"urls": s.turn_url, "username": username, "credential": pw})
+    elif s.turn_url and s.turn_user and s.turn_password:
+        servers.append({"urls": s.turn_url, "username": s.turn_user, "credential": s.turn_password})
+    return {"ice_servers": servers}
+
 IST = _IST_TZ
 PAY_DISP = ("PAYMENT", "PAID")
 

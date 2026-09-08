@@ -98,7 +98,7 @@ interface ApiService {
     suspend fun attMeToday(): MeToday
 
     @POST("api/attendance/checkin")
-    suspend fun attCheckin(@Body body: Map<String, Any?>): Map<String, Any?>
+    suspend fun attCheckin(@Body body: Map<String, @JvmSuppressWildcards Any?>):Map<String, Any?>
 
     @Multipart
     @POST("api/attendance/checkin/photo")
@@ -110,13 +110,13 @@ interface ApiService {
     ): Map<String, Any?>
 
     @POST("api/attendance/checkout")
-    suspend fun attCheckout(@Body body: Map<String, Any?>): Map<String, Any?>
+    suspend fun attCheckout(@Body body: Map<String, @JvmSuppressWildcards Any?>):Map<String, Any?>
 
     @POST("api/attendance/overtime")
     suspend fun attOvertime(): Map<String, Any?>
 
     @POST("api/attendance/heartbeat")
-    suspend fun attHeartbeat(@Body body: Map<String, Any?>): HeartbeatResp
+    suspend fun attHeartbeat(@Body body: Map<String, @JvmSuppressWildcards Any?>):HeartbeatResp
 
     @GET("api/attendance/day")
     suspend fun attDay(@Query("date") date: String? = null, @Query("role") role: String? = null): AttDay
@@ -375,23 +375,23 @@ interface ApiService {
                            @Query("office") office: Boolean? = null): Map<String, Any?>
 
     @POST("api/chat/send")
-    suspend fun chatSend(@Body body: Map<String, Any?>): Map<String, Any?>
+    suspend fun chatSend(@Body body: Map<String, @JvmSuppressWildcards Any?>):Map<String, Any?>
 
     @POST("api/chat/request")
-    suspend fun chatRequest(@Body body: Map<String, Any?>): Map<String, Any?>
+    suspend fun chatRequest(@Body body: Map<String, @JvmSuppressWildcards Any?>):Map<String, Any?>
 
     @GET("api/chat/requests")
     suspend fun chatRequests(): Map<String, Any?>
 
     @POST("api/chat/request/{id}/decide")
     suspend fun chatRequestDecide(@retrofit2.http.Path("id") id: Int,
-                                  @Body body: Map<String, Any?>): Map<String, Any?>
+                                  @Body body: Map<String, @JvmSuppressWildcards Any?>):Map<String, Any?>
 
     @POST("api/chat/broadcast")
-    suspend fun chatBroadcast(@Body body: Map<String, Any?>): Map<String, Any?>
+    suspend fun chatBroadcast(@Body body: Map<String, @JvmSuppressWildcards Any?>):Map<String, Any?>
 
     @POST("api/chat/callback")
-    suspend fun chatCallback(@Body body: Map<String, Any?>): Map<String, Any?>
+    suspend fun chatCallback(@Body body: Map<String, @JvmSuppressWildcards Any?>):Map<String, Any?>
 
     @GET("api/chat/unread")
     suspend fun chatUnread(): Map<String, Any?>

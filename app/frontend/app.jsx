@@ -7915,6 +7915,106 @@ function BroadcastPopup() {
   </div>;
 }
 
+/* In-app WebRTC voice calling (staff↔staff). Mounted once in the Shell; owns its own /ws socket
+   for call signaling (invite/answer/ice/reject/end). window.ssdStartCall(id,name) starts a call —
+   the chat thread's 📞 button calls it. Media is peer-to-peer via STUN, relayed through the
+   self-hosted TURN when NAT blocks P2P. */
+function VoiceCall({ user }) {
+  const [st, setSt] = useState('idle');          // idle | outgoing | incoming | active
+  const [peer, setPeer] = useState(null);        // { id, name }
+  const [muted, setMuted] = useState(false);
+  const [secs, setSecs] = useState(0);
+  const wsRef = React.useRef(null); const pcRef = React.useRef(null);
+  const localRef = React.useRef(null); const remoteRef = React.useRef(null);
+  const pendingIce = React.useRef([]); const offerRef = React.useRef(null);
+  const stRef = React.useRef('idle'); stRef.current = st;
+  const peerRef = React.useRef(null); peerRef.current = peer;
+
+  const send = (toId, sub, data) => { try { const ws = wsRef.current; if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'call', to_id: toId, sub, data })); } catch (_) {} };
+  const iceConf = async () => { try { const r = await api('/api/rtc/ice'); return { iceServers: r.ice_servers || [] }; } catch (_) { return { iceServers: [] }; } };
+  const cleanup = () => {
+    try { pcRef.current && pcRef.current.close(); } catch (_) {} pcRef.current = null;
+    try { localRef.current && localRef.current.getTracks().forEach(t => t.stop()); } catch (_) {} localRef.current = null;
+    pendingIce.current = []; offerRef.current = null; setMuted(false); setSecs(0);
+  };
+  const endCall = (notify) => { const p = peerRef.current; if (notify && p) send(p.id, 'end', null); cleanup(); setSt('idle'); setPeer(null); };
+  const makePc = async (toId) => {
+    const pc = new RTCPeerConnection(await iceConf());
+    pc.onicecandidate = e => { if (e.candidate) send(toId, 'ice', e.candidate); };
+    pc.ontrack = e => { if (remoteRef.current) { remoteRef.current.srcObject = e.streams[0]; remoteRef.current.play().catch(() => {}); } };
+    const ms = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    localRef.current = ms; ms.getTracks().forEach(t => pc.addTrack(t, ms));
+    pcRef.current = pc; return pc;
+  };
+  const startCall = async (id, name) => {
+    if (stRef.current !== 'idle') { toast('You are already on a call'); return; }
+    setPeer({ id, name }); setSt('outgoing'); ssdChime('chat');
+    try { const pc = await makePc(id); const offer = await pc.createOffer(); await pc.setLocalDescription(offer); send(id, 'invite', offer); }
+    catch (e) { toast('Microphone access is needed for calls', 'err'); endCall(true); }
+  };
+  useEffect(() => { window.ssdStartCall = startCall; return () => { if (window.ssdStartCall === startCall) delete window.ssdStartCall; }; });
+  const accept = async () => {
+    const p = peerRef.current; if (!p) return;
+    try {
+      const pc = await makePc(p.id); await pc.setRemoteDescription(offerRef.current);
+      for (const c of pendingIce.current) { try { await pc.addIceCandidate(c); } catch (_) {} } pendingIce.current = [];
+      const ans = await pc.createAnswer(); await pc.setLocalDescription(ans); send(p.id, 'answer', ans); setSt('active');
+    } catch (e) { toast('Microphone access is needed', 'err'); endCall(true); }
+  };
+  const reject = () => { const p = peerRef.current; if (p) send(p.id, 'reject', null); cleanup(); setSt('idle'); setPeer(null); };
+  const toggleMute = () => { const ms = localRef.current; if (ms) { const nm = !muted; ms.getAudioTracks().forEach(t => t.enabled = !nm); setMuted(nm); } };
+
+  // Own always-on signaling socket (mounted once).
+  useEffect(() => {
+    let stop = false, ws, retry;
+    const connect = () => {
+      try {
+        ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
+        wsRef.current = ws;
+        ws.onmessage = async e => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } if (m.type !== 'call') return;
+          const sub = m.sub, from = { id: m.from_id, name: m.from_name || 'User' };
+          if (sub === 'invite') {
+            if (stRef.current !== 'idle' || pcRef.current) { try { ws.send(JSON.stringify({ type: 'call', to_id: m.from_id, sub: 'reject', data: null })); } catch (_) {} return; }
+            offerRef.current = m.data; setPeer(from); setSt('incoming'); ssdChime('broadcast');
+          } else if (sub === 'answer') { if (pcRef.current) { try { await pcRef.current.setRemoteDescription(m.data); } catch (_) {} setSt('active'); } }
+          else if (sub === 'ice') { if (pcRef.current && pcRef.current.remoteDescription) { try { await pcRef.current.addIceCandidate(m.data); } catch (_) {} } else pendingIce.current.push(m.data); }
+          else if (sub === 'reject') { toast(((peerRef.current && peerRef.current.name) || 'User') + ' is unavailable'); cleanup(); setSt('idle'); setPeer(null); }
+          else if (sub === 'end') { cleanup(); setSt('idle'); setPeer(null); }
+        };
+        ws.onclose = () => { if (!stop) retry = setTimeout(connect, 3000); };
+      } catch (_) { if (!stop) retry = setTimeout(connect, 3000); }
+    };
+    connect();
+    return () => { stop = true; clearTimeout(retry); try { ws && ws.close(); } catch (_) {} };
+  }, []);
+
+  // Call timer while active.
+  useEffect(() => { if (st !== 'active') return; const t = setInterval(() => setSecs(s => s + 1), 1000); return () => clearInterval(t); }, [st]);
+  const mmss = (n) => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+
+  if (st === 'idle') return <audio ref={remoteRef} autoPlay style={{ display: 'none' }} />;
+  const nm = peer ? peer.name : 'User';
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 5000, background: 'rgba(3,17,38,.92)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+      <audio ref={remoteRef} autoPlay />
+      <div style={{ width: 96, height: 96, borderRadius: '50%', background: WA.teal, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 40, fontWeight: 700 }}>{(nm[0] || '?').toUpperCase()}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, marginTop: 16 }}>{nm}</div>
+      <div style={{ opacity: .8, marginTop: 6 }}>
+        {st === 'outgoing' ? 'Calling…' : st === 'incoming' ? 'Incoming voice call' : mmss(secs)}
+      </div>
+      <div style={{ display: 'flex', gap: 20, marginTop: 40 }}>
+        {st === 'incoming' ? <>
+          <button onClick={reject} style={{ width: 64, height: 64, borderRadius: '50%', border: 'none', background: '#DC2626', color: '#fff', fontSize: 26, cursor: 'pointer' }}>✕</button>
+          <button onClick={accept} style={{ width: 64, height: 64, borderRadius: '50%', border: 'none', background: '#16A34A', color: '#fff', fontSize: 26, cursor: 'pointer' }}>📞</button>
+        </> : <>
+          {st === 'active' && <button onClick={toggleMute} style={{ width: 60, height: 60, borderRadius: '50%', border: 'none', background: muted ? '#F59E0B' : 'rgba(255,255,255,.15)', color: '#fff', fontSize: 22, cursor: 'pointer' }}>{muted ? '🔇' : '🎤'}</button>}
+          <button onClick={() => endCall(true)} style={{ width: 64, height: 64, borderRadius: '50%', border: 'none', background: '#DC2626', color: '#fff', fontSize: 26, cursor: 'pointer' }}>✕</button>
+        </>}
+      </div>
+    </div>
+  );
+}
+
 function ChatWidget({ user }) {
   const [open, setOpen] = useState(false); const [unread, setUnread] = useState(0);
   const [contacts, setContacts] = useState(null);
@@ -7996,6 +8096,7 @@ function ChatWidget({ user }) {
               <div style={{ fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activeName}</div>
               <div style={{ fontSize: 10.5, opacity: .85, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activeRole}</div>
             </div>
+            {active !== 'office' && active && active.id && <span title={'Voice call ' + activeName} onClick={() => window.ssdStartCall && window.ssdStartCall(active.id, activeName)} style={{ cursor: 'pointer', fontSize: 18, padding: '2px 6px' }}>📞</span>}
           </div>
           <div style={{ flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 4, background: WA.bg, backgroundImage: 'radial-gradient(rgba(0,0,0,.03) 1px, transparent 0)', backgroundSize: '18px 18px' }}>
             {msgs.length === 0 ? <div style={{ fontSize: 12, textAlign: 'center', marginTop: 20, color: '#667781', background: '#fff', alignSelf: 'center', padding: '5px 12px', borderRadius: 8 }}>No messages yet. Say hello 👋</div> :
@@ -8210,6 +8311,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       {/* Floating chat — stacked ABOVE the help/tour button (IRCTC/DISHA-style). */}
       <ChatWidget user={user} />
       <BroadcastPopup />
+      <VoiceCall user={user} />
       <PerfHost />
     </div>
   );
