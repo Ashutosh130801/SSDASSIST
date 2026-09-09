@@ -87,6 +87,11 @@ _FIELD_SPECS = [
 ]
 
 
+# Every header alias that maps to a structural case field (OD NORM/STAB, TOS, POS, MAD, phone,
+# address…). These are synced value-for-value and must NEVER be mistaken for a cash-amount column.
+_FIELD_ALIASES = set().union(*(aliases for _a, aliases, _k, _m in _FIELD_SPECS))
+
+
 def _coerce(kind, v):
     """Convert a raw cell to the case-field type; None means 'no value / skip'."""
     import datetime as _dt
@@ -245,12 +250,14 @@ def _refine(cols, headers, rows):
     # 3) Amount fallback: if no amount column was recognised, pick the numeric money column
     #    (not a key / status / ns / name) with the most non-zero values.
     if not cols.get("amount"):
-        # Never mistake a small-number column (cycle / bucket / count) for a money column.
+        # Never mistake a small-number column (cycle / bucket / count) for a money column,
+        # nor an OUTSTANDING-balance field (OD NORM / OD STAB / TOS / POS…) — those are
+        # structural targets synced to the case, never cash the DPR collected.
         taken = set(cols["keys"]) | {cols.get("status"), cols.get("ns"), cols.get("name"), cols.get("date")}
         small_fields = {"cyc", "cycle", "bucket", "bkt", "dpd", "sno", "srno", "slno", "sl"}
         best_h, best_hits = None, 0
         for h in hs:
-            if h in taken or h in small_fields:
+            if h in taken or h in small_fields or h in _FIELD_ALIASES:
                 continue
             vals = _sample(rows, h)
             nums = [x for x in (_dec(v) for v in vals) if x is not None]
@@ -305,6 +312,13 @@ def _prepare(content, default_bank, product, user, db, month_bucket=None):
                             detail="No account / card / loan number column found in the DPR.")
     field_cols = _detect_fields(headers)
     cols["fields"] = {attr: h for attr, (h, _k, _m) in field_cols.items()}
+    # A DPR that carries OD-NORM / OD-STAB columns and NO cash-amount column is a PL/BL-format
+    # report (outstanding-balance snapshot, never a cash collection). Treat every one of its rows
+    # as PL/BL — so paid/unpaid + NORM/STAB + OD values sync but no cash is ever booked — even if a
+    # matched case wasn't tagged segment "PL/BL".
+    dpr_plbl_format = (("norm_amount" in field_cols or "stab_amount" in field_cols)
+                       and not cols.get("amount"))
+    cols["plbl_format"] = dpr_plbl_format
     # all_periods=True: a DPR for a just-closed month arrives days into the next month, so match
     # cases across ALL periods (incl. closed portfolios), still within the uploader's own scope.
     q = _scope(db.query(models.Case), user, all_periods=True).filter(models.Case.bank == default_bank,
@@ -343,7 +357,7 @@ def _prepare(content, default_bank, product, user, db, month_bucket=None):
         # daily OD-NORM / OD-STAB targets + status, never a cash amount.
         prev = Decimal(match.received_amount or 0)
         already = (match.paid_status or "").upper() == "PAID"
-        is_plbl = (match.segment or "") == "PL/BL"
+        is_plbl = (match.segment or "") == "PL/BL" or dpr_plbl_format
         status_txt = str(r.get(cols["status"]) or "").strip().upper() if cols["status"] else ""
         explicit_unpaid = any(x in status_txt for x in
                               ("UNPAID", "BOUNCE", "FAIL", "REVERS", "RETURN", "DISHON", "REJECT", "NACHFAIL"))
@@ -422,6 +436,7 @@ async def dpr_preview(file: UploadFile = File(...), default_bank: str = Form(...
     counts["excluded_amount"] = excluded if excluded > 0 else 0.0
     public = [{k: v for k, v in it.items() if not k.startswith("_")} for it in items]
     return {"bank": default_bank, "product": product, "detected": cols,
+            "plbl_format": cols.get("plbl_format", False),
             "total": len(items), "parsed": len(items), "counts": counts,
             "unmatched_rows": unmatched_rows,
             "rows": public[:500], "capped": len(public) > 500}
@@ -484,14 +499,22 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
             change["fields"] = {k: str(v) for k, v in ups.items()}
 
         if mode == "plbl":
-            # PL/BL: OD targets already synced above; DPR only sets the paid/unpaid flag. NO cash,
-            # NO dated event — PL/BL cash comes solely from call-log + visit collections.
+            # PL/BL: OD targets already synced above; DPR sets the paid/unpaid flag + the
+            # NORM/STAB settlement type. NO cash, NO dated event — PL/BL cash comes solely
+            # from call-log + visit collections.
+            old_ns = case.norm_stab
             if act == "plbl_paid":
                 case.auto_debit = True
+                if ns:                       # STATUS column (NORM/STAB) → the case's settlement tag
+                    case.norm_stab = ns      # (kept, since auto_debit short-circuits autotag)
             elif act == "plbl_unpaid":
                 case.auto_debit = False
+                case.norm_stab = None        # unpaid / flow → no settlement tag
             new_status = paymath.recompute(case)
-            change.update({"new_status": new_status, "delta": 0.0})
+            change.update({"new_status": new_status, "delta": 0.0,
+                           "norm_stab": case.norm_stab, "auto_debit": case.auto_debit})
+            if (case.norm_stab or None) != (old_ns or None):
+                change.setdefault("fields", {})["norm_stab"] = str(case.norm_stab or "—")
             plbl_n += 1; _touch(case)
 
         elif mode == "reverse":

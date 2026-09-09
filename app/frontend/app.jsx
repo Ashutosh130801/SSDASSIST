@@ -1230,6 +1230,9 @@ function DprModal({ onClose, onDone }) {
           {prev && <button className="btn gold" onClick={doCommit} disabled={busy || changes === 0}>{busy ? 'Applying…' : `Confirm & apply (${changes} change${changes === 1 ? '' : 's'})`}</button>}
         </div>}
         {prev && !res && <div className="glass card" style={{ marginTop: 8 }}>
+          {prev.plbl_format && <div style={{ background: 'rgba(37,99,235,.08)', border: '1px solid rgba(37,99,235,.3)', borderRadius: 10, padding: '9px 12px', marginBottom: 10, fontSize: 12.5, lineHeight: 1.5 }}>
+            <b style={{ color: 'var(--info)' }}>🔵 PL/BL DPR — outstanding-status sync, no cash collected.</b> This file only updates each case's <b>paid/unpaid</b>, <b>NORM/STAB status</b> and <b>OD&nbsp;NORM / OD&nbsp;STAB</b> outstanding (0 = that amount cleared). It posts <b>₹0</b> as collection — PL/BL cash comes only from call-log &amp; visit collections. Changes sync to the Live Sheet, case info &amp; history.
+          </div>}
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 13, marginBottom: 6 }}>
             <span><b style={{ color: 'var(--good)' }}>{prev.counts.mark_paid || 0}</b> to mark paid</span>
             <span><b style={{ color: 'var(--info)' }}>{prev.counts.extra || 0}</b> extra (↑)</span>
