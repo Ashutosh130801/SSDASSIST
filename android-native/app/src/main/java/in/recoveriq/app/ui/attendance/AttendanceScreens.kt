@@ -79,9 +79,13 @@ private fun money(v: Double) = "₹" + "%,.0f".format(v)
 /** Save the monthly attendance .xlsx to the cache and open/share it via the app's FileProvider. */
 private suspend fun downloadAttendanceSheet(ctx: Context, vm: AuthViewModel, month: String, role: String) {
     try {
-        val body = vm.repo.attDownload(month, role)
-        val file = java.io.File(ctx.cacheDir, "Attendance_$month.xlsx")
-        file.outputStream().use { out -> body.byteStream().use { it.copyTo(out) } }
+        // Network read + file write off the main thread (streamed response body).
+        val file = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val body = vm.repo.attDownload(month, role)
+            val f = java.io.File(ctx.cacheDir, "Attendance_$month.xlsx")
+            f.outputStream().use { out -> body.byteStream().use { it.copyTo(out) } }
+            f
+        }
         val uri = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".fileprovider", file)
         val mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         val open = android.content.Intent(android.content.Intent.ACTION_VIEW)

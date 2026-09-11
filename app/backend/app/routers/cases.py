@@ -1,8 +1,11 @@
 from decimal import Decimal
 from datetime import datetime, time, timedelta, timezone
 
+import io
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
@@ -1442,3 +1445,125 @@ def timeline(case_id: int, db: Session = Depends(get_db),
     from datetime import datetime, timezone
     ev.sort(key=lambda e: e["at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return ev
+
+
+# ============================ Case export (Excel / PDF) ============================
+class CaseExportBody(BaseModel):
+    ids: list[int] = []
+    fmt: str = "xlsx"                 # "xlsx" | "pdf"
+    title: str | None = None          # e.g. "AXIS · BL · Sep'26"
+
+
+def _fnum(v) -> float:
+    try:
+        return float(v or 0)
+    except Exception:
+        return 0.0
+
+
+def _cases_xlsx(cases, title: str) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    cols = [("#", 6), ("Account", 20), ("Card", 20), ("Customer", 26), ("Phone", 15),
+            ("Alt Phone", 15), ("Bank", 12), ("Product", 16), ("Bucket", 10), ("Cycle", 8),
+            ("Month", 10), ("TOS", 14), ("Pending", 14), ("Received", 14), ("NORM", 12),
+            ("STAB", 12), ("N/S", 8), ("Status", 12), ("Address", 42)]
+    wb = Workbook(); ws = wb.active; ws.title = "Cases"
+    ws.append([c[0] for c in cols])
+    hf = Font(bold=True, color="FFFFFF"); fill = PatternFill("solid", fgColor="0F2A4A")
+    for cell in ws[1]:
+        cell.font = hf; cell.fill = fill; cell.alignment = Alignment(horizontal="center")
+    for i, c in enumerate(cases, 1):
+        ws.append([i, c.account_no, c.card_no, c.customer_name, c.phone, c.alt_phone,
+                   c.bank, c.product, c.bucket, c.cycle, c.month,
+                   _fnum(c.total_outstanding), _fnum(c.pending_amount), _fnum(c.received_amount),
+                   _fnum(c.norm_amount), _fnum(c.stab_amount), c.norm_stab,
+                   (c.paid_status or c.status or ""), c.address])
+    ws.append(["", "", "", "TOTAL", "", "", "", "", "", "", "",
+               sum(_fnum(c.total_outstanding) for c in cases),
+               sum(_fnum(c.pending_amount) for c in cases),
+               sum(_fnum(c.received_amount) for c in cases), "", "", "", "", ""])
+    for cell in ws[ws.max_row]:
+        cell.font = Font(bold=True)
+    for i, (_, w) in enumerate(cols, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
+
+
+def _cases_pdf(cases, title: str, user) -> bytes:
+    from fpdf import FPDF
+    from datetime import datetime as _dt
+    heads = ["#", "Account / Card", "Customer", "Phone", "Bank / Product", "Bucket",
+             "TOS", "Pending", "Recd", "N/S", "Status"]
+    widths = [8, 45, 44, 26, 44, 18, 23, 23, 23, 12, 25]   # ≈ 291mm (A4 landscape usable)
+
+    class PDF(FPDF):
+        def header(self):
+            self.set_font("Helvetica", "B", 14); self.set_text_color(15, 42, 74)
+            self.cell(0, 8, f"RecoverIQ  -  {title}", new_x="LMARGIN", new_y="NEXT")
+            self.set_font("Helvetica", "", 8.5); self.set_text_color(90, 90, 90)
+            self.cell(0, 5, f"{user.name}   -   {len(cases)} accounts   -   generated "
+                            f"{_dt.now().strftime('%d-%b-%Y %H:%M')}", new_x="LMARGIN", new_y="NEXT")
+            self.ln(1.5)
+            self.set_font("Helvetica", "B", 7.6); self.set_fill_color(15, 42, 74)
+            self.set_text_color(255, 255, 255)
+            for h, w in zip(heads, widths):
+                self.cell(w, 7, h, border=0, fill=True, align="L")
+            self.ln(7); self.set_text_color(20, 20, 20)
+
+    pdf = PDF(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=12)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "", 7.4)
+    shade = False
+    for i, c in enumerate(cases, 1):
+        acct = (c.account_no or c.card_no or "")[:24]
+        row = [str(i), acct, (c.customer_name or "")[:24], (c.phone or "")[:14],
+               f"{c.bank or ''} / {c.product or ''}"[:24], (c.bucket or "")[:9],
+               f"{_fnum(c.total_outstanding):,.0f}", f"{_fnum(c.pending_amount):,.0f}",
+               f"{_fnum(c.received_amount):,.0f}", (c.norm_stab or "")[:5],
+               (c.paid_status or c.status or "")[:12]]
+        pdf.set_fill_color(244, 247, 251) if shade else pdf.set_fill_color(255, 255, 255)
+        for val, w in zip(row, widths):
+            pdf.cell(w, 6, val, border=0, fill=True, align="L")
+        pdf.ln(6); shade = not shade
+    pdf.ln(2); pdf.set_font("Helvetica", "B", 8.5); pdf.set_text_color(15, 42, 74)
+    pdf.cell(0, 6, f"Total pending  Rs {sum(_fnum(c.pending_amount) for c in cases):,.0f}"
+                   f"      Total received  Rs {sum(_fnum(c.received_amount) for c in cases):,.0f}",
+             new_x="LMARGIN", new_y="NEXT")
+    return bytes(pdf.output())
+
+
+@router.post("/export")
+def export_cases(body: CaseExportBody, db: Session = Depends(get_db),
+                 user: models.User = Depends(get_current_user)):
+    """Export the given cases (already filtered client-side) as a styled Excel or PDF.
+    Scoped to the caller's own visible cases — you can only export what you're allowed to see."""
+    ids = (body.ids or [])[:5000]
+    if not ids:
+        raise HTTPException(status_code=400, detail="No cases selected to export")
+    rows = _scope(db.query(models.Case), user).filter(models.Case.id.in_(ids)).all()
+    cases = [c for c in rows if c.removed is not True]
+    if not cases:
+        raise HTTPException(status_code=404, detail="No accessible cases in the selection")
+    order = {cid: i for i, cid in enumerate(ids)}          # preserve the on-screen order
+    cases.sort(key=lambda c: order.get(c.id, 1 << 30))
+    title = (body.title or "My Cases").strip()
+    fmt = (body.fmt or "xlsx").lower()
+    safe = "".join(ch for ch in title if ch.isalnum() or ch in " -_").strip().replace(" ", "_") or "Cases"
+    try:
+        if fmt == "pdf":
+            data, media, ext = _cases_pdf(cases, title, user), "application/pdf", "pdf"
+        else:
+            data, media, ext = (_cases_xlsx(cases, title),
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")
+    except ImportError:
+        raise HTTPException(status_code=503, detail="PDF export needs the 'fpdf2' package on the server "
+                                                    "(pip install fpdf2). Excel export works without it.")
+    audit.record(db, user, "download", None, entity_type="download",
+                 detail=f"Exported {len(cases)} cases ({ext}) — {title}")
+    db.commit()
+    return StreamingResponse(io.BytesIO(data), media_type=media,
+                             headers={"Content-Disposition": f'attachment; filename="{safe}.{ext}"'})

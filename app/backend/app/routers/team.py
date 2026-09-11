@@ -227,9 +227,16 @@ def delete_branch(name: str, reassign: str | None = None, db: Session = Depends(
     return {"ok": True, "moved_staff": n_staff, "moved_cases": n_cases, "to": target}
 
 
-def _window(db: Session, u: models.User, start, case_ids=None):
-    """Activity in a time window. When case_ids is given, restrict to those cases so the
-    daily/weekly/monthly/overall cards honour the profile's month filter (None = all cases)."""
+# A "call" is an actual dial the caller logged. PAYMENT / PAID rows are collection events
+# (created by caller mark-paid, head-office mark-paid, DPR uploads, live-sheet money edits) and
+# must NEVER be counted as calls — that was inflating weekly/monthly counts with random numbers.
+_PAY_DISPO = ("PAYMENT", "PAID")
+
+
+def _window(db: Session, u: models.User, start, case_ids=None, end=None):
+    """Activity in a time window [start, end). When case_ids is given, restrict to those cases so
+    the daily/weekly/monthly cards honour the selected month (None = all of the person's cases).
+    Counts are ACTUAL calls/visits only; collected ₹ still comes from the PAYMENT/PAID events."""
     from sqlalchemy import select
     esc = select(models.Case.id).where(models.Case.escalated.is_(True))   # exclude escalated work
     if u.role == "fos":
@@ -239,6 +246,8 @@ def _window(db: Session, u: models.User, start, case_ids=None):
             q = q.filter(models.Visit.case_id.in_(case_ids or [-1]))
         if start:
             q = q.filter(models.Visit.created_at >= start)
+        if end:
+            q = q.filter(models.Visit.created_at < end)
         items = q.all()
         return {"label": "visits", "count": len(items),
                 "collected": _d(sum(_d(v.amount_collected) for v in items))}
@@ -249,12 +258,63 @@ def _window(db: Session, u: models.User, start, case_ids=None):
         q = q.filter(models.CallLog.case_id.in_(case_ids or [-1]))
     if start:
         q = q.filter(models.CallLog.created_at >= start)
+    if end:
+        q = q.filter(models.CallLog.created_at < end)
     calls = q.all()
-    ptp = sum(1 for c in calls if (c.disposition or "") == "PTP")   # RTP = Refuse to Pay, not a promise
-    # Every collection event counts: caller payments, head-office mark-paid, DPR (all logged as
-    # PAYMENT or PAID; reversals carry a negative amount and net out).
-    collected = _d(sum(_d(c.ptp_amount) for c in calls if (c.disposition or "") in ("PAYMENT", "PAID")))
-    return {"label": "calls", "count": len(calls), "ptp": ptp, "collected": collected}
+    real_calls = [c for c in calls if (c.disposition or "") not in _PAY_DISPO]   # actual dials only
+    ptp = sum(1 for c in real_calls if (c.disposition or "") == "PTP")   # RTP = Refuse to Pay, not a promise
+    # Collected ₹ still counts every collection event: caller payments, HO mark-paid, DPR
+    # (all logged as PAYMENT/PAID; reversals carry a negative amount and net out).
+    collected = _d(sum(_d(c.ptp_amount) for c in calls if (c.disposition or "") in _PAY_DISPO))
+    return {"label": "calls", "count": len(real_calls), "ptp": ptp, "collected": collected}
+
+
+def _cal_windows(case_ids=None):
+    """Calendar-aligned window bounds (IST) as {name: (start_utc, end_utc)} for the
+    performance cards — Today, this calendar Week (Mon→now), this calendar Month (1st→now),
+    Overall. By EVENT DATE, so months never bleed into each other."""
+    ist_now = datetime.now(IST)
+    day = ist_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week = (ist_now - timedelta(days=ist_now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    month = ist_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    to_utc = lambda d: d.astimezone(timezone.utc)
+    return {
+        "daily": (to_utc(day), None),
+        "weekly": (to_utc(week), None),
+        "monthly": (to_utc(month), None),
+        "overall": (None, None),
+    }
+
+
+def _month_bounds_utc(month_bucket):
+    """UTC [start, end) for the selected calendar month (current / last / next). 'all' → (None, None)."""
+    ist_now = datetime.now(IST)
+    if not month_bucket or month_bucket == "all":
+        return (None, None)
+    y, m = ist_now.year, ist_now.month
+    if month_bucket == "last":
+        y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    elif month_bucket == "next":
+        y, m = (y, m + 1) if m < 12 else (y + 1, 1)
+    ny, nm = (y, m + 1) if m < 12 else (y + 1, 1)
+    start = datetime(y, m, 1, tzinfo=IST).astimezone(timezone.utc)
+    end = datetime(ny, nm, 1, tzinfo=IST).astimezone(timezone.utc)
+    return (start, end)
+
+
+def _perf_cards(db: Session, u: models.User, case_ids, month_bucket):
+    """Daily / weekly / monthly / overall cards, calendar-aligned by EVENT DATE and scoped to the
+    selected month's cases. 'Monthly' follows the chosen calendar month so months never mix; Daily
+    and Weekly are today / this calendar week. Counts are actual call-log dials only."""
+    w = _cal_windows()
+    ms, me = _month_bounds_utc(month_bucket)
+    m_start, m_end = (ms, me) if ms else w["monthly"]      # 'all' → current calendar month
+    return {
+        "daily": _window(db, u, w["daily"][0], case_ids),
+        "weekly": _window(db, u, w["weekly"][0], case_ids),
+        "monthly": _window(db, u, m_start, case_ids, end=m_end),
+        "overall": _window(db, u, None, case_ids),
+    }
 
 
 @router.get("/user/{uid}/performance")
@@ -267,14 +327,15 @@ def performance(uid: int, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="User not found")
     _guard_view(actor, u, db)
 
-    now = datetime.now(timezone.utc)
-    today = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    # Calendar-aligned windows by event date (Today / this Week / this Month / Overall) — no
+    # rolling 7/30-day spans, so months never mix. Counts are actual call-log dials only.
+    w = _cal_windows()
     return {
         "role": u.role, "name": u.name,
-        "daily": _window(db, u, today),
-        "weekly": _window(db, u, now - timedelta(days=7)),
-        "monthly": _window(db, u, now - timedelta(days=30)),
-        "overall": _window(db, u, None),
+        "daily": _window(db, u, *w["daily"]),
+        "weekly": _window(db, u, *w["weekly"]),
+        "monthly": _window(db, u, *w["monthly"]),
+        "overall": _window(db, u, *w["overall"]),
     }
 
 
@@ -312,6 +373,8 @@ def employee_dashboard(uid: int, month_bucket: str | None = "current", db: Sessi
     # month toggle instead of showing lifetime call/collection numbers next to 0 assigned cases.
     calls = [cl for cl in calls if cl.case_id in case_ids]
     visits = [v for v in visits if v.case_id in case_ids]
+    # Actual dials only for COUNTS (PAYMENT/PAID rows are collection events, not calls).
+    real_calls = [cl for cl in calls if (cl.disposition or "") not in ("PAYMENT", "PAID")]
 
     def paid(c):
         return (c.paid_status or "").upper() == "PAID"
@@ -358,7 +421,7 @@ def employee_dashboard(uid: int, month_bucket: str | None = "current", db: Sessi
     gfence = float(get_settings().geofence_metres or 300)
     field = {}
     if is_caller:
-        field = {"calls": len(calls), "calls_today": sum(1 for cl in calls if d_ist(cl.created_at) == today_d),
+        field = {"calls": len(real_calls), "calls_today": sum(1 for cl in real_calls if d_ist(cl.created_at) == today_d),
                  "ptp_total": len(ptp_cases), "ptp_kept": ptp_kept, "ptp_broken": ptp_broken}
     else:
         field = {"visits": len(visits), "visits_today": sum(1 for v in visits if d_ist(v.created_at) == today_d),
@@ -379,10 +442,7 @@ def employee_dashboard(uid: int, month_bucket: str | None = "current", db: Sessi
                  "cash_collected": cash,
                  "collected_calls": collected_calls, "collected_visits": collected_visits,
                  "collected_logs": round(collected_calls + collected_visits, 2)},
-        "performance": {"daily": _window(db, u, datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc), case_ids),
-                        "weekly": _window(db, u, datetime.now(timezone.utc) - timedelta(days=7), case_ids),
-                        "monthly": _window(db, u, datetime.now(timezone.utc) - timedelta(days=30), case_ids),
-                        "overall": _window(db, u, None, case_ids)},
+        "performance": _perf_cards(db, u, case_ids, month_bucket),
         "trend": trend,
         "dispositions": dispositions,
         "ptp": {"total": len(ptp_cases), "kept": ptp_kept, "broken": ptp_broken, "kept_pct": pct(ptp_kept, len(ptp_cases))},

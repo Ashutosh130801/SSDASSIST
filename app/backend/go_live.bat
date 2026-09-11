@@ -19,6 +19,10 @@ if not exist ".venv\Scripts\activate.bat" (
 )
 call .venv\Scripts\activate.bat
 
+REM --- keep dependencies current (installs any newly-added packages, e.g. fpdf2) ---
+python -m pip install --upgrade pip >nul
+pip install -r requirements.txt
+
 REM --- MUST match run_local.bat so we touch the same DB the server reads ---
 set DATABASE_URL=sqlite:///./ssd_local.db
 set SECRET_KEY=local-dev-secret-change-me

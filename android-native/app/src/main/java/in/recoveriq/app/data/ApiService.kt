@@ -2,6 +2,7 @@ package `in`.recoveriq.app.data
 
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
+import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -11,6 +12,7 @@ import retrofit2.http.POST
 import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
+import retrofit2.http.Streaming
 
 /** Retrofit interface mapping the RecoverIQ FastAPI endpoints. */
 interface ApiService {
@@ -55,6 +57,11 @@ interface ApiService {
         @Query("caller_ids") callerIds: String? = null,
         @Query("limit") limit: Int = 500,
     ): List<Case>
+
+    // Export the given (already-filtered) cases as a styled Excel or PDF file.
+    @Streaming
+    @POST("api/cases/export")
+    suspend fun exportCases(@Body body: CaseExportRequest): ResponseBody
 
     // Bank-first portfolio navigation + filter dropdown options.
     @GET("api/cases/portfolio-banks")

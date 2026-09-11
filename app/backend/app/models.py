@@ -163,6 +163,10 @@ class Case(Base):
     # Auto-debit settlement: the case is resolved via an auto-debit / e-NACH mandate, so it counts
     # as PAID even when ₹0 has actually been collected (cash stays 0; pending stays the full balance).
     auto_debit = Column(Boolean, default=False)
+    # DPR-confirmed settlement: the bank's DPR marked this case PAID under a NORM/STAB plan, so it
+    # stays PAID with that tag even if the amount collected is below the settlement target (the bank
+    # accepted it as a full settlement). Set only by DPR; keeps paymath from re-tagging it PARTIAL.
+    paid_locked = Column(Boolean, default=False)
     caller_name = Column(String(80), index=True)          # CALLER (as named in the sheet)
     fos_name = Column(String(120), index=True)            # FOS NAME (name/area,phone text)
     team = Column(String(40), index=True)                 # AREA / region code (GTR, KDP, TS...)

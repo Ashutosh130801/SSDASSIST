@@ -17,3 +17,4 @@ email-validator==2.2.0
 google-cloud-storage==2.18.2
 pyotp==2.9.0
 webauthn==2.2.0
+fpdf2

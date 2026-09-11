@@ -36,6 +36,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.activity.compose.BackHandler
+import androidx.compose.material3.OutlinedButton
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -206,64 +209,80 @@ private val CASE_SORTS: List<Pair<String, Comparator<Case>>> = listOf(
 @Composable
 fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     val liveKey = rememberLiveKey()
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     var sel by remember { mutableStateOf("All") }
     var query by remember { mutableStateOf("") }
-    // Default order for field agents: smallest pending first (quick wins), with other criteria available.
     var sort by remember { mutableStateOf("Pending ↑") }
+    // Drill-down: month  ->  portfolio (bank·product)  ->  cases.
+    var month by rememberSaveable { mutableStateOf<String?>(null) }
+    var portfolio by rememberSaveable { mutableStateOf<String?>(null) }   // "bank||product"
+    var busy by remember { mutableStateOf(false) }
+    // In-screen Back: step cases -> portfolio list -> (month stays; chips always visible).
+    BackHandler(enabled = portfolio != null) { portfolio = null }
+
+    fun monthOf(c: Case): String = (c.month ?: "").trim().ifEmpty { "—" }
+    fun portKey(c: Case): String = "${(c.bank ?: "—")}||${(c.product ?: "—")}"
+
     Column(Modifier.fillMaxSize()) {
         SectionTitle("My accounts", Modifier.padding(start = 16.dp, top = 12.dp))
-        OutlinedTextField(
-            value = query, onValueChange = { query = it },
-            singleLine = true,
-            leadingIcon = { Icon(Icons.Filled.Search, null) },
-            placeholder = { Text("Search name / account / phone") },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = TextDark, unfocusedTextColor = TextDark,
-                cursorColor = BrandBlue, focusedBorderColor = BrandBlue, unfocusedBorderColor = Muted,
-            ),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-        )
         RemindersBanner(vm, liveKey, onOpenCase)
         AsyncContent(key = liveKey, block = { vm.repo.myCases() }) { cases, _ ->
             if (cases.isEmpty()) {
                 EmptyState("No cases assigned to you yet.")
                 return@AsyncContent
             }
-            // New-case alert: freshly allocated, not yet worked.
-            val newCount = cases.count { (it.status ?: "") == "allocated" }
-            if (newCount > 0) {
-                InfoCard(Modifier.padding(horizontal = 16.dp)) {
-                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Bolt, null, tint = Warn)
-                        Spacer(Modifier.size(8.dp))
-                        Text("$newCount new case${if (newCount == 1) "" else "s"} assigned to you",
-                            fontWeight = FontWeight.SemiBold)
+            val months = cases.map { monthOf(it) }.distinct().sortedDescending()
+            val curMonth = month ?: months.firstOrNull() ?: "—"
+
+            // ---- Month chips (compact, single scrollable line) — months stay separate ----
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Month:", color = Muted, modifier = Modifier.padding(end = 2.dp))
+                months.forEach { m ->
+                    val n = cases.count { monthOf(it) == m }
+                    FilterChip(selected = curMonth == m,
+                        onClick = { month = m; portfolio = null },
+                        label = { Text("$m ($n)") })
+                }
+            }
+            val monthCases = cases.filter { monthOf(it) == curMonth }
+
+            if (portfolio == null) {
+                // ---- Portfolio picker: one card per Bank · Product in this month ----
+                val ports = monthCases.groupBy { portKey(it) }.toList().sortedByDescending { it.second.size }
+                Text("Portfolios in $curMonth", color = Muted,
+                    modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items(ports.size) { i ->
+                        val (key, list) = ports[i]
+                        val bank = key.substringBefore("||"); val prod = key.substringAfter("||")
+                        val pend = list.sumOf { it.pendingAmount }
+                        InfoCard(Modifier.fillMaxWidth().clickable { portfolio = key }) {
+                            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("$bank  ·  $prod", fontWeight = FontWeight.Bold, color = BrandBlue)
+                                    Text("${list.size} account${if (list.size == 1) "" else "s"}  ·  pending ₹${"%,.0f".format(pend)}",
+                                        style = MaterialTheme.typography.bodySmall, color = Muted)
+                                }
+                                Text("›", color = Muted, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
+                return@AsyncContent
             }
-            // Filter chips with live counts — single scrollable line (Flipkart-style) to keep the list roomy.
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CASE_FILTERS.forEach { (label, pred) ->
-                    val n = cases.count(pred)
-                    FilterChip(selected = sel == label, onClick = { sel = label },
-                        label = { Text("$label ($n)") })
-                }
-            }
-            // Sort selector — pending ascending is the default; single scrollable line.
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Sort:", color = Muted, modifier = Modifier.padding(end = 2.dp))
-                CASE_SORTS.forEach { (label, _) ->
-                    FilterChip(selected = sort == label, onClick = { sort = label }, label = { Text(label) })
-                }
-            }
+
+            // ---- Case list for the selected month + portfolio ----
+            val bank = portfolio!!.substringBefore("||"); val prod = portfolio!!.substringAfter("||")
+            val portCases = monthCases.filter { portKey(it) == portfolio }
             val pred = CASE_FILTERS.first { it.first == sel }.second
             val q = query.trim().lowercase()
             fun matches(c: Case): Boolean {
@@ -275,18 +294,105 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
                         .any { it != null && it.filter { ch -> ch.isDigit() }.contains(digits) })
             }
             val comparator = (CASE_SORTS.firstOrNull { it.first == sort } ?: CASE_SORTS.first()).second
-            val ordered = cases.filter { pred(it) && matches(it) }.sortedWith(comparator)
+            val ordered = portCases.filter { pred(it) && matches(it) }.sortedWith(comparator)
+            val exportTitle = "$bank · $prod · $curMonth"
+            val exportBase = "Cases_${bank}_${prod}_$curMonth".replace(Regex("[^A-Za-z0-9_-]"), "")
+
+            // Context bar: which portfolio, change link, and Excel / PDF download of the filtered set.
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = { portfolio = null }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                    Text("‹ $bank·$prod", color = BrandBlue, fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.weight(1f))
+                Text("${ordered.size}", color = Muted)
+                Spacer(Modifier.size(6.dp))
+                OutlinedButton(onClick = {
+                    if (!busy && ordered.isNotEmpty()) { busy = true
+                        scope.launch { exportAndShare(ctx, vm, ordered.map { it.id }, "xlsx", exportBase, exportTitle); busy = false }
+                    }
+                }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)) { Text("⬇ Excel") }
+                Spacer(Modifier.size(6.dp))
+                OutlinedButton(onClick = {
+                    if (!busy && ordered.isNotEmpty()) { busy = true
+                        scope.launch { exportAndShare(ctx, vm, ordered.map { it.id }, "pdf", exportBase, exportTitle); busy = false }
+                    }
+                }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)) { Text("⬇ PDF") }
+            }
+            // Search
+            OutlinedTextField(
+                value = query, onValueChange = { query = it }, singleLine = true,
+                leadingIcon = { Icon(Icons.Filled.Search, null) },
+                placeholder = { Text("Search name / account / phone") },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = TextDark, unfocusedTextColor = TextDark,
+                    cursorColor = BrandBlue, focusedBorderColor = BrandBlue, unfocusedBorderColor = Muted,
+                ),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+            )
+            // Status + sort — one compact scrollable line each.
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CASE_FILTERS.forEach { (label, p) ->
+                    val n = portCases.count(p)
+                    FilterChip(selected = sel == label, onClick = { sel = label }, label = { Text("$label ($n)") })
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Sort:", color = Muted, modifier = Modifier.padding(end = 2.dp))
+                CASE_SORTS.forEach { (label, _) ->
+                    FilterChip(selected = sort == label, onClick = { sort = label }, label = { Text(label) })
+                }
+            }
             if (ordered.isEmpty()) {
                 EmptyState(if (q.isEmpty()) "No cases in this filter." else "No cases match \"$query\".")
             } else {
                 LazyColumn(
                     Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(ordered.size) { i -> CaseCard(ordered[i], onClick = { onOpenCase(ordered[i].id) }) }
                 }
             }
         }
+    }
+}
+
+/** Download the given cases as Excel/PDF from the backend and open the Android share sheet. */
+private suspend fun exportAndShare(
+    ctx: android.content.Context, vm: AuthViewModel,
+    ids: List<Int>, fmt: String, baseName: String, title: String,
+) {
+    try {
+        val ext = if (fmt == "pdf") "pdf" else "xlsx"
+        // Do the network read + file write OFF the main thread (a @Streaming body is read from the
+        // socket here), then share on the main thread.
+        val file = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val body = vm.repo.exportCases(ids, fmt, title)
+            val f = java.io.File(ctx.cacheDir, "$baseName.$ext")
+            body.byteStream().use { input -> f.outputStream().use { out -> input.copyTo(out) } }
+            f
+        }
+        val uri = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".fileprovider", file)
+        val mime = if (fmt == "pdf") "application/pdf"
+            else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            putExtra(android.content.Intent.EXTRA_SUBJECT, "$title — accounts")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        ctx.startActivity(android.content.Intent.createChooser(send, "Share / save")
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (e: Exception) {
+        android.widget.Toast.makeText(ctx, "Download failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
     }
 }

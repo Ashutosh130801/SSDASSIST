@@ -66,7 +66,9 @@ def settle_target(case) -> Decimal:
 def compute_status(case) -> str:
     """PAID / PARTIAL / UNPAID from received + settlement/base — pure, no side effects."""
     # Auto-debit / e-NACH settlement resolves the case as PAID even at ₹0 collected.
-    if getattr(case, "auto_debit", False):
+    # paid_locked = the bank's DPR confirmed a NORM/STAB settlement as PAID, so it stays PAID
+    # even when the amount is below the settlement target (the bank accepted it as full).
+    if getattr(case, "auto_debit", False) or getattr(case, "paid_locked", False):
         return "PAID"
     recv = _d(getattr(case, "received_amount", 0))
     if is_settlement(case):
@@ -85,19 +87,21 @@ def compute_status(case) -> str:
 
 
 def autotag(case) -> None:
-    """For a settlement (NORM/STAB) case, derive the NORM/STAB tag from the CUMULATIVE received —
-    the amount decides, never a manual pick: received >= norm -> NORM, else >= stab -> STAB, else
-    below the lower threshold -> no tag (PARTIAL). Plain (no norm/stab) cases are left untouched so
-    a user's free NORM/STAB/PAID choice on them is preserved. Skipped when auto_debit settles at ₹0."""
-    if getattr(case, "auto_debit", False) or not is_settlement(case):
+    """NON-DESTRUCTIVE. For a settlement (NORM/STAB) case that has NO tag yet, fill it in once
+    from the cumulative received (>= norm -> NORM, else >= stab -> STAB). It NEVER overwrites or
+    clears a tag that a user, caller, or DPR already set — whatever was chosen stays exactly as-is,
+    so nothing changes on its own (e.g. on a later recompute or restart). Plain (no norm/stab)
+    cases and auto_debit / DPR-confirmed (paid_locked) cases are left untouched."""
+    if getattr(case, "auto_debit", False) or getattr(case, "paid_locked", False) or not is_settlement(case):
         return
+    if (getattr(case, "norm_stab", None) or "").strip():
+        return                               # already tagged (user / caller / DPR) → keep it
     n, s, recv = norm_amt(case), stab_amt(case), _d(getattr(case, "received_amount", 0))
     if n > 0 and recv >= n:
         case.norm_stab = "NORM"
     elif s > 0 and recv >= s:
         case.norm_stab = "STAB"
-    else:
-        case.norm_stab = None            # below the lower of the two -> partial, no tag
+    # below the lower threshold: leave the tag empty (do NOT force it to None repeatedly)
 
 
 def recompute(case) -> str:

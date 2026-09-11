@@ -64,6 +64,7 @@ def _ensure_columns():
             "flag_reason": "VARCHAR(160)",
             "branch_explicit": "BOOLEAN",
             "auto_debit": "BOOLEAN",
+            "paid_locked": "BOOLEAN",
             "geo_lat": "DOUBLE PRECISION",
             "geo_lng": "DOUBLE PRECISION",
             "geo_precision": "VARCHAR(12)",
@@ -171,7 +172,10 @@ def _recompute_pay_status():
         db.close()
 
 
-_recompute_pay_status()
+# NOTE: intentionally NOT run on startup. Re-deriving every case on each restart silently
+# changed user/DPR-entered values (NORM/STAB tag, status, extra-over-settlement) a day or two
+# later. Cases are now recomputed ONLY when a user acts on them (payment, live-sheet edit, DPR).
+# _recompute_pay_status()   # disabled on purpose
 
 
 def _backfill_emp_codes():
@@ -442,7 +446,10 @@ _backfill_dual_role_flag()
 _reset_rtp_promises()
 _fix_dup_tl_codes()
 _clear_random_allocations()
-_cleanup_dpr_overcredit()
+# _cleanup_dpr_overcredit()  # disabled: this capped received down to the NORM/STAB ceiling,
+# wiping legitimate extra-over-settlement collections, and re-ran when its marker didn't persist.
+# Extra above the settlement now stays as-is (counts as cash). Old additive-DPR overshoot is
+# cleaned once, deliberately, via app/backend/dpr_reset.py — not automatically on restart.
 
 
 def _maybe_seed():

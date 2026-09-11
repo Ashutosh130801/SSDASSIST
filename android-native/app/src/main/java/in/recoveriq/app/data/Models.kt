@@ -9,6 +9,13 @@ import com.squareup.moshi.JsonClass
  */
 
 @JsonClass(generateAdapter = true)
+data class CaseExportRequest(
+    val ids: List<Int>,
+    val fmt: String,                 // "xlsx" | "pdf"
+    val title: String? = null,
+)
+
+@JsonClass(generateAdapter = true)
 data class LoginRequest(
     val email: String,
     val password: String,

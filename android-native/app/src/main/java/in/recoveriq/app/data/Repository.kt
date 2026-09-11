@@ -70,6 +70,10 @@ class Repository(context: Context) {
         bank: String? = null, status: String? = null, search: String? = null,
     ): List<Case> = Api.service.cases(bank = bank, status = status, search = search?.ifBlank { null })
 
+    /** Download the given cases as a styled Excel or PDF (fmt = "xlsx" | "pdf"). */
+    suspend fun exportCases(ids: List<Int>, fmt: String, title: String): okhttp3.ResponseBody =
+        Api.service.exportCases(CaseExportRequest(ids = ids, fmt = fmt, title = title))
+
     // ---- Bank-first portfolio navigation + filters + performance ----
     suspend fun portfolioBanks(monthBucket: String? = null): List<PortfolioBank> =
         Api.service.portfolioBanks(monthBucket?.ifBlank { null })

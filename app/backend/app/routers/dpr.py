@@ -509,6 +509,7 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
                     case.norm_stab = ns      # (kept, since auto_debit short-circuits autotag)
             elif act == "plbl_unpaid":
                 case.auto_debit = False
+                case.paid_locked = False     # unpaid / flow → un-settle
                 case.norm_stab = None        # unpaid / flow → no settlement tag
             new_status = paymath.recompute(case)
             change.update({"new_status": new_status, "delta": 0.0,
@@ -524,6 +525,7 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
                 collected_total -= prev_recv
             case.received_amount = Decimal(0)
             case.auto_debit = False
+            case.paid_locked = False           # a reversal un-settles the case
             new_status = paymath.recompute(case)
             change.update({"new_status": new_status, "delta": float(-prev_recv), "new_received": 0.0})
             unpaid_n += 1; _touch(case)
@@ -538,10 +540,17 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
 
         elif mode == "reconcile":
             # Snapshot: set the collected total to the DPR's cumulative amount (up OR down); the
-            # DELTA is the only new cash and the only thing that hits FTD. paymath auto-tags NORM/STAB.
+            # DELTA is the only new cash and the only thing that hits FTD.
             case.auto_debit = False
             case.received_amount = target
-            new_status = paymath.recompute(case)
+            # DPR AUTHORITY: if the bank marked the row PAID with a NORM/STAB tag, honour it as a
+            # confirmed settlement — stays PAID under that tag even if the amount is below target.
+            if it.get("_paid") and ns:
+                case.norm_stab = ns
+                case.paid_locked = True
+            else:
+                case.paid_locked = False        # a non-paid / untagged snapshot re-derives normally
+            new_status = paymath.recompute(case)   # paid_locked → PAID + keeps the tag; else auto-tag
             if delta != 0:
                 _log_payment(case, delta, f"DPR reconciled: total ₹{target} (Δ {delta})")
                 collected_total += delta
@@ -551,7 +560,8 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
                 extra_n += 1
             elif delta < 0:
                 reduce_n += 1
-            change.update({"new_status": new_status, "delta": float(delta), "new_received": float(target)})
+            change.update({"new_status": new_status, "delta": float(delta), "new_received": float(target),
+                           "norm_stab": case.norm_stab})
             _touch(case)
             if (new_status or "").upper() != "PAID" and target > 0:
                 not_paid.append({"account": it["key"], "customer": case.customer_name,

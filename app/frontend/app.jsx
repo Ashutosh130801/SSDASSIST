@@ -3265,6 +3265,7 @@ function EmployeeDashboard({ u, config, onClose }) {
 const DISPOS_FIELD = ['PAID', 'PTP', 'NOT AVAILABLE', 'MOVED', 'WRONG ADDRESS', 'DISPUTE', 'REFUSED', 'RNR'];
 
 function VisitModal({ c, onClose, onDone }) {
+  useBackClose(true, onClose);   // Back closes the visit sheet instead of leaving the section
   const [coords, setCoords] = useState(null); const [photo, setPhoto] = useState(null); const [photoUrl, setPhotoUrl] = useState(null);
   const fileRef = useRef(null); const [stamping, setStamping] = useState(false);
   const [locOk, setLocOk] = useState(true); const [moved, setMoved] = useState(false);
@@ -3802,6 +3803,7 @@ const REVIEW_SWATCHES = [['red', '#EF4444'], ['amber', '#F59E0B'], ['green', '#2
 const REVIEW_HEX = Object.fromEntries(REVIEW_SWATCHES);
 
 function CaseDrawer({ c, onClose, onChanged }) {
+  useBackClose(true, onClose);   // Back button closes the case, returning to the list/section
   const [cur, setCur] = useState(c); const [hist, setHist] = useState(null); const [tab, setTab] = useState('call');
   const [tpls, setTpls] = useState([]); const [tplId, setTplId] = useState(''); const [msg, setMsg] = useState('');
   const [dispo, setDispo] = useState('PTP'); const [amt, setAmt] = useState(''); const [ptpDate, setPtpDate] = useState('');
@@ -5029,24 +5031,65 @@ function SecurityView({ user }) {
 }
 
 /* ============================== Shell + App ============================== */
+/* Resilient WebSocket to /ws, shared by every live-sync consumer.
+   - Defers the FIRST connect until the page has finished loading, so a slow or failing
+     socket handshake can never hold the browser's "still loading" indicator on.
+   - Exponential backoff on repeated failures (2s → up to 30s) instead of a flat 3s storm.
+   - A watchdog force-closes a socket stuck "connecting" so it can't sit pending forever.
+   Returns a controller with .sock (current socket, or null) and .close(). */
+function ssdWS({ onMessage, onOpen, onClose }) {
+  let ws = null, stop = false, attempts = 0, watchdog = null, retry = null;
+  const clearT = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null; } if (retry) { clearTimeout(retry); retry = null; } };
+  const plan = () => { if (stop) return; attempts = Math.min(attempts + 1, 10); retry = setTimeout(open, Math.min(30000, 2000 * attempts)); };
+  function open() {
+    if (stop) return;
+    clearT();
+    try {
+      ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
+      watchdog = setTimeout(() => { if (ws && ws.readyState === 0) { try { ws.close(); } catch (e) {} } }, 12000);
+      ws.onopen = () => { attempts = 0; if (watchdog) { clearTimeout(watchdog); watchdog = null; } try { onOpen && onOpen(ws); } catch (e) {} };
+      ws.onmessage = (e) => { try { onMessage && onMessage(e); } catch (_) {} };
+      ws.onclose = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null; } try { onClose && onClose(); } catch (e) {} plan(); };
+      ws.onerror = () => { try { ws.close(); } catch (e) {} };
+    } catch (_) { plan(); }
+  }
+  const boot = () => { if (!stop) open(); };
+  if (document.readyState === 'complete') boot();
+  else window.addEventListener('load', boot, { once: true });
+  return { get sock() { return ws; }, close() { stop = true; clearT(); if (ws) { try { ws.close(); } catch (e) {} } } };
+}
+
+/* Make the browser/OS Back button close an open overlay (case drawer, modal) instead of
+   leaving the section. While the overlay is open we push one throwaway history entry; Back
+   pops it and fires onClose. Closing via the UI discards that entry so history stays clean. */
+function useBackClose(isOpen, onClose) {
+  const cb = React.useRef(onClose); cb.current = onClose;
+  React.useEffect(() => {
+    if (!isOpen) return;
+    try { window.history.pushState({ ssdOverlay: true }, ''); } catch (e) {}
+    const onPop = () => { try { cb.current && cb.current(); } catch (e) {} };
+    window.addEventListener('popstate', onPop);
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      // Closed via the UI (not Back): discard the entry we added so Back isn't a no-op.
+      try { if (window.history.state && window.history.state.ssdOverlay) window.history.back(); } catch (e) {}
+    };
+  }, [isOpen]);
+}
+
 /* Live refresh — runs cb (debounced) whenever the server broadcasts a data change
    (any FOS/caller log, payment, or sheet edit). Used by MIS, dashboards, cases. */
 function useDataChanged(cb) {
   const ref = React.useRef(cb); ref.current = cb;
   React.useEffect(() => {
-    let stop = false, ws, timer;
-    const connect = () => {
-      try {
-        ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
-        ws.onmessage = e => { try { const m = JSON.parse(e.data);
-          if (m.type === 'notification') { try { window.dispatchEvent(new CustomEvent('ssd-notif', { detail: m.notification })); } catch (_) {} return; }
-          if (m.type === 'broadcast') { try { window.dispatchEvent(new CustomEvent('ssd-broadcast', { detail: m })); } catch (_) {} return; }
-          if (m.type === 'data_changed' || m.type === 'case_update') { clearTimeout(timer); timer = setTimeout(() => ref.current(m), 700); } } catch (_) {} };
-        ws.onclose = () => { if (!stop) setTimeout(connect, 3000); };
-      } catch (_) { if (!stop) setTimeout(connect, 3000); }
-    };
-    connect();
-    return () => { stop = true; clearTimeout(timer); try { ws && ws.close(); } catch (_) {} };
+    let timer;
+    const conn = ssdWS({ onMessage: e => {
+      const m = JSON.parse(e.data);
+      if (m.type === 'notification') { window.dispatchEvent(new CustomEvent('ssd-notif', { detail: m.notification })); return; }
+      if (m.type === 'broadcast') { window.dispatchEvent(new CustomEvent('ssd-broadcast', { detail: m })); return; }
+      if (m.type === 'data_changed' || m.type === 'case_update') { clearTimeout(timer); timer = setTimeout(() => ref.current(m), 700); }
+    } });
+    return () => { clearTimeout(timer); conn.close(); };
   }, []);
 }
 
@@ -5871,31 +5914,21 @@ function SheetView({ user, config }) {
 
   // Live updates over WebSocket
   React.useEffect(() => {
-    let stop = false, ws;
-    const connect = () => {
-      try {
-        ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
-        wsRef.current = ws;
-        ws.onopen = () => { if (!stop) setLive(true); };
-        ws.onclose = () => { setLive(false); wsRef.current = null; if (!stop) setTimeout(connect, 3000); };
-        ws.onmessage = (e) => {
-          try {
-            const m = JSON.parse(e.data);
-            if (m.type === 'case_update' && m.case) {
-              setRows(rs => { const i = rs.findIndex(r => r.id === m.case.id); if (i < 0) return rs; const cp = rs.slice(); cp[i] = { ...cp[i], ...m.case }; return cp; });
-            } else if (m.type === 'data_changed' || m.type === 'payment' || m.type === 'case_changed') {
-              // A payment/log/edit landed anywhere (e.g. a telecaller logged a payment) —
-              // pull the sheet fresh so paid/pending/status reflect it automatically.
-              load();
-            } else if (m.type === 'presence') {
-              setPresence(p => { const cp = { ...p }; if (m.editors && m.editors.length) cp[m.case_id] = m.editors; else delete cp[m.case_id]; return cp; });
-            }
-          } catch (_) {}
-        };
-      } catch (_) { if (!stop) setTimeout(connect, 3000); }
-    };
-    connect();
-    return () => { stop = true; try { ws && ws.close(); } catch (_) {} };
+    const conn = ssdWS({
+      onOpen: (ws) => { wsRef.current = ws; setLive(true); },
+      onClose: () => { setLive(false); wsRef.current = null; },
+      onMessage: (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === 'case_update' && m.case) {
+          setRows(rs => { const i = rs.findIndex(r => r.id === m.case.id); if (i < 0) return rs; const cp = rs.slice(); cp[i] = { ...cp[i], ...m.case }; return cp; });
+        } else if (m.type === 'data_changed' || m.type === 'payment' || m.type === 'case_changed') {
+          load();
+        } else if (m.type === 'presence') {
+          setPresence(p => { const cp = { ...p }; if (m.editors && m.editors.length) cp[m.case_id] = m.editors; else delete cp[m.case_id]; return cp; });
+        }
+      },
+    });
+    return () => { conn.close(); };
   }, []);
 
   // Tell everyone which row/cell I'm editing (live presence badges).
@@ -7983,20 +8016,14 @@ function BroadcastPopup() {
   // even ones that don't mount useDataChanged (Attendance, Chat, etc.). This socket is also
   // the single source for notification sounds (broadcast + incoming chat message).
   useEffect(() => {
-    let stop = false, ws, retry;
-    const connect = () => {
-      try {
-        ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
-        ws.onmessage = e => { try { const m = JSON.parse(e.data);
-          if (m.type === 'broadcast') { setMsg({ from: m.from || 'Head Office', body: m.body || '' }); ssdChime('broadcast'); ssdOsNotify('📢 Broadcast — ' + (m.from || 'Head Office'), m.body || ''); window.dispatchEvent(new Event('ssd-chat-refresh')); }
-          else if (m.type === 'notification' && m.notification) { const n = m.notification;
-            if (n.type === 'chat') { ssdChime('chat'); window.dispatchEvent(new Event('ssd-chat-refresh')); }
-            ssdOsNotify(n.title || 'RecoverIQ', n.body || ''); } } catch (_) {} };
-        ws.onclose = () => { if (!stop) retry = setTimeout(connect, 3000); };
-      } catch (_) { if (!stop) retry = setTimeout(connect, 3000); }
-    };
-    connect();
-    return () => { stop = true; clearTimeout(retry); try { ws && ws.close(); } catch (_) {} };
+    const conn = ssdWS({ onMessage: e => {
+      const m = JSON.parse(e.data);
+      if (m.type === 'broadcast') { setMsg({ from: m.from || 'Head Office', body: m.body || '' }); ssdChime('broadcast'); ssdOsNotify('📢 Broadcast — ' + (m.from || 'Head Office'), m.body || ''); window.dispatchEvent(new Event('ssd-chat-refresh')); }
+      else if (m.type === 'notification' && m.notification) { const n = m.notification;
+        if (n.type === 'chat') { ssdChime('chat'); window.dispatchEvent(new Event('ssd-chat-refresh')); }
+        ssdOsNotify(n.title || 'RecoverIQ', n.body || ''); }
+    } });
+    return () => { conn.close(); };
   }, []);
   // Tab-title unread badge (WhatsApp-web style: "(3) RecoverIQ…").
   useEffect(() => {
@@ -8073,26 +8100,21 @@ function VoiceCall({ user }) {
 
   // Own always-on signaling socket (mounted once).
   useEffect(() => {
-    let stop = false, ws, retry;
-    const connect = () => {
-      try {
-        ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(store.t || ''));
-        wsRef.current = ws;
-        ws.onmessage = async e => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } if (m.type !== 'call') return;
-          const sub = m.sub, from = { id: m.from_id, name: m.from_name || 'User' };
-          if (sub === 'invite') {
-            if (stRef.current !== 'idle' || pcRef.current) { try { ws.send(JSON.stringify({ type: 'call', to_id: m.from_id, sub: 'reject', data: null })); } catch (_) {} return; }
-            offerRef.current = m.data; setPeer(from); setSt('incoming'); ssdChime('broadcast');
-          } else if (sub === 'answer') { if (pcRef.current) { try { await pcRef.current.setRemoteDescription(m.data); } catch (_) {} setSt('active'); } }
-          else if (sub === 'ice') { if (pcRef.current && pcRef.current.remoteDescription) { try { await pcRef.current.addIceCandidate(m.data); } catch (_) {} } else pendingIce.current.push(m.data); }
-          else if (sub === 'reject') { toast(((peerRef.current && peerRef.current.name) || 'User') + ' is unavailable'); cleanup(); setSt('idle'); setPeer(null); }
-          else if (sub === 'end') { cleanup(); setSt('idle'); setPeer(null); }
-        };
-        ws.onclose = () => { if (!stop) retry = setTimeout(connect, 3000); };
-      } catch (_) { if (!stop) retry = setTimeout(connect, 3000); }
-    };
-    connect();
-    return () => { stop = true; clearTimeout(retry); try { ws && ws.close(); } catch (_) {} };
+    const conn = ssdWS({
+      onOpen: (ws) => { wsRef.current = ws; },
+      onClose: () => { wsRef.current = null; },
+      onMessage: async e => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } if (m.type !== 'call') return;
+        const sub = m.sub, from = { id: m.from_id, name: m.from_name || 'User' };
+        if (sub === 'invite') {
+          if (stRef.current !== 'idle' || pcRef.current) { try { wsRef.current && wsRef.current.send(JSON.stringify({ type: 'call', to_id: m.from_id, sub: 'reject', data: null })); } catch (_) {} return; }
+          offerRef.current = m.data; setPeer(from); setSt('incoming'); ssdChime('broadcast');
+        } else if (sub === 'answer') { if (pcRef.current) { try { await pcRef.current.setRemoteDescription(m.data); } catch (_) {} setSt('active'); } }
+        else if (sub === 'ice') { if (pcRef.current && pcRef.current.remoteDescription) { try { await pcRef.current.addIceCandidate(m.data); } catch (_) {} } else pendingIce.current.push(m.data); }
+        else if (sub === 'reject') { toast(((peerRef.current && peerRef.current.name) || 'User') + ' is unavailable'); cleanup(); setSt('idle'); setPeer(null); }
+        else if (sub === 'end') { cleanup(); setSt('idle'); setPeer(null); }
+      },
+    });
+    return () => { conn.close(); };
   }, []);
 
   // Call timer while active.
@@ -8300,7 +8322,30 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
   const baseNav = NAV[user.role] || NAV.telecaller;
   // Everyone gets a personal E-ID / profile entry.
   const nav = baseNav.some(n => n[0] === 'profile') ? baseNav : [...baseNav, ['profile', '🪪', 'My E-ID']];
-  const [view, setView] = useState(nav[0][0]);
+  // Section is driven by the URL hash so a RELOAD stays on the current screen and the browser /
+  // Android Back & Forward move through the sections you visited (instead of jumping to home).
+  const homeView = nav[0][0];
+  // Sections reachable from the top bar in addition to the sidebar nav — always safe to land on.
+  const _EXTRA_VIEWS = ['attendance', 'todo', 'rtsb', 'monitor', 'help', 'support'];
+  const allowedViews = new Set([...nav.map(n => n[0]), ..._EXTRA_VIEWS]);
+  const _readHash = () => { try { return decodeURIComponent((window.location.hash || '').replace(/^#\/?/, '')); } catch (e) { return ''; } };
+  // Only honour a hash that this role is actually allowed to open — otherwise (e.g. a stale hash
+  // left over from another role after a re-login / view switch) fall back to the home section.
+  const _hashView = () => { const h = _readHash(); return (h && allowedViews.has(h)) ? h : homeView; };
+  const [view, _setView] = useState(_hashView);
+  const setView = React.useCallback((v) => {
+    _setView(v);
+    try { if (_readHash() !== v) window.history.pushState({ ssdView: v }, '', '#' + v); } catch (e) {}
+  }, []);
+  useEffect(() => {
+    // On first load: stamp the (validated) hash so a reload restores this section — and correct a
+    // stale/foreign hash so nobody lands on a screen missing from their menu.
+    try { window.history.replaceState({ ssdView: view }, '', '#' + view); } catch (e) {}
+    // Back / Forward: switch to whatever (allowed) section the hash now points at.
+    const onPop = () => _setView(_hashView());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   const [trackOnboard, setTrackOnboard] = useState(false);
   const [notifCase, setNotifCase] = useState(null);
   const [tour, setTour] = useState(false);

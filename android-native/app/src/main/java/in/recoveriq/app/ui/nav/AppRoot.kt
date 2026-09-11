@@ -52,7 +52,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -277,7 +279,16 @@ private fun HomeScaffold(
         navEntriesFor(vm, user, onOpenCase, onNeedTrackingPermissions, onRequestBatteryExemption) +
             NavEntry("attendance", "Attendance", Icons.Filled.Schedule) { AttendanceScreen(vm, user) }
     }
-    var currentKey by remember { mutableStateOf(items.first().key) }
+    // Section back-stack: Back steps through the sections you actually visited (full history)
+    // instead of exiting the app or jumping to home. Persisted across rotation / process death
+    // via rememberSaveable (stored as keys joined by "|").
+    var stackStr by rememberSaveable { mutableStateOf(items.first().key) }
+    val stack = stackStr.split("|").filter { it.isNotEmpty() }.ifEmpty { listOf(items.first().key) }
+    val currentKey = stack.last()
+    val goTo: (String) -> Unit = { key -> if (key != currentKey) stackStr = (stack + key).joinToString("|") }
+    // Hardware / gesture Back pops one section off the stack; disabled on the home section so the
+    // OS handles it (exit / background) as usual.
+    BackHandler(enabled = stack.size > 1) { stackStr = stack.dropLast(1).joinToString("|") }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val current = items.firstOrNull { it.key == currentKey } ?: items.first()
@@ -324,7 +335,7 @@ private fun HomeScaffold(
                             icon = { Icon(entry.icon, null) },
                             selected = entry.key == currentKey,
                             colors = itemColors,
-                            onClick = { currentKey = entry.key; scope.launch { drawerState.close() } },
+                            onClick = { goTo(entry.key); scope.launch { drawerState.close() } },
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                         )
                     }
@@ -368,7 +379,7 @@ private fun HomeScaffold(
                         }
                     },
                     actions = {
-                        androidx.compose.material3.IconButton(onClick = { currentKey = "attendance" }) {
+                        androidx.compose.material3.IconButton(onClick = { goTo("attendance") }) {
                             Icon(Icons.Filled.Schedule, "Attendance")
                         }
                         androidx.compose.material3.IconButton(onClick = onOpenAi) {
