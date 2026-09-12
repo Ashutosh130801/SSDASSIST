@@ -49,7 +49,7 @@ if errorlevel 1 (
 
 echo Backup OK.
 REM Delete dumps older than KEEP_DAYS.
-powershell -NoProfile -Command "Get-ChildItem '%OUTDIR%\*.dump' ^| Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-%KEEP_DAYS%) } ^| Remove-Item -Force"
+powershell -NoProfile -Command "Get-ChildItem '%OUTDIR%\*.dump' | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-%KEEP_DAYS%) } | Remove-Item -Force"
 echo Pruned dumps older than %KEEP_DAYS% days.
 echo Done.
 
