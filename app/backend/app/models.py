@@ -53,7 +53,7 @@ class User(Base):
     hr_ref = Column(String(30))                 # official employee id (SSD0001)
     gender = Column(String(10))
     dob = Column(Date, nullable=True)
-    blood_group = Column(String(8))
+    blood_group = Column(String(16))
     marital_status = Column(String(20))
     ctc = Column(String(30))
     emergency_name = Column(String(80))
@@ -68,7 +68,7 @@ class User(Base):
     bank_name = Column(String(80))
     aadhar_address = Column(Text)
     current_address = Column(Text)
-    rent_own = Column(String(10))
+    rent_own = Column(String(20))
     # Dual role: a caller/FOS can ALSO be a team lead. They keep their primary role/emp_code
     # and get a second team-lead ID (tl_emp_code). On login they pick which "view" to use and
     # can switch anytime — one hat at a time (the active view drives all scoping).

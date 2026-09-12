@@ -29,6 +29,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Load ALL settings (LocationIQ, SMTP, TURN, OpenRouter, branding, etc.) from the .env
+    # next to this file — one place for every key. The explicit `environment:` block below
+    # still wins for DATABASE_URL (must point at the `db` service, not localhost).
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+psycopg2://ssd:${POSTGRES_PASSWORD:-ssd_password}@db:5432/ssd_recovery
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}

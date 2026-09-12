@@ -16,10 +16,12 @@ Default first-login password for staff: Ssd@2026 (they're forced to change it).
 The admin (role=admin) uses ADMIN_PASSWORD from .env.
 """
 import os
+import re
 import sys
 from datetime import datetime, date
 
 import openpyxl
+from sqlalchemy import String as _SAString
 
 from app.database import Base, SessionLocal, engine
 from app import models
@@ -27,6 +29,22 @@ from app.security import hash_password
 from app.config import get_settings
 
 DEFAULT_STAFF_PW = "Ssd@2026"
+
+# Column length limits (PostgreSQL enforces these; SQLite ignores them). We clamp every
+# string field to its limit so a stray long value (e.g. blood_group "Don't know") can never
+# abort the whole seed.
+_STR_LIMITS = {c.name: c.type.length for c in models.User.__table__.columns
+               if isinstance(c.type, _SAString) and c.type.length}
+_BLOOD_RE = re.compile(r"^(A|B|AB|O)[+-]$")
+
+
+def _clamp(user):
+    # values are kept as-is; we only guard against any string longer than its column
+    # limit (Postgres enforces lengths; SQLite doesn't).
+    for field, limit in _STR_LIMITS.items():
+        v = getattr(user, field, None)
+        if isinstance(v, str) and len(v) > limit:
+            setattr(user, field, v[:limit].strip())
 
 
 def _s(v):
@@ -131,6 +149,9 @@ def main(path):
 
             # head-office manager flag
             u.ho_manager = ("head office manager" in roles_label.lower())
+
+            # clamp any over-length strings so Postgres never rejects the batch
+            _clamp(u)
 
             if is_new:
                 u.employment_type = "Full-time"

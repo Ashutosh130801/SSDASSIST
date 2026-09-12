@@ -821,7 +821,11 @@ def get_case(case_id: int, db: Session = Depends(get_db), user: models.User = De
 @router.post("", response_model=schemas.CaseOut)
 def create_case(body: schemas.CaseCreate, db: Session = Depends(get_db),
                 admin: models.User = Depends(require_roles("admin"))):
-    case = models.Case(**body.model_dump())
+    # CaseCreate carries a few computed/display-only fields (e.g. visited_today,
+    # contacted_today) that are NOT real columns — filter to actual columns so
+    # models.Case(**...) never raises "invalid keyword argument".
+    _cols = {c.name for c in models.Case.__table__.columns}
+    case = models.Case(**{k: v for k, v in body.model_dump().items() if k in _cols})
     db.add(case)
     db.commit()
     db.refresh(case)

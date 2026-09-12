@@ -56,6 +56,47 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+# ----------------------------------------------------------------------------
+# PostgreSQL-safety guard (applies to EVERY model, EVERY insert/update).
+# SQLite silently accepts values that PostgreSQL rejects and aborts the whole
+# transaction on. The two classic import killers are:
+#   1) a string longer than its column's declared length  -> value too long
+#   2) a NUL byte (\x00) inside text                       -> invalid for type text
+# This before_flush hook cleans both on the way in, so a stray Excel cell can
+# never crash an import/seed/edit on Postgres. It is a no-op for well-formed data
+# and harmless on SQLite too.
+# ----------------------------------------------------------------------------
+from sqlalchemy import String as _SAString, Text as _SAText          # noqa: E402
+from sqlalchemy.orm import Session as _SASession                      # noqa: E402
+
+
+def _pg_safe(obj):
+    try:
+        cols = obj.__table__.columns
+    except Exception:
+        return
+    for col in cols:
+        if not isinstance(col.type, (_SAString, _SAText)):
+            continue
+        val = getattr(obj, col.name, None)
+        if not isinstance(val, str):
+            continue
+        new = val
+        if "\x00" in new:
+            new = new.replace("\x00", "")
+        limit = getattr(col.type, "length", None)
+        if limit and len(new) > limit:
+            new = new[:limit].rstrip()
+        if new != val:
+            setattr(obj, col.name, new)
+
+
+@event.listens_for(_SASession, "before_flush")
+def _pg_safe_before_flush(session, flush_context, instances):
+    for obj in list(session.new) + list(session.dirty):
+        _pg_safe(obj)
+
+
 def get_db():
     db = SessionLocal()
     try:
