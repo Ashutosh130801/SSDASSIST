@@ -2,40 +2,99 @@
 REM ============================================================
 REM  SSD Recovery - PRODUCTION run on PostgreSQL (Windows)
 REM  Uses the DATABASE_URL in your .env (localhost Postgres).
-REM  Prereq: PostgreSQL installed + database/user created, and
-REM          data migrated once (see POSTGRES_SETUP.md).
+REM  This window ALWAYS stays open (pause at the end) so you can
+REM  read any error instead of it flashing and closing.
 REM ============================================================
-setlocal
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-where py >nul 2>nul && (set PY=py) || (set PY=python)
+echo ============================================================
+echo   RecoverIQ / SSD - starting on PostgreSQL
+echo ============================================================
 
+REM --- 1) find Python ---
+where py >nul 2>nul && (set PY=py) || (set PY=python)
+%PY% --version >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo  ERROR: Python was not found on this PC.
+  echo  Install Python 3.11+ from https://www.python.org/downloads/
+  echo  and TICK "Add python.exe to PATH", then run this again.
+  goto :end
+)
+for /f "delims=" %%v in ('%PY% --version 2^>^&1') do echo   Python: %%v
+
+REM --- 2) virtual environment ---
 if not exist ".venv\Scripts\activate.bat" (
-  echo [setup] Creating virtual environment (.venv)...
+  echo   [setup] Creating virtual environment ^(.venv^)...
   %PY% -m venv .venv
-  if errorlevel 1 goto :nopython
+  if errorlevel 1 (
+    echo.
+    echo  ERROR: could not create the virtual environment.
+    goto :end
+  )
 )
 call .venv\Scripts\activate.bat
-python -m pip install --upgrade pip >nul
-pip install -r requirements.txt
+if errorlevel 1 (
+  echo.
+  echo  ERROR: could not activate .venv. Delete the .venv folder and re-run.
+  goto :end
+)
 
-REM --- DO NOT set DATABASE_URL here: the app reads it from .env (PostgreSQL). ---
-REM --- Set a strong SECRET_KEY in .env for production. ---
+REM --- 3) dependencies (non-fatal: keep going if offline) ---
+echo   [deps] Installing / updating dependencies...
+python -m pip install --upgrade pip >nul 2>nul
+pip install -r requirements.txt
+if errorlevel 1 echo   [warn] Some packages could not be (re)installed ^(offline?^). Continuing with what's in .venv.
+
+REM --- 4) config checks ---
+if not exist ".env" (
+  echo.
+  echo  ERROR: .env not found in app\backend.
+  echo  Create it with at least DATABASE_URL, SECRET_KEY, ADMIN_EMAIL, ADMIN_PASSWORD.
+  echo  See SETUP_FROM_SCRATCH.md step 4.
+  goto :end
+)
+findstr /I /C:"DATABASE_URL" .env | findstr /I "postgres" >nul
+if errorlevel 1 (
+  echo.
+  echo  WARNING: .env DATABASE_URL does not look like a PostgreSQL URL.
+  echo  It should be:  DATABASE_URL=postgresql+psycopg2://ssd:PASSWORD@localhost:5432/ssd_recovery
+  echo.
+)
+
+REM --- production: create admin from .env on first start (no demo data) ---
 set SEED_ON_START=1
 set ENVIRONMENT=production
 
+REM --- 5) quick Postgres reachability check (clear message if the DB is down) ---
+echo   [db] Checking the database connection...
+python -c "from app.config import get_settings; from sqlalchemy import create_engine, text; e=create_engine(get_settings().database_url); c=e.connect(); c.execute(text('select 1')); c.close(); print('   DB OK')"
+if errorlevel 1 (
+  echo.
+  echo  ERROR: cannot connect to PostgreSQL using the DATABASE_URL in .env.
+  echo  Fix one of these, then re-run:
+  echo    - Is PostgreSQL running?  ^(services.msc -^> postgresql, or start the Postgres app^)
+  echo    - Do the user/db/password in .env match what you created in psql?
+  echo    - Is it listening on localhost:5432 ?
+  echo  See SETUP_FROM_SCRATCH.md steps 1-2 and 4.
+  goto :end
+)
+
 echo.
 echo   =====================================================
-echo     Starting on PostgreSQL (from .env DATABASE_URL).
-echo     The startup log prints:  [SSD] Database: PostgreSQL -> ...
+echo     Starting on PostgreSQL ^(from .env DATABASE_URL^).
+echo     The log should say:  [SSD] Database: PostgreSQL -^> ...
 echo     Open:   http://localhost:8000
-echo     (Press CTRL+C to stop)
+echo     Press CTRL+C here to stop the server.
 echo   =====================================================
 echo.
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-goto :eof
 
-:nopython
-echo  ERROR: Python was not found. Install Python 3.11+ and tick "Add python.exe to PATH".
+echo.
+echo   The server has stopped.
+
+:end
+echo.
 pause
-goto :eof
+endlocal
