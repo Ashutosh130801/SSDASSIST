@@ -12,17 +12,36 @@ echo ============================================================
 echo   RecoverIQ / SSD - starting on PostgreSQL
 echo ============================================================
 
-REM --- 1) find Python ---
-where py >nul 2>nul && (set PY=py) || (set PY=python)
-%PY% --version >nul 2>nul
-if errorlevel 1 (
+REM --- 1) find Python (PREFER 3.12 / 3.11 — they have prebuilt wheels for all deps).
+REM     Python 3.13/3.14 are too new: psycopg2, pydantic-core etc. have no wheels yet and
+REM     would try to compile from source (needs Visual C++ / Rust) and fail. ---
+set "PY="
+py -3.12 --version >nul 2>nul && set "PY=py -3.12"
+if not defined PY py -3.11 --version >nul 2>nul && set "PY=py -3.11"
+if not defined PY py -3.10 --version >nul 2>nul && set "PY=py -3.10"
+if not defined PY where py >nul 2>nul && set "PY=py"
+if not defined PY where python >nul 2>nul && set "PY=python"
+if not defined PY (
   echo.
   echo  ERROR: Python was not found on this PC.
-  echo  Install Python 3.11+ from https://www.python.org/downloads/
+  echo  Install Python 3.12 ^(64-bit^) from https://www.python.org/downloads/release/python-3128/
   echo  and TICK "Add python.exe to PATH", then run this again.
   goto :end
 )
-for /f "delims=" %%v in ('%PY% --version 2^>^&1') do echo   Python: %%v
+for /f "delims=" %%v in ('%PY% --version 2^>^&1') do set "PYVER=%%v"
+echo   Python: !PYVER!
+echo !PYVER! | findstr /R "3\.1[3-9] 3\.[2-9][0-9]" >nul
+if not errorlevel 1 (
+  echo.
+  echo  ERROR: !PYVER! is too new — several dependencies have no prebuilt wheels for it,
+  echo         so pip tries to COMPILE them and fails ^(needs Visual C++ / Rust^).
+  echo.
+  echo  FIX: install Python 3.12 ^(64-bit^):  https://www.python.org/downloads/release/python-3128/
+  echo       During install TICK "Add python.exe to PATH".
+  echo       Then delete the .venv folder here and run this file again — it will
+  echo       automatically use 3.12 ^(no build tools needed^).
+  goto :end
+)
 
 REM --- 2) virtual environment ---
 if not exist ".venv\Scripts\activate.bat" (
