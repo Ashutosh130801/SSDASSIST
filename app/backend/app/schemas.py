@@ -74,6 +74,15 @@ class UserOut(UserBase):
     @classmethod
     def _flag_bool(cls, v):
         return bool(v)
+
+    # available_views is only computed for the LOGGED-IN user, so every OTHER user in a list
+    # response would serialize it as null — and the native app parses it as a non-null List,
+    # which crashes ("Non-null value 'availableViews' was null"). Coerce null -> [] so it's
+    # always a valid array for every row.
+    @field_validator("available_views", mode="before")
+    @classmethod
+    def _avail_list(cls, v):
+        return v or []
     must_change_password: Optional[bool] = None
     profile_completed: Optional[bool] = None
     designation: Optional[str] = None
