@@ -21,12 +21,14 @@ import com.google.android.gms.location.Priority
 import `in`.recoveriq.app.MainActivity
 import `in`.recoveriq.app.R
 import `in`.recoveriq.app.data.Api
+import `in`.recoveriq.app.data.AuthEvents
 import `in`.recoveriq.app.data.PingCreate
 import `in`.recoveriq.app.data.Repository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 /**
@@ -58,6 +60,7 @@ class LocationService : Service() {
     private lateinit var client: FusedLocationProviderClient
     private lateinit var repo: Repository
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var stopping = false
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -76,6 +79,19 @@ class LocationService : Service() {
         client = LocationServices.getFusedLocationProviderClient(this)
         repo = Repository(applicationContext)
         createChannel()
+        // Stop tracking the moment the session ends (logout OR a 401 token-expiry, which the
+        // network interceptor broadcasts). Without this the GPS + 20s pings keep running with a
+        // dead token — wasting the officer's battery and spamming 401s. When logged out, nothing
+        // should touch the location radio until they sign in again (which restarts this service).
+        scope.launch {
+            AuthEvents.forceLogout.collect {
+                if (!stopping) {
+                    stopping = true
+                    Log.i(TAG, "auth ended (logout/401) — stopping location tracking to save battery")
+                    stopSelf()
+                }
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -118,6 +134,7 @@ class LocationService : Service() {
     }
 
     private fun postLocation(lat: Double, lng: Double, acc: Double?, speed: Double?) {
+        if (stopping) return                     // session ended — don't touch the network/GPS
         scope.launch {
             try {
                 if (Api.token.isNullOrBlank()) repo.bootstrapToken()
