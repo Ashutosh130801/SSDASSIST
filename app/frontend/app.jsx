@@ -2735,9 +2735,10 @@ function TeamLeadView({ config, user }) {
   const [ov, setOv] = useState(null); const [err, setErr] = useState('');
   const [modal, setModal] = useState(false); const [editing, setEditing] = useState(null);
   const [perfUser, setPerfUser] = useState(null); const [dashUser, setDashUser] = useState(null);
+  const [monthB, setMonthB] = useState('current');   // this month by default; team KPIs/cards/trend follow it
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
-  const load = () => api('/api/team/overview').then(setOv).catch(e => setErr(e.message || 'Could not load'));
-  useEffect(() => { load(); }, []);
+  const load = () => api('/api/team/overview?month_bucket=' + monthB).then(setOv).catch(e => setErr(e.message || 'Could not load'));
+  useEffect(() => { setOv(null); load(); }, [monthB]);
   const removeMember = (m) => {
     if (!window.confirm(`Remove ${m.name} from your team? They'll be marked inactive.`)) return;
     api('/api/users/' + m.id, { method: 'DELETE' }).then(() => { toast(m.name + ' removed'); load(); }).catch(e => toast(e.message, 'err'));
@@ -2776,7 +2777,10 @@ function TeamLeadView({ config, user }) {
   );
   return (
     <div>
-      <div className="toolbar"><h3 style={{ margin: 0 }}>My team{user.branch ? ' · ' + user.branch : ''}</h3><div style={{ flex: 1 }} />
+      <div className="toolbar" style={{ flexWrap: 'wrap' }}><h3 style={{ margin: 0 }}>My team{user.branch ? ' · ' + user.branch : ''}</h3>
+        {[['current', '📅 This month'], ['next', '🔜 Next month'], ['last', '🗄️ Last month'], ['all', 'All months']].map(([v, lbl]) =>
+          <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
+        <div style={{ flex: 1 }} />
         <button className="btn gold" onClick={() => { setEditing(null); setModal(true); }}>+ Add member</button></div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12, marginBottom: 14 }}>

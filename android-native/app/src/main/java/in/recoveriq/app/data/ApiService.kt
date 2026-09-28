@@ -250,7 +250,7 @@ interface ApiService {
 
     // --- Team lead ---
     @GET("api/team/overview")
-    suspend fun teamOverview(): TeamOverview
+    suspend fun teamOverview(@Query("month_bucket") monthBucket: String = "current"): TeamOverview
 
     @GET("api/team/my-team")
     suspend fun myTeam(): List<TeamMemberCard>

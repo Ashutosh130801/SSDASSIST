@@ -13,13 +13,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -45,7 +51,9 @@ private fun money(v: Double) = "₹" + "%,.0f".format(v)
 @Composable
 fun TeamLeadDashboardScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     val liveKey = rememberLiveKey()
-    AsyncContent(key = liveKey, block = { vm.repo.teamOverview() }) { ov, _ ->
+    // This/Last/Next/All month — the whole team dashboard (KPIs, member cards, trend) follows it.
+    var monthB by remember { mutableStateOf("current") }
+    AsyncContent(key = "$liveKey:$monthB", block = { vm.repo.teamOverview(monthB) }) { ov, _ ->
         val k = ov.kpis
         LazyColumn(
             Modifier.fillMaxSize(),
@@ -55,6 +63,14 @@ fun TeamLeadDashboardScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
             item {
                 Text("My team" + (ov.lead?.branch?.let { " · $it" } ?: ""),
                     style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            }
+            item {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("current" to "This month", "next" to "Next", "last" to "Last", "all" to "All").forEach { (v, lbl) ->
+                        FilterChip(selected = monthB == v, onClick = { monthB = v }, label = { Text(lbl) })
+                    }
+                }
             }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
