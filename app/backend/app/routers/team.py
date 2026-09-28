@@ -553,28 +553,50 @@ def my_team(db: Session = Depends(get_db),
     return out
 
 
-def _overview_payload(db: Session, lead: models.User, month_bucket: str | None = "current") -> dict:
+def _overview_payload(db: Session, lead: models.User, month_bucket: str | None = "current",
+                      portfolio: tuple | None = None) -> dict:
     """Team-lead dashboard payload: overall team KPIs, per-member performance cards (with
     phone for calling), a 30-day team collection trend and a member leaderboard. Shared by
     the lead's own /overview and the admin/manager/HO 'view this lead's team' endpoint.
-    Scoped to one month by default (month_bucket=current); 'all' = lifetime."""
+    Scoped to one month by default (month_bucket=current); 'all' = lifetime.
+
+    When `portfolio=(bank, product, branch)` is given (a peer team lead drilling into a shared
+    portfolio), the whole payload is confined to that portfolio's cases — team members shown are
+    just those handling this portfolio's cases, and every KPI / card / trend counts only it."""
     from .cases import teamlead_case_filter
     from .mis import _period_for
     period = _period_for(month_bucket)
-    member_ids = _teamlead_member_ids(db, lead)
-    members = []
-    if member_ids:
-        members = db.query(models.User).filter(models.User.id.in_(member_ids),
-                                               models.User.is_active == True).all()  # noqa: E712
+    p_bank = p_product = p_branch = None
+    if portfolio:
+        p_bank, p_product, p_branch = portfolio
 
     # The lead's cases are those the upload tagged with their name (not every case the
-    # assigned FOS/caller happens to hold), minus escalated/removed.
+    # assigned FOS/caller happens to hold), minus escalated/removed — optionally narrowed to
+    # one portfolio (bank+product+branch) for the peer drill-down view.
     _cq = db.query(models.Case).filter(
         models.Case.escalated.isnot(True), models.Case.removed.isnot(True),
         teamlead_case_filter(lead))
     if period:
         _cq = _cq.filter(models.Case.period == period)
+    if p_bank:
+        _cq = _cq.filter(models.Case.bank == p_bank)
+    if p_product:
+        _cq = _cq.filter(models.Case.product == p_product)
+    if p_branch:
+        _cq = _cq.filter(models.Case.branch == p_branch)
     cases = _cq.all()
+
+    # Members: within a portfolio view, the staff actually on this portfolio's cases; otherwise
+    # the lead's full roster (derived across all their cases).
+    if portfolio:
+        member_ids = list({i for c in cases for i in (c.assigned_fos_id, c.assigned_caller_id) if i})
+    else:
+        member_ids = _teamlead_member_ids(db, lead)
+    members = []
+    if member_ids:
+        members = db.query(models.User).filter(models.User.id.in_(member_ids),
+                                               models.User.is_active == True).all()  # noqa: E712
+    pf_case_ids = [c.id for c in cases] if portfolio else None
 
     def paid(c):
         return (c.paid_status or "").upper() == "PAID"
@@ -601,7 +623,7 @@ def _overview_payload(db: Session, lead: models.User, month_bucket: str | None =
             "phone": m.phone, "email": m.email,
             "assigned": len(mine), "resolved": sum(1 for c in mine if paid(c)),
             "recovered": round(rec, 2), "pending": round(sum(_d(c.pending_amount) for c in mine), 2),
-            "recovery_pct": pct(rec, tenr), "today": _window(db, m, today_start),
+            "recovery_pct": pct(rec, tenr), "today": _window(db, m, today_start, pf_case_ids),
         })
 
     total_enr = sum(_d(c.enr) for c in cases)
@@ -617,10 +639,15 @@ def _overview_payload(db: Session, lead: models.User, month_bucket: str | None =
     }
 
     esc = select(models.Case.id).where(models.Case.escalated.is_(True))
-    calls = db.query(models.CallLog).filter(models.CallLog.caller_id.in_(member_ids),
-                                            ~models.CallLog.case_id.in_(esc)).all() if member_ids else []
-    visits = db.query(models.Visit).filter(models.Visit.officer_id.in_(member_ids),
-                                           ~models.Visit.case_id.in_(esc)).all() if member_ids else []
+    _cq_calls = db.query(models.CallLog).filter(models.CallLog.caller_id.in_(member_ids),
+                                                ~models.CallLog.case_id.in_(esc)) if member_ids else None
+    _cq_visits = db.query(models.Visit).filter(models.Visit.officer_id.in_(member_ids),
+                                               ~models.Visit.case_id.in_(esc)) if member_ids else None
+    if portfolio and member_ids:
+        _cq_calls = _cq_calls.filter(models.CallLog.case_id.in_(pf_case_ids or [-1]))
+        _cq_visits = _cq_visits.filter(models.Visit.case_id.in_(pf_case_ids or [-1]))
+    calls = _cq_calls.all() if _cq_calls is not None else []
+    visits = _cq_visits.all() if _cq_visits is not None else []
     pay = [(d_ist(cl.created_at), _d(cl.ptp_amount)) for cl in calls if (cl.disposition or "") in ("PAYMENT", "PAID")]
     pay += [(d_ist(v.created_at), _d(v.amount_collected)) for v in visits if _d(v.amount_collected) > 0]
     today_d = datetime.now(IST).date()
@@ -655,3 +682,180 @@ def lead_overview(uid: int, month_bucket: str | None = "current", db: Session = 
         if not (actor.role == "manager" and lead.branch == actor.branch):
             raise HTTPException(status_code=403, detail="Not allowed to view this team")
     return _overview_payload(db, lead, month_bucket)
+
+
+# ── Team-lead portfolio drill-down ──────────────────────────────────────────────
+# A team lead can browse the portfolios they work on (bank+product+branch), see every OTHER
+# team lead working the same portfolio, and open any of those peer teams READ-ONLY. Access is
+# strictly same-portfolio: a lead only ever sees teams inside a portfolio they themselves work.
+
+def _pf_filter(q, bank, product, branch):
+    """Apply portfolio filters. Only non-empty values narrow the query (empty/None = any) —
+    so a bank+product portfolio with no branch split matches across its locations."""
+    if bank:
+        q = q.filter(models.Case.bank == bank)
+    if product:
+        q = q.filter(models.Case.product == product)
+    if branch:
+        q = q.filter(models.Case.branch == branch)
+    return q
+
+
+def _lead_works_portfolio(db: Session, lead: models.User, bank, product, branch) -> bool:
+    """True if this team lead owns at least one live case in the given portfolio."""
+    from .cases import teamlead_case_filter
+    q = db.query(models.Case.id).filter(models.Case.removed.isnot(True), teamlead_case_filter(lead))
+    q = _pf_filter(q, bank, product, branch)
+    return db.query(q.exists()).scalar()
+
+
+def _tl_resolver(db: Session):
+    """Return resolve(cell) → team-lead User for a case's team_lead value (name or TL code)."""
+    tls = [u for u in db.query(models.User).all()
+           if u.role == "teamlead" or getattr(u, "also_team_lead", False)]
+    m = {}
+    for u in tls:
+        if u.name:
+            m.setdefault(u.name.strip().upper(), u)
+        if u.role == "teamlead" and u.emp_code:
+            m[u.emp_code.strip().upper()] = u
+        if getattr(u, "tl_emp_code", None):
+            m[u.tl_emp_code.strip().upper()] = u
+
+    def resolve(val):
+        if not val or not str(val).strip():
+            return None
+        return m.get(str(val).strip().upper())
+    return resolve
+
+
+@router.get("/portfolios")
+def my_portfolios(db: Session = Depends(get_db),
+                  lead: models.User = Depends(require_roles("teamlead"))):
+    """Portfolios (bank + product + branch) the signed-in team lead works on, with quick totals —
+    the entry list for the team lead's Portfolios section."""
+    from .cases import teamlead_case_filter
+    rows = db.query(
+        models.Case.bank, models.Case.product, models.Case.branch,
+        models.Case.funding_amount, models.Case.total_outstanding, models.Case.enr,
+        models.Case.principal_outstanding, models.Case.received_amount, models.Case.paid_status,
+    ).filter(models.Case.removed.isnot(True), teamlead_case_filter(lead)).all()
+    agg: dict = {}
+    for b, p, br, fund, tos, enr, pos, recv, pstat in rows:
+        base = float(fund or 0) or float(tos or 0) or float(enr or 0) or float(pos or 0)
+        rc = float(recv or 0)
+        key = (b or "—", p or "—", (br or "").strip())
+        d = agg.setdefault(key, {"bank": key[0], "product": key[1], "branch": key[2],
+                                 "count": 0, "received": 0.0, "pending": 0.0, "paid": 0, "unpaid": 0})
+        d["count"] += 1
+        d["received"] += rc
+        d["pending"] += max(0.0, base - rc)
+        d["paid" if (pstat or "").upper() == "PAID" else "unpaid"] += 1
+    out = sorted(agg.values(), key=lambda x: (x["bank"], x["product"], x["branch"]))
+    for d in out:
+        d["received"] = round(d["received"], 2)
+        d["pending"] = round(d["pending"], 2)
+    return out
+
+
+@router.get("/portfolio/leads")
+def portfolio_leads(bank: str | None = None, product: str | None = None, branch: str | None = None,
+                    db: Session = Depends(get_db),
+                    lead: models.User = Depends(require_roles("teamlead"))):
+    """Every team lead working the given portfolio, with quick per-team totals. Authorized only if
+    the requesting lead works this portfolio too (same-portfolio rule)."""
+    if not _lead_works_portfolio(db, lead, bank, product, branch):
+        raise HTTPException(status_code=403, detail="This portfolio is not in your scope")
+    resolve = _tl_resolver(db)
+    q = db.query(
+        models.Case.team_lead, models.Case.assigned_fos_id, models.Case.assigned_caller_id,
+        models.Case.funding_amount, models.Case.total_outstanding, models.Case.enr,
+        models.Case.principal_outstanding, models.Case.received_amount, models.Case.paid_status,
+    ).filter(models.Case.removed.isnot(True), models.Case.escalated.isnot(True))
+    q = _pf_filter(q, bank, product, branch)
+    agg: dict = {}
+    for tl_val, fos_id, caller_id, fund, tos, enr, pos, recv, pstat in q.all():
+        tlu = resolve(tl_val)
+        if not tlu:
+            continue
+        base = float(fund or 0) or float(tos or 0) or float(enr or 0) or float(pos or 0)
+        rc = float(recv or 0)
+        d = agg.setdefault(tlu.id, {"id": tlu.id, "name": tlu.name, "emp_code": tlu.emp_code,
+                                    "branch": tlu.branch, "count": 0, "received": 0.0,
+                                    "pending": 0.0, "paid": 0, "unpaid": 0, "_members": set(),
+                                    "is_me": tlu.id == lead.id})
+        d["count"] += 1
+        d["received"] += rc
+        d["pending"] += max(0.0, base - rc)
+        d["paid" if (pstat or "").upper() == "PAID" else "unpaid"] += 1
+        if fos_id:
+            d["_members"].add(fos_id)
+        if caller_id:
+            d["_members"].add(caller_id)
+    out = []
+    for d in agg.values():
+        d["members"] = len(d.pop("_members"))
+        d["received"] = round(d["received"], 2)
+        d["pending"] = round(d["pending"], 2)
+        out.append(d)
+    out.sort(key=lambda x: (not x["is_me"], x["name"] or ""))   # the requester first, then A→Z
+    return out
+
+
+@router.get("/portfolio/lead/{uid}/overview")
+def portfolio_lead_overview(uid: int, bank: str | None = None, product: str | None = None,
+                            branch: str | None = None, month_bucket: str | None = "current",
+                            db: Session = Depends(get_db),
+                            lead: models.User = Depends(require_roles("teamlead"))):
+    """Read-only team dashboard for a PEER team lead, confined to one shared portfolio. Allowed
+    only when both the requester and the target lead work that portfolio."""
+    if not _lead_works_portfolio(db, lead, bank, product, branch):
+        raise HTTPException(status_code=403, detail="This portfolio is not in your scope")
+    target = db.query(models.User).filter(models.User.id == uid).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Team lead not found")
+    if not (target.role == "teamlead" or getattr(target, "also_team_lead", False)):
+        raise HTTPException(status_code=400, detail="That user is not a team lead")
+    if not _lead_works_portfolio(db, target, bank, product, branch):
+        raise HTTPException(status_code=403, detail="That team lead doesn't work this portfolio")
+    return _overview_payload(db, target, month_bucket, portfolio=(bank, product, branch))
+
+
+@router.get("/portfolio/lead/{uid}/cases")
+def portfolio_lead_cases(uid: int, bank: str | None = None, product: str | None = None,
+                         branch: str | None = None, month_bucket: str | None = "current",
+                         db: Session = Depends(get_db),
+                         lead: models.User = Depends(require_roles("teamlead"))):
+    """Read-only case list (with status) for a PEER team lead inside one shared portfolio —
+    powers the 'cases & case status' view of the drill-down. Same-portfolio rule enforced."""
+    if not _lead_works_portfolio(db, lead, bank, product, branch):
+        raise HTTPException(status_code=403, detail="This portfolio is not in your scope")
+    target = db.query(models.User).filter(models.User.id == uid).first()
+    if not target or not (target.role == "teamlead" or getattr(target, "also_team_lead", False)):
+        raise HTTPException(status_code=404, detail="Team lead not found")
+    if not _lead_works_portfolio(db, target, bank, product, branch):
+        raise HTTPException(status_code=403, detail="That team lead doesn't work this portfolio")
+    from .cases import teamlead_case_filter
+    from .mis import _period_for
+    period = _period_for(month_bucket)
+    q = db.query(models.Case).filter(models.Case.removed.isnot(True),
+                                     models.Case.escalated.isnot(True),
+                                     teamlead_case_filter(target))
+    q = _pf_filter(q, bank, product, branch)
+    if period:
+        q = q.filter(models.Case.period == period)
+    names = {u.id: u.name for u in db.query(models.User).all()}
+    out = []
+    for c in q.order_by(models.Case.paid_status.desc(), models.Case.id.desc()).limit(2000).all():
+        base = _d(c.funding_amount) or _d(c.total_outstanding) or _d(c.enr) or _d(c.principal_outstanding)
+        rc = _d(c.received_amount)
+        out.append({
+            "id": c.id, "account_no": c.account_no,
+            "customer": c.customer_name or getattr(c, "name", None),
+            "bank": c.bank, "product": c.product, "branch": c.branch,
+            "fos": names.get(c.assigned_fos_id), "caller": names.get(c.assigned_caller_id),
+            "paid_status": c.paid_status, "disposition": c.disposition,
+            "received": round(rc, 2), "pending": round(max(0.0, base - rc), 2),
+            "enr": round(_d(c.enr), 2), "period": c.period,
+        })
+    return {"count": len(out), "cases": out}

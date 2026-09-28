@@ -560,6 +560,26 @@ function AndroidDownloadButton({ block, style, compact }) {
     </a>
   );
 }
+
+/* Shows a "Download Windows app" button, but only once a desktop build has been published to the
+   server (/downloads/desktop.json exists). Serves the .exe straight from this domain. */
+function DesktopDownloadButton({ block, style, compact }) {
+  const [ver, setVer] = useState(null);
+  useEffect(() => {
+    fetch('/downloads/desktop.json', { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null)).then(setVer).catch(() => setVer(null));
+  }, []);
+  if (!ver) return null;
+  const label = compact ? '🖥️ Windows app' : '🖥️ Download Windows app';
+  const file = ver.file || 'RecoverIQ-desktop.exe';
+  return (
+    <a className={cx('btn', block && 'block')} href={'/downloads/' + file} download
+      style={{ marginTop: compact ? 0 : 10, ...style }}
+      title={'Install on a Windows PC' + (ver.version_name ? ' (v' + ver.version_name + ')' : '')}>
+      {label}{ver.version_name && !compact ? ' · v' + ver.version_name : ''}
+    </a>
+  );
+}
 function Login({ onLogin, config }) {
   const [email, setEmail] = useState(''); const [pw, setPw] = useState('');
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
@@ -630,6 +650,7 @@ function Login({ onLogin, config }) {
           {config && config.google_client_id ?
             <div id="gbtn" style={{ marginTop: 14, display: 'flex', justifyContent: 'center' }}></div> : null}
           <AndroidDownloadButton block />
+          <DesktopDownloadButton block />
           <div className="divider"></div>
           <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.6 }}>
             Use the credentials issued by your administrator. Trouble signing in from a new device?
@@ -1343,11 +1364,11 @@ function UploadsModal({ onClose, onDone }) {
     </div>
   );
 }
-function UploadModal({ onClose, onDone }) {
+function UploadModal({ onClose, onDone, initial }) {
   const [cat, setCat] = useState(null);
   const now = new Date();
-  const [file, setFile] = useState(null); const [bank, setBank] = useState(''); const [product, setProduct] = useState('');
-  const [segment, setSegment] = useState(''); const [branch, setBranch] = useState(''); const [prev, setPrev] = useState(null);
+  const [file, setFile] = useState(null); const [bank, setBank] = useState((initial && initial.bank) || ''); const [product, setProduct] = useState((initial && initial.product) || '');
+  const [segment, setSegment] = useState((initial && initial.segment) || ''); const [branch, setBranch] = useState((initial && initial.branch) || ''); const [prev, setPrev] = useState(null);
   const [res, setRes] = useState(null);
   const [fosAssign, setFosAssign] = useState({});   // account_no -> FOS emp_code, chosen at upload
   const [year, setYear] = useState(now.getFullYear()); const [month, setMonth] = useState(now.getMonth() + 1);
@@ -1447,6 +1468,25 @@ function UploadModal({ onClose, onDone }) {
               <td>{s.customer_name}</td><td>{s.bank}</td><td className="mono">{s.account_no}</td>
               <td className="mono">{s.funding_amount}</td><td>{s.pincode || '—'}</td></tr>)}</tbody></table></div>
         </div>}
+        {prev && prev.tl_scope && prev.tl_scope.restricted && (() => {
+          const t = prev.tl_scope;
+          return <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid ' + (t.will_drop ? 'var(--warn)' : 'var(--good)') }}>
+            <div className="section-h" style={{ marginBottom: 4 }}>
+              <b>👥 Team-lead upload — only your team’s rows will import</b></div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+              As a team lead you can only load cases tagged with <b>your</b> team-lead ID. Of <b>{prev.total_rows}</b> rows,
+              <b style={{ color: 'var(--good)' }}> {t.mine_count} will import</b>
+              {t.will_drop > 0 && <> and <b style={{ color: 'var(--warn)' }}>{t.will_drop} will be dropped</b> ({t.other_tl_count} for another team lead, {t.no_tl_count} with no team-lead ID)</>}.
+            </p>
+            {(t.other_tl_samples || []).length > 0 && <div className="tablewrap" style={{ maxHeight: 180, overflow: 'auto', marginTop: 6 }}>
+              <table><thead><tr><th>Account</th><th>Customer</th><th>Team lead in sheet</th></tr></thead>
+                <tbody>{t.other_tl_samples.map((r, i) => <tr key={i}>
+                  <td className="mono">{r.account_no || '—'}</td><td>{r.customer || '—'}</td>
+                  <td className="muted">{r.team_lead_in_sheet || '—'}</td></tr>)}</tbody></table></div>}
+            {t.mine_count === 0 && <p style={{ color: 'var(--bad)', fontSize: 12.5, marginTop: 6 }}>
+              No rows carry your team-lead ID — nothing will import. Check the TEAM LEAD column has your ID.</p>}
+          </div>;
+        })()}
         {prev && (prev.no_fos_rows || []).length > 0 && <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid var(--warn)' }}>
           <div className="section-h" style={{ marginBottom: 4 }}><b>⚠ {prev.no_fos_count} case(s) have no FOS ID in the sheet</b></div>
           <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
@@ -1467,6 +1507,12 @@ function UploadModal({ onClose, onDone }) {
             </tr>)}</tbody></table></div>
           {prev.no_fos_capped && <p className="muted" style={{ fontSize: 11 }}>Showing the first 500 — the rest without a FOS stay caller-only.</p>}
           <p className="muted" style={{ fontSize: 12, marginTop: 4 }}><b>{Object.values(fosAssign).filter(Boolean).length}</b> FOS assigned here · the rest will be caller-only.</p>
+        </div>}
+        {res && res.tl_dropped && res.tl_dropped.total > 0 && <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid var(--warn)' }}>
+          <b>👥 {res.tl_dropped.total} row(s) skipped — not your team</b>
+          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            {res.tl_dropped.other_tl} row(s) were tagged to another team lead and {res.tl_dropped.no_tl} had no team-lead ID, so they were not imported. Only your team’s cases ({res.tl_dropped.kept}) were loaded.
+          </p>
         </div>}
         {res && <div className="glass card" style={{ marginTop: 8, borderLeft: '3px solid var(--good)' }}>
           <b>✅ Imported {res.imported} new · {res.updated} updated</b>
@@ -7259,12 +7305,124 @@ function ConnectionsView({ user }) {
   );
 }
 
+// Team-lead "My Portfolios": browse the portfolios you work on, upload your team's cases, and
+// (read-only) see every other team lead working the same portfolio and drill into their team.
+function TLPortfoliosView({ user }) {
+  const [pfs, setPfs] = useState(null); const [err, setErr] = useState('');
+  const [sel, setSel] = useState(null);              // selected portfolio {bank,product,branch}
+  const [leads, setLeads] = useState(null); const [leadErr, setLeadErr] = useState('');
+  const [lead, setLead] = useState(null);            // selected peer team lead
+  const [team, setTeam] = useState(null); const [teamCases, setTeamCases] = useState(null);
+  const [monthB, setMonthB] = useState('current'); const [tab, setTab] = useState('team');
+  const [upload, setUpload] = useState(null);        // portfolio to upload cases into
+  const qOf = (p) => 'bank=' + encodeURIComponent(p.bank) + '&product=' + encodeURIComponent(p.product) + '&branch=' + encodeURIComponent(p.branch || '');
+  const loadPfs = () => { setErr(''); api('/api/team/portfolios').then(setPfs).catch(e => setErr(e.message || 'Could not load')); };
+  useEffect(() => { loadPfs(); }, []);
+  const openPortfolio = (p) => {
+    setSel(p); setLead(null); setTeam(null); setTeamCases(null); setLeads(null); setLeadErr('');
+    api('/api/team/portfolio/leads?' + qOf(p)).then(setLeads).catch(e => setLeadErr(e.message || 'Could not load'));
+  };
+  const openLead = (l) => { setLead(l); setTab('team'); };
+  useEffect(() => {
+    if (!sel || !lead) return;
+    setTeam(null); setTeamCases(null);
+    const q = qOf(sel) + '&month_bucket=' + monthB;
+    api('/api/team/portfolio/lead/' + lead.id + '/overview?' + q).then(setTeam).catch(e => toast(e.message || 'Could not load', 'err'));
+    api('/api/team/portfolio/lead/' + lead.id + '/cases?' + q).then(r => setTeamCases(r.cases || [])).catch(() => setTeamCases([]));
+  }, [lead, monthB]);
+  const pfLabel = (p) => p.bank + ' · ' + p.product + (p.branch ? ' · ' + p.branch : '');
+
+  // ── Peer team drill-down (read-only) ──
+  if (sel && lead) {
+    return (<div>
+      <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn ghost sm" onClick={() => setLead(null)}>← Team leads</button>
+        <b>{lead.name}{lead.is_me ? ' (you)' : ''}</b>
+        <span className="muted" style={{ fontSize: 12 }}>· {pfLabel(sel)} · read-only</span>
+        <div style={{ flex: 1 }} />
+        {['current', 'last', 'all'].map(m => <div key={m} className={cx('chip', monthB === m && 'on')} onClick={() => setMonthB(m)}>{m === 'current' ? 'This month' : m === 'last' ? 'Last month' : 'All'}</div>)}
+      </div>
+      {!team ? <div className="muted" style={{ padding: 16 }}>Loading…</div> : <>
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginTop: 8 }}>
+          <div className="glass card"><div className="muted" style={{ fontSize: 11 }}>Members</div><b style={{ fontSize: 20 }}>{team.kpis.members}</b><div className="muted" style={{ fontSize: 11 }}>{team.kpis.fos} FOS · {team.kpis.callers} callers</div></div>
+          <div className="glass card"><div className="muted" style={{ fontSize: 11 }}>Cases</div><b style={{ fontSize: 20 }}>{team.kpis.cases}</b><div className="muted" style={{ fontSize: 11 }}>{team.kpis.resolved} resolved</div></div>
+          <div className="glass card"><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ fontSize: 18, color: 'var(--good)' }}>{INR(team.kpis.recovered)}</b><div className="muted" style={{ fontSize: 11 }}>{team.kpis.recovery_pct}%</div></div>
+          <div className="glass card"><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ fontSize: 18, color: 'var(--warn)' }}>{INR(team.kpis.pending)}</b></div>
+        </div>
+        <div className="toolbar" style={{ gap: 8, marginTop: 10 }}>
+          <div className={cx('chip', tab === 'team' && 'on')} onClick={() => setTab('team')}>👥 Members</div>
+          <div className={cx('chip', tab === 'cases' && 'on')} onClick={() => setTab('cases')}>🗂️ Cases & status</div>
+        </div>
+        {tab === 'team' ? <div className="tablewrap" style={{ marginTop: 8 }}><table>
+          <thead><tr><th>Member</th><th>Role</th><th>Assigned</th><th>Resolved</th><th>Recovered</th><th>Pending</th><th>Recovery %</th></tr></thead>
+          <tbody>{(team.members || []).map(m => <tr key={m.id}>
+            <td><b>{m.name}</b> <span className="muted" style={{ fontSize: 11 }}>{m.emp_code}</span></td>
+            <td>{m.role === 'fos' ? 'FOS' : 'Caller'}</td><td>{m.assigned}</td><td>{m.resolved}</td>
+            <td style={{ color: 'var(--good)' }}>{INR(m.recovered)}</td><td>{INR(m.pending)}</td><td>{m.recovery_pct}%</td>
+          </tr>)}{(team.members || []).length === 0 && <tr><td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 16 }}>No team members on this portfolio for the selected month.</td></tr>}</tbody>
+        </table></div> : <div className="tablewrap" style={{ marginTop: 8, maxHeight: 460, overflow: 'auto' }}><table>
+          <thead><tr><th>Account</th><th>Customer</th><th>FOS</th><th>Caller</th><th>Status</th><th>Recovered</th><th>Pending</th></tr></thead>
+          <tbody>{(teamCases || []).map(c => <tr key={c.id}>
+            <td className="mono">{c.account_no || '—'}</td><td>{c.customer || '—'}</td>
+            <td>{c.fos || '—'}</td><td>{c.caller || '—'}</td>
+            <td><span className={cx('badge', (c.paid_status || '').toUpperCase() === 'PAID' ? 'allocated' : '')}>{c.paid_status || 'UNPAID'}</span>{c.disposition ? <span className="muted" style={{ fontSize: 11 }}> · {c.disposition}</span> : ''}</td>
+            <td style={{ color: 'var(--good)' }}>{INR(c.received)}</td><td>{INR(c.pending)}</td>
+          </tr>)}{teamCases && teamCases.length === 0 && <tr><td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 16 }}>No cases for the selected month.</td></tr>}</tbody>
+        </table></div>}
+      </>}
+    </div>);
+  }
+
+  // ── Team leads on the selected portfolio ──
+  if (sel) {
+    return (<div>
+      <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn ghost sm" onClick={() => setSel(null)}>← Portfolios</button>
+        <b>{pfLabel(sel)}</b><span className="muted" style={{ fontSize: 12 }}>· team leads working this portfolio</span>
+      </div>
+      {leadErr && <div style={{ color: 'var(--bad)', padding: 12 }}>{leadErr}</div>}
+      {!leads ? <div className="muted" style={{ padding: 16 }}>Loading…</div> :
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 12, marginTop: 8 }}>
+          {leads.map(l => <div key={l.id} className="glass card" style={{ cursor: 'pointer', borderLeft: l.is_me ? '3px solid var(--info)' : undefined }} onClick={() => openLead(l)}>
+            <div className="section-h" style={{ marginBottom: 4 }}><b>{l.name}{l.is_me ? ' (you)' : ''}</b>
+              <span className="muted" style={{ fontSize: 11 }}>{l.emp_code}</span></div>
+            <div className="muted" style={{ fontSize: 12 }}>{l.members} member(s) · {l.count} case(s) · {l.paid} paid</div>
+            <div style={{ marginTop: 6, fontSize: 12 }}>Recovered <b style={{ color: 'var(--good)' }}>{INR(l.received)}</b> · Pending <b style={{ color: 'var(--warn)' }}>{INR(l.pending)}</b></div>
+            <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>Open team →</div>
+          </div>)}
+          {leads.length === 0 && <div className="muted" style={{ padding: 16 }}>No team leads found on this portfolio.</div>}
+        </div>}
+    </div>);
+  }
+
+  // ── Portfolio list ──
+  return (<div>
+    <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>The portfolios you work on. Open one to see every team lead working it and drill into their team (read-only). Use <b>Upload cases</b> to load a portfolio file — only rows carrying your team-lead ID will import.</p>
+    {err && <div style={{ color: 'var(--bad)', padding: 12 }}>{err}</div>}
+    {!pfs ? <div className="muted" style={{ padding: 16 }}>Loading…</div> :
+      pfs.length === 0 ? <div className="glass card muted">No portfolios yet. Once cases tagged with your team-lead ID are uploaded, they'll appear here.</div> :
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 12 }}>
+          {pfs.map((p, i) => <div key={i} className="glass card">
+            <div className="section-h" style={{ marginBottom: 4 }}><b>{p.bank} · {p.product}</b></div>
+            {p.branch && <div className="muted" style={{ fontSize: 12 }}>📍 {p.branch}</div>}
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{p.count} case(s) · {p.paid} paid · {p.unpaid} unpaid</div>
+            <div style={{ marginTop: 6, fontSize: 12 }}>Recovered <b style={{ color: 'var(--good)' }}>{INR(p.received)}</b> · Pending <b style={{ color: 'var(--warn)' }}>{INR(p.pending)}</b></div>
+            <div className="toolbar" style={{ gap: 6, marginTop: 8 }}>
+              <button className="btn sm" onClick={() => openPortfolio(p)}>👥 Team leads</button>
+              <button className="btn ghost sm" onClick={() => setUpload(p)}>⬆ Upload cases</button>
+            </div>
+          </div>)}
+        </div>}
+    {upload && <UploadModal initial={upload} onClose={() => setUpload(null)} onDone={(close) => { if (close !== false) setUpload(null); loadPfs(); }} />}
+  </div>);
+}
+
 const NAV = {
   admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  teamlead: [['tldash', '👥', 'My Team'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['audit', '📜', 'Audit Log'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  teamlead: [['tldash', '👥', 'My Team'], ['portfolios', '🗂️', 'My Portfolios'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['audit', '📜', 'Audit Log'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['security', '🔒', 'Security']],
   hr: [['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
@@ -7363,6 +7521,7 @@ const TOUR_VERSION = 1;
 const TOUR_DESC = {
   dashboard: 'Your home base — headline numbers at a glance: total cases, recovery %, cash collected, pending, and your resolution %.',
   tldash: 'My Team — your team’s overview, members and their performance, all scoped to you.',
+  portfolios: 'My Portfolios — the portfolios you work on. Upload your team’s cases and view peer team leads on the same portfolio (read-only).',
   myperf: 'My Performance — how much you’ve achieved (FTD / MTD / LMTD / Overall), broken down per portfolio, with a live leaderboard.',
   cases: 'Portfolios & Accounts — browse every portfolio; open any case for full details, payments and history.',
   fcases: 'My Accounts — your assigned field cases grouped by bank & bucket. Search, filter, or view them on a map.',
@@ -8377,6 +8536,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'map': return <LiveMap config={config} />;
       case 'staff': return <StaffView config={config} user={user} />;
       case 'tldash': return <TeamLeadView config={config} user={user} />;
+      case 'portfolios': return <TLPortfoliosView user={user} />;
       case 'records': return <RecordsView user={user} />;
       case 'audit': return <AuditLogView user={user} />;
       case 'archive': return <ArchiveView user={user} />;

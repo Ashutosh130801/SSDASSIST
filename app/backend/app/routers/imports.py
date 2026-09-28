@@ -32,10 +32,84 @@ def _parse_due(val):
     return None
 
 
+# ── Team-lead upload guard ──────────────────────────────────────────────────────
+# A team lead may upload a portfolio file in the HO format (TL / caller / FOS ID per row),
+# but ONLY the rows whose TEAM-LEAD id is the uploader's own may be committed — a TL can't
+# hand work to another team. HO/admin/backend upload with no such restriction.
+
+def _tl_maps(db: Session):
+    """Resolve a sheet's team-lead cell to a user: by emp_code (pure team leads) or by
+    tl_emp_code (dual-role caller/FOS granted the team-lead hat), plus a name fallback."""
+    users = db.query(models.User).all()
+    tls = [u for u in users if u.role == "teamlead" or getattr(u, "also_team_lead", False)]
+    by_code = {}
+    for u in tls:
+        if u.role == "teamlead" and u.emp_code:
+            by_code[u.emp_code.strip().upper()] = u
+        if getattr(u, "also_team_lead", False) and getattr(u, "tl_emp_code", None):
+            by_code[u.tl_emp_code.strip().upper()] = u
+    by_name = {u.name.strip().upper(): u for u in tls if u.name}
+    return by_code, by_name
+
+
+def _actor_tl_ids(actor: models.User) -> set:
+    """The identifier(s) that mark a case row as belonging to THIS team lead: their name,
+    their TL emp_code (pure lead) and/or their second tl_emp_code (dual-role lead)."""
+    ids = set()
+    if actor.name:
+        ids.add(actor.name.strip().upper())
+    primary = getattr(actor, "_primary_role", None) or actor.role
+    if primary == "teamlead" and actor.emp_code:      # a pure lead's emp_code IS their TL id
+        ids.add(actor.emp_code.strip().upper())
+    if getattr(actor, "tl_emp_code", None):           # dual-role lead's separate TL id
+        ids.add(actor.tl_emp_code.strip().upper())
+    return ids
+
+
+def _is_restricted_uploader(actor: models.User) -> bool:
+    """True when the uploader is acting as a team lead (pure, or a dual-role user whose
+    current login view is 'teamlead') — so the per-row TL restriction applies."""
+    return actor.role == "teamlead"
+
+
+def _row_tl_user(rec, by_code, by_name):
+    """Resolve one sheet row to its team lead: the TEAM-LEAD column first, then any known TL
+    emp code appearing anywhere in the row (formats without a TL column), then a name match."""
+    k = record_to_case_kwargs(rec)
+    val = k.get("team_lead")
+    if val and str(val).strip():
+        key = str(val).strip().upper()
+        u = by_code.get(key) or by_name.get(key)
+        if u:
+            return u
+    for cell in (rec.get("_cells") or []):
+        u = by_code.get(str(cell).strip().upper())
+        if u:
+            return u
+    return None
+
+
+def _classify_row_tl(rec, by_code, by_name, actor_ids, actor_id):
+    """('mine' | 'other_tl' | 'no_tl', tl_user_or_None) for a row relative to the uploader."""
+    u = _row_tl_user(rec, by_code, by_name)
+    if u is None:
+        return "no_tl", None
+    codes = set()
+    if u.name:
+        codes.add(u.name.strip().upper())
+    if u.role == "teamlead" and u.emp_code:
+        codes.add(u.emp_code.strip().upper())
+    if getattr(u, "tl_emp_code", None):
+        codes.add(u.tl_emp_code.strip().upper())
+    if u.id == actor_id or (codes & actor_ids):
+        return "mine", u
+    return "other_tl", u
+
+
 @router.post("/preview")
 async def preview(file: UploadFile = File(...), default_bank: str | None = Form(None),
                   product: str | None = Form(None), segment: str | None = Form(None),
-                  admin: models.User = Depends(require_roles("admin", "backend", "headoffice")),
+                  admin: models.User = Depends(require_roles("admin", "backend", "headoffice", "teamlead")),
                   db: Session = Depends(get_db)):
     content = await file.read()
     try:
@@ -74,9 +148,46 @@ async def preview(file: UploadFile = File(...), default_bank: str | None = Form(
                    for u in db.query(models.User)
                    .filter(models.User.role == "fos", models.User.is_active == True)
                    .order_by(models.User.name).all() if u.emp_code]
+
+    # Team-lead uploader: classify every row's TL id against the uploader's own so the UI can
+    # show that only the uploader's-TL rows will import (the rest are dropped on commit).
+    tl_scope = {"restricted": False}
+    if _is_restricted_uploader(admin):
+        by_code, by_name = _tl_maps(db)
+        actor_ids = _actor_tl_ids(admin)
+        mine = other = none_ = 0
+        other_samples, none_samples = [], []
+        scap = 200
+        for r in records:
+            cls, tlu = _classify_row_tl(r, by_code, by_name, actor_ids, admin.id)
+            k = record_to_case_kwargs(r)
+            row = {"account_no": k.get("account_no"),
+                   "customer": k.get("customer_name") or k.get("name")}
+            if cls == "mine":
+                mine += 1
+            elif cls == "other_tl":
+                other += 1
+                if len(other_samples) < scap:
+                    other_samples.append({**row, "team_lead_in_sheet": (tlu.name if tlu else None)})
+            else:
+                none_ += 1
+                if len(none_samples) < scap:
+                    none_samples.append(row)
+        tl_scope = {
+            "restricted": True,
+            "uploader": admin.name,
+            "mine_count": mine,
+            "other_tl_count": other,
+            "no_tl_count": none_,
+            "will_import": mine,
+            "will_drop": other + none_,
+            "other_tl_samples": other_samples,
+            "no_tl_samples": none_samples,
+        }
+
     return {"sheet": sheet, "total_rows": len(records), "sample": sample,
             "no_fos_rows": no_fos, "no_fos_count": len(no_fos), "no_fos_capped": len(no_fos) >= cap,
-            "fos_options": fos_options}
+            "fos_options": fos_options, "tl_scope": tl_scope}
 
 
 @router.post("/commit")
@@ -85,7 +196,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                  branch: str | None = Form(None), auto_allocate: bool = Form(True),
                  year: int | None = Form(None), month: int | None = Form(None),
                  fos_overrides: str | None = Form(None),
-                 admin: models.User = Depends(require_roles("admin", "backend", "headoffice")), db: Session = Depends(get_db)):
+                 admin: models.User = Depends(require_roles("admin", "backend", "headoffice", "teamlead")), db: Session = Depends(get_db)):
     content = await file.read()
     # Snap the chosen/typed branch to its canonical spelling so 'kadapa' joins the existing
     # 'KADAPA' portfolio instead of creating a case-duplicate split. New branches pass through.
@@ -103,6 +214,26 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
         records, sheet = import_workbook(content, default_bank=default_bank)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    # Team-lead uploader: keep ONLY the rows whose team-lead id is the uploader's own — a TL may
+    # never assign work to another team. Rows for another TL, or with no TL id, are dropped here
+    # (reported back as tl_dropped) BEFORE anything is written. HO/admin/backend skip this entirely.
+    tl_dropped = None
+    if _is_restricted_uploader(admin):
+        _tlc, _tln = _tl_maps(db)
+        _aids = _actor_tl_ids(admin)
+        kept, d_other, d_none = [], 0, 0
+        for r in records:
+            cls, _ = _classify_row_tl(r, _tlc, _tln, _aids, admin.id)
+            if cls == "mine":
+                kept.append(r)
+            elif cls == "other_tl":
+                d_other += 1
+            else:
+                d_none += 1
+        records = kept
+        tl_dropped = {"other_tl": d_other, "no_tl": d_none, "total": d_other + d_none,
+                      "kept": len(kept)}
 
     # The month/year picked on the upload form is the authoritative PERIOD this batch
     # belongs to (multiple uploads in a month accumulate into the same period). Falls
@@ -441,6 +572,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             "assigned_fos_total": assigned_fos,
             "assigned_caller_total": assigned_caller,
             "assignment_report": assignment_report,
+            "tl_dropped": tl_dropped,
             "batch_id": batch.id}
 
 
