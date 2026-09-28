@@ -3524,14 +3524,23 @@ function GeocodeButton() {
     setRunning(false); loadStatus();
   };
   if (hidden || !st) return null;
+  // Always-visible count: pinned / left to locate / unresolved.
+  const counts = (
+    <span className="muted" style={{ fontSize: 11.5, marginLeft: 6 }}>
+      📍 <b style={{ color: 'var(--good)' }}>{st.with_pin}</b> pinned · <b>{st.remaining}</b> left
+      {st.failed_total ? <> · <b style={{ color: 'var(--warn)' }}>{st.failed_total}</b> unresolved</> : null}
+      <span style={{ opacity: .7 }}> (of {st.total})</span>
+    </span>
+  );
   if (running) return <>
     <span className="badge" style={{ background: '#FEF3C7', color: '#92400E' }}>📍 {msg || 'Geocoding…'}</span>
     <button className="btn sm" onClick={() => { stop.current = true; }}>Stop</button></>;
   return <>
-    <button className="btn sm" title={`${st.with_pin} of ${st.total} cases pinned · ${st.remaining} new to locate`}
+    <button className="btn sm" title={`${st.with_pin} of ${st.total} cases pinned · ${st.remaining} new to locate${st.failed_total ? ` · ${st.failed_total} unresolved` : ''}`}
       onClick={() => run(false)}>📍 Geocode addresses{st.remaining ? ` (${st.remaining})` : ''}</button>
     {!st.remaining && st.failed_total ? <button className="btn sm" style={{ marginLeft: 6 }}
       title="Re-attempt addresses that couldn't be located before" onClick={() => run(true)}>↻ Retry {st.failed_total} unresolved</button> : null}
+    {counts}
   </>;
 }
 
