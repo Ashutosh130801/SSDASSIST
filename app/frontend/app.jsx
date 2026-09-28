@@ -2281,8 +2281,12 @@ function LiveMap({ config }) {
                 <div><b><span style={{ color: on ? 'var(--good)' : 'var(--ink-dim)' }}>●</span> {o.name}</b>
                   <div className="muted" style={{ fontSize: 11.5 }}>{on ? 'Live now' : 'Offline · seen ' + agoLabel(o.last_seen)}</div>
                   <div className="muted" style={{ fontSize: 11 }}>🏢 {o.branch || '—'}{o.banks && o.banks.length ? ' · 🏦 ' + o.banks.join('/') : ''}</div>
-                  <div style={{ fontSize: 11, color: o.checkin_device ? 'var(--info)' : 'var(--warn)' }} title={o.checkin_device || ''}>
-                    📱 {o.checkin_device ? ('Checked in from ' + (o.checkin_platform ? o.checkin_platform + ' · ' : '') + o.checkin_device) : 'Not checked in today'}</div></div>
+                  <div style={{ fontSize: 11, color: o.checked_in ? 'var(--info)' : 'var(--warn)' }} title={o.checkin_device || ''}>
+                    📱 {o.checked_in
+                      ? (o.checkin_device
+                          ? ('Checked in from ' + (o.checkin_platform ? o.checkin_platform + ' · ' : '') + o.checkin_device)
+                          : 'Checked in today' + (o.checkin_platform ? ' (' + o.checkin_platform + ')' : ''))
+                      : 'Not checked in today'}</div></div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button className="btn sm gold" onClick={() => navigateTo(o)} title="Directions to live location">🧭</button>
                   <button className="btn sm" onClick={() => (histOfficer && histOfficer.officer_id === o.officer_id) ? (setHistOfficer(null), clearRoute(), setRouteInfo(null)) : openHistory(o)} title="Route & visits">🕘</button>
@@ -3518,6 +3522,10 @@ function GeocodeButton() {
         done += r.geocoded || 0; failed += r.failed || 0;
         const leftLabel = retryMode ? `${r.failed_total || 0} still unresolved` : `${r.remaining} left`;
         setMsg(`Located ${done} · ${leftLabel}`);
+        // Keep the pinned / left / unresolved counter live as each batch lands.
+        setSt(s => s ? { ...s, with_pin: (s.with_pin || 0) + (r.geocoded || 0),
+                         remaining: (r.remaining != null ? r.remaining : s.remaining),
+                         failed_total: (r.failed_total != null ? r.failed_total : s.failed_total) } : s);
         if (!r.processed || (!retryMode && r.remaining === 0)) break;
       }
     } catch (e) { setMsg('Stopped — ' + (e.message || 'error')); }
@@ -3534,7 +3542,9 @@ function GeocodeButton() {
   );
   if (running) return <>
     <span className="badge" style={{ background: '#FEF3C7', color: '#92400E' }}>📍 {msg || 'Geocoding…'}</span>
-    <button className="btn sm" onClick={() => { stop.current = true; }}>Stop</button></>;
+    <button className="btn sm" onClick={() => { stop.current = true; }}>Stop</button>
+    {counts}
+  </>;
   return <>
     <button className="btn sm" title={`${st.with_pin} of ${st.total} cases pinned · ${st.remaining} new to locate${st.failed_total ? ` · ${st.failed_total} unresolved` : ''}`}
       onClick={() => run(false)}>📍 Geocode addresses{st.remaining ? ` (${st.remaining})` : ''}</button>

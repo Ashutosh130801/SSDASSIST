@@ -193,9 +193,11 @@ def live(minutes: int = 30, db: Session = Depends(get_db),
         cur = best.get(p.officer_id)
         if cur is None or p.id > cur[0].id:
             best[p.officer_id] = (p, name, branch, banks)
-    # Which device each officer checked in from today (admin note on the live map).
+    # Today's check-in per officer (admin note on the live map): whether they checked in at all,
+    # and from which device/platform. checked_in is TRUE whenever there's a check-in — even from an
+    # older app that didn't report a device id (so we never wrongly say "not checked in").
     today = datetime.now(_IST).date()
-    checkin = {a.user_id: (a.checkin_device_id, a.last_platform)
+    checkin = {a.user_id: (a.check_in_at is not None, a.checkin_device_id, a.last_platform)
                for a in db.query(models.Attendance)
                .filter(models.Attendance.date == today,
                        models.Attendance.user_id.in_(list(best.keys()) or [-1])).all()}
@@ -204,8 +206,9 @@ def live(minutes: int = 30, db: Session = Depends(get_db),
             officer_id=p.officer_id, name=name, latitude=p.latitude, longitude=p.longitude,
             accuracy=p.accuracy, active_case_id=p.active_case_id, last_seen=p.created_at,
             branch=branch, banks=banks or [],
-            checkin_device=checkin.get(p.officer_id, (None, None))[0],
-            checkin_platform=checkin.get(p.officer_id, (None, None))[1],
+            checked_in=checkin.get(p.officer_id, (False, None, None))[0],
+            checkin_device=checkin.get(p.officer_id, (False, None, None))[1],
+            checkin_platform=checkin.get(p.officer_id, (False, None, None))[2],
         )
         for p, name, branch, banks in best.values()
     ]

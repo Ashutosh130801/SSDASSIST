@@ -453,6 +453,7 @@ class OfficerLocation(BaseModel):
     last_seen: datetime
     branch: Optional[str] = None
     banks: List[str] = []
+    checked_in: Optional[bool] = None          # did the officer check in today (any device)?
     checkin_device: Optional[str] = None       # the device the officer checked in from today
     checkin_platform: Optional[str] = None      # android / web
 
