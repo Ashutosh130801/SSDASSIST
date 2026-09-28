@@ -193,23 +193,33 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     caseLabel = "Case #${case.id}" + (case.customerName?.let { " • $it" } ?: ""),
                     onDismiss = { showVisit = false },
                     onSubmit = { v ->
-                        // Returns true only on a confirmed save. The dialog stays open (with an
-                        // error) on failure so the agent can retry — no more silent lost logs.
-                        val ok = runCatching {
+                        // Returns null only on a confirmed save; on failure returns the REAL reason
+                        // (the server's message, e.g. "escalated — locked", or a network hint) so the
+                        // agent isn't misled into thinking it's always a signal problem. Entry is kept.
+                        val res = runCatching {
                             vm.repo.createVisit(
                                 caseId = caseId, lat = v.lat, lng = v.lng, accuracy = v.accuracy,
                                 personMoved = v.personMoved, paid = v.paid, amount = v.amount,
                                 disposition = v.disposition, note = v.note, photoJpeg = v.photoJpeg,
                                 normStab = v.normStab, ptpDate = v.ptpDate,
                             )
-                        }.isSuccess
-                        if (ok) {
+                        }
+                        if (res.isSuccess) {
                             refresh++
                             // Open WhatsApp's contact picker so the agent can forward the
                             // visit summary + geotagged photo to anyone (office/colleague/self).
                             Actions.shareVisit(context, buildVisitMessage(case, user, v), v.photoJpeg)
+                            null
+                        } else {
+                            val e = res.exceptionOrNull()
+                            val detail = (e as? retrofit2.HttpException)?.response()?.errorBody()?.string()
+                                ?.let { Regex("\"detail\"\\s*:\\s*\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
+                            when {
+                                !detail.isNullOrBlank() -> detail
+                                e is java.io.IOException -> "Couldn't submit — check your signal and tap Save again. Your entry is kept."
+                                else -> (e?.message ?: "Couldn't submit — please try again.") + " Your entry is kept."
+                            }
                         }
-                        ok
                     },
                 )
             }

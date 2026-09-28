@@ -39,8 +39,17 @@ async def create_visit(
         raise HTTPException(status_code=404, detail="Case not found")
     if user.role == "fos" and case.assigned_fos_id != user.id:
         raise HTTPException(status_code=403, detail="This case is not assigned to you")
-    from .cases import _ensure_open
-    _ensure_open(case, user)
+    # A field visit is proof-of-visit / an observation — always allow it, even when the case is
+    # already PAID or has closed for the month (the FOS may still need to record a doorstep visit,
+    # a PTP, an address correction, or a "door locked" note). Only an ESCALATED case (handed up to
+    # the team lead / manager) stays locked for the field officer. The month-closed book is still
+    # frozen for MONEY: a payment isn't posted on a closed case (guarded below), but the visit,
+    # disposition, note, photo and GPS pin are recorded normally.
+    from .cases import _case_closed
+    if user.role in ("fos", "telecaller") and case.escalated:
+        raise HTTPException(status_code=403,
+                            detail="This case has been escalated and is locked for you. Your team lead / manager is handling it.")
+    _closed = _case_closed(case)
 
     photo_path = None
     if photo is not None:
@@ -73,7 +82,7 @@ async def create_visit(
         case.disposition = disposition
     if person_moved:
         case.disposition = "MOVED"
-    if paid and amt > 0:
+    if paid and amt > 0 and not _closed:          # closed-month book is frozen for money
         case.received_amount = (Decimal(case.received_amount or 0) + amt)
         if norm_stab:                         # credit-card: NORM or STAB paid
             ns = norm_stab.upper()

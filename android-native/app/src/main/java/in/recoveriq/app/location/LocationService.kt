@@ -142,7 +142,10 @@ class LocationService : Service() {
                     Log.w(TAG, "no token yet — skipping POST")
                     return@launch
                 }
-                Api.service.ping(PingCreate(latitude = lat, longitude = lng, accuracy = acc, speed = speed))
+                // Tag every ping with this device's id so the server only tracks the device the
+                // officer checked in from today (other signed-in devices are ignored).
+                val devId = try { repo.deviceId() } catch (e: Exception) { null }
+                Api.service.ping(PingCreate(latitude = lat, longitude = lng, accuracy = acc, speed = speed, deviceId = devId))
                 Log.i(TAG, "POST ping OK")
             } catch (e: Exception) {
                 Log.e(TAG, "POST ping failed: ${e.message}", e)

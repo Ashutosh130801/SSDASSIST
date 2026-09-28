@@ -253,7 +253,7 @@ fun LogVisitDialog(
     agentName: String? = null,
     caseLabel: String? = null,
     onDismiss: () -> Unit,
-    onSubmit: suspend (VisitDraft) -> Boolean,
+    onSubmit: suspend (VisitDraft) -> String?,   // null = saved; non-null = error message to show
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -415,10 +415,10 @@ fun LogVisitDialog(
                 )
                 scope.launch {
                     submitting = true; submitError = null
-                    val ok = onSubmit(draft)          // suspend upload; true only on a confirmed save
+                    val err = onSubmit(draft)          // suspend upload; null only on a confirmed save
                     submitting = false
-                    if (ok) onDismiss()                // close only when the server confirmed it
-                    else submitError = "Couldn't submit — check your signal and tap Save again. Your entry is kept."
+                    if (err == null) onDismiss()       // close only when the server confirmed it
+                    else submitError = err             // show the real reason (locked / offline …); entry kept
                 }
             }) { Text(if (submitting) "Saving…" else "Save visit") }
         },

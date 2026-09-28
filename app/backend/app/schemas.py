@@ -59,13 +59,18 @@ class UserOut(UserBase):
     also_team_lead: Optional[bool] = None
     ho_manager: Optional[bool] = None             # head-office user titled "Head Office Manager"
     tl_emp_code: Optional[str] = None
+    # Dual-role (caller who also works field / field agent who also calls)
+    also_field_agent: Optional[bool] = None
+    fos_emp_code: Optional[str] = None
+    also_caller: Optional[bool] = None
+    tc_emp_code: Optional[str] = None
     available_views: Optional[List[str]] = None   # hats this account can switch between
     active_view: Optional[str] = None             # the hat currently in effect
     is_active: bool
 
     # Never emit null for these — the native app parses them as non-null (a NULL from an
     # older DB row would otherwise fail JSON decoding on the phone).
-    @field_validator("also_team_lead", "ho_manager", mode="before")
+    @field_validator("also_team_lead", "ho_manager", "also_field_agent", "also_caller", mode="before")
     @classmethod
     def _atl_bool(cls, v):
         return bool(v)
@@ -424,6 +429,7 @@ class PingCreate(BaseModel):
     accuracy: Optional[float] = None
     speed: Optional[float] = None
     active_case_id: Optional[int] = None
+    device_id: Optional[str] = None       # the posting device — must match today's check-in device
 
 
 class PingOut(BaseModel):
@@ -447,6 +453,8 @@ class OfficerLocation(BaseModel):
     last_seen: datetime
     branch: Optional[str] = None
     banks: List[str] = []
+    checkin_device: Optional[str] = None       # the device the officer checked in from today
+    checkin_platform: Optional[str] = None      # android / web
 
 
 # ---------- AI ----------

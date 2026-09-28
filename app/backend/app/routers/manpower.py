@@ -102,6 +102,8 @@ def _emp(u: models.User) -> dict:
         "blocked_at": u.blocked_at.isoformat() if u.blocked_at else None,
         "profile_completed": bool(u.profile_completed),
         "also_team_lead": bool(u.also_team_lead), "tl_emp_code": u.tl_emp_code,
+        "also_field_agent": bool(getattr(u, "also_field_agent", False)), "fos_emp_code": getattr(u, "fos_emp_code", None),
+        "also_caller": bool(getattr(u, "also_caller", False)), "tc_emp_code": getattr(u, "tc_emp_code", None),
         "ho_manager": bool(getattr(u, "ho_manager", False)),
         "all_roles": _all_roles(u), "all_ids": _all_ids(u),
     }
@@ -120,16 +122,25 @@ def _all_roles(u) -> str:
         label = "Head Office Manager"
     else:
         label = _ROLE_LABELS.get(u.role, (u.role or "").title())
+    extras = []
     if getattr(u, "also_team_lead", False) and u.role != "teamlead":
-        return f"{label} + Team Lead"
-    return label
+        extras.append("Team Lead")
+    if getattr(u, "also_field_agent", False) and u.role != "fos":
+        extras.append("Field Agent")
+    if getattr(u, "also_caller", False) and u.role != "telecaller":
+        extras.append("Tele-calling Agent")
+    return label + (" + " + " + ".join(extras) if extras else "")
 
 
 def _all_ids(u) -> str:
-    """Both IDs for a dual-role user, e.g. 'FO012 / TL014'."""
+    """Every ID a dual-role user holds, e.g. 'TC003 / FO210' or 'FO012 / TL014'."""
     ids = [u.emp_code] if u.emp_code else []
     if getattr(u, "also_team_lead", False) and getattr(u, "tl_emp_code", None):
         ids.append(u.tl_emp_code)
+    if getattr(u, "also_field_agent", False) and getattr(u, "fos_emp_code", None):
+        ids.append(u.fos_emp_code)
+    if getattr(u, "also_caller", False) and getattr(u, "tc_emp_code", None):
+        ids.append(u.tc_emp_code)
     return " / ".join(ids)
 
 
@@ -184,7 +195,8 @@ def download(role: str | None = None, location: str | None = None,
     rows = query.order_by(models.User.role, models.User.name).all()
 
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Manpower"
-    cols = [("emp_code", "Emp Code"), ("tl_emp_code", "Team Lead ID"), ("all_roles", "Roles"),
+    cols = [("emp_code", "Emp Code"), ("tl_emp_code", "Team Lead ID"),
+            ("fos_emp_code", "Field Agent ID"), ("tc_emp_code", "Caller ID"), ("all_roles", "Roles"),
             ("hr_ref", "HR Ref"), ("name", "Name"),
             ("role", "Primary Role"), ("designation", "Designation"), ("location", "Location"),
             ("branch", "Branch"), ("phone", "Phone"), ("email", "Email"), ("gender", "Gender"),
@@ -621,6 +633,20 @@ def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get
         if grant and u.role != "teamlead" and not u.tl_emp_code:
             from .users import generate_emp_code
             u.tl_emp_code = generate_emp_code(db, "teamlead")
+    # Dual role: grant/revoke the field-agent hat on a caller (issues a FO id), and the caller
+    # hat on a field agent (issues a TC id). Keeps their primary role + emp_code intact.
+    if "also_field_agent" in body:
+        grant = bool(body["also_field_agent"])
+        u.also_field_agent = grant
+        if grant and u.role != "fos" and not u.fos_emp_code:
+            from .users import generate_emp_code
+            u.fos_emp_code = generate_emp_code(db, "fos")
+    if "also_caller" in body:
+        grant = bool(body["also_caller"])
+        u.also_caller = grant
+        if grant and u.role != "telecaller" and not u.tc_emp_code:
+            from .users import generate_emp_code
+            u.tc_emp_code = generate_emp_code(db, "telecaller")
     if "is_active" in body:
         active = bool(body["is_active"])
         if active and not u.is_active:            # unblocking → clear the block record

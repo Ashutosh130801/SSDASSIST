@@ -130,8 +130,14 @@ async def preview(file: UploadFile = File(...), default_bank: str | None = Form(
 
     # Pre-upload FOS check: list every row whose FOS ID is missing or unknown, WITH the reason,
     # so HR can decide up-front — continue without a FOS (caller-only) or pick a FOS per case.
-    fos_by_code = {u.emp_code.strip().upper(): u for u in db.query(models.User).all()
+    _all_u = db.query(models.User).all()
+    fos_by_code = {u.emp_code.strip().upper(): u for u in _all_u
                    if u.emp_code and u.role == "fos" and u.is_active}
+    # A caller granted the field-agent hat can own field cases via their fos_emp_code — count it
+    # here so those rows aren't wrongly flagged as "no FOS".
+    for u in _all_u:
+        if u.is_active and getattr(u, "also_field_agent", False) and getattr(u, "fos_emp_code", None):
+            fos_by_code.setdefault(u.fos_emp_code.strip().upper(), u)
     no_fos, cap = [], 500
     for r in records:
         k = record_to_case_kwargs(r)
@@ -148,6 +154,10 @@ async def preview(file: UploadFile = File(...), default_bank: str | None = Form(
                    for u in db.query(models.User)
                    .filter(models.User.role == "fos", models.User.is_active == True)
                    .order_by(models.User.name).all() if u.emp_code]
+    # Dual-role callers who also work field cases are valid FOS choices — offer their FO id too.
+    fos_options += [{"code": u.fos_emp_code, "name": u.name + " (caller +FOS)", "branch": u.branch}
+                    for u in _all_u
+                    if u.is_active and getattr(u, "also_field_agent", False) and getattr(u, "fos_emp_code", None)]
 
     # Team-lead uploader: classify every row's TL id against the uploader's own so the UI can
     # show that only the uploader's-TL rows will import (the rest are dropped on commit).
@@ -281,6 +291,17 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                        if u.emp_code and u.role == "telecaller" and u.is_active}
     _fos_by_code = {u.emp_code.strip().upper(): u for u in _users
                     if u.emp_code and u.role == "fos" and u.is_active}
+    # Dual-role staff carry a SECOND id for their other hat: a caller who also works field cases
+    # has a field-agent id (fos_emp_code) and a field agent who also calls has a caller id
+    # (tc_emp_code). Index those too so a case whose FOS/CALLER column names that second id is
+    # attributed to the right person under the right hat.
+    for u in _users:
+        if not u.is_active:
+            continue
+        if getattr(u, "also_field_agent", False) and getattr(u, "fos_emp_code", None):
+            _fos_by_code.setdefault(u.fos_emp_code.strip().upper(), u)
+        if getattr(u, "also_caller", False) and getattr(u, "tc_emp_code", None):
+            _caller_by_code.setdefault(u.tc_emp_code.strip().upper(), u)
     # Team lead is resolved from the sheet's TEAM LEAD ID column (its emp code, e.g. TL001,
     # or the TL's name). The resolved TL is stamped on the case and the case's caller + FOS
     # are linked to report to that team lead (so it shows in the team lead's scope).
@@ -402,6 +423,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             existing = eq.first()
         if existing:
             _old_recv = _num(existing.received_amount)
+            _old_addr = (existing.address, existing.pincode)
             # update amounts / status, don't duplicate
             for k in ("funding_amount", "received_amount", "pending_amount", "paid_status",
                       "disposition", "remarks", "address", "pincode", "phone",
@@ -410,6 +432,14 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                       "caller_name", "fos_name", "team", "bucket", "cycle", "final_status"):
                 if kwargs.get(k) is not None:
                     setattr(existing, k, kwargs[k])
+            # If the re-upload changed the address/pincode, this case needs geocoding again —
+            # clear the "attempted" marker (and the geocoded pin, unless a FOS verified it in the
+            # field) so the next Geocode run picks up the NEW address.
+            if (existing.address, existing.pincode) != _old_addr:
+                existing.geo_attempted_at = None
+                if existing.location_source != "field":
+                    existing.latitude = existing.longitude = None
+                    existing.location_source = None
             if kwargs.get("extra"):                 # merge new loan/caller columns
                 existing.extra = {**(existing.extra or {}), **kwargs["extra"]}
             _rawc = kwargs.get("caller_name")

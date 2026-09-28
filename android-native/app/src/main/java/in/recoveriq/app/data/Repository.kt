@@ -85,15 +85,18 @@ class Repository(context: Context) {
         Api.service.areas(bank = bank, product = product, branch = branch?.ifBlank { null })
 
     // ---- Attendance ----
+    /** The stable per-install device id — used to pin location tracking to the check-in device. */
+    suspend fun deviceId(): String = session.deviceId()
     suspend fun attMeToday(): MeToday = Api.service.attMeToday()
     suspend fun attCheckin(lat: Double?, lng: Double?): Map<String, Any?> =
-        Api.service.attCheckin(mapOf("lat" to lat, "lng" to lng, "platform" to "android"))
+        Api.service.attCheckin(mapOf("lat" to lat, "lng" to lng, "platform" to "android",
+            "device_id" to session.deviceId()))
     suspend fun attCheckinPhoto(bytes: ByteArray, lat: Double?, lng: Double?): Map<String, Any?> {
         val part = MultipartBody.Part.createFormData(
             "file", "checkin.jpg", bytes.toRequestBody("image/jpeg".toMediaType()))
         fun t(v: String?) = v?.toRequestBody("text/plain".toMediaType())
         return Api.service.attCheckinPhoto(part, t(lat?.toString()), t(lng?.toString()),
-            "android".toRequestBody("text/plain".toMediaType()))
+            "android".toRequestBody("text/plain".toMediaType()), t(session.deviceId()))
     }
     suspend fun attCheckout(lat: Double?, lng: Double?): Map<String, Any?> =
         Api.service.attCheckout(mapOf("lat" to lat, "lng" to lng))

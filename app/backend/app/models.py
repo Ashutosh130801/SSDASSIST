@@ -74,6 +74,15 @@ class User(Base):
     # can switch anytime — one hat at a time (the active view drives all scoping).
     also_team_lead = Column(Boolean, default=False)
     tl_emp_code = Column(String(20), nullable=True)      # e.g. TL014, alongside FO012 / TC003
+    # Dual role: a caller can ALSO work field cases, and a field agent can ALSO make calls (for a
+    # few of their cases). They keep their primary role/emp_code and get a SECOND id for the other
+    # hat — a caller gets a field-agent id (fos_emp_code, e.g. FO210), a field agent gets a caller
+    # id (tc_emp_code, e.g. TC210). On login they pick a "view" and can switch anytime; the active
+    # view drives all scoping. The importer maps the case's FOS/CALLER column to whichever id fits.
+    also_field_agent = Column(Boolean, default=False)   # a telecaller who also works field cases
+    fos_emp_code = Column(String(20), nullable=True)    # e.g. FO210, their field-agent id
+    also_caller = Column(Boolean, default=False)        # a field agent who also makes calls
+    tc_emp_code = Column(String(20), nullable=True)     # e.g. TC210, their caller id
     # A head-office user additionally titled "Head Office Manager" (admin-only). Same access as
     # head office; only the label differs and they have no attendance login-window restriction.
     ho_manager = Column(Boolean, default=False)
@@ -132,6 +141,9 @@ class Case(Base):
     geo_precision = Column(String(12))            # rooftop / locality / pincode / city / none
     location_source = Column(String(12))          # 'geocoded' | 'field' (FOS doorstep GPS)
     location_updated_at = Column(DateTime)
+    geo_attempted_at = Column(DateTime)           # last time we tried to geocode this address — set on
+    # success OR failure, so a repeat "Geocode" run skips addresses already tried (only NEW/never-tried
+    # ones are processed). Cleared when the address changes so the new address gets located.
     address_clean = Column(Text)                  # cleaned, readable address used for geocoding + navigate
     digipin = Column(String(15))                  # India Post DIGIPIN for the effective location
 
@@ -622,6 +634,8 @@ class Attendance(Base):
     overtime_start_at = Column(DateTime(timezone=True), nullable=True)  # when "Continue working" was pressed
 
     last_platform = Column(String(10))               # last device seen that day
+    checkin_device_id = Column(String(80), nullable=True)   # the device the FOS checked in from —
+    # only THIS device's location pings are tracked for the day (other logged-in devices are ignored)
     note = Column(String(240), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

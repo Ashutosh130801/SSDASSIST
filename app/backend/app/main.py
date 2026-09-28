@@ -70,6 +70,7 @@ def _ensure_columns():
             "geo_precision": "VARCHAR(12)",
             "location_source": "VARCHAR(12)",
             "location_updated_at": "TIMESTAMP",
+            "geo_attempted_at": "TIMESTAMP",
             "address_clean": "TEXT",
             "digipin": "VARCHAR(15)",
         },
@@ -100,6 +101,10 @@ def _ensure_columns():
             "rent_own": "VARCHAR(10)",
             "also_team_lead": "BOOLEAN",
             "tl_emp_code": "VARCHAR(20)",
+            "also_field_agent": "BOOLEAN",
+            "fos_emp_code": "VARCHAR(20)",
+            "also_caller": "BOOLEAN",
+            "tc_emp_code": "VARCHAR(20)",
             "profile_completed": "BOOLEAN",
             "must_change_password": "BOOLEAN",
             "emergency_contact": "VARCHAR(60)",
@@ -125,6 +130,7 @@ def _ensure_columns():
         "attendance": {
             "check_in_photo": "VARCHAR(255)",
             "overtime_start_at": "TIMESTAMP",
+            "checkin_device_id": "VARCHAR(80)",
         },
         "visits": {
             "distance_from_case_m": "FLOAT",
@@ -285,6 +291,11 @@ def _backfill_dual_role_flag():
             conn.execute(text("UPDATE users SET also_team_lead = 0 WHERE also_team_lead IS NULL"))
         except Exception:
             pass
+        for col in ("also_field_agent", "also_caller"):
+            try:
+                conn.execute(text(f"UPDATE users SET {col} = 0 WHERE {col} IS NULL"))
+            except Exception:
+                pass
 
 
 def _reset_rtp_promises():

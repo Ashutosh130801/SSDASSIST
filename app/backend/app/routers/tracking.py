@@ -46,6 +46,25 @@ _PING_MIN_GAP_S = 12.0                       # while stationary, store at most o
 _PING_MIN_MOVE_M = 25.0                      # always store if moved at least 25 m
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _tracking_device_ok(db: Session, user: models.User, device_id) -> bool:
+    """A field officer is tracked from ONE device per day — the one they checked in from. Returns
+    True if this ping should be stored. Rule: if today's check-in recorded a device, only a ping
+    carrying that same device_id is accepted; every other logged-in device is ignored. If there's
+    no check-in yet today, or the check-in recorded no device (older client), tracking isn't
+    blocked, so nothing breaks during rollout."""
+    today = datetime.now(_IST).date()
+    a = (db.query(models.Attendance)
+         .filter(models.Attendance.user_id == user.id, models.Attendance.date == today)
+         .first())
+    bound = getattr(a, "checkin_device_id", None) if a else None
+    if not bound:
+        return True
+    return bool(device_id) and str(device_id) == str(bound)
+
+
 def _ping_moved_m(a_lat, a_lng, b_lat, b_lng) -> float:
     import math
     r = 6371000.0
@@ -60,6 +79,14 @@ def _ping_moved_m(a_lat, a_lng, b_lat, b_lng) -> float:
 def ping(body: schemas.PingCreate, db: Session = Depends(get_db),
          user: models.User = Depends(require_roles("fos", "admin"))):
     import time as _time
+    # Only the device the officer checked in from today is tracked — ignore pings from any other
+    # device they may also be signed in on (acknowledge without storing, so that app doesn't error).
+    if user.role == "fos" and not _tracking_device_ok(db, user, body.device_id):
+        return {
+            "id": 0, "officer_id": user.id, "latitude": body.latitude, "longitude": body.longitude,
+            "accuracy": body.accuracy, "active_case_id": body.active_case_id,
+            "created_at": datetime.now(timezone.utc),
+        }
     now = _time.time()
     prev = _PING_LAST.get(user.id)
     if (prev and body.latitude is not None and body.longitude is not None
@@ -113,15 +140,26 @@ async def ping_native(request: Request, db: Session = Depends(get_db),
     elif isinstance(data, dict):
         loc = data.get("location", data)
         items = loc if isinstance(loc, list) else [loc]
-    stored = 0
+    # Device id may ride at the top level or per-item under the plugin's `extras`.
+    top_dev = None
+    if isinstance(data, dict):
+        top_dev = data.get("device_id") or (data.get("extras") or {}).get("device_id")
+    stored, skipped = 0, 0
     for it in items:
         c = _extract_coords(it)
         if not c:
             continue
+        idev = top_dev
+        if isinstance(it, dict):
+            idev = idev or (it.get("extras") or {}).get("device_id") or it.get("device_id")
+        # Only the device the officer checked in from today is tracked.
+        if user.role == "fos" and not _tracking_device_ok(db, user, idev):
+            skipped += 1
+            continue
         db.add(models.LocationPing(officer_id=user.id, **c))
         stored += 1
     db.commit()
-    return {"stored": stored}
+    return {"stored": stored, "skipped": skipped}
 
 
 @router.get("/live", response_model=list[schemas.OfficerLocation])
@@ -146,13 +184,30 @@ def live(minutes: int = 30, db: Session = Depends(get_db),
     if viewer.role == "manager":
         q = q.filter(models.User.branch == viewer.branch)
     rows = q.all()
+    # One marker per officer. If an officer is signed in on more than one device, several ping
+    # rows can share the exact same latest timestamp — the join above would then emit a duplicate
+    # marker for each device. Collapse to a single position per officer, keeping the most recent
+    # row (highest id wins a timestamp tie) so the map shows the device they used last.
+    best: dict = {}
+    for p, name, branch, banks in rows:
+        cur = best.get(p.officer_id)
+        if cur is None or p.id > cur[0].id:
+            best[p.officer_id] = (p, name, branch, banks)
+    # Which device each officer checked in from today (admin note on the live map).
+    today = datetime.now(_IST).date()
+    checkin = {a.user_id: (a.checkin_device_id, a.last_platform)
+               for a in db.query(models.Attendance)
+               .filter(models.Attendance.date == today,
+                       models.Attendance.user_id.in_(list(best.keys()) or [-1])).all()}
     return [
         schemas.OfficerLocation(
             officer_id=p.officer_id, name=name, latitude=p.latitude, longitude=p.longitude,
             accuracy=p.accuracy, active_case_id=p.active_case_id, last_seen=p.created_at,
             branch=branch, banks=banks or [],
+            checkin_device=checkin.get(p.officer_id, (None, None))[0],
+            checkin_platform=checkin.get(p.officer_id, (None, None))[1],
         )
-        for p, name, branch, banks in rows
+        for p, name, branch, banks in best.values()
     ]
 
 

@@ -114,6 +114,7 @@ interface ApiService {
         @Part("lat") lat: RequestBody?,
         @Part("lng") lng: RequestBody?,
         @Part("platform") platform: RequestBody,
+        @Part("device_id") deviceId: RequestBody? = null,
     ): Map<String, Any?>
 
     @POST("api/attendance/checkout")

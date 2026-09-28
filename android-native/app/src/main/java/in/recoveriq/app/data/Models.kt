@@ -50,6 +50,10 @@ data class User(
     // Dual role (caller/FOS who is also a team lead)
     @Json(name = "also_team_lead") val alsoTeamLead: Boolean = false,
     @Json(name = "tl_emp_code") val tlEmpCode: String? = null,
+    @Json(name = "also_field_agent") val alsoFieldAgent: Boolean = false,
+    @Json(name = "fos_emp_code") val fosEmpCode: String? = null,
+    @Json(name = "also_caller") val alsoCaller: Boolean = false,
+    @Json(name = "tc_emp_code") val tcEmpCode: String? = null,
     @Json(name = "available_views") val availableViews: List<String> = emptyList(),
     @Json(name = "active_view") val activeView: String? = null,
 ) {
@@ -118,6 +122,7 @@ data class PingCreate(
     val accuracy: Double? = null,
     val speed: Double? = null,
     @Json(name = "active_case_id") val activeCaseId: Int? = null,
+    @Json(name = "device_id") val deviceId: String? = null,
 )
 
 @JsonClass(generateAdapter = true)

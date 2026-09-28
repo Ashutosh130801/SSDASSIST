@@ -21,9 +21,16 @@ from .. import audit
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 
 
-def _needs_geocode(q):
-    return q.filter(models.Case.latitude.is_(None)).filter(
+def _needs_geocode(q, include_failed: bool = False):
+    """Cases that still need a map pin. By default this is only NEW / never-attempted addresses —
+    a case we already tried (whether it resolved or not) is left alone, so clicking 'Geocode' again
+    processes just the remaining/new ones instead of re-running everything from scratch. Pass
+    include_failed=True to also re-attempt addresses that were tried but couldn't be located."""
+    q = q.filter(models.Case.latitude.is_(None)).filter(
         or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
+    if not include_failed:
+        q = q.filter(models.Case.geo_attempted_at.is_(None))
+    return q
 
 
 def apply_geocode(case: models.Case, res: dict) -> bool:
@@ -51,7 +58,7 @@ def apply_geocode(case: models.Case, res: dict) -> bool:
 
 
 @router.post("/geocode")
-def geocode(limit: int = 40, db: Session = Depends(get_db),
+def geocode(limit: int = 40, retry_failed: bool = False, db: Session = Depends(get_db),
             admin: models.User = Depends(require_roles("admin"))):
     """Fill latitude/longitude for cases that only have an address/pincode, so they pin on the
     field map. Processes up to `limit` per call — call again while `remaining` > 0 (the web
@@ -62,7 +69,8 @@ def geocode(limit: int = 40, db: Session = Depends(get_db),
         raise HTTPException(status_code=400,
                             detail="Geocoding is not configured — set LOCATIONIQ_KEY in the server .env and restart.")
     import time
-    cases = _needs_geocode(db.query(models.Case)).limit(limit).all()
+    cases = _needs_geocode(db.query(models.Case), include_failed=retry_failed).limit(limit).all()
+    _now = datetime.now(_IST_TZ)
     geocoded = failed = 0
     # One AI pass over the whole chunk first (splits glued words, normalizes short forms like
     # Vizag->Visakhapatnam, drops noise). Best-effort — falls back to the deterministic cleaner.
@@ -77,14 +85,21 @@ def geocode(limit: int = 40, db: Session = Depends(get_db),
                 time.sleep(1.0)                          # pace between cases (rate limit)
             res = _geo.geocode_one(client, c.address, c.address2, c.pincode,
                                    pre_clean=clean_map.get(c.id))
+            c.geo_attempted_at = _now          # mark as tried (success OR fail) so a repeat run skips it
             if apply_geocode(c, res):
                 geocoded += 1
             else:
                 failed += 1
     db.commit()
     remaining = _needs_geocode(db.query(models.Case)).count()
+    # Cases we tried but still couldn't pin — offered as an explicit "retry failed" action.
+    failed_total = (db.query(models.Case)
+                    .filter(models.Case.removed.isnot(True), models.Case.latitude.is_(None),
+                            models.Case.geo_attempted_at.isnot(None),
+                            or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
+                    .count())
     return {"geocoded": geocoded, "failed": failed, "remaining": remaining,
-            "processed": len(cases)}
+            "failed_total": failed_total, "processed": len(cases)}
 
 
 @router.get("/geocode/status")
@@ -97,8 +112,14 @@ def geocode_status(db: Session = Depends(get_db),
     with_pin = db.query(models.Case).filter(models.Case.removed.isnot(True),
                                             models.Case.latitude.isnot(None)).count()
     remaining = _needs_geocode(db.query(models.Case).filter(models.Case.removed.isnot(True))).count()
+    # Tried before but still unpinned — surfaced separately so admin can choose to retry them.
+    failed_total = (db.query(models.Case)
+                    .filter(models.Case.removed.isnot(True), models.Case.latitude.is_(None),
+                            models.Case.geo_attempted_at.isnot(None),
+                            or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
+                    .count())
     return {"total": total, "with_pin": with_pin, "remaining": remaining,
-            "configured": _geo.has_key()}
+            "failed_total": failed_total, "configured": _geo.has_key()}
 
 
 @router.delete("/all")

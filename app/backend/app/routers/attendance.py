@@ -315,7 +315,7 @@ def my_today(db: Session = Depends(get_db), user: models.User = Depends(get_curr
     }
 
 
-def _apply_checkin(db: Session, user: models.User, lat, lng, platform: str, photo_ref=None):
+def _apply_checkin(db: Session, user: models.User, lat, lng, platform: str, photo_ref=None, device_id=None):
     """Shared check-in: mark present (late per shift window unless HO Manager), record GPS and,
     for FOS, the GPS-tagged selfie. Returns (attendance, already_checked_in)."""
     today = _ist_today()
@@ -341,6 +341,10 @@ def _apply_checkin(db: Session, user: models.User, lat, lng, platform: str, phot
     a.source = "checkin"
     a.shift_start, a.shift_end = ss, se
     a.last_platform = (platform or "web")[:10]
+    # Pin location tracking to THIS device for the day: only pings carrying this same device_id are
+    # stored/shown, so a session left open on another phone/browser is never tracked.
+    if device_id:
+        a.checkin_device_id = str(device_id)[:80]
     if photo_ref:
         a.check_in_photo = photo_ref
     presence.touch(db, user.id, a.last_platform, active=True)
@@ -357,7 +361,8 @@ def checkin(body: dict = Body(default={}), db: Session = Depends(get_db),
             user: models.User = Depends(get_current_user)):
     if not _tracked(user):
         raise HTTPException(status_code=400, detail="Admins are not tracked for attendance.")
-    a, already, after_hours = _apply_checkin(db, user, body.get("lat"), body.get("lng"), body.get("platform") or "web")
+    a, already, after_hours = _apply_checkin(db, user, body.get("lat"), body.get("lng"),
+                                             body.get("platform") or "web", device_id=body.get("device_id"))
     if after_hours:
         return {"ok": False, "after_hours": True,
                 "detail": "After work hours — attendance isn't recorded now, but your activity is still logged."}
@@ -368,6 +373,7 @@ def checkin(body: dict = Body(default={}), db: Session = Depends(get_db),
 @router.post("/checkin/photo")
 async def checkin_with_photo(file: UploadFile = File(...), lat: str | None = Form(None),
                              lng: str | None = Form(None), platform: str = Form("android"),
+                             device_id: str | None = Form(None),
                              db: Session = Depends(get_db),
                              user: models.User = Depends(get_current_user)):
     """FOS check-in with a GPS-tagged selfie from the phone (proof of presence)."""
@@ -386,7 +392,7 @@ async def checkin_with_photo(file: UploadFile = File(...), lat: str | None = For
             return float(v)
         except (TypeError, ValueError):
             return None
-    a, already, after_hours = _apply_checkin(db, user, _f(lat), _f(lng), platform, photo_ref=ref)
+    a, already, after_hours = _apply_checkin(db, user, _f(lat), _f(lng), platform, photo_ref=ref, device_id=device_id)
     if after_hours:
         return {"ok": False, "after_hours": True,
                 "detail": "After work hours — attendance isn't recorded now, but your activity is still logged."}

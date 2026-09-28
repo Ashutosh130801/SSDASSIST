@@ -2102,7 +2102,7 @@ function LiveMap({ config }) {
   const refresh = useCallback(async () => {
     try {
       const list = await api('/api/tracking/live?minutes=1440');
-      list.sort((a, b) => (isOnline(b.last_seen) - isOnline(a.last_seen)) || String(a.name || '').localeCompare(b.name || ''));
+      list.sort((a, b) => String(a.name || '').localeCompare(b.name || ''));   // alphabetical (live + offline together)
       setOfficers(list);
       if (map.current && window.google && window.L) {
         const g = window.google; const L = window.L; const rawMap = map.current._map;
@@ -2115,7 +2115,8 @@ function LiveMap({ config }) {
           const on = isOnline(o.last_seen);
           const prev = lastPos.current[o.officer_id];
           const heading = (prev && (prev.lat !== pos.lat || prev.lng !== pos.lng)) ? bearingDeg(prev, pos) : (prev ? prev.hd : 0);
-          const title = o.name + (on ? ' · live' : ' · offline ' + agoLabel(o.last_seen));
+          const devNote = o.checkin_device ? ('\nChecked in from: ' + (o.checkin_platform ? o.checkin_platform + ' · ' : '') + o.checkin_device) : '\nNot checked in today';
+          const title = o.name + (on ? ' · live' : ' · offline ' + agoLabel(o.last_seen)) + devNote;
           let gm = markers.current[o.officer_id];
           if (!gm) {
             // first sighting — drop the pin where they are
@@ -2279,16 +2280,15 @@ function LiveMap({ config }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <div><b><span style={{ color: on ? 'var(--good)' : 'var(--ink-dim)' }}>●</span> {o.name}</b>
                   <div className="muted" style={{ fontSize: 11.5 }}>{on ? 'Live now' : 'Offline · seen ' + agoLabel(o.last_seen)}</div>
-                  <div className="muted" style={{ fontSize: 11 }}>🏢 {o.branch || '—'}{o.banks && o.banks.length ? ' · 🏦 ' + o.banks.join('/') : ''}</div></div>
+                  <div className="muted" style={{ fontSize: 11 }}>🏢 {o.branch || '—'}{o.banks && o.banks.length ? ' · 🏦 ' + o.banks.join('/') : ''}</div>
+                  <div style={{ fontSize: 11, color: o.checkin_device ? 'var(--info)' : 'var(--warn)' }} title={o.checkin_device || ''}>
+                    📱 {o.checkin_device ? ('Checked in from ' + (o.checkin_platform ? o.checkin_platform + ' · ' : '') + o.checkin_device) : 'Not checked in today'}</div></div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button className="btn sm gold" onClick={() => navigateTo(o)} title="Directions to live location">🧭</button>
-                  <button className="btn sm" onClick={() => openHistory(o)} title="Route & visits">🕘</button>
+                  <button className="btn sm" onClick={() => (histOfficer && histOfficer.officer_id === o.officer_id) ? (setHistOfficer(null), clearRoute(), setRouteInfo(null)) : openHistory(o)} title="Route & visits">🕘</button>
                 </div>
               </div>
-            </div>; })}
-          </div>
-
-          {histOfficer && <div className="glass card">
+              {histOfficer && histOfficer.officer_id === o.officer_id && <div className="glass card" style={{ marginTop: 10 }}>
             <div className="section-h"><h3>{histOfficer.name}</h3>
               <button className="btn ghost sm" onClick={() => { setHistOfficer(null); clearRoute(); setRouteInfo(null); }}>✕</button></div>
             {/* Profile summary + live status. */}
@@ -2325,6 +2325,8 @@ function LiveMap({ config }) {
               </div>}
             </>}
           </div>}
+            </div>; })}
+          </div>
         </div>
       </div>
 
@@ -3482,7 +3484,7 @@ function CaseCard({ c, onVisit, onNav, onDetails }) {
         <span className="k">Pending NORM / STAB</span>
         <b className="mono" style={{ color: 'var(--info)' }}>{c.remaining_to_norm != null ? INR(c.remaining_to_norm) : '—'} / {c.remaining_to_stab != null ? INR(c.remaining_to_stab) : '—'}</b></div>}
       <div className="toolbar" style={{ margin: '10px 0 0' }}>
-        <button className="btn sm gold" style={{ flex: 1 }} onClick={onVisit} disabled={c.closed} title={c.closed ? 'Closed for the month — locked' : ''}>Log visit</button>
+        <button className="btn sm gold" style={{ flex: 1 }} onClick={onVisit} title={c.closed ? 'Closed for the month — you can still log a visit (payment stays locked)' : ''}>Log visit</button>
         {onDetails && <button className="btn sm" onClick={onDetails}>Details</button>}
         <button className="btn sm" onClick={onNav}>🧭 Navigate</button>
         <ContactBtns phone={c.phone} />
@@ -3501,27 +3503,35 @@ function GeocodeButton() {
   const stop = React.useRef(false);
   const loadStatus = () => api('/api/cases/geocode/status').then(setSt).catch(() => setHidden(true));
   React.useEffect(() => { loadStatus(); }, []);
-  const run = async () => {
+  // retryMode=false → only NEW / never-tried addresses (keeps already-located as-is, skips ones
+  // already attempted). retryMode=true → re-attempt addresses that were tried but couldn't be pinned.
+  const run = async (retryMode) => {
     if (!st || !st.configured) { toast('Set LOCATIONIQ_KEY in the server .env, then restart the backend.'); return; }
     setRunning(true); stop.current = false; let done = 0, failed = 0;
+    // Bound the retry loop so it makes one full pass over the currently-failed set (a still-failing
+    // address stays selectable, which would otherwise loop forever).
+    const maxBatches = retryMode ? Math.ceil((st.failed_total || 0) / 25) + 1 : 100000;
+    const url = '/api/cases/geocode?limit=25' + (retryMode ? '&retry_failed=true' : '');
     try {
-      // Loop batches until nothing's left (or Stop). Backend paces ~1 req/sec internally.
-      while (!stop.current) {
-        const r = await api('/api/cases/geocode?limit=25', { method: 'POST' });
+      for (let i = 0; i < maxBatches && !stop.current; i++) {
+        const r = await api(url, { method: 'POST' });
         done += r.geocoded || 0; failed += r.failed || 0;
-        setMsg(`Located ${done} · ${r.remaining} left${failed ? ` · ${failed} unresolved` : ''}`);
-        if (!r.processed || r.remaining === 0) break;
+        const leftLabel = retryMode ? `${r.failed_total || 0} still unresolved` : `${r.remaining} left`;
+        setMsg(`Located ${done} · ${leftLabel}`);
+        if (!r.processed || (!retryMode && r.remaining === 0)) break;
       }
     } catch (e) { setMsg('Stopped — ' + (e.message || 'error')); }
     setRunning(false); loadStatus();
   };
   if (hidden || !st) return null;
+  if (running) return <>
+    <span className="badge" style={{ background: '#FEF3C7', color: '#92400E' }}>📍 {msg || 'Geocoding…'}</span>
+    <button className="btn sm" onClick={() => { stop.current = true; }}>Stop</button></>;
   return <>
-    {running
-      ? <><span className="badge" style={{ background: '#FEF3C7', color: '#92400E' }}>📍 {msg || 'Geocoding…'}</span>
-          <button className="btn sm" onClick={() => { stop.current = true; }}>Stop</button></>
-      : <button className="btn sm" title={`${st.with_pin} of ${st.total} cases pinned · ${st.remaining} need locating`}
-          onClick={run}>📍 Geocode addresses{st.remaining ? ` (${st.remaining})` : ''}</button>}
+    <button className="btn sm" title={`${st.with_pin} of ${st.total} cases pinned · ${st.remaining} new to locate`}
+      onClick={() => run(false)}>📍 Geocode addresses{st.remaining ? ` (${st.remaining})` : ''}</button>
+    {!st.remaining && st.failed_total ? <button className="btn sm" style={{ marginLeft: 6 }}
+      title="Re-attempt addresses that couldn't be located before" onClick={() => run(true)}>↻ Retry {st.failed_total} unresolved</button> : null}
   </>;
 }
 
@@ -3723,7 +3733,7 @@ function useLocationPing(user, config) {
       // backgrounded, or switched away. It requests the location permission itself on start.
       try {
         const Tracker = Cap.registerPlugin('Tracker');
-        Tracker.start({ url: (window.location.origin || '') + '/api/tracking/ping', token: store.t || '' });
+        Tracker.start({ url: (window.location.origin || '') + '/api/tracking/ping', token: store.t || '', extras: { device_id: deviceId } });
       } catch (e) {}
       return () => { try { Cap.registerPlugin('Tracker').stop(); } catch (e) {} };
     }
@@ -3743,7 +3753,7 @@ function useLocationPing(user, config) {
       const now = Date.now();
       if (!force && now - lastSent < minGap && distM(lastPos, coords) < 20) return;   // skip tiny jitter
       lastSent = now; lastPos = coords;
-      try { await api('/api/tracking/ping', { method: 'POST', body: { latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy, speed: coords.speed } }); } catch (e) {}
+      try { await api('/api/tracking/ping', { method: 'POST', body: { latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy, speed: coords.speed, device_id: deviceId } }); } catch (e) {}
     };
     // real-time movement stream (fires as the officer moves)
     const startWatch = () => {
@@ -6476,6 +6486,18 @@ function StaffFormModal({ existing, roles, onClose, onDone, isAdmin }) {
             Also a team lead — adds a Team Leader view they can switch to
             {existing.tl_emp_code ? <> (team-lead ID: <b>{existing.tl_emp_code}</b>)</> : <> (a team-lead ID is generated on save)</>}
           </label>)}
+        {editing && f.role === 'telecaller' && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, margin: '6px 0' }}>
+            <input type="checkbox" checked={!!f.also_field_agent} onChange={e => set('also_field_agent', e.target.checked)} />
+            Also a field agent — adds a Field Agent view they can switch to
+            {existing.fos_emp_code ? <> (field-agent ID: <b>{existing.fos_emp_code}</b>)</> : <> (a field-agent ID is generated on save)</>}
+          </label>)}
+        {editing && f.role === 'fos' && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, margin: '6px 0' }}>
+            <input type="checkbox" checked={!!f.also_caller} onChange={e => set('also_caller', e.target.checked)} />
+            Also a caller — adds a Tele-calling view they can switch to
+            {existing.tc_emp_code ? <> (caller ID: <b>{existing.tc_emp_code}</b>)</> : <> (a caller ID is generated on save)</>}
+          </label>)}
         {err && <div style={{ color: 'var(--bad)', fontSize: 13, margin: '6px 0' }}>{err}</div>}
         <div className="toolbar" style={{ marginTop: 8 }}>
           <button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
@@ -6550,10 +6572,10 @@ function ManpowerView({ user }) {
           <div className="tablewrap"><table>
             <thead><tr><th>Code</th><th>Name</th><th>Role</th><th>Designation</th><th>Location</th><th>Branch</th><th>Phone</th><th>DOJ</th><th></th></tr></thead>
             <tbody>{shown.map(e => <tr key={e.id} style={{ cursor: 'pointer', ...(e.is_active === false ? { background: 'rgba(220,38,38,.05)' } : {}) }} onClick={() => setSel(e)}>
-              <td className="mono">{e.emp_code || '—'}{e.also_team_lead && e.tl_emp_code ? <span className="muted"> / {e.tl_emp_code}</span> : ''}</td>
+              <td className="mono">{e.emp_code || '—'}{e.also_team_lead && e.tl_emp_code ? <span className="muted"> / {e.tl_emp_code}</span> : ''}{e.also_field_agent && e.fos_emp_code ? <span className="muted"> / {e.fos_emp_code}</span> : ''}{e.also_caller && e.tc_emp_code ? <span className="muted"> / {e.tc_emp_code}</span> : ''}</td>
               <td><b>{e.name}</b>{e.is_active === false && <span className="badge unpaid" style={{ marginLeft: 6 }} title={e.blocked_reason || 'Blocked'}>⛔ Blocked</span>}
                 <div><PersonPresence id={e.id} /></div></td>
-              <td><span className="badge allocated">{roleName(e.role)}</span>{e.also_team_lead && e.role !== 'teamlead' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ Team Lead</span>}</td>
+              <td><span className="badge allocated">{roleName(e.role)}</span>{e.also_team_lead && e.role !== 'teamlead' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ TL</span>}{e.also_field_agent && e.role !== 'fos' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ FOS</span>}{e.also_caller && e.role !== 'telecaller' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ Caller</span>}</td>
               <td className="muted" style={{ fontSize: 12 }}>{e.designation || '—'}</td>
               <td>{e.location || '—'}</td><td className="muted">{e.branch || '—'}</td>
               <td>{e.phone || '—'}</td><td className="muted" style={{ fontSize: 12 }}>{e.joining_date || '—'}</td>
@@ -7654,7 +7676,7 @@ function CheckinModal({ user, shift, onDone, onSkip }) {
       // Location is optional — never let a blocked/failed GPS lookup stop the check-in.
       let g = geo;
       if (!g) { try { g = await getGeo(); } catch (_) { g = null; } }
-      const r = await api('/api/attendance/checkin', { method: 'POST', body: { lat: g && g.lat, lng: g && g.lng, platform: platformTag() } });
+      const r = await api('/api/attendance/checkin', { method: 'POST', body: { lat: g && g.lat, lng: g && g.lng, platform: platformTag(), device_id: deviceId } });
       toast(r.late ? 'Checked in — marked present (late).' : 'Checked in. Have a great day!');
       onDone(r.attendance);
     } catch (e) {

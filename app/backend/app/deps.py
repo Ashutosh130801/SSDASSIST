@@ -71,6 +71,12 @@ def allowed_views(user: "models.User") -> list[str]:
     views = [primary]
     if getattr(user, "also_team_lead", False) and primary != "teamlead":
         views.append("teamlead")
+    # A caller granted the field-agent hat can switch to the FOS view, and a field agent granted
+    # the caller hat can switch to the telecaller view (one active hat at a time drives scoping).
+    if getattr(user, "also_field_agent", False) and primary != "fos":
+        views.append("fos")
+    if getattr(user, "also_caller", False) and primary != "telecaller":
+        views.append("telecaller")
     return views
 
 

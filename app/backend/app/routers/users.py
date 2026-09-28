@@ -28,10 +28,11 @@ def generate_emp_code(db: Session, role: str) -> str:
     prefix = _ROLE_PREFIX.get(role, "EMP")
     existing = [u.emp_code for u in db.query(models.User.emp_code)
                 .filter(models.User.emp_code.like(prefix + "%")).all() if u.emp_code]
-    # Dual-role team leads store their TL id in tl_emp_code — count those too so each new
-    # grant gets a UNIQUE TL code (otherwise every dual-role user would get the same one).
-    existing += [u.tl_emp_code for u in db.query(models.User.tl_emp_code)
-                 .filter(models.User.tl_emp_code.like(prefix + "%")).all() if u.tl_emp_code]
+    # Dual-role staff store their SECOND id in tl_emp_code / fos_emp_code / tc_emp_code — count
+    # those too so each new grant gets a UNIQUE code (otherwise every dual-role user of the same
+    # kind would collide on one code).
+    for _col in (models.User.tl_emp_code, models.User.fos_emp_code, models.User.tc_emp_code):
+        existing += [c for (c,) in db.query(_col).filter(_col.like(prefix + "%")).all() if c]
     n = 0
     for code in existing:
         try:
