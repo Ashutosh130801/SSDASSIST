@@ -1560,8 +1560,10 @@ function ReassignModal({ ids, onClose, onDone }) {
   const [tl, setTl] = useState('keep');         // 'keep' | '' (clear) | name
   const [busy, setBusy] = useState(false);
   useEffect(() => { api('/api/users').then(setUsers).catch(() => setUsers([])); }, []);
-  const foses = (users || []).filter(u => u.role === 'fos' && u.is_active !== false);
-  const callers = (users || []).filter(u => u.role === 'telecaller' && u.is_active !== false);
+  // Include dual-role staff: a caller who also does field (also_field_agent) is a valid FOS target,
+  // and a field agent who also calls (also_caller) is a valid telecaller target.
+  const foses = (users || []).filter(u => (u.role === 'fos' || u.also_field_agent) && u.is_active !== false);
+  const callers = (users || []).filter(u => (u.role === 'telecaller' || u.also_caller) && u.is_active !== false);
   // Team leads = pure team-lead role + dual-role (also a team lead) users.
   const leads = (users || []).filter(u => (u.role === 'teamlead' || u.also_team_lead) && u.is_active !== false);
   const val = (s) => s === 'keep' ? 'keep' : (s === 'null' ? null : Number(s));
@@ -1584,12 +1586,12 @@ function ReassignModal({ ids, onClose, onDone }) {
         <div className="field"><label>Field officer (FOS)</label>
           <select className="input" value={fos} onChange={e => setFos(e.target.value)}>
             <option value="keep">Keep as-is</option><option value="null">— De-allocate —</option>
-            {foses.map(u => <option key={u.id} value={u.id}>{u.name}{u.branch ? ` · ${u.branch}` : ''}</option>)}
+            {foses.map(u => <option key={u.id} value={u.id}>{u.name}{u.role !== 'fos' ? ' (+FOS ' + (u.fos_emp_code || '') + ')' : ''}{u.branch ? ` · ${u.branch}` : ''}</option>)}
           </select></div>
         <div className="field"><label>Telecaller</label>
           <select className="input" value={caller} onChange={e => setCaller(e.target.value)}>
             <option value="keep">Keep as-is</option><option value="null">— De-allocate —</option>
-            {callers.map(u => <option key={u.id} value={u.id}>{u.name}{u.branch ? ` · ${u.branch}` : ''}</option>)}
+            {callers.map(u => <option key={u.id} value={u.id}>{u.name}{u.role !== 'telecaller' ? ' (+Caller ' + (u.tc_emp_code || '') + ')' : ''}{u.branch ? ` · ${u.branch}` : ''}</option>)}
           </select></div>
         <div className="field"><label>Team lead</label>
           <select className="input" value={tl} onChange={e => setTl(e.target.value)}>
@@ -1616,8 +1618,8 @@ function AllocTransferModal({ onClose, onDone }) {
   const [tgtId, setTgtId] = useState(''); const [busy, setBusy] = useState(false);
   useEffect(() => { api('/api/users').then(setUsers).catch(() => setUsers([])); }, []);
   const act = (u) => u.is_active !== false;
-  const callers = (users || []).filter(u => u.role === 'telecaller' && act(u));
-  const foses = (users || []).filter(u => u.role === 'fos' && act(u));
+  const callers = (users || []).filter(u => (u.role === 'telecaller' || u.also_caller) && act(u));
+  const foses = (users || []).filter(u => (u.role === 'fos' || u.also_field_agent) && act(u));
   const tls = (users || []).filter(u => (u.role === 'teamlead' || u.also_team_lead) && act(u));
   const srcOptions = srcRole === 'telecaller' ? callers : srcRole === 'fos' ? foses : tls;
   const tgtOptions = tgtField === 'team_lead' ? tls : tgtField === 'caller' ? callers : foses;
@@ -2055,6 +2057,7 @@ function LiveMap({ config }) {
   const [selDate, setSelDate] = useState(''); const [routeInfo, setRouteInfo] = useState(null);
   const [, setTick] = useState(0);   // local 1s clock so live/offline + "seen ago" update on their own
   const [branch, setBranch] = useState(''); const branchRef = useRef('');
+  const [liveFirstOn, setLiveFirstOn] = useState(false);   // tap "live" count → float live officers on top
   const visitMarks = useRef([]);
   const [dayVisits, setDayVisits] = useState(null); const [selVisit, setSelVisit] = useState(null);
   const [showReport, setShowReport] = useState(false); const [drawerCase, setDrawerCase] = useState(null);
@@ -2247,6 +2250,10 @@ function LiveMap({ config }) {
   };
 
   const shown = officers.filter(o => !branch || o.branch === branch);
+  // Default order is alphabetical; tap the "live" count to float live officers to the top.
+  const shownSorted = liveFirstOn
+    ? [...shown].sort((a, b) => (isOnline(b.last_seen) - isOnline(a.last_seen)) || String(a.name || '').localeCompare(b.name || ''))
+    : shown;
 
   return (
     <div>
@@ -2272,11 +2279,13 @@ function LiveMap({ config }) {
           <div className="glass card">
             <div className="section-h"><h3>Officers{branch ? ' · ' + branch : ''}</h3>
               <span style={{ fontSize: 12 }}>
-                <span style={{ color: 'var(--good)', fontWeight: 600 }}>● {shown.filter(o => isOnline(o.last_seen)).length} live</span>
+                <span onClick={() => setLiveFirstOn(v => !v)} title={liveFirstOn ? 'Live-first — tap for A→Z' : 'Tap to show live officers on top'}
+                  style={{ color: 'var(--good)', fontWeight: 600, cursor: 'pointer', textDecoration: liveFirstOn ? 'underline' : 'none' }}>
+                  ● {shown.filter(o => isOnline(o.last_seen)).length} live{liveFirstOn ? ' ↑' : ''}</span>
                 <span className="muted"> · {shown.filter(o => !isOnline(o.last_seen)).length} offline</span>
               </span></div>
             {shown.length === 0 && <p className="muted">No field officers{branch ? ' in ' + branch : ''} active today. They appear here once their app has sent a location.</p>}
-            {shown.map(o => { const on = isOnline(o.last_seen); return <div key={o.officer_id} style={{ padding: '9px 0', borderBottom: '1px solid var(--stroke-soft)', opacity: on ? 1 : .62 }}>
+            {shownSorted.map(o => { const on = isOnline(o.last_seen); return <div key={o.officer_id} style={{ padding: '9px 0', borderBottom: '1px solid var(--stroke-soft)', opacity: on ? 1 : .62 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <div><b><span style={{ color: on ? 'var(--good)' : 'var(--ink-dim)' }}>●</span> {o.name}</b>
                   <div className="muted" style={{ fontSize: 11.5 }}>{on ? 'Live now' : 'Offline · seen ' + agoLabel(o.last_seen)}</div>
@@ -3644,9 +3653,10 @@ function FOCases({ config }) {
   const [cases, setCases] = useState(null); const [view, setView] = useState('list'); const [active, setActive] = useState(null); const [detail, setDetail] = useState(null);
   const [collapsed, setCollapsed] = useState({}); const [bucketFilter, setBucketFilter] = useState('');
   const [search, setSearch] = useState(''); const [sortBy, setSortBy] = useState('');   // '' = grouped
+  const [monthB, setMonthB] = useState('current');   // current | last | next  (last = read-only)
   const mapEl = useRef(null); const map = useRef(null);
-  const load = () => api('/api/cases').then(setCases);
-  useEffect(() => { load(); }, []);
+  const load = () => api('/api/cases?month_bucket=' + monthB).then(setCases);
+  useEffect(() => { setCases(null); load(); }, [monthB]);
   useDataChanged(load);
   // Search across name / account / card / phone (digit-aware, so "98765" matches a phone).
   const matchQ = (c) => { const q = search.trim().toLowerCase(); if (!q) return true;
@@ -3678,6 +3688,10 @@ function FOCases({ config }) {
     <div>
       <RemindersBanner />
       <div className="toolbar">
+        {[['current', 'This month'], ['last', 'Last month'], ['next', 'Next month']].map(([v, lbl]) =>
+          <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}
+            title={v === 'last' ? 'Previous month — view only (locked)' : ''}>{lbl}{v === 'last' ? ' 🔒' : ''}</div>)}
+        <div style={{ width: 1, alignSelf: 'stretch', background: 'var(--stroke-soft)', margin: '0 2px' }} />
         <div className={cx('chip', view === 'list' && 'on')} onClick={() => setView('list')}>☰ Grouped</div>
         <div className={cx('chip', view === 'map' && 'on')} onClick={() => setView('map')}>◎ Map</div>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search name / account / card / phone"

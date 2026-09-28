@@ -176,8 +176,8 @@ def list_manpower(role: str | None = None, location: str | None = None, q: str |
         s = q.lower().strip()
         def _hit(e):
             return any(s in (str(e.get(k) or "")).lower() for k in
-                       ("name", "emp_code", "email", "phone", "designation",
-                        "location", "branch", "hr_ref", "role"))
+                       ("name", "emp_code", "tl_emp_code", "fos_emp_code", "tc_emp_code",
+                        "email", "phone", "designation", "location", "branch", "hr_ref", "role"))
         out = [e for e in out if _hit(e)]
     return out
 
