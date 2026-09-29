@@ -7843,16 +7843,23 @@ function AttendanceView({ user }) {
     return [r.name || '', r.emp_code || '', roleName(r.role), st, pres, fmtTime(r.check_in_at) || '', fmtTime(r.check_out_at) || '', fmtDur(r.worked_seconds) || '', fmtDur(r.idle_seconds) || '', act ? (r.calls || 0) : '—', act ? (r.visits || 0) : '—', act ? money(r.collected) : '—'];
   };
   const printDay = () => {
-    const w = window.open('', '_blank'); if (!w) { toast('Allow pop-ups to print'); return; }
     const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
     const th = DAY_COLS.map(h => '<th>' + esc(h) + '</th>').join('');
     const body = rows.map(r => '<tr>' + dayCell(r).map(c => '<td>' + esc(c) + '</td>').join('') + '</tr>').join('');
     const title = 'Attendance — ' + date;
-    w.document.write('<html><head><title>' + esc(title) + '</title><style>body{font-family:system-ui;padding:22px;color:#0f172a}h2{color:#2563EB;margin:0 0 2px}.cap{color:#475569;font-size:13px;margin:0 0 12px}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #cbd5e1;padding:5px 8px;text-align:left}th{background:#EEF3FB}@media print{.noprint{display:none}}</style></head><body>'
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + esc(title) + '</title><style>body{font-family:system-ui;padding:22px;color:#0f172a}h2{color:#2563EB;margin:0 0 2px}.cap{color:#475569;font-size:13px;margin:0 0 12px}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #cbd5e1;padding:5px 8px;text-align:left}th{background:#EEF3FB}</style></head><body>'
       + '<h2>' + esc(title) + '</h2><p class="cap">Filter: <b>' + esc(filterLabel()) + '</b> · ' + rows.length + ' ' + (rows.length === 1 ? 'person' : 'people') + ' · generated ' + esc(new Date().toLocaleString('en-IN')) + '</p>'
-      + '<button class="noprint" onclick="window.print()" style="margin-bottom:10px;padding:6px 12px">🖨 Print</button>'
-      + '<table><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table></body></html>');
-    w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch (e) {} }, 350);
+      + '<table><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table></body></html>';
+    // Print via a hidden iframe rather than window.open — a new window is unreliable inside the
+    // desktop app (WebView2 tries to hand '_blank' to the OS → "no app available"). The iframe
+    // prints inside the same window and works in both the browser and the desktop shell.
+    const ifr = document.createElement('iframe');
+    ifr.setAttribute('aria-hidden', 'true');
+    ifr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+    document.body.appendChild(ifr);
+    const cw = ifr.contentWindow; const d = cw.document; d.open(); d.write(html); d.close();
+    const go = () => { try { cw.focus(); cw.print(); } catch (e) { toast('Could not open the print dialog', 'err'); } setTimeout(() => ifr.remove(), 1500); };
+    if (cw.document.readyState === 'complete') setTimeout(go, 250); else { ifr.onload = () => setTimeout(go, 250); setTimeout(go, 800); }
   };
   const exportDayCsv = () => {
     const q2 = v => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -7860,7 +7867,9 @@ function AttendanceView({ user }) {
     const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob); const a = document.createElement('a');
     const tag = (filterLabel() === 'All staff' ? 'all' : filterLabel().replace(/[^a-z0-9]+/gi, '-')).toLowerCase();
-    a.href = url; a.download = `Attendance_${date}_${tag}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1500);
+    a.href = url; a.download = `Attendance_${date}_${tag}.csv`;
+    // The anchor must be in the DOM before .click() for the download to fire in WebView2 (desktop app).
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
   };
   const stTag = (r) => { const s = r.late ? 'Late' : r.status === 'present' ? 'Present' : r.status === 'leave' ? 'Leave' : r.status === 'weekoff' ? 'Week-off' : r.status === 'absent' ? 'Absent' : r.status; const c = ATT_COLOR[r.late ? 'L' : r.status] || '#64748B'; return <span style={{ color: c, fontWeight: 700, fontSize: 12.5 }}>{s}</span>; };
   return <div>

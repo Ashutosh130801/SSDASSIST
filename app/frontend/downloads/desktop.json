@@ -1,7 +1,6 @@
 {
-  "version_name": "1.0.59",
+  "version_name": "1.0.60",
   "file": "RecoverIQ-desktop.exe",
-  "size_mb": 43,
   "platform": "windows",
-  "notes": "Windows desktop app for RecoverIQ. Download, run, and enter your server address on first launch."
+  "notes": "Windows desktop app for RecoverIQ."
 }
