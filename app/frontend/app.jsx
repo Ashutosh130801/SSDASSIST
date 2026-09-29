@@ -7832,6 +7832,36 @@ function AttendanceView({ user }) {
   const rows = (day ? day.rows : []).filter(r => passStat(r) && (!q || (r.name || '').toLowerCase().includes(q.toLowerCase()) || (r.emp_code || '').toLowerCase().includes(q.toLowerCase())));
   const people = (mon ? mon.people : []).filter(p => !q || (p.name || '').toLowerCase().includes(q.toLowerCase()) || (p.emp_code || '').toLowerCase().includes(q.toLowerCase()));
   const dl = () => { const p = new URLSearchParams(); p.set('month', month); if (role) p.set('role', role); download('/api/attendance/download?' + p, `Attendance_${month}.xlsx`); };
+  // Human-readable summary of exactly which filters are applied — printed/exported as a caption
+  // so the sheet says e.g. "Field Agent · Absent". Uses the same filtered `rows` shown on screen.
+  const filterLabel = () => { const parts = []; if (role) parts.push(roleName(role)); if (statF) parts.push(statF === 'online' ? 'Online now' : statF.charAt(0).toUpperCase() + statF.slice(1)); if (q) parts.push('“' + q + '”'); return parts.length ? parts.join(' · ') : 'All staff'; };
+  const DAY_COLS = ['Name', 'Emp ID', 'Role', 'Status', 'Presence', 'Check-in', 'Check-out', 'Worked', 'Idle', 'Calls', 'Visits', 'Collected'];
+  const dayCell = (r) => {
+    const st = r.late ? 'Late' : r.status === 'present' ? 'Present' : r.status === 'leave' ? 'Leave' : r.status === 'weekoff' ? 'Week-off' : r.status === 'absent' ? 'Absent' : (r.status || '');
+    const pres = r.presence ? (r.presence.state === 'active' ? 'Active' : r.presence.state === 'idle' ? 'Idle' : 'Offline') : 'Offline';
+    const act = r.show_activity;
+    return [r.name || '', r.emp_code || '', roleName(r.role), st, pres, fmtTime(r.check_in_at) || '', fmtTime(r.check_out_at) || '', fmtDur(r.worked_seconds) || '', fmtDur(r.idle_seconds) || '', act ? (r.calls || 0) : '—', act ? (r.visits || 0) : '—', act ? money(r.collected) : '—'];
+  };
+  const printDay = () => {
+    const w = window.open('', '_blank'); if (!w) { toast('Allow pop-ups to print'); return; }
+    const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const th = DAY_COLS.map(h => '<th>' + esc(h) + '</th>').join('');
+    const body = rows.map(r => '<tr>' + dayCell(r).map(c => '<td>' + esc(c) + '</td>').join('') + '</tr>').join('');
+    const title = 'Attendance — ' + date;
+    w.document.write('<html><head><title>' + esc(title) + '</title><style>body{font-family:system-ui;padding:22px;color:#0f172a}h2{color:#2563EB;margin:0 0 2px}.cap{color:#475569;font-size:13px;margin:0 0 12px}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #cbd5e1;padding:5px 8px;text-align:left}th{background:#EEF3FB}@media print{.noprint{display:none}}</style></head><body>'
+      + '<h2>' + esc(title) + '</h2><p class="cap">Filter: <b>' + esc(filterLabel()) + '</b> · ' + rows.length + ' ' + (rows.length === 1 ? 'person' : 'people') + ' · generated ' + esc(new Date().toLocaleString('en-IN')) + '</p>'
+      + '<button class="noprint" onclick="window.print()" style="margin-bottom:10px;padding:6px 12px">🖨 Print</button>'
+      + '<table><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table></body></html>');
+    w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch (e) {} }, 350);
+  };
+  const exportDayCsv = () => {
+    const q2 = v => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const lines = [DAY_COLS.map(q2).join(','), ...rows.map(r => dayCell(r).map(q2).join(','))];
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob); const a = document.createElement('a');
+    const tag = (filterLabel() === 'All staff' ? 'all' : filterLabel().replace(/[^a-z0-9]+/gi, '-')).toLowerCase();
+    a.href = url; a.download = `Attendance_${date}_${tag}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1500);
+  };
   const stTag = (r) => { const s = r.late ? 'Late' : r.status === 'present' ? 'Present' : r.status === 'leave' ? 'Leave' : r.status === 'weekoff' ? 'Week-off' : r.status === 'absent' ? 'Absent' : r.status; const c = ATT_COLOR[r.late ? 'L' : r.status] || '#64748B'; return <span style={{ color: c, fontWeight: 700, fontSize: 12.5 }}>{s}</span>; };
   return <div>
     <div className="toolbar" style={{ marginBottom: 10 }}>
@@ -7842,6 +7872,8 @@ function AttendanceView({ user }) {
         ? <input type="date" className="input" value={date} max={today} onChange={e => setDate(e.target.value)} style={{ maxWidth: 160 }} />
         : <input type="month" className="input" value={month} max={today.slice(0, 7)} onChange={e => setMonth(e.target.value)} style={{ maxWidth: 160 }} />}
       {(day && day.can_download || mon && mon.can_download) && tab === 'month' && <button className="btn gold sm" onClick={dl}>⬇ Download sheet</button>}
+      {tab === 'today' && day && <button className="btn ghost sm" title="Print exactly what's shown (respects role/status/search filters)" onClick={printDay}>🖨 Print</button>}
+      {tab === 'today' && day && <button className="btn ghost sm" title="Export the filtered list to CSV" onClick={exportDayCsv}>⬇ CSV</button>}
     </div>
     <div className="toolbar" style={{ marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
       <input className="input" placeholder="🔎 Search name / ID…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 220 }} />
