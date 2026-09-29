@@ -16,13 +16,24 @@ if _is_sqlite:
 # get checked out waiting on the DB and the next request times out. A larger pool + recycle
 # absorbs those spikes. These values are safe and beneficial on Postgres too (no change needed
 # when DATABASE_URL is switched over for go-live).
+# Pool sizing is env-tunable so you can raise it without a code change. Keep the ceiling under
+# Postgres's own max_connections: (workers) x (DB_POOL_SIZE + DB_MAX_OVERFLOW) + headroom <= max_connections.
+# Defaults (1 worker): 30 + 70 = 100 max. Postgres default max_connections is 100 — if you run more than
+# one worker OR raise these, also raise Postgres `max_connections` (postgresql.conf) or put pgbouncer
+# in front, otherwise the DB itself refuses connections. pool_use_lifo reuses recent connections so idle
+# ones get recycled/closed instead of all staying open.
+import os as _os
+def _envint(name, default):
+    try: return int(_os.getenv(name, "") or default)
+    except (TypeError, ValueError): return default
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
-    pool_size=20,          # persistent connections kept open
-    max_overflow=40,       # extra burst connections when the pool is busy
-    pool_recycle=1800,     # recycle a connection after 30 min (avoids stale server-side closes)
-    pool_timeout=30,       # wait up to 30s for a free connection before erroring
+    pool_size=_envint("DB_POOL_SIZE", 30),          # persistent connections kept open
+    max_overflow=_envint("DB_MAX_OVERFLOW", 70),    # extra burst connections when the pool is busy
+    pool_recycle=_envint("DB_POOL_RECYCLE", 1800),  # recycle a connection after 30 min (avoids stale closes)
+    pool_timeout=_envint("DB_POOL_TIMEOUT", 30),    # wait this long for a free connection before erroring
+    pool_use_lifo=True,                             # reuse the most-recent connection; let idle ones expire
     connect_args=connect_args,
 )
 

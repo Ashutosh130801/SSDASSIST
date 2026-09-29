@@ -109,6 +109,7 @@ def assist(body: schemas.AIRequest, db: Session = Depends(get_db),
     if body.context:
         prompt += f"\nCURRENT ACCOUNT CONTEXT: {body.context}\n"
     prompt += f"\nUSER ({user.name}, {user.role}) ASKS: {body.prompt}"
+    db.close()   # release the pooled DB connection before the (slow) LLM call — nothing below needs it
 
     if not settings.gemini_api_key:
         return schemas.AIResponse(reply=(

@@ -65,41 +65,59 @@ def geocode(limit: int = 40, retry_failed: bool = False, db: Session = Depends(g
     button loops this). Uses LocationIQ (LOCATIONIQ_KEY) with a cleaned address and a
     pincode-centroid fallback; paces ~1 req/sec to respect the free-tier rate limit."""
     from .. import geocode as _geo
+    from ..database import SessionLocal
     if not _geo.has_key():
         raise HTTPException(status_code=400,
                             detail="Geocoding is not configured — set LOCATIONIQ_KEY in the server .env and restart.")
     import time
-    cases = _needs_geocode(db.query(models.Case), include_failed=retry_failed).limit(limit).all()
-    _now = datetime.now(_IST_TZ)
-    geocoded = failed = 0
-    # One AI pass over the whole chunk first (splits glued words, normalizes short forms like
-    # Vizag->Visakhapatnam, drops noise). Best-effort — falls back to the deterministic cleaner.
+    # 1) READ (quick): pull the batch into plain dicts, then RELEASE the DB connection. The geocoding
+    # loop below does slow network I/O (LLM + ~1 req/sec HTTP), which must NOT hold a pooled DB
+    # connection — doing so is what exhausted the pool ("QueuePool overflow reached").
+    rows = _needs_geocode(db.query(
+        models.Case.id, models.Case.address, models.Case.address2, models.Case.pincode),
+        include_failed=retry_failed).limit(limit).all()
+    batch = [{"id": r[0], "address": r[1], "address2": r[2], "pincode": r[3]} for r in rows]
+    db.close()                                  # hand the connection back to the pool during network work
+
+    # 2) NETWORK (slow, no DB held): AI clean pass + per-case geocode.
     clean_map = {}
     if _geo.llm_available():
-        items = [{"id": c.id, "raw": ", ".join(str(p) for p in (c.address, c.address2, c.pincode) if p)}
-                 for c in cases]
+        items = [{"id": c["id"], "raw": ", ".join(str(p) for p in (c["address"], c["address2"], c["pincode"]) if p)}
+                 for c in batch]
         clean_map = _geo.llm_clean_batch(items)
+    results = []                                 # [(case_id, res_dict)]
     with httpx.Client(timeout=15) as client:
-        for i, c in enumerate(cases):
+        for i, c in enumerate(batch):
             if i:
-                time.sleep(1.0)                          # pace between cases (rate limit)
-            res = _geo.geocode_one(client, c.address, c.address2, c.pincode,
-                                   pre_clean=clean_map.get(c.id))
-            c.geo_attempted_at = _now          # mark as tried (success OR fail) so a repeat run skips it
-            if apply_geocode(c, res):
+                time.sleep(1.0)                  # pace between cases (rate limit)
+            res = _geo.geocode_one(client, c["address"], c["address2"], c["pincode"],
+                                   pre_clean=clean_map.get(c["id"]))
+            results.append((c["id"], res))
+
+    # 3) WRITE (quick): re-open a short-lived session, apply results, commit.
+    _now = datetime.now(_IST_TZ)
+    geocoded = failed = 0
+    with SessionLocal() as w:
+        by_id = {cs.id: cs for cs in w.query(models.Case).filter(
+            models.Case.id.in_([cid for cid, _ in results] or [-1])).all()}
+        for cid, res in results:
+            cs = by_id.get(cid)
+            if cs is None:
+                continue
+            cs.geo_attempted_at = _now           # mark as tried (success OR fail) so a repeat run skips it
+            if apply_geocode(cs, res):
                 geocoded += 1
             else:
                 failed += 1
-    db.commit()
-    remaining = _needs_geocode(db.query(models.Case)).count()
-    # Cases we tried but still couldn't pin — offered as an explicit "retry failed" action.
-    failed_total = (db.query(models.Case)
-                    .filter(models.Case.removed.isnot(True), models.Case.latitude.is_(None),
-                            models.Case.geo_attempted_at.isnot(None),
-                            or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
-                    .count())
+        w.commit()
+        remaining = _needs_geocode(w.query(models.Case)).count()
+        failed_total = (w.query(models.Case)
+                        .filter(models.Case.removed.isnot(True), models.Case.latitude.is_(None),
+                                models.Case.geo_attempted_at.isnot(None),
+                                or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
+                        .count())
     return {"geocoded": geocoded, "failed": failed, "remaining": remaining,
-            "failed_total": failed_total, "processed": len(cases)}
+            "failed_total": failed_total, "processed": len(batch)}
 
 
 @router.get("/geocode/status")
