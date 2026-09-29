@@ -38,6 +38,31 @@ async function api(path, { method, body, form, auth = true } = {}) {
   return res;
 }
 
+// Save a Blob to the user's machine. In a normal browser this is the usual anchor download.
+// Inside the desktop app (pywebview/WebView2) the browser download mechanism does nothing, so we
+// hand the bytes to the native shell (window.pywebview.api.save_file), which pops an OS Save-As
+// dialog and writes the file. Used by every download in the app so they work everywhere.
+async function saveBlob(filename, blob) {
+  const api = (typeof window !== 'undefined') && window.pywebview && window.pywebview.api;
+  if (api && api.save_file) {
+    try {
+      const b64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result).split(',')[1] || '');
+        r.onerror = () => rej(new Error('read failed'));
+        r.readAsDataURL(blob);
+      });
+      const saved = await api.save_file(filename, b64);
+      if (saved) toast('Saved to ' + saved); else toast('Save cancelled');
+      return;
+    } catch (e) { /* fall through to browser download */ }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
 async function download(path, filename) {
   try {
     const res = await fetch(path, { headers: store.t ? { Authorization: 'Bearer ' + store.t } : {} });
@@ -46,10 +71,7 @@ async function download(path, filename) {
       toast(msg, 'err'); return;
     }
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    await saveBlob(filename, blob);
   } catch (e) { toast('Download failed: ' + e.message, 'err'); }
 }
 
@@ -7865,11 +7887,8 @@ function AttendanceView({ user }) {
     const q2 = v => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const lines = [DAY_COLS.map(q2).join(','), ...rows.map(r => dayCell(r).map(q2).join(','))];
     const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob); const a = document.createElement('a');
     const tag = (filterLabel() === 'All staff' ? 'all' : filterLabel().replace(/[^a-z0-9]+/gi, '-')).toLowerCase();
-    a.href = url; a.download = `Attendance_${date}_${tag}.csv`;
-    // The anchor must be in the DOM before .click() for the download to fire in WebView2 (desktop app).
-    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
+    saveBlob(`Attendance_${date}_${tag}.csv`, blob);   // routes through native Save-As in the desktop app
   };
   const stTag = (r) => { const s = r.late ? 'Late' : r.status === 'present' ? 'Present' : r.status === 'leave' ? 'Leave' : r.status === 'weekoff' ? 'Week-off' : r.status === 'absent' ? 'Absent' : r.status; const c = ATT_COLOR[r.late ? 'L' : r.status] || '#64748B'; return <span style={{ color: c, fontWeight: 700, fontSize: 12.5 }}>{s}</span>; };
   return <div>
