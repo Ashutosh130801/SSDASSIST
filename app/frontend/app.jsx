@@ -7892,7 +7892,15 @@ function AttendanceView({ user }) {
     || (statF === 'absent' && r.status === 'absent') || (statF === 'leave' && r.status === 'leave')
     || (statF === 'online' && online(r));
   const passLoc = r => !loc || (r.branch || '').trim().toLowerCase() === loc.toLowerCase();
-  const rows = (day ? day.rows : []).filter(r => passStat(r) && passLoc(r) && (!q || (r.name || '').toLowerCase().includes(q.toLowerCase()) || (r.emp_code || '').toLowerCase().includes(q.toLowerCase())));
+  // Base set = location + search filtered (but NOT the status KPI filter), so the KPI counts
+  // reflect the chosen location, and clicking a KPI narrows within that same set.
+  const baseRows = (day ? day.rows : []).filter(r => passLoc(r) && (!q || (r.name || '').toLowerCase().includes(q.toLowerCase()) || (r.emp_code || '').toLowerCase().includes(q.toLowerCase())));
+  // Always compute from the visible (role + location + search) rows so every KPI reflects all
+  // applied filters together. Role is already applied server-side; location + search are applied above.
+  const summary = { present: baseRows.filter(r => r.status === 'present').length, late: baseRows.filter(r => r.late).length,
+    absent: baseRows.filter(r => r.status === 'absent').length, leave: baseRows.filter(r => r.status === 'leave').length,
+    online: baseRows.filter(r => online(r)).length, total: baseRows.length };
+  const rows = baseRows.filter(r => passStat(r));
   const people = (mon ? mon.people : []).filter(p => passLoc(p) && (!q || (p.name || '').toLowerCase().includes(q.toLowerCase()) || (p.emp_code || '').toLowerCase().includes(q.toLowerCase())));
   const dl = () => { const p = new URLSearchParams(); p.set('month', month); if (role) p.set('role', role); download('/api/attendance/download?' + p, `Attendance_${month}.xlsx`); };
   // Human-readable summary of exactly which filters are applied — printed/exported as a caption
@@ -7958,9 +7966,9 @@ function AttendanceView({ user }) {
 
     {tab === 'today' && (!day ? <Loader /> : <>
       <div className="kpi-row" style={{ marginBottom: 10 }}>
-        {[['present', 'Present', day.summary.present, 'var(--good)'], ['late', 'Late', day.summary.late, 'var(--warn)'],
-          ['absent', 'Absent', day.summary.absent, 'var(--bad)'], ['leave', 'On leave', day.summary.leave, 'var(--info)'],
-          ['online', 'Online now', day.summary.online, 'var(--ink)']].map(([key, label, val, color]) =>
+        {[['present', 'Present', summary.present, 'var(--good)'], ['late', 'Late', summary.late, 'var(--warn)'],
+          ['absent', 'Absent', summary.absent, 'var(--bad)'], ['leave', 'On leave', summary.leave, 'var(--info)'],
+          ['online', 'Online now', summary.online, 'var(--ink)']].map(([key, label, val, color]) =>
           <div key={key} className="glass card" onClick={() => setStatF(statF === key ? '' : key)}
             style={{ cursor: 'pointer', border: statF === key ? '2px solid ' + color : undefined }}>
             <div className="k">{label}</div><b style={{ color }}>{val}</b></div>)}
