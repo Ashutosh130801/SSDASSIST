@@ -150,7 +150,14 @@ def filters(db: Session = Depends(get_db), user: models.User = Depends(require_r
     roles = sorted({r for r, _ in us if r})
     if user.role != "admin":                       # Tech Support is admin-only
         roles = [r for r in roles if r != "techsupport"]
-    locations = sorted({(loc or "").strip() for _, loc in us if loc and loc.strip()})
+    # Dedupe locations case-insensitively so "Hyderabad" / "hyderabad" / "HYDERABAD" are one option
+    # (keep the first-seen spelling as the label). Filtering already matches case-insensitively.
+    _loc_seen = {}
+    for _, loc in us:
+        v = (loc or "").strip()
+        if v and v.lower() not in _loc_seen:
+            _loc_seen[v.lower()] = v
+    locations = sorted(_loc_seen.values(), key=lambda s: s.lower())
     return {"roles": roles, "locations": locations}
 
 

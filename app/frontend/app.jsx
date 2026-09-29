@@ -1,21 +1,55 @@
 const { useState, useEffect, useRef, useCallback } = React;
 
 /* ============================== helpers ============================== */
+// Desktop app (pywebview) persistence bridge. WebView2 wipes localStorage when the app closes,
+// which logged users out and made every relaunch look like a new device. So in the desktop app we
+// mirror the token + device id + user into the shell's own config file (which survives restarts)
+// and restore them on launch. In a normal browser window.pywebview is absent, so these are no-ops
+// and ordinary localStorage is the single source of truth.
+const nativeApi = () => { try { return (window.pywebview && window.pywebview.api) || null; } catch { return null; } };
+const nativeSaveAuth = () => { const a = nativeApi(); if (!a || !a.auth_set) return; try {
+  a.auth_set(localStorage.getItem('ssd_token') || '', localStorage.getItem('ssd_device') || '', localStorage.getItem('ssd_user') || '');
+} catch {} };
+// Resolve the pywebview API if present (it may attach a moment after load, signalled by
+// 'pywebviewready'); resolves null quickly in a normal browser.
+function waitForNativeApi(timeout) {
+  return new Promise(res => {
+    try { if (window.pywebview && window.pywebview.api) return res(window.pywebview.api); } catch { return res(null); }
+    let done = false; const f = () => { if (done) return; done = true; try { res((window.pywebview && window.pywebview.api) || null); } catch { res(null); } };
+    try { window.addEventListener('pywebviewready', f, { once: true }); } catch {}
+    setTimeout(f, timeout || 1500);
+  });
+}
+// On desktop launch, pull the saved session back into localStorage (native is source of truth there).
+async function nativeRestore() {
+  const a = await waitForNativeApi(1500);
+  if (!a || !a.auth_get) return;
+  try {
+    const s = await a.auth_get();   // { token, device, user }
+    if (!s) return;
+    if (s.device) localStorage.setItem('ssd_device', s.device);
+    if (s.token) localStorage.setItem('ssd_token', s.token);
+    if (s.user) localStorage.setItem('ssd_user', s.user);
+  } catch {}
+}
+
 const store = {
   get t() { try { return localStorage.getItem('ssd_token'); } catch { return null; } },
-  set t(v) { try { v ? localStorage.setItem('ssd_token', v) : localStorage.removeItem('ssd_token'); } catch {} },
+  set t(v) { try { v ? localStorage.setItem('ssd_token', v) : localStorage.removeItem('ssd_token'); } catch {} nativeSaveAuth(); },
   get u() { try { return JSON.parse(localStorage.getItem('ssd_user') || 'null'); } catch { return null; } },
-  set u(v) { try { v ? localStorage.setItem('ssd_user', JSON.stringify(v)) : localStorage.removeItem('ssd_user'); } catch {} },
+  set u(v) { try { v ? localStorage.setItem('ssd_user', JSON.stringify(v)) : localStorage.removeItem('ssd_user'); } catch {} nativeSaveAuth(); },
 };
 
-// Stable per-browser device id (for device-access approval / anti-fraud).
-const deviceId = (() => {
+// Stable per-device id (for device-access approval / anti-fraud). Read fresh from localStorage each
+// call so a value restored from the native config (desktop app) is picked up, rather than caching a
+// throwaway id generated at page load before the restore ran.
+function getDeviceId() {
   try {
     let d = localStorage.getItem('ssd_device');
-    if (!d) { d = 'dev-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); localStorage.setItem('ssd_device', d); }
+    if (!d) { d = 'dev-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); localStorage.setItem('ssd_device', d); nativeSaveAuth(); }
     return d;
   } catch { return 'dev-unknown'; }
-})();
+}
 const deviceLabel = (() => { try { return (navigator.userAgent || 'device').slice(0, 140); } catch { return 'device'; } })();
 
 async function api(path, { method, body, form, auth = true } = {}) {
@@ -611,7 +645,7 @@ function Login({ onLogin, config }) {
   const submit = async (e) => {
     e && e.preventDefault(); setErr(''); setBusy(true);
     try {
-      const body = { email, password: pw, device_id: deviceId, device_label: deviceLabel };
+      const body = { email, password: pw, device_id: getDeviceId(), device_label: deviceLabel };
       if (need2fa) body.otp = otp;
       const r = await api('/api/auth/login-json', { auth: false, body });
       store.t = r.access_token; store.u = r.user; onLogin(r.user);
@@ -3792,7 +3826,7 @@ function useLocationPing(user, config) {
       // backgrounded, or switched away. It requests the location permission itself on start.
       try {
         const Tracker = Cap.registerPlugin('Tracker');
-        Tracker.start({ url: (window.location.origin || '') + '/api/tracking/ping', token: store.t || '', extras: { device_id: deviceId } });
+        Tracker.start({ url: (window.location.origin || '') + '/api/tracking/ping', token: store.t || '', extras: { device_id: getDeviceId() } });
       } catch (e) {}
       return () => { try { Cap.registerPlugin('Tracker').stop(); } catch (e) {} };
     }
@@ -3812,7 +3846,7 @@ function useLocationPing(user, config) {
       const now = Date.now();
       if (!force && now - lastSent < minGap && distM(lastPos, coords) < 20) return;   // skip tiny jitter
       lastSent = now; lastPos = coords;
-      try { await api('/api/tracking/ping', { method: 'POST', body: { latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy, speed: coords.speed, device_id: deviceId } }); } catch (e) {}
+      try { await api('/api/tracking/ping', { method: 'POST', body: { latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy, speed: coords.speed, device_id: getDeviceId() } }); } catch (e) {}
     };
     // real-time movement stream (fires as the officer moves)
     const startWatch = () => {
@@ -7735,7 +7769,7 @@ function CheckinModal({ user, shift, onDone, onSkip }) {
       // Location is optional — never let a blocked/failed GPS lookup stop the check-in.
       let g = geo;
       if (!g) { try { g = await getGeo(); } catch (_) { g = null; } }
-      const r = await api('/api/attendance/checkin', { method: 'POST', body: { lat: g && g.lat, lng: g && g.lng, platform: platformTag(), device_id: deviceId } });
+      const r = await api('/api/attendance/checkin', { method: 'POST', body: { lat: g && g.lat, lng: g && g.lng, platform: platformTag(), device_id: getDeviceId() } });
       toast(r.late ? 'Checked in — marked present (late).' : 'Checked in. Have a great day!');
       onDone(r.attendance);
     } catch (e) {
@@ -7835,6 +7869,7 @@ function AttendanceView({ user }) {
   const [date, setDate] = useState(today);
   const [month, setMonth] = useState(today.slice(0, 7));
   const [role, setRole] = useState('');
+  const [loc, setLoc] = useState('');        // location (branch) filter
   const [q, setQ] = useState('');
   const [day, setDay] = useState(null);
   const [mon, setMon] = useState(null);
@@ -7847,16 +7882,22 @@ function AttendanceView({ user }) {
   useEffect(() => { if (tab === 'month') loadMon(); }, [tab, month, role]);
   useEffect(() => { if (tab !== 'today') return; const t = setInterval(loadDay, 30000); return () => clearInterval(t); }, [tab, date, role]);
   const roles = day ? [...new Set(day.rows.map(r => r.role))].sort() : [];
+  // Locations (branches) present in the currently-loaded data — drives the location filter chips.
+  const locSrc = tab === 'today' ? (day ? day.rows : []) : (mon ? mon.people : []);
+  // Group locations case-insensitively so "Hyderabad" / "hyderabad" / "HYDERABAD" are one chip
+  // (keeps the first-seen spelling as the label). Filtering matches the same way.
+  const locations = (() => { const seen = new Map(); locSrc.forEach(r => { const v = (r.branch || '').trim(); if (v && !seen.has(v.toLowerCase())) seen.set(v.toLowerCase(), v); }); return [...seen.values()].sort((a, b) => a.localeCompare(b)); })();
   const online = r => r.presence && (r.presence.state === 'active' || r.presence.state === 'idle');
   const passStat = r => statF === '' || (statF === 'present' && r.status === 'present') || (statF === 'late' && r.late)
     || (statF === 'absent' && r.status === 'absent') || (statF === 'leave' && r.status === 'leave')
     || (statF === 'online' && online(r));
-  const rows = (day ? day.rows : []).filter(r => passStat(r) && (!q || (r.name || '').toLowerCase().includes(q.toLowerCase()) || (r.emp_code || '').toLowerCase().includes(q.toLowerCase())));
-  const people = (mon ? mon.people : []).filter(p => !q || (p.name || '').toLowerCase().includes(q.toLowerCase()) || (p.emp_code || '').toLowerCase().includes(q.toLowerCase()));
+  const passLoc = r => !loc || (r.branch || '').trim().toLowerCase() === loc.toLowerCase();
+  const rows = (day ? day.rows : []).filter(r => passStat(r) && passLoc(r) && (!q || (r.name || '').toLowerCase().includes(q.toLowerCase()) || (r.emp_code || '').toLowerCase().includes(q.toLowerCase())));
+  const people = (mon ? mon.people : []).filter(p => passLoc(p) && (!q || (p.name || '').toLowerCase().includes(q.toLowerCase()) || (p.emp_code || '').toLowerCase().includes(q.toLowerCase())));
   const dl = () => { const p = new URLSearchParams(); p.set('month', month); if (role) p.set('role', role); download('/api/attendance/download?' + p, `Attendance_${month}.xlsx`); };
   // Human-readable summary of exactly which filters are applied — printed/exported as a caption
   // so the sheet says e.g. "Field Agent · Absent". Uses the same filtered `rows` shown on screen.
-  const filterLabel = () => { const parts = []; if (role) parts.push(roleName(role)); if (statF) parts.push(statF === 'online' ? 'Online now' : statF.charAt(0).toUpperCase() + statF.slice(1)); if (q) parts.push('“' + q + '”'); return parts.length ? parts.join(' · ') : 'All staff'; };
+  const filterLabel = () => { const parts = []; if (loc) parts.push('📍 ' + loc); if (role) parts.push(roleName(role)); if (statF) parts.push(statF === 'online' ? 'Online now' : statF.charAt(0).toUpperCase() + statF.slice(1)); if (q) parts.push('“' + q + '”'); return parts.length ? parts.join(' · ') : 'All staff'; };
   const DAY_COLS = ['Name', 'Emp ID', 'Role', 'Status', 'Presence', 'Check-in', 'Check-out', 'Worked', 'Idle', 'Calls', 'Visits', 'Collected'];
   const dayCell = (r) => {
     const st = r.late ? 'Late' : r.status === 'present' ? 'Present' : r.status === 'leave' ? 'Leave' : r.status === 'weekoff' ? 'Week-off' : r.status === 'absent' ? 'Absent' : (r.status || '');
@@ -7909,6 +7950,11 @@ function AttendanceView({ user }) {
       <div className={cx('chip', !role && 'on')} onClick={() => setRole('')}>All</div>
       {roles.map(rl => <div key={rl} className={cx('chip', role === rl && 'on')} onClick={() => setRole(rl)}>{roleName(rl)}</div>)}
     </div>
+    {locations.length > 1 && <div className="toolbar" style={{ marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
+      <span className="muted" style={{ fontSize: 12 }}>📍 Location:</span>
+      <div className={cx('chip', !loc && 'on')} onClick={() => setLoc('')}>All</div>
+      {locations.map(l => <div key={l} className={cx('chip', loc === l && 'on')} onClick={() => setLoc(loc === l ? '' : l)}>{l}</div>)}
+    </div>}
 
     {tab === 'today' && (!day ? <Loader /> : <>
       <div className="kpi-row" style={{ marginBottom: 10 }}>
@@ -8847,8 +8893,16 @@ function App() {
     api('/api/config', { auth: false })
       .then(cfg => { done = true; clearTimeout(t); setBootSlow(false); setConfig(cfg); window.__ssdCfg = cfg; })
       .catch(() => { setConfig({}); });   // real failure → leave bootSlow to the timeout / retry
-    if (store.t) api('/api/auth/me').then(u => { setUser(u); store.u = u; }).catch(() => { store.t = null; setUser(null); }).finally(() => setReady(true));
-    else setReady(true);
+    // Desktop app: if there's no token in localStorage (WebView2 may have wiped it on close),
+    // restore the saved session from the native config file before deciding to show the login screen.
+    (async () => {
+      if (!store.t) { try { await nativeRestore(); } catch {} }
+      if (store.t) {
+        try { const u = await api('/api/auth/me'); setUser(u); store.u = u; }
+        catch { store.t = null; setUser(null); }
+      }
+      setReady(true);
+    })();
     const h = (e) => { e.preventDefault(); setInstallEvt(e); };
     window.addEventListener('beforeinstallprompt', h);
     return () => { clearTimeout(t); window.removeEventListener('beforeinstallprompt', h); };
