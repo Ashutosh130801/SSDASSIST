@@ -35,13 +35,18 @@ jobs:
           node-version: "24"
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Don't install the legacy "tools" package — Google removed it, which made the default
+          # setup fail ("Failed to find package 'tools'"). Empty list = just cmdline-tools + license
+          # acceptance; Gradle/AGP then downloads the exact platform + build-tools the project needs.
+          packages: ""
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
