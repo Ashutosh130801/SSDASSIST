@@ -1239,7 +1239,7 @@ function AddProductModal({ presetBank, onClose, onAdded }) {
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div className="field"><label>Segment</label>
             <select className="input" value={segment} onChange={e => setSegment(e.target.value)}>
-              <option>Credit Card</option><option>PL/BL</option></select></div>
+              <option>Credit Card</option><option>PL/BL</option><option>AUTO LOANS</option></select></div>
           <div className="field"><label>Closing rule</label>
             <select className="input" value={closing} onChange={e => setClosing(e.target.value)}>
               <option value="month_end">Month-end</option>
@@ -1500,7 +1500,7 @@ function UploadModal({ onClose, onDone, initial }) {
           <div className="field"><label>Segment</label>
             <select className="input" value={segment} onChange={e => setSegment(e.target.value)}>
               <option value="">— select —</option>
-              {(cat ? cat.segments : ['Credit Card', 'PL/BL']).map(s => <option key={s} value={s}>{s}</option>)}</select></div>
+              {(() => { const base = (cat && cat.segments && cat.segments.length) ? cat.segments : ['Credit Card', 'PL/BL']; const opts = base.includes('AUTO LOANS') ? base : [...base, 'AUTO LOANS']; return opts.map(s => <option key={s} value={s}>{s}</option>); })()}</select></div>
           <div className="field"><label>Branch <span className="muted" style={{ fontWeight: 400 }}>(makes a branch-specific portfolio)</span></label>
             <input className="input" list="ssd-branch-list" value={branch} onChange={e => setBranch(e.target.value)}
               placeholder="Select or type a branch (e.g. Visakhapatnam)" />
@@ -1789,7 +1789,9 @@ function CasesView({ user }) {
   const [branchProduct, setBranchProduct] = useState(null);  // a split product whose branch cards are showing
   // Multi-select filters (AND-combined with everything else).
   const [cyclesSel, setCyclesSel] = useState([]); const [fosSel, setFosSel] = useState([]); const [callerSel, setCallerSel] = useState([]);
-  const [filterOpts, setFilterOpts] = useState({ cycles: [], fos: [], callers: [] });
+  // AUTO LOANS filters (only shown when the portfolio has vehicle data). Vehicle number → search box.
+  const [vehType, setVehType] = useState(''); const [brandF, setBrandF] = useState(''); const [oldNew, setOldNew] = useState('');
+  const [filterOpts, setFilterOpts] = useState({ cycles: [], fos: [], callers: [], vehicle_types: [], brands: [], old_new: [] });
   const nextPeriod = (window.__ssdCfg || {}).next_period;
   const [upload, setUpload] = useState(false); const [busy, setBusy] = useState(false); const [drawer, setDrawer] = useState(null); const [campaign, setCampaign] = useState(false);
   const [resetOpen, setResetOpen] = useState(false); const [resetTxt, setResetTxt] = useState('');
@@ -1809,8 +1811,11 @@ function CasesView({ user }) {
     if (cyclesSel.length) p.set('cycles', cyclesSel.join(','));
     if (fosSel.length) p.set('fos_ids', fosSel.join(','));
     if (callerSel.length) p.set('caller_ids', callerSel.join(','));
+    if (vehType) p.set('vehicle_type', vehType);
+    if (brandF) p.set('brand', brandF);
+    if (oldNew) p.set('old_new', oldNew);
     api('/api/cases?' + p).then(setCases);
-  }, [bank, product, segment, branchF, paid, q, openState, cyc, monthB, area, cyclesSel, fosSel, callerSel]);
+  }, [bank, product, segment, branchF, paid, q, openState, cyc, monthB, area, cyclesSel, fosSel, callerSel, vehType, brandF, oldNew]);
   useEffect(() => { api('/api/users').then(us => { const m = {}; (us || []).forEach(u => { m[u.id] = u.name; }); setStaff(m); }).catch(() => {}); }, []);
   // Section-wide month: reload bank + product cards whenever the month changes.
   useEffect(() => { loadSummary(); loadBanks(); }, [monthB]);
@@ -1827,7 +1832,7 @@ function CasesView({ user }) {
   useEffect(() => { if (mode === 'list' && (bank || product)) { const p = new URLSearchParams(); if (bank) p.set('bank', bank); if (product) p.set('product', product); if (branchF) p.set('branch', branchF); api('/api/cases/areas?' + p).then(a => setAreas(a || [])).catch(() => setAreas([])); } }, [mode, bank, product, branchF]);
   useEffect(() => { if (mode !== 'list') return; const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load, mode]);
   useDataChanged(() => { loadSummary(); loadBanks(); if (mode === 'list') load(); });   // live product cards / list
-  const clearFilters = () => { setCyclesSel([]); setFosSel([]); setCallerSel([]); setPaid(''); setArea(''); setFlaggedOnly(false); };
+  const clearFilters = () => { setCyclesSel([]); setFosSel([]); setCallerSel([]); setPaid(''); setArea(''); setFlaggedOnly(false); setVehType(''); setBrandF(''); setOldNew(''); };
   // Month stays the section-wide context (not reset per product) — clean month-wise separation.
   const openProduct = (c, branchVal = '') => {
     setBank(c.bank === '—' ? '' : c.bank); setProduct(c.product === '—' ? '' : c.product);
@@ -2024,10 +2029,17 @@ function CasesView({ user }) {
             options={(filterOpts.fos || []).map(f => ({ value: f.id, label: f.name + (f.code ? ` (${f.code})` : '') }))} />
           <MultiSelect label="Caller" icon="📞" width={220} selected={callerSel} onChange={setCallerSel}
             options={(filterOpts.callers || []).map(f => ({ value: f.id, label: f.name + (f.code ? ` (${f.code})` : '') }))} />
-          {(cyclesSel.length + fosSel.length + callerSel.length > 0 || paid) && <div className="chip" onClick={clearFilters} title="Clear all filters" style={{ color: 'var(--bad)' }}>✕ Clear</div>}
+          {(cyclesSel.length + fosSel.length + callerSel.length > 0 || paid || vehType || brandF || oldNew) && <div className="chip" onClick={clearFilters} title="Clear all filters" style={{ color: 'var(--bad)' }}>✕ Clear</div>}
           <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
           {areas.length > 0 && <select className="input" style={{ maxWidth: 150 }} value={area} onChange={e => setArea(e.target.value)} title="Filter by area">
             <option value="">📍 All areas</option>{areas.map(a => <option key={a} value={a}>{a}</option>)}</select>}
+          {/* AUTO LOANS filters — only appear when the portfolio carries vehicle data */}
+          {(filterOpts.vehicle_types || []).length > 0 && <select className="input" style={{ maxWidth: 150 }} value={vehType} onChange={e => setVehType(e.target.value)} title="Filter by vehicle type">
+            <option value="">🚗 All types</option>{filterOpts.vehicle_types.map(v => <option key={v} value={v}>{v}</option>)}</select>}
+          {(filterOpts.brands || []).length > 0 && <select className="input" style={{ maxWidth: 150 }} value={brandF} onChange={e => setBrandF(e.target.value)} title="Filter by brand">
+            <option value="">🏷 All brands</option>{filterOpts.brands.map(v => <option key={v} value={v}>{v}</option>)}</select>}
+          {(filterOpts.old_new || []).length > 0 && <select className="input" style={{ maxWidth: 130 }} value={oldNew} onChange={e => setOldNew(e.target.value)} title="Filter Old / New">
+            <option value="">Old/New</option>{filterOpts.old_new.map(v => <option key={v} value={v}>{v}</option>)}</select>}
           {(cases || []).some(c => c.flagged) && <div className={cx('chip', flaggedOnly && 'on')} onClick={() => setFlaggedOnly(v => !v)}
             style={flaggedOnly ? { background: 'rgba(220,38,38,.12)', color: 'var(--bad)' } : { color: 'var(--bad)' }}
             title="Cases flagged for review (e.g. old RTP)">⚠️ Flagged ({(cases || []).filter(c => c.flagged).length})</div>}
@@ -4099,6 +4111,11 @@ function CaseDrawer({ c, onClose, onChanged }) {
           {row('Card no', cur.card_no)}
           {row('Bucket / Cycle', (cur.bucket || '—') + ' · cyc ' + (cur.cycle || '—'))}
           {row('Month', cur.month)}
+          {/* AUTO LOANS — vehicle details + Old/New + CREDIT (display) */}
+          {(cur.vehicle_type || cur.brand || cur.vehicle_num) && row('Vehicle',
+            [cur.vehicle_type, cur.brand, cur.vehicle_num].filter(Boolean).join(' · '))}
+          {row('Old / New', cur.old_new)}
+          {cur.extra && cur.extra.x_credit ? row('Credit', cur.extra.x_credit) : null}
           {row('Branch / Area', (cur.branch || '—') + (cur.team ? ' · ' + cur.team : ''))}
           {row('Team lead', cur.team_lead)}{row('Category', cur.cat)}
           {row('Caller', cur.caller_name)}{row('Field agent (FOS)', cur.fos_name)}

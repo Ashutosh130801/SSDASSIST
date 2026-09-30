@@ -264,6 +264,11 @@ class CaseBase(BaseModel):
     bucket: Optional[str] = None
     cycle: Optional[str] = None
     month: Optional[str] = None
+    # AUTO LOANS segment fields (not MIS; filter/search/display)
+    vehicle_type: Optional[str] = None
+    brand: Optional[str] = None
+    vehicle_num: Optional[str] = None
+    old_new: Optional[str] = None
     total_outstanding: Optional[Decimal] = Decimal("0")
     principal_outstanding: Optional[Decimal] = Decimal("0")
     min_amount_due: Optional[Decimal] = Decimal("0")

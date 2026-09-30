@@ -117,7 +117,12 @@ class Case(Base):
     # cases stay merged in one bank→product portfolio.
     branch_explicit = Column(Boolean, default=False)
     product = Column(String(80))                 # bank product, e.g. "2 BKT", "180+", "DR"
-    segment = Column(String(30))                 # "Credit Card" or "PL/BL" (chosen at upload)
+    segment = Column(String(30))                 # "Credit Card" / "PL/BL" / "AUTO LOANS" (chosen at upload)
+    # AUTO LOANS segment fields — not MIS; used for filtering/searching the portfolio.
+    vehicle_type = Column(String(40))            # e.g. Car / Two-Wheeler / Commercial
+    brand = Column(String(60))                   # vehicle make/brand
+    vehicle_num = Column(String(40), index=True) # registration number (searchable)
+    old_new = Column(String(10))                 # "Old" or "New" (filter)
     account_no = Column(String(60), index=True)
     card_no = Column(String(40))
     customer_name = Column(String(160))

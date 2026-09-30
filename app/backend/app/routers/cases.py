@@ -434,6 +434,9 @@ def list_cases(
     period: str | None = None,          # "YYYY-MM" — admin can view a past month's cases
     month_bucket: str | None = None,    # 'current' | 'next' — this month vs next month
     area: str | None = None,            # AREA/region code (team) — scope to one area
+    vehicle_type: str | None = None,    # AUTO LOANS filter — vehicle type
+    brand: str | None = None,           # AUTO LOANS filter — vehicle brand/make
+    old_new: str | None = None,         # AUTO LOANS filter — Old / New
     closed: bool | None = None,         # True = only closed(locked), False = only open
     closing_type: str | None = None,    # cyc / month_end / due_date
     cyc: int | None = None,             # cycle day-of-month it closes on
@@ -494,6 +497,12 @@ def list_cases(
         q = q.filter(models.Case.branch == branch)
     if area:
         q = q.filter(models.Case.team == area)
+    if vehicle_type:
+        q = q.filter(func.lower(func.trim(func.coalesce(models.Case.vehicle_type, ""))) == vehicle_type.strip().lower())
+    if brand:
+        q = q.filter(func.lower(func.trim(func.coalesce(models.Case.brand, ""))) == brand.strip().lower())
+    if old_new:
+        q = q.filter(func.lower(func.trim(func.coalesce(models.Case.old_new, ""))) == old_new.strip().lower())
     if status:
         q = q.filter(models.Case.status == status)
     if paid_status:
@@ -505,6 +514,7 @@ def list_cases(
             models.Case.account_no.ilike(like),
             models.Case.phone.ilike(like),
             models.Case.pincode.ilike(like),
+            models.Case.vehicle_num.ilike(like),   # AUTO LOANS — search by vehicle registration number
         ))
     # Personal review-highlight filters (the user's own colour flags).
     if review_color or flagged_review:
@@ -803,7 +813,8 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
     """Distinct cycles + the FOS and callers actually present in a portfolio, so the case-list and
     MIS filter dropdowns only offer values that exist. Names resolve to full name + emp code."""
     q = _scope(db.query(
-        models.Case.cycle, models.Case.assigned_fos_id, models.Case.assigned_caller_id), user)
+        models.Case.cycle, models.Case.assigned_fos_id, models.Case.assigned_caller_id,
+        models.Case.vehicle_type, models.Case.brand, models.Case.old_new), user)
     if bank:
         q = q.filter(models.Case.bank == bank)
     if product:
@@ -811,13 +822,20 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
     if branch:
         q = q.filter(models.Case.branch == branch)
     cycles, fos_ids, caller_ids = set(), set(), set()
-    for cyc, fid, cid in q.all():
+    veh_types, brands, oldnew = set(), set(), set()   # AUTO LOANS filter values
+    for cyc, fid, cid, vt, br, on in q.all():
         if cyc is not None and str(cyc).strip():
             cycles.add(str(cyc).strip())
         if fid:
             fos_ids.add(fid)
         if cid:
             caller_ids.add(cid)
+        if vt and str(vt).strip():
+            veh_types.add(str(vt).strip())
+        if br and str(br).strip():
+            brands.add(str(br).strip())
+        if on and str(on).strip():
+            oldnew.add(str(on).strip())
     umap = {u.id: u for u in db.query(models.User).filter(
         models.User.id.in_(fos_ids | caller_ids)).all()} if (fos_ids or caller_ids) else {}
     def _people(ids):
@@ -830,7 +848,11 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
         except (TypeError, ValueError):
             return (1, c)
     return {"cycles": sorted(cycles, key=_cyc_sort),
-            "fos": _people(fos_ids), "callers": _people(caller_ids)}
+            "fos": _people(fos_ids), "callers": _people(caller_ids),
+            # AUTO LOANS filter options (only non-empty when the portfolio has vehicle data)
+            "vehicle_types": sorted(veh_types, key=str.lower),
+            "brands": sorted(brands, key=str.lower),
+            "old_new": sorted(oldnew, key=str.lower)}
 
 
 @router.get("/removed", response_model=list[schemas.CaseOut])

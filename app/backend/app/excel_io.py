@@ -174,6 +174,14 @@ HEADER_MAP = {
     "allocdate": "x:alloc_date", "allocationdate": "x:alloc_date", "duedate": "x:due_date",
     "pnpadates": "x:pnpa_dates",
     "cardlimit": "_ignore", "creditlimi": "_ignore",
+    # ---- AUTO LOANS segment ----
+    # Vehicle fields (not MIS, used for filtering/searching) → real columns so they're filterable.
+    "vehicletype": "vehicle_type", "vehicletyp": "vehicle_type",
+    "brand": "brand", "make": "brand",
+    "vehiclenum": "vehicle_num", "vehicleno": "vehicle_num", "vehiclenumber": "vehicle_num",
+    "regno": "vehicle_num", "registrationno": "vehicle_num", "vehicleregno": "vehicle_num",
+    "on": "old_new", "oldnew": "old_new", "o/n": "old_new",   # O/N column: values are Old / New (filter)
+    "credit": "x:credit",                                     # CREDIT → display-only extra field
 }
 
 MONEY_FIELDS = {
@@ -271,6 +279,8 @@ def record_to_case_kwargs(rec: dict) -> dict:
         "disposition", "remarks", "final_status",
         # MIS
         "enr", "norm_amount", "stab_amount", "rollback_amount", "norm_stab", "cat", "team_lead",
+        # AUTO LOANS — vehicle fields (filter/search) + old/new flag
+        "vehicle_type", "brand", "vehicle_num", "old_new",
     }
     kwargs = {k: v for k, v in rec.items() if k in fields and v is not None}
 

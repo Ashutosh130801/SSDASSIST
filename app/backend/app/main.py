@@ -73,6 +73,11 @@ def _ensure_columns():
             "geo_attempted_at": "TIMESTAMP",
             "address_clean": "TEXT",
             "digipin": "VARCHAR(15)",
+            # AUTO LOANS segment fields (filter/search)
+            "vehicle_type": "VARCHAR(40)",
+            "brand": "VARCHAR(60)",
+            "vehicle_num": "VARCHAR(40)",
+            "old_new": "VARCHAR(10)",
         },
         "users": {
             "employment_type": "VARCHAR(30)",
