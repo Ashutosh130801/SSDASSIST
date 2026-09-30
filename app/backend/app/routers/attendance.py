@@ -659,6 +659,7 @@ def user_visits(uid: int, date: str | None = None, db: Session = Depends(get_db)
             "id": v.id, "at": v.created_at.isoformat() if v.created_at else None,
             "case_id": v.case_id, "case_label": label,
             "photo": resolve_photo(v.photo_path) if v.photo_path else None,
+            "payment_photo": resolve_photo(v.payment_photo_path) if v.payment_photo_path else None,
             "lat": v.latitude, "lng": v.longitude,
             "distance_m": round(v.distance_from_case_m, 0) if v.distance_from_case_m is not None else None,
             "location_correct": v.location_correct, "person_moved": bool(v.person_moved),

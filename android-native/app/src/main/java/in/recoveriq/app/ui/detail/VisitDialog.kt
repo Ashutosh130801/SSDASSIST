@@ -69,6 +69,7 @@ data class VisitDraft(
     val disposition: String?, val note: String?, val photoJpeg: ByteArray?,
     val normStab: String? = null,
     val ptpDate: String? = null,
+    val paymentPhotoJpeg: ByteArray? = null,   // payment screenshot the customer shared (optional)
 )
 
 // ---------------------------------------------------------------------------
@@ -269,6 +270,7 @@ fun LogVisitDialog(
     var note by remember { mutableStateOf("") }
     var photo by remember { mutableStateOf<Bitmap?>(null) }
     var stamping by remember { mutableStateOf(false) }
+    var paymentPhoto by remember { mutableStateOf<Bitmap?>(null) }   // payment screenshot from the customer
     var lat by remember { mutableStateOf<Double?>(null) }
     var lng by remember { mutableStateOf<Double?>(null) }
     var acc by remember { mutableStateOf<Double?>(null) }
@@ -310,6 +312,38 @@ fun LogVisitDialog(
                         }
                     }
                 }
+        }
+    }
+
+    // Pick the customer's payment screenshot from the gallery (downsampled to keep upload small).
+    val paymentPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch(Dispatchers.IO) {
+            val bmp = runCatching {
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching null
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                var sample = 1
+                val longest = maxOf(bounds.outWidth, bounds.outHeight)
+                while (longest / sample > 1600) sample *= 2
+                val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            }.getOrNull()
+            if (bmp != null) withContext(Dispatchers.Main) { paymentPhoto = bmp }
+        }
+    }
+
+    // Capture the payment screenshot with the camera (e.g. photo of the customer's phone screen).
+    val paymentPhotoFile = remember { File(context.cacheDir, "payment_${System.currentTimeMillis()}.jpg") }
+    val paymentPhotoUri: Uri = remember {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", paymentPhotoFile)
+    }
+    val paymentCamera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        if (ok) scope.launch(Dispatchers.IO) {
+            val bmp = runCatching {
+                val raw = decodeSampled(paymentPhotoFile, 1600) ?: return@runCatching null
+                applyExifRotation(paymentPhotoFile, raw)
+            }.getOrNull()
+            if (bmp != null) withContext(Dispatchers.Main) { paymentPhoto = bmp }
         }
     }
 
@@ -398,11 +432,30 @@ fun LogVisitDialog(
                         }
                     )
                 }
+
+                // Payment screenshot from the customer (optional) — saved with the visit and shared to WhatsApp.
+                paymentPhoto?.let {
+                    Image(it.asImageBitmap(), "Payment screenshot",
+                        modifier = Modifier.fillMaxWidth().height(180.dp).padding(top = 4.dp))
+                }
+                Text(if (paymentPhoto == null) "🧾 Payment screenshot (optional)" else "🧾 Payment screenshot ✓",
+                    style = MaterialTheme.typography.labelSmall, color = Muted)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { paymentPicker.launch("image/*") }, modifier = Modifier.weight(1f)) {
+                        Text("🖼 Gallery")
+                    }
+                    OutlinedButton(onClick = { paymentCamera.launch(paymentPhotoUri) }, modifier = Modifier.weight(1f)) {
+                        Text("📷 Camera")
+                    }
+                }
             }
         },
         confirmButton = {
             TextButton(enabled = !submitting, onClick = {
                 val jpeg = photo?.let { bmp ->
+                    ByteArrayOutputStream().use { out -> bmp.compress(Bitmap.CompressFormat.JPEG, 85, out); out.toByteArray() }
+                }
+                val payJpeg = paymentPhoto?.let { bmp ->
                     ByteArrayOutputStream().use { out -> bmp.compress(Bitmap.CompressFormat.JPEG, 85, out); out.toByteArray() }
                 }
                 val draft = VisitDraft(
@@ -412,6 +465,7 @@ fun LogVisitDialog(
                     disposition = disp, note = note.ifBlank { null }, photoJpeg = jpeg,
                     normStab = if (paid && isCreditCard) normStab else null,
                     ptpDate = if (!paid && disp == "PTP" && ptpDate.isNotBlank()) ptpDate else null,
+                    paymentPhotoJpeg = payJpeg,
                 )
                 scope.launch {
                     submitting = true; submitError = null

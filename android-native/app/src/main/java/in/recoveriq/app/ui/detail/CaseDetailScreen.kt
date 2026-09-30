@@ -202,13 +202,14 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                                 personMoved = v.personMoved, paid = v.paid, amount = v.amount,
                                 disposition = v.disposition, note = v.note, photoJpeg = v.photoJpeg,
                                 normStab = v.normStab, ptpDate = v.ptpDate,
+                                paymentPhotoJpeg = v.paymentPhotoJpeg,
                             )
                         }
                         if (res.isSuccess) {
                             refresh++
                             // Open WhatsApp's contact picker so the agent can forward the
                             // visit summary + geotagged photo to anyone (office/colleague/self).
-                            Actions.shareVisit(context, buildVisitMessage(case, user, v), v.photoJpeg)
+                            Actions.shareVisit(context, buildVisitMessage(case, user, v), v.photoJpeg, v.paymentPhotoJpeg)
                             null
                         } else {
                             val e = res.exceptionOrNull()
@@ -426,8 +427,14 @@ private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = b
     case.phone?.let { appendLine("Phone: $it") }
     case.cardNo?.let { appendLine("Card no: $it") }
     case.accountNo?.let { appendLine("A/C no: $it") }
-    val bankBits = listOfNotNull(case.bank, case.bucket)
-    if (bankBits.isNotEmpty()) appendLine("Bank: ${bankBits.joinToString(" · ")}")
+    case.bank?.takeIf { it.isNotBlank() }?.let { appendLine("Bank: $it") }
+    // Collections identifiers the office needs on the visit slip: cycle, bucket and ENR (or TOS).
+    case.cycle?.takeIf { it.isNotBlank() }?.let { appendLine("CYC: $it") }
+    case.bucket?.takeIf { it.isNotBlank() }?.let { appendLine("BKT: $it") }
+    when {
+        case.enr > 0 -> appendLine("ENR: ₹${"%,.0f".format(case.enr)}")
+        case.totalOutstanding > 0 -> appendLine("TOS: ₹${"%,.0f".format(case.totalOutstanding)}")
+    }
     case.address?.let { appendLine("Address: $it" + (case.pincode?.let { p -> ", $p" } ?: "")) }
     appendLine("Outcome: ${v.disposition ?: "—"}")
     if (v.paid && v.amount > 0) appendLine("Collected: ₹${"%,.0f".format(v.amount)}")

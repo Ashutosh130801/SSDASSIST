@@ -263,6 +263,7 @@ class Visit(Base):
     gps_accuracy = Column(Float)
     distance_from_case_m = Column(Float)     # metres between visit GPS and case location (geo-fence)
     photo_path = Column(String(255))         # gps-camera image
+    payment_photo_path = Column(String(255)) # payment screenshot from the customer (optional)
     location_correct = Column(Boolean)       # is the address correct?
     person_moved = Column(Boolean, default=False)
 

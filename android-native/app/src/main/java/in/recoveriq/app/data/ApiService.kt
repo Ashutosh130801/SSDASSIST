@@ -209,6 +209,7 @@ interface ApiService {
         @Part("ptp_date") ptpDate: RequestBody?,
         @Part("note") note: RequestBody?,
         @Part photo: MultipartBody.Part?,
+        @Part paymentPhoto: MultipartBody.Part?,
     ): VisitOut
 
     // --- Templates / messaging ---

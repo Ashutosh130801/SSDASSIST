@@ -31,6 +31,7 @@ async def create_visit(
     ptp_date: str | None = Form(None),
     note: str | None = Form(None),
     photo: UploadFile | None = File(None),
+    payment_photo: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     user: models.User = Depends(require_roles("fos", "admin")),
 ):
@@ -55,6 +56,11 @@ async def create_visit(
     if photo is not None:
         content = await photo.read()
         photo_path = save_photo(content, photo.filename or "", photo.content_type or "image/jpeg")
+    # Optional payment screenshot the customer shared (proof of payment), stored alongside the visit.
+    payment_photo_path = None
+    if payment_photo is not None:
+        pcontent = await payment_photo.read()
+        payment_photo_path = save_photo(pcontent, payment_photo.filename or "", payment_photo.content_type or "image/jpeg")
 
     # Geo-fence: distance between where the visit was logged and the case's known location.
     dist_m = None
@@ -70,6 +76,7 @@ async def create_visit(
     visit = models.Visit(
         case_id=case_id, officer_id=user.id, latitude=latitude, longitude=longitude,
         gps_accuracy=gps_accuracy, distance_from_case_m=dist_m, photo_path=photo_path,
+        payment_photo_path=payment_photo_path,
         location_correct=location_correct, person_moved=person_moved, paid=paid,
         amount_collected=amt, disposition=disposition, note=note,
     )
@@ -130,6 +137,7 @@ async def create_visit(
     from .realtime import notify_data_changed
     notify_data_changed(case.bank, case.product)
     visit.photo_path = resolve_photo(visit.photo_path)
+    visit.payment_photo_path = resolve_photo(visit.payment_photo_path)
     return visit
 
 
@@ -183,6 +191,7 @@ def officer_day(officer_id: int, date: str | None = None, db: Session = Depends(
             "off_location": (v.distance_from_case_m is not None and v.distance_from_case_m > 300),
             "distance_m": v.distance_from_case_m, "note": v.note,
             "photo": resolve_photo(v.photo_path),
+            "payment_photo": resolve_photo(v.payment_photo_path),
         })
     return {"officer": {"id": u.id, "name": u.name, "branch": u.branch}, "date": d.isoformat(),
             "count": len(out), "collected": round(sum(x["amount"] for x in out), 2), "visits": out}
@@ -197,4 +206,5 @@ def visits_for_case(case_id: int, db: Session = Depends(get_db),
     rows = q.order_by(models.Visit.created_at.desc()).all()
     for v in rows:
         v.photo_path = resolve_photo(v.photo_path)
+        v.payment_photo_path = resolve_photo(v.payment_photo_path)
     return rows

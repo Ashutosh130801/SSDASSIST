@@ -62,21 +62,35 @@ object Actions {
      * themselves). No recipient is pre-selected. Falls back to the system share sheet if
      * WhatsApp isn't installed.
      */
-    fun shareVisit(context: Context, message: String, photoJpeg: ByteArray?) {
+    fun shareVisit(context: Context, message: String, photoJpeg: ByteArray?, paymentPhotoJpeg: ByteArray? = null) {
         try {
-            val intent = Intent(Intent.ACTION_SEND)
-            if (photoJpeg != null) {
-                val dir = File(context.cacheDir, "shared").apply { mkdirs() }
-                val file = File(dir, "visit_${System.currentTimeMillis()}.jpg")
-                file.writeBytes(photoJpeg)
-                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                intent.type = "image/jpeg"
-                intent.putExtra(Intent.EXTRA_STREAM, uri)
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } else {
-                intent.type = "text/plain"
+            val dir = File(context.cacheDir, "shared").apply { mkdirs() }
+            val uris = ArrayList<Uri>()
+            fun stash(name: String, bytes: ByteArray) {
+                val file = File(dir, name)
+                file.writeBytes(bytes)
+                uris.add(FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file))
             }
-            intent.putExtra(Intent.EXTRA_TEXT, message)   // caption for the photo
+            val ts = System.currentTimeMillis()
+            if (photoJpeg != null) stash("visit_$ts.jpg", photoJpeg)
+            if (paymentPhotoJpeg != null) stash("payment_$ts.jpg", paymentPhotoJpeg)
+
+            // One image → ACTION_SEND; two (visit + payment screenshot) → ACTION_SEND_MULTIPLE so
+            // both attach in the same WhatsApp share. No image → plain text.
+            val intent = when {
+                uris.size >= 2 -> Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                    type = "image/jpeg"
+                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                uris.size == 1 -> Intent(Intent.ACTION_SEND).apply {
+                    type = "image/jpeg"
+                    putExtra(Intent.EXTRA_STREAM, uris[0])
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                else -> Intent(Intent.ACTION_SEND).apply { type = "text/plain" }
+            }
+            intent.putExtra(Intent.EXTRA_TEXT, message)   // caption for the photo(s)
             // Prefer WhatsApp (personal, then Business); if neither, use the share sheet.
             val pm = context.packageManager
             val wa = when {

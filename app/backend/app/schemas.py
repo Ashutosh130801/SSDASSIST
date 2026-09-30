@@ -388,6 +388,7 @@ class VisitOut(BaseModel):
     latitude: Optional[float]
     longitude: Optional[float]
     photo_path: Optional[str]
+    payment_photo_path: Optional[str] = None
     location_correct: Optional[bool]
     person_moved: Optional[bool]
     paid: Optional[bool]

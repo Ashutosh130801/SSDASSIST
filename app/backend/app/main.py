@@ -134,6 +134,7 @@ def _ensure_columns():
         },
         "visits": {
             "distance_from_case_m": "FLOAT",
+            "payment_photo_path": "VARCHAR(255)",
         },
         "devices": {
             "approved_at": "TIMESTAMP",
@@ -601,7 +602,25 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 if os.path.isdir(FRONTEND_DIR):
+    # index.html (and the service worker) must NEVER be cached: they're the entry point that
+    # references app.jsx?v=NNN, so if a client caches index.html it keeps loading the OLD app.jsx
+    # and never sees updates. The desktop app (WebView2) caches aggressively and heuristically —
+    # this was why it showed stale UI while the browser (which revalidates) updated. Serving these
+    # with Cache-Control: no-cache forces a revalidate every load; app.jsx/styles are cache-busted
+    # by their ?v= query so they can still be cached safely.
+    _NOCACHE = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+
+    @app.get("/", include_in_schema=False)
+    @app.get("/index.html", include_in_schema=False)
+    def _index():
+        return FileResponse(os.path.join(FRONTEND_DIR, "index.html"), headers=_NOCACHE)
+
+    @app.get("/sw.js", include_in_schema=False)
+    def _sw():
+        return FileResponse(os.path.join(FRONTEND_DIR, "sw.js"), headers=_NOCACHE,
+                            media_type="application/javascript")
+
     # Serve the PWA from the site root so index.html's relative assets
     # (styles.css, app.jsx, manifest, sw.js) resolve correctly.
-    # Mounted LAST so all /api/* and /uploads routes take precedence.
+    # Mounted LAST so all /api/*, /uploads and the no-cache routes above take precedence.
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

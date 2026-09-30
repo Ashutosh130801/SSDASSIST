@@ -229,12 +229,17 @@ class Repository(context: Context) {
         caseId: Int, lat: Double?, lng: Double?, accuracy: Double?,
         personMoved: Boolean, paid: Boolean, amount: Double,
         disposition: String?, note: String?, photoJpeg: ByteArray?, normStab: String? = null,
-        ptpDate: String? = null,
+        ptpDate: String? = null, paymentPhotoJpeg: ByteArray? = null,
     ): VisitOut {
         fun t(v: String) = v.toRequestBody("text/plain".toMediaType())
         val photoPart = photoJpeg?.let {
             MultipartBody.Part.createFormData(
                 "photo", "visit.jpg", it.toRequestBody("image/jpeg".toMediaType()),
+            )
+        }
+        val paymentPart = paymentPhotoJpeg?.let {
+            MultipartBody.Part.createFormData(
+                "payment_photo", "payment.jpg", it.toRequestBody("image/jpeg".toMediaType()),
             )
         }
         return Api.service.createVisit(
@@ -250,6 +255,7 @@ class Repository(context: Context) {
             ptpDate = ptpDate?.let { t(it) },
             note = note?.let { t(it) },
             photo = photoPart,
+            paymentPhoto = paymentPart,
         )
     }
 

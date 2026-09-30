@@ -2507,6 +2507,7 @@ function LiveMap({ config }) {
         {selVisit.off_location && <div className="stat-row"><span className="k">⚠ Location</span><b style={{ color: 'var(--bad)' }}>{Math.round(selVisit.distance_m)}m off case</b></div>}
         {selVisit.note && <div style={{ marginTop: 8 }}><div className="muted" style={{ fontSize: 12 }}>Log submitted</div><div style={{ fontSize: 13, lineHeight: 1.5 }}>{selVisit.note}</div></div>}
         {selVisit.photo && <img src={selVisit.photo} alt="visit" style={{ width: '100%', borderRadius: 10, marginTop: 10 }} />}
+        {selVisit.payment_photo && <div style={{ marginTop: 10 }}><div className="muted" style={{ fontSize: 12 }}>🧾 Payment screenshot</div><a href={selVisit.payment_photo} target="_blank" rel="noreferrer"><img src={selVisit.payment_photo} alt="payment screenshot" style={{ width: '100%', borderRadius: 10, marginTop: 4 }} /></a></div>}
         <button className="btn gold block" style={{ marginTop: 10 }} onClick={async () => { try { const c = await api('/api/cases/' + selVisit.case_id); setDrawerCase(c); setSelVisit(null); } catch (e) { toast(e.message, 'err'); } }}>Open full case</button>
       </div></div>}
 
@@ -8080,6 +8081,7 @@ function AttendanceDetail({ id, date, onClose }) {
               {visits.map(v => <div key={v.id} style={{ display: 'flex', gap: 10, padding: 6, borderBottom: '1px solid var(--line)' }}>
                 {v.photo ? <a href={v.photo} target="_blank" rel="noreferrer"><img src={v.photo} alt="visit" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--line)' }} /></a>
                   : <div style={{ width: 72, height: 72, borderRadius: 8, border: '1px dashed var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>📷</div>}
+                {v.payment_photo && <a href={v.payment_photo} target="_blank" rel="noreferrer" title="Payment screenshot"><img src={v.payment_photo} alt="payment" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--good)' }} /></a>}
                 <div style={{ flex: 1, fontSize: 12.5 }}>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
                     <b>{fmtTime(v.at)}</b>
