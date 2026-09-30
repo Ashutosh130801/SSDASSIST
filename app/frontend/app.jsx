@@ -5334,8 +5334,9 @@ function MISView({ user }) {
   const [cycleView, setCycleView] = useState(false); // 'Cycle-wise MIS' — every portfolio by cycle
   const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // area-wise MIS
   const [cyclesSel, setCyclesSel] = useState([]); const [fosSel, setFosSel] = useState([]); const [callerSel, setCallerSel] = useState([]);
+  const [tlSel, setTlSel] = useState([]);   // team-lead-wise filter (values are team-lead names/codes)
   const [branchSel, setBranchSel] = useState([]);   // multi-select branches → combined MIS
-  const [filterOpts, setFilterOpts] = useState({ cycles: [], fos: [], callers: [] });
+  const [filterOpts, setFilterOpts] = useState({ cycles: [], fos: [], callers: [], team_leads: [] });
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   useEffect(() => {
     api('/api/cases/product-summary').then(rows => {
@@ -5345,17 +5346,17 @@ function MISView({ user }) {
     }).catch(() => setProds([]));
     api('/api/mis/overview').then(setOv).catch(() => {});
   }, []);
-  const fq = (cyclesSel.length ? `&cycles=${cyclesSel.join(',')}` : '') + (fosSel.length ? `&fos_ids=${fosSel.join(',')}` : '') + (callerSel.length ? `&caller_ids=${callerSel.join(',')}` : '');
+  const fq = (cyclesSel.length ? `&cycles=${cyclesSel.join(',')}` : '') + (fosSel.length ? `&fos_ids=${fosSel.join(',')}` : '') + (callerSel.length ? `&caller_ids=${callerSel.join(',')}` : '') + (tlSel.length ? `&team_leads=${tlSel.map(encodeURIComponent).join(',')}` : '');
   const mbq = (monthB ? `&month_bucket=${monthB}` : '') + (area ? `&area=${encodeURIComponent(area)}` : '') + (branchSel.length ? `&branch=${branchSel.map(encodeURIComponent).join(',')}` : '') + fq;
   const load = () => { if (!sel) { setD(null); return; } api(`/api/mis?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${mbq}`).then(setD).catch(e => setErr(e.message || 'Could not load MIS')); };
-  useEffect(() => { setErr(''); setD(null); load(); }, [sel, monthB, area, cyclesSel, fosSel, callerSel, branchSel]);
+  useEffect(() => { setErr(''); setD(null); load(); }, [sel, monthB, area, cyclesSel, fosSel, callerSel, tlSel, branchSel]);
   // Area list + filter options for the selected portfolio (reset when switching portfolio).
   useEffect(() => {
-    setArea(''); setCyclesSel([]); setFosSel([]); setCallerSel([]); setBranchSel([]);
-    if (!sel) { setAreas([]); setFilterOpts({ cycles: [], fos: [], callers: [] }); return; }
+    setArea(''); setCyclesSel([]); setFosSel([]); setCallerSel([]); setTlSel([]); setBranchSel([]);
+    if (!sel) { setAreas([]); setFilterOpts({ cycles: [], fos: [], callers: [], team_leads: [] }); return; }
     const bq = `bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${(sel.branch ? '&branch=' + encodeURIComponent(sel.branch) : '')}`;
     api('/api/cases/areas?' + bq).then(a => setAreas(a || [])).catch(() => setAreas([]));
-    api('/api/cases/filter-options?' + bq).then(o => setFilterOpts(o || { cycles: [], fos: [], callers: [] })).catch(() => setFilterOpts({ cycles: [], fos: [], callers: [] }));
+    api('/api/cases/filter-options?' + bq).then(o => setFilterOpts(o || { cycles: [], fos: [], callers: [], team_leads: [] })).catch(() => setFilterOpts({ cycles: [], fos: [], callers: [], team_leads: [] }));
   }, [sel]);
   // Real-time: recompute the MIS instantly whenever any log/payment/edit lands.
   useDataChanged(m => { if (!sel) return; if (m && m.product && m.product !== sel.product) return; load(); api('/api/mis/overview').then(setOv).catch(() => {}); });
@@ -5466,7 +5467,9 @@ function MISView({ user }) {
           options={(filterOpts.fos || []).map(f => ({ value: f.id, label: f.name + (f.code ? ` (${f.code})` : '') }))} />
         <MultiSelect label="Caller" icon="📞" width={220} selected={callerSel} onChange={setCallerSel}
           options={(filterOpts.callers || []).map(f => ({ value: f.id, label: f.name + (f.code ? ` (${f.code})` : '') }))} />
-        {(cyclesSel.length + fosSel.length + callerSel.length > 0) && <div className="chip" onClick={() => { setCyclesSel([]); setFosSel([]); setCallerSel([]); }} title="Clear filters" style={{ color: 'var(--bad)' }}>✕ Clear</div>}
+        {(filterOpts.team_leads || []).length > 0 && <MultiSelect label="Team Lead" icon="👥" width={220} selected={tlSel} onChange={setTlSel}
+          options={(filterOpts.team_leads || []).map(t => ({ value: t, label: t }))} />}
+        {(cyclesSel.length + fosSel.length + callerSel.length + tlSel.length > 0) && <div className="chip" onClick={() => { setCyclesSel([]); setFosSel([]); setCallerSel([]); setTlSel([]); }} title="Clear filters" style={{ color: 'var(--bad)' }}>✕ Clear</div>}
         {/* Area-wise — full MIS for one AREA only. */}
         {areas.length > 0 && <select className="input" style={{ maxWidth: 160 }} value={area} onChange={e => setArea(e.target.value)} title="Full MIS for one area">
           <option value="">📍 All areas</option>{areas.map(a => <option key={a} value={a}>{a}</option>)}</select>}

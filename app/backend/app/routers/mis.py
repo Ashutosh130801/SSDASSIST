@@ -187,7 +187,8 @@ def _group(cases: list, keyfn, idfn=None) -> list:
 def compute_mis(db: Session, user: models.User, bank: str, product: str,
                 period: str | None = None, area: str | None = None, branch=None,
                 cycles: list | None = None, fos_ids: list | None = None,
-                caller_ids: list | None = None, paid: str | None = None) -> dict:
+                caller_ids: list | None = None, paid: str | None = None,
+                team_leads: list | None = None) -> dict:
     from .cases import propensity as _prop, _bucket_for_period
     from sqlalchemy import func as _func
     q = _scope(db.query(models.Case), user, bucket=_bucket_for_period(period)).filter(
@@ -208,6 +209,9 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
         q = q.filter(models.Case.assigned_fos_id.in_(fos_ids))
     if caller_ids:
         q = q.filter(models.Case.assigned_caller_id.in_(caller_ids))
+    if team_leads:
+        q = q.filter(_func.lower(_func.trim(_func.coalesce(models.Case.team_lead, ""))).in_(
+            [str(t).strip().lower() for t in team_leads]))
     if paid:
         q = q.filter(models.Case.paid_status == paid)
     cases = q.all()
@@ -482,14 +486,15 @@ def _csv_int(v):
 def mis(bank: str = Query(...), product: str = Query(...), month_bucket: str | None = None,
         area: str | None = None, branch: str | None = None,
         cycles: str | None = None, fos_ids: str | None = None, caller_ids: str | None = None,
-        paid: str | None = None,
+        team_leads: str | None = None, paid: str | None = None,
         db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     if not bank or not product:
         raise HTTPException(status_code=400, detail="bank and product are required")
     out = compute_mis(db, user, bank, product, period=_period_for(month_bucket),
                       area=area or None, branch=_csv_str(branch),
                       cycles=_csv_str(cycles), fos_ids=_csv_int(fos_ids),
-                      caller_ids=_csv_int(caller_ids), paid=paid or None)
+                      caller_ids=_csv_int(caller_ids), team_leads=_csv_str(team_leads),
+                      paid=paid or None)
     out["table_names"] = TABLE_NAMES
     out["month_bucket"] = month_bucket or "all"
     out["area"] = area or ""
@@ -878,7 +883,7 @@ def download(bank: str = Query(...), product: str = Query(...),
              tables: str = Query(",".join(TABLE_NAMES.keys())), month_bucket: str | None = None,
              area: str | None = None, branch: str | None = None,
              cycles: str | None = None, fos_ids: str | None = None, caller_ids: str | None = None,
-             paid: str | None = None,
+             team_leads: str | None = None, paid: str | None = None,
              db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -921,7 +926,8 @@ def download(bank: str = Query(...), product: str = Query(...),
     data = compute_mis(db, user, bank, product, period=_period_for(month_bucket),
                        area=area or None, branch=_csv_str(branch),
                        cycles=_csv_str(cycles), fos_ids=_csv_int(fos_ids),
-                       caller_ids=_csv_int(caller_ids), paid=paid or None)
+                       caller_ids=_csv_int(caller_ids), team_leads=_csv_str(team_leads),
+                       paid=paid or None)
     wanted = [t.strip() for t in tables.split(",") if t.strip()]
     wb = openpyxl.Workbook()
     wb.remove(wb.active)

@@ -427,7 +427,13 @@ private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = b
     case.phone?.let { appendLine("Phone: $it") }
     case.cardNo?.let { appendLine("Card no: $it") }
     case.accountNo?.let { appendLine("A/C no: $it") }
-    case.bank?.takeIf { it.isNotBlank() }?.let { appendLine("Bank: $it") }
+    // Full portfolio the case belongs to: bank · product · segment (e.g. "ICICI · 2 BKT · Credit Card").
+    val portfolio = listOfNotNull(
+        case.bank?.takeIf { it.isNotBlank() },
+        case.product?.takeIf { it.isNotBlank() },
+        case.segment?.takeIf { it.isNotBlank() },
+    ).joinToString(" · ")
+    if (portfolio.isNotBlank()) appendLine("Portfolio: $portfolio")
     // Collections identifiers the office needs on the visit slip: cycle, bucket and ENR (or TOS).
     case.cycle?.takeIf { it.isNotBlank() }?.let { appendLine("CYC: $it") }
     case.bucket?.takeIf { it.isNotBlank() }?.let { appendLine("BKT: $it") }

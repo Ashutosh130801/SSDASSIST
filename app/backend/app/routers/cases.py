@@ -814,7 +814,7 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
     MIS filter dropdowns only offer values that exist. Names resolve to full name + emp code."""
     q = _scope(db.query(
         models.Case.cycle, models.Case.assigned_fos_id, models.Case.assigned_caller_id,
-        models.Case.vehicle_type, models.Case.brand, models.Case.old_new), user)
+        models.Case.vehicle_type, models.Case.brand, models.Case.old_new, models.Case.team_lead), user)
     if bank:
         q = q.filter(models.Case.bank == bank)
     if product:
@@ -823,7 +823,8 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
         q = q.filter(models.Case.branch == branch)
     cycles, fos_ids, caller_ids = set(), set(), set()
     veh_types, brands, oldnew = set(), set(), set()   # AUTO LOANS filter values
-    for cyc, fid, cid, vt, br, on in q.all():
+    tl_seen = {}                                      # team-lead values (dedupe case-insensitively)
+    for cyc, fid, cid, vt, br, on, tl in q.all():
         if cyc is not None and str(cyc).strip():
             cycles.add(str(cyc).strip())
         if fid:
@@ -836,6 +837,8 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
             brands.add(str(br).strip())
         if on and str(on).strip():
             oldnew.add(str(on).strip())
+        if tl and str(tl).strip() and str(tl).strip().lower() not in tl_seen:
+            tl_seen[str(tl).strip().lower()] = str(tl).strip()
     umap = {u.id: u for u in db.query(models.User).filter(
         models.User.id.in_(fos_ids | caller_ids)).all()} if (fos_ids or caller_ids) else {}
     def _people(ids):
@@ -852,7 +855,8 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
             # AUTO LOANS filter options (only non-empty when the portfolio has vehicle data)
             "vehicle_types": sorted(veh_types, key=str.lower),
             "brands": sorted(brands, key=str.lower),
-            "old_new": sorted(oldnew, key=str.lower)}
+            "old_new": sorted(oldnew, key=str.lower),
+            "team_leads": sorted(tl_seen.values(), key=str.lower)}
 
 
 @router.get("/removed", response_model=list[schemas.CaseOut])
