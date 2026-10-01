@@ -5338,14 +5338,20 @@ function MISView({ user }) {
   const [branchSel, setBranchSel] = useState([]);   // multi-select branches → combined MIS
   const [filterOpts, setFilterOpts] = useState({ cycles: [], fos: [], callers: [], team_leads: [] });
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  // The portfolio dropdown must be scoped to the selected month: a bank whose current month isn't
+  // uploaded yet only has LAST-month data, which _scope hides for non-admins unless we ask for that
+  // month. So reload the portfolio list whenever the month changes, passing the same bucket — else
+  // last-month-only portfolios never appear in the dropdown. Keep the current selection if it still
+  // exists in the new month, otherwise fall back to the first.
   useEffect(() => {
-    api('/api/cases/product-summary').then(rows => {
+    api('/api/cases/product-summary' + (monthB ? '?month_bucket=' + monthB : '')).then(rows => {
       const seen = {}, list = [];
       (rows || []).forEach(r => { const k = r.bank + '||' + r.product; if (!seen[k] && r.product !== '—') { seen[k] = 1; list.push({ bank: r.bank, product: r.product, branch: '', branch_split: !!r.branch_split, branches: (r.branches || []).map(b => b.branch) }); } });
-      setProds(list); if (list[0]) setSel(list[0]);
+      setProds(list);
+      setSel(cur => (cur && list.find(p => p.bank === cur.bank && p.product === cur.product)) ? cur : (list[0] || null));
     }).catch(() => setProds([]));
-    api('/api/mis/overview').then(setOv).catch(() => {});
-  }, []);
+  }, [monthB]);
+  useEffect(() => { api('/api/mis/overview').then(setOv).catch(() => {}); }, []);
   const fq = (cyclesSel.length ? `&cycles=${cyclesSel.join(',')}` : '') + (fosSel.length ? `&fos_ids=${fosSel.join(',')}` : '') + (callerSel.length ? `&caller_ids=${callerSel.join(',')}` : '') + (tlSel.length ? `&team_leads=${tlSel.map(encodeURIComponent).join(',')}` : '');
   const mbq = (monthB ? `&month_bucket=${monthB}` : '') + (area ? `&area=${encodeURIComponent(area)}` : '') + (branchSel.length ? `&branch=${branchSel.map(encodeURIComponent).join(',')}` : '') + fq;
   const load = () => { if (!sel) { setD(null); return; } api(`/api/mis?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${mbq}`).then(setD).catch(e => setErr(e.message || 'Could not load MIS')); };
