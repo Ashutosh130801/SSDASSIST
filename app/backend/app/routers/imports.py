@@ -339,11 +339,26 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
     def _match_teamlead(val):
         return _match(val, _tl_by_code)
 
+    def _resolve_tl(val):
+        """Resolve a team-lead cell to a real team-lead user by EMP CODE (TL001 / dual-role
+        tl_emp_code) or by NAME. Returns the user or None. Used to decide whether a value is a
+        genuine team lead before it's stamped on a case."""
+        if val is None or not str(val).strip():
+            return None
+        key = str(val).strip().upper()
+        return _tl_by_code.get(key) or _tl_by_name.get(key)
+
     def _row_tl_code(rec):
         """Header-agnostic fallback: recognise a known team-lead emp code (e.g. TL001) appearing
-        in ANY cell of the row, for formats (like PL/BL) that have no team-lead column."""
+        in ANY cell of the row, for formats (like PL/BL) that have no team-lead column.
+        GUARD: only a canonical TL### token counts — this stops a stray numeric / short value in an
+        unrelated column (cycle, bucket, a count, an account fragment) from being mistaken for a
+        team lead, which was silently assigning random team leads to 1–2 cases."""
         for cell in (rec.get("_cells") or []):
-            u = _tl_by_code.get(str(cell).strip().upper())
+            cs = str(cell).strip()
+            if not (len(cs) >= 3 and cs[:2].upper() == "TL" and cs[2:].isdigit()):
+                continue
+            u = _tl_by_code.get(cs.upper())
             if u:
                 return u.emp_code or u.name
         return None
@@ -355,15 +370,20 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
         return _match_fos(val)[0]
 
     def _apply_teamlead(case_obj, cu, fu):
-        """Stamp the resolved team lead on the case and point its caller + FOS at that TL
-        so the team lead sees these cases in their scope. Returns True if a TL was applied."""
-        tl = _match_teamlead(case_obj.team_lead)[0]
+        """Stamp the team lead on the case, normalising it to the TL's full name. Returns True if a
+        real team lead was applied.
+        FIX A: if the value doesn't resolve to a genuine team lead (code or name), BLANK it — never
+        leave a stray/typo value on the case, so it can't surface as a bogus 'team lead' in MIS.
+        FIX C: do NOT overwrite the caller/FOS's reporting team_lead_id from an upload. A shared
+        caller/FOS works under different team leads across portfolios; the case's own team_lead is
+        the source of truth for team-lead scope (teamlead_case_filter matches on it, not on the
+        person's team_lead_id). Overwriting it was re-pointing people to whichever file was uploaded
+        last, shuffling 'My Team' rosters."""
+        tl = _resolve_tl(case_obj.team_lead)
         if not tl:
+            case_obj.team_lead = None
             return False
         case_obj.team_lead = tl.name
-        for person in (cu, fu):
-            if person and getattr(person, "team_lead_id", None) != tl.id:
-                person.team_lead_id = tl.id
         return True
 
     # Per-row diagnostics: rows whose CALLER/FOS was named on the sheet but didn't map to
@@ -460,8 +480,8 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                     existing.branch = fu.branch
             elif not existing.assigned_fos_id:
                 _flag(kwargs, "fos", _rawf, _fr)
-            # Team lead: header column first, else a TL emp code found anywhere in the row.
-            if not _match_teamlead(existing.team_lead)[0]:
+            # Team lead: header column first, else a canonical TL code found anywhere in the row.
+            if not _resolve_tl(existing.team_lead):
                 _tlc = _row_tl_code(rec)
                 if _tlc:
                     existing.team_lead = _tlc
@@ -534,8 +554,8 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                 if pulled:
                     kwargs["new_contact_by"] = "Imported from database"
                     kwargs["new_contact_at"] = datetime.now(timezone.utc)
-        # Team lead: header column first, else a TL emp code found anywhere in the row.
-        if not _match_teamlead(kwargs.get("team_lead"))[0]:
+        # Team lead: header column first, else a canonical TL code found anywhere in the row.
+        if not _resolve_tl(kwargs.get("team_lead")):
             _tlc = _row_tl_code(rec)
             if _tlc:
                 kwargs["team_lead"] = _tlc
