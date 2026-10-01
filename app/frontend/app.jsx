@@ -6170,6 +6170,18 @@ function SheetView({ user, config }) {
     return out;
   };
 
+  // Excel-style formula/cell bar: the focused free-text cell's full content shown in a wide bar
+  // above the sheet, so long text that doesn't fit the narrow cell can be read and edited there.
+  const [fxCell, setFxCell] = useState(null);   // { row, col, label, domId }
+  const [fxVal, setFxVal] = useState('');
+  const focusFx = (row, col, domId, value) => { setFxCell({ row, col, label: col.t, domId }); setFxVal(value == null ? '' : String(value)); };
+  const commitFx = () => {
+    if (!fxCell) return;
+    const el = document.getElementById(fxCell.domId);
+    if (el) el.value = fxVal;                 // keep the cell input in sync
+    editCell(fxCell.row, fxCell.col, fxVal);  // commit through the normal edit path (audit + live sync)
+  };
+
   const editCell = (row, col, value) => {
     // "Paid" and "Status" are linked: flipping either toward/away from paid runs the same
     // accounting popup (record a payment or revert one) so paid_status + status move together
@@ -6247,6 +6259,11 @@ function SheetView({ user, config }) {
         .sv-btn{border:1px solid var(--stroke-soft);background:var(--glass-2);border-radius:10px;padding:7px 12px;cursor:pointer;font-size:13px;color:var(--ink)}
         .sv-btn:hover{border-color:var(--gold)}
         .sv-btn.primary{background:var(--gold);color:#fff;border-color:var(--gold)}
+        /* Excel-style formula/cell bar above the sheet */
+        .sv-fxbar{display:flex;align-items:center;gap:8px;margin:8px 0;padding:4px 6px;border:1px solid var(--stroke-soft);border-radius:10px;background:var(--glass-2)}
+        .sv-fxlabel{flex:0 0 auto;min-width:54px;text-align:center;font-weight:700;font-style:italic;color:var(--ink-dim);border-right:1px solid var(--stroke-soft);padding:4px 10px 4px 4px;font-size:13px}
+        .sv-fxinput{flex:1;border:none;background:transparent;outline:none;font-size:14px;color:var(--ink);padding:6px 4px}
+        .sv-fxinput:disabled{color:var(--ink-dim)}
         .sv-dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px}
         .sv-scroll{overflow:auto;border:1px solid var(--stroke-soft);border-radius:14px;background:var(--glass-2);flex:1;max-height:calc(100vh - 210px)}
         table.sv{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
@@ -6342,6 +6359,17 @@ function SheetView({ user, config }) {
 
       {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
 
+      {/* Excel-style formula/cell bar — shows the full text of the selected cell so long entries
+          that don't fit the narrow cell can be read and edited here. Enter (or clicking away) saves. */}
+      <div className="sv-fxbar">
+        <span className="sv-fxlabel" title="Selected cell">{fxCell ? fxCell.label : 'ƒx'}</span>
+        <input className="sv-fxinput" value={fxVal} disabled={!fxCell}
+          placeholder={fxCell ? 'Full text of “' + fxCell.label + '” — edit here, press Enter to save' : 'Click a cell to see / edit its full text here'}
+          onChange={e => { setFxVal(e.target.value); const el = document.getElementById(fxCell && fxCell.domId); if (el) el.value = e.target.value; }}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitFx(); e.target.blur(); } }}
+          onBlur={commitFx} />
+      </div>
+
       {scrollable && (
         <div className="sv-slide">
           <button className="sv-slide-btn" onClick={() => nudge(-1)} title="Scroll left" aria-label="Scroll left">◀</button>
@@ -6391,8 +6419,9 @@ function SheetView({ user, config }) {
                   <td key={c.k}>
                     {(row.closed || row.escalated) && (c.edit || c.data) ? (
                         <span className="muted" title={row.escalated ? 'Escalated — locked' : 'Closed for the month — locked'}>{c.data ? ((row.extra || {})[c.k] || '—') : cellText(row, c)}</span>
-                      ) : c.data ? <input key={row.id + '-' + c.k} defaultValue={(row.extra || {})[c.k] || ''}
-                        onFocus={() => sendPresence(row.id, c.t, true)}
+                      ) : c.data ? <input key={row.id + '-' + c.k} id={'sv-' + row.id + '-' + c.k} defaultValue={(row.extra || {})[c.k] || ''}
+                        onFocus={e => { sendPresence(row.id, c.t, true); focusFx(row, c, 'sv-' + row.id + '-' + c.k, e.target.value); }}
+                        onInput={e => setFxVal(e.target.value)}
                         onBlur={e => { sendPresence(row.id, c.t, false); if (String(e.target.value) !== String((row.extra || {})[c.k] || '')) editCell(row, c, e.target.value); }}
                         onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }} />
                       : c.custom ? sheetFmt(rowFormula(c.formula, row))
@@ -6405,8 +6434,9 @@ function SheetView({ user, config }) {
                       ) : c.type === 'date' ? (
                         <input type="date" value={(row[c.k] || '').slice(0, 10)} onChange={e => editCell(row, c, e.target.value)} />
                       ) : (
-                        <input key={row.id + '-' + c.k} type={c.type === 'num' ? 'number' : 'text'} defaultValue={row[c.k] == null ? '' : row[c.k]}
-                          onFocus={() => sendPresence(row.id, c.t, true)}
+                        <input key={row.id + '-' + c.k} id={'sv-' + row.id + '-' + c.k} type={c.type === 'num' ? 'number' : 'text'} defaultValue={row[c.k] == null ? '' : row[c.k]}
+                          onFocus={e => { sendPresence(row.id, c.t, true); focusFx(row, c, 'sv-' + row.id + '-' + c.k, e.target.value); }}
+                          onInput={e => setFxVal(e.target.value)}
                           onBlur={e => { sendPresence(row.id, c.t, false); if (String(e.target.value) !== String(row[c.k] == null ? '' : row[c.k])) editCell(row, c, e.target.value); }}
                           onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }} />
                       )}
