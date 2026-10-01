@@ -7775,6 +7775,9 @@ function getGeo() {
   });
 }
 const platformTag = () => { try { const c = window.Capacitor; return (c && (c.isNativePlatform ? c.isNativePlatform() : c.isNative)) ? 'android' : 'web'; } catch (e) { return 'web'; } };
+// Phone/tablet detection — used to hide the PWA "Install" button on mobile (where it would install a
+// misleading Chrome shortcut instead of the real native app). Desktop keeps the install button.
+const isMobileDevice = () => { try { return /android|iphone|ipad|ipod|mobile|windows phone/i.test(navigator.userAgent || '') || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || '')); } catch (e) { return false; } };
 const fmtDur = (s) => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h}h ${m}m` : `${m}m`; };
 // Attendance times render in IST via the shared helper (treats naive server times as UTC).
 const fmtTime = fmtTimeIST;
@@ -8812,8 +8815,12 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       <main className="main">
         <div className="topbar">
           <h1>{title}</h1>
-          {installEvt && <button className="btn sm gold" style={{ marginLeft: 'auto', marginRight: 10 }} onClick={onInstall}>⬇ Install app</button>}
-          <div style={{ marginLeft: installEvt ? 0 : 'auto', display: 'flex', gap: 4, marginRight: 6 }}>
+          {/* PWA "Install app" button shows on DESKTOP only. On mobile/Android it installed a Chrome
+              shortcut (not the real native app), which misled staff — there they should download the
+              actual APK from the login page instead. (isMobileDevice() gates it; beforeinstallprompt
+              is still prevented so the browser's own mobile mini-infobar doesn't pop up either.) */}
+          {installEvt && !isMobileDevice() && <button className="btn sm gold" style={{ marginLeft: 'auto', marginRight: 10 }} onClick={onInstall}>⬇ Install desktop app</button>}
+          <div style={{ marginLeft: (installEvt && !isMobileDevice()) ? 0 : 'auto', display: 'flex', gap: 4, marginRight: 6 }}>
             {hasQueue && <button className="btn ghost sm" title="My work queue (To-Do)" onClick={() => setView('todo')} style={{ fontSize: 17, padding: '4px 8px', background: view === 'todo' ? 'rgba(37,99,235,.12)' : 'transparent' }}>📋</button>}
             {canRtsb && <button className="btn ghost sm" title="RTSB — target vs achievement" onClick={() => setView('rtsb')} style={{ fontSize: 17, padding: '4px 8px', background: view === 'rtsb' ? 'rgba(37,99,235,.12)' : 'transparent' }}>🎯</button>}
             {canMonitor && <button className="btn ghost sm" title="Live Monitor" onClick={() => setView('monitor')} style={{ fontSize: 17, padding: '4px 8px', background: view === 'monitor' ? 'rgba(37,99,235,.12)' : 'transparent' }}>🖥️</button>}
