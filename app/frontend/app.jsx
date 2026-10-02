@@ -5745,7 +5745,15 @@ function FeedbackView({ user }) {
       {err && <div className="glass card" style={{ color: 'var(--bad)', marginBottom: 10 }}>{err}</div>}
       {!data ? <Loader /> : shown.length === 0 ? <div className="glass card muted" style={{ padding: 20, textAlign: 'center' }}>{(search || Object.values(filters).some(Boolean)) ? 'No rows match your search / filters.' : 'No cases for this product / day.'}</div> :
         <div className="glass card" style={{ padding: 6 }}>
-          <div className="tablewrap" style={{ maxHeight: '70vh', overflow: 'auto' }}><table>
+          {/* Fixed/sticky header (both the label row and the filter row) like the Live Sheet, so
+              column names stay visible while scrolling the rows. */}
+          <style>{`
+            .fb-sheet{border-collapse:separate;border-spacing:0}
+            .fb-sheet thead th{position:sticky;background:var(--glass-2);z-index:2;box-shadow:inset 0 -1px 0 var(--stroke-soft)}
+            .fb-sheet thead tr:first-child th{top:0;z-index:3}
+            .fb-sheet thead tr:nth-child(2) th{top:34px}
+          `}</style>
+          <div className="tablewrap" style={{ maxHeight: '70vh', overflow: 'auto' }}><table className="fb-sheet">
             <thead>
               <tr>
                 <th style={{ width: 30 }}><input type="checkbox" checked={allPicked} onChange={toggleAll} /></th>

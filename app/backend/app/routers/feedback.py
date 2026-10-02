@@ -32,7 +32,9 @@ COLUMNS = [
     {"key": "visit_date", "label": "Visit Date", "type": "date"},
     {"key": "nature_of_business", "label": "Nature Of Business", "type": "code", "code": "nature_of_business"},
     {"key": "default_reason", "label": "Default Reason", "type": "code", "code": "default_reason"},
+    {"key": "tc_name", "label": "TC Name", "type": "text", "readonly": True},
     {"key": "tc_code", "label": "Tc Code", "type": "code", "code": "tc_code"},
+    {"key": "fe_name", "label": "FE Name", "type": "text", "readonly": True},
     {"key": "fe_code", "label": "Fe Code", "type": "code", "code": "fe_code"},
     {"key": "tc_final_code", "label": "Tc Final Code", "type": "code", "code": "tc_code"},
     {"key": "fe_final_code", "label": "Fe  Final Code", "type": "code", "code": "fe_code"},
@@ -44,7 +46,7 @@ COLUMNS = [
 ]
 # columns actually stored/editable on the FeedbackEntry row. loan_no + paid_status come from the
 # case (read-only, auto-filled) and history is derived — none are stored/editable on the entry.
-STORED = {c["key"] for c in COLUMNS} - {"loan_no", "history", "paid_status"}
+STORED = {c["key"] for c in COLUMNS} - {"loan_no", "history", "paid_status", "tc_name", "fe_name"}
 # fields kept live from the call / visit logs unless a human has overridden them
 LOG_FIELDS = {"visited", "dispo_code", "visit_date", "tc_code", "fe_code", "tc_remarks", "fe_remark", "ptp_date"}
 
@@ -105,31 +107,57 @@ def _scope_feedback(db: Session, user, bank, product, branch=None, month_bucket=
     return q
 
 
-def _derive(case, call, visit):
-    """Log-derived defaults for a case's feedback row (call/visit already filtered to the day)."""
+# Normalise a raw call/visit disposition to the bank's TC/FE code list, tolerating spelling/spacing.
+_CODE_ALIAS = {
+    "CALLBACK": "CALL BACK", "CALL BACK": "CALL BACK", "CB": "CALL BACK",
+    "PTP": "PTP", "BPTP": "BPTP", "RTP": "RTP", "PAID": "PAID", "RNR": "RNR",
+    "PAYMENT": "PAID", "PARTIAL": "PTP", "DISPUTE": "DISPUTE", "FRAUD": "FRAUD SUSPECT",
+    "PNC": "PNC", "SNC": "SNC", "LEFT MESSAGE": "LEFT MESSAGE", "NO ANSWER": "RNR",
+    "DOOR LOCK": "DOOR LOCK", "SKIP": "SKIP", "EXPIRED": "CUSTOMER EXPIRED",
+    "CUSTOMER EXPIRED": "CUSTOMER EXPIRED",
+}
+
+
+def _code_for(disp, allowed):
+    """Map a disposition string onto the allowed TC/FE code set (exact, then alias)."""
+    if not disp:
+        return None
+    u = str(disp).strip().upper()
+    if u in allowed:
+        return u
+    a = _CODE_ALIAS.get(u)
+    return a if a in allowed else None
+
+
+def _derive(case, call, visit, ptp_call=None):
+    """Log-derived defaults for a case's feedback row, from its LATEST call & visit (and the most
+    recent call that actually carries a PTP date, passed separately so a later non-PTP call doesn't
+    blank it)."""
     d = {}
     if visit:
         d["visited"] = "Visited"
         d["visit_date"] = _fmt_date(visit.created_at)
         if visit.note:
             d["fe_remark"] = visit.note
-        vd = (visit.disposition or "").upper()
-        if vd in _FE:
-            d["fe_code"] = vd
+        fc = _code_for(visit.disposition, _FE)
+        if fc:
+            d["fe_code"] = fc
     else:
         d["visited"] = "Not Visited"
     if call:
         if call.note:
             d["tc_remarks"] = call.note
-        cd = (call.disposition or "").upper()
-        if cd in _TC:
-            d["tc_code"] = cd
-        if call.ptp_date:
-            d["ptp_date"] = _fmt_date(call.ptp_date)
-    # dispo code from whichever disposition we have
+        tc = _code_for(call.disposition, _TC)
+        if tc:
+            d["tc_code"] = tc
+    # PTP date — from the most recent call that has one (not just the latest call overall).
+    pc = ptp_call or (call if (call and call.ptp_date) else None)
+    if pc and pc.ptp_date:
+        d["ptp_date"] = _fmt_date(pc.ptp_date)
+    # dispo code from whichever disposition we have (visit first, then call, then the case)
     disp = (visit.disposition if visit else None) or (call.disposition if call else None) or case.disposition
     if disp:
-        code = _DISPO_TO_CODE.get(str(disp).upper())
+        code = _DISPO_TO_CODE.get(str(disp).strip().upper())
         if code:
             d["dispo_code"] = code
     return d
@@ -147,8 +175,10 @@ def _row(entry, case):
          "customer": case.customer_name, "phone": case.phone}
     for k in STORED:
         r[k] = getattr(entry, k)
-    # Paid/Unpaid is read-only and always reflects the case's live pay status (auto-filled).
+    # Read-only, auto-filled from the case: pay status + the assigned TC / FE names.
     r["paid_status"] = (case.paid_status or "UNPAID")
+    r["tc_name"] = case.caller_name
+    r["fe_name"] = case.fos_name
     return r
 
 
@@ -180,12 +210,17 @@ def get_feedback(bank: str, product: str, day: str | None = None, branch: str | 
         models.CallLog.case_id.in_(ids)).order_by(models.CallLog.created_at.asc()).all())
     visits = _latest_by_case(db.query(models.Visit).filter(
         models.Visit.case_id.in_(ids)).order_by(models.Visit.created_at.asc()).all())
+    # Latest call that actually has a PTP date — so the PTP column fills from the real PTP call, not
+    # a later RNR/other call that would otherwise overwrite it with a blank.
+    ptps = _latest_by_case(db.query(models.CallLog).filter(
+        models.CallLog.case_id.in_(ids), models.CallLog.ptp_date.isnot(None)
+        ).order_by(models.CallLog.created_at.asc()).all())
     existing = {e.case_id: e for e in db.query(models.FeedbackEntry).filter(
         models.FeedbackEntry.case_id.in_(ids), models.FeedbackEntry.day == d).all()}
 
     rows, dirty = [], False
     for c in cases:
-        derived = _derive(c, calls.get(c.id), visits.get(c.id))
+        derived = _derive(c, calls.get(c.id), visits.get(c.id), ptps.get(c.id))
         e = existing.get(c.id)
         if not e:
             e = models.FeedbackEntry(case_id=c.id, bank=bank, product=product, day=d,
@@ -257,11 +292,16 @@ def refresh_feedback(bank: str, product: str, day: str | None = None, branch: st
         models.CallLog.case_id.in_(ids)).order_by(models.CallLog.created_at.asc()).all())
     visits = _latest_by_case(db.query(models.Visit).filter(
         models.Visit.case_id.in_(ids)).order_by(models.Visit.created_at.asc()).all())
+    # Latest call that actually has a PTP date — so the PTP column fills from the real PTP call, not
+    # a later RNR/other call that would otherwise overwrite it with a blank.
+    ptps = _latest_by_case(db.query(models.CallLog).filter(
+        models.CallLog.case_id.in_(ids), models.CallLog.ptp_date.isnot(None)
+        ).order_by(models.CallLog.created_at.asc()).all())
     existing = {e.case_id: e for e in db.query(models.FeedbackEntry).filter(
         models.FeedbackEntry.case_id.in_(ids), models.FeedbackEntry.day == d).all()}
     n = 0
     for c in cases:
-        derived = _derive(c, calls.get(c.id), visits.get(c.id))
+        derived = _derive(c, calls.get(c.id), visits.get(c.id), ptps.get(c.id))
         e = existing.get(c.id)
         if not e:
             e = models.FeedbackEntry(case_id=c.id, bank=bank, product=product, day=d,
