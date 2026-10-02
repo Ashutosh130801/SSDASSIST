@@ -27,6 +27,7 @@ COLUMNS = [
     {"key": "agency_name", "label": "AGENCY NAME", "type": "text"},
     {"key": "loan_no", "label": "LOAN NO", "type": "text", "readonly": True},
     {"key": "visited", "label": "Visited/Not Visited", "type": "code", "code": "visited"},
+    {"key": "paid_status", "label": "Paid/Unpaid", "type": "text", "readonly": True},
     {"key": "dispo_code", "label": "Dispo Code", "type": "code", "code": "dispo_code"},
     {"key": "visit_date", "label": "Visit Date", "type": "date"},
     {"key": "nature_of_business", "label": "Nature Of Business", "type": "code", "code": "nature_of_business"},
@@ -41,8 +42,9 @@ COLUMNS = [
     # Full merged notes/remarks history (all calls + visits, newest first) — read-only reference.
     {"key": "history", "label": "Remarks History", "type": "text", "readonly": True},
 ]
-# columns actually stored/editable on the FeedbackEntry row (loan_no from the case; history is derived)
-STORED = {c["key"] for c in COLUMNS} - {"loan_no", "history"}
+# columns actually stored/editable on the FeedbackEntry row. loan_no + paid_status come from the
+# case (read-only, auto-filled) and history is derived — none are stored/editable on the entry.
+STORED = {c["key"] for c in COLUMNS} - {"loan_no", "history", "paid_status"}
 # fields kept live from the call / visit logs unless a human has overridden them
 LOG_FIELDS = {"visited", "dispo_code", "visit_date", "tc_code", "fe_code", "tc_remarks", "fe_remark", "ptp_date"}
 
@@ -145,6 +147,8 @@ def _row(entry, case):
          "customer": case.customer_name, "phone": case.phone}
     for k in STORED:
         r[k] = getattr(entry, k)
+    # Paid/Unpaid is read-only and always reflects the case's live pay status (auto-filled).
+    r["paid_status"] = (case.paid_status or "UNPAID")
     return r
 
 
@@ -168,13 +172,14 @@ def get_feedback(bank: str, product: str, day: str | None = None, branch: str | 
     if not ids:
         return {"day": d.isoformat(), "bank": bank, "product": product, "count": 0, "rows": []}
 
-    start, end = _ist_bounds(d)
+    # Use each case's LATEST call & visit across all time (not just the selected day) so the
+    # TC/FE remark, visit date, visited, dispo and PTP columns always reflect the most recent
+    # activity — previously they stayed blank unless the log happened on this exact day, and the
+    # remark only appeared in the all-time Remarks History column.
     calls = _latest_by_case(db.query(models.CallLog).filter(
-        models.CallLog.case_id.in_(ids), models.CallLog.created_at >= start,
-        models.CallLog.created_at < end).order_by(models.CallLog.created_at.asc()).all())
+        models.CallLog.case_id.in_(ids)).order_by(models.CallLog.created_at.asc()).all())
     visits = _latest_by_case(db.query(models.Visit).filter(
-        models.Visit.case_id.in_(ids), models.Visit.created_at >= start,
-        models.Visit.created_at < end).order_by(models.Visit.created_at.asc()).all())
+        models.Visit.case_id.in_(ids)).order_by(models.Visit.created_at.asc()).all())
     existing = {e.case_id: e for e in db.query(models.FeedbackEntry).filter(
         models.FeedbackEntry.case_id.in_(ids), models.FeedbackEntry.day == d).all()}
 
@@ -244,13 +249,14 @@ def refresh_feedback(bank: str, product: str, day: str | None = None, branch: st
     ids = [c.id for c in cases]
     if not ids:
         return {"ok": True, "updated": 0}
-    start, end = _ist_bounds(d)
+    # Use each case's LATEST call & visit across all time (not just the selected day) so the
+    # TC/FE remark, visit date, visited, dispo and PTP columns always reflect the most recent
+    # activity — previously they stayed blank unless the log happened on this exact day, and the
+    # remark only appeared in the all-time Remarks History column.
     calls = _latest_by_case(db.query(models.CallLog).filter(
-        models.CallLog.case_id.in_(ids), models.CallLog.created_at >= start,
-        models.CallLog.created_at < end).order_by(models.CallLog.created_at.asc()).all())
+        models.CallLog.case_id.in_(ids)).order_by(models.CallLog.created_at.asc()).all())
     visits = _latest_by_case(db.query(models.Visit).filter(
-        models.Visit.case_id.in_(ids), models.Visit.created_at >= start,
-        models.Visit.created_at < end).order_by(models.Visit.created_at.asc()).all())
+        models.Visit.case_id.in_(ids)).order_by(models.Visit.created_at.asc()).all())
     existing = {e.case_id: e for e in db.query(models.FeedbackEntry).filter(
         models.FeedbackEntry.case_id.in_(ids), models.FeedbackEntry.day == d).all()}
     n = 0

@@ -36,14 +36,12 @@ def _tracked(u: models.User) -> bool:
 
 
 def _shift(role: str) -> tuple[str, str, str]:
-    """(shift_start, shift_end, late_after) as HH:MM. Frontline (FOS + callers) must check in by
-    10:00; all other roles get a looser 10:30 window, after which it's a late check-in (still
-    present). FOS start their shift earlier at 08:00."""
+    """(shift_start, shift_end, late_after) as HH:MM. EVERYONE must check in by 10:00 — a check-in
+    after 10:00 is marked LATE (not present) for all roles. FOS start their shift earlier at 08:00;
+    others at 09:00. (HO-Manager flag is still exempt from late, by design — see check-in.)"""
     if role == "fos":
         return "08:00", "19:00", "10:00"
-    if role == "telecaller":
-        return "09:00", "19:00", "10:00"
-    return "09:00", "19:00", "10:30"
+    return "09:00", "19:00", "10:00"
 
 
 def _hm(s: str) -> time_cls:

@@ -142,6 +142,12 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                                 scope.launch { runCatching { vm.repo.setReviewFlag(caseId, if (selected) null else col) }; refresh++ }
                             }) {}
                     }
+                    // Explicit "Clear" to remove the highlight once it's no longer needed.
+                    if (!case.reviewColor.isNullOrBlank()) {
+                        TextButton(onClick = { scope.launch { runCatching { vm.repo.setReviewFlag(caseId, null) }; refresh++ } }) {
+                            Text("Clear")
+                        }
+                    }
                 }
 
                 DetailFields(case)
