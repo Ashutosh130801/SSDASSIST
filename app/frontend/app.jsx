@@ -2125,6 +2125,7 @@ function LiveMap({ config }) {
   const [selDate, setSelDate] = useState(''); const [routeInfo, setRouteInfo] = useState(null);
   const [, setTick] = useState(0);   // local 1s clock so live/offline + "seen ago" update on their own
   const [branch, setBranch] = useState(''); const branchRef = useRef('');
+  const [fosQ, setFosQ] = useState('');   // search officers by name / emp code / branch / bank
   const [liveFirstOn, setLiveFirstOn] = useState(false);   // tap "live" count → float live officers on top
   const visitMarks = useRef([]);
   const [dayVisits, setDayVisits] = useState(null); const [selVisit, setSelVisit] = useState(null);
@@ -2317,7 +2318,9 @@ function LiveMap({ config }) {
     XLSX.writeFile(wb, `Visits_${histOfficer.name}_${selDate}.xlsx`.replace(/[^\w.-]/g, '_'));
   };
 
-  const shown = officers.filter(o => !branch || o.branch === branch);
+  const _fosMatch = o => { const q = fosQ.trim().toLowerCase(); if (!q) return true;
+    return [o.name, o.emp_code, o.branch, o.phone, ...(o.banks || [])].some(v => (v || '').toString().toLowerCase().includes(q)); };
+  const shown = officers.filter(o => (!branch || o.branch === branch) && _fosMatch(o));
   // Default order is alphabetical; tap the "live" count to float live officers to the top.
   const shownSorted = liveFirstOn
     ? [...shown].sort((a, b) => (isOnline(b.last_seen) - isOnline(a.last_seen)) || String(a.name || '').localeCompare(b.name || ''))
@@ -2331,6 +2334,9 @@ function LiveMap({ config }) {
           <option value="">All branches</option>
           {[...new Set(officers.map(o => o.branch).filter(Boolean))].map(b => <option key={b} value={b}>{b}</option>)}
         </select>
+        <input className="input" style={{ maxWidth: 220 }} value={fosQ} onChange={e => setFosQ(e.target.value)}
+          placeholder="🔍 Search FOS — name, ID, bank" />
+        {fosQ && <button className="btn ghost sm" onClick={() => setFosQ('')} title="Clear search">✕</button>}
         <div style={{ flex: 1 }} />
         {routeActive.current && <button className="btn sm" onClick={() => { clearRoute(); setRouteInfo(null); refresh(); }}>✕ Clear route</button>}
         <GeocodeButton />
@@ -2352,7 +2358,7 @@ function LiveMap({ config }) {
                   ● {shown.filter(o => isOnline(o.last_seen)).length} live{liveFirstOn ? ' ↑' : ''}</span>
                 <span className="muted"> · {shown.filter(o => !isOnline(o.last_seen)).length} offline</span>
               </span></div>
-            {shown.length === 0 && <p className="muted">No field officers{branch ? ' in ' + branch : ''} active today. They appear here once their app has sent a location.</p>}
+            {shown.length === 0 && <p className="muted">{fosQ ? 'No field officer matches “' + fosQ + '”.' : 'No field officers' + (branch ? ' in ' + branch : '') + ' active today. They appear here once their app has sent a location.'}</p>}
             {shownSorted.map(o => { const on = isOnline(o.last_seen); return <div key={o.officer_id} style={{ padding: '9px 0', borderBottom: '1px solid var(--stroke-soft)', opacity: on ? 1 : .62 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <div><b><span style={{ color: on ? 'var(--good)' : 'var(--ink-dim)' }}>●</span> {o.name}</b>
