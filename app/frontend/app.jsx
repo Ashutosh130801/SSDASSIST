@@ -52,12 +52,13 @@ function getDeviceId() {
 }
 const deviceLabel = (() => { try { return (navigator.userAgent || 'device').slice(0, 140); } catch { return 'device'; } })();
 
-async function api(path, { method, body, form, auth = true } = {}) {
+async function api(path, { method, body, form, auth = true, signal } = {}) {
   const headers = {};
   if (auth && store.t) headers['Authorization'] = 'Bearer ' + store.t;
   // A request carrying a body must be POST — a GET+body throws in Firefox.
   const httpMethod = method || (body || form ? 'POST' : 'GET');
   const opts = { method: httpMethod, headers };
+  if (signal) opts.signal = signal;   // lets a caller abort a long in-flight request (e.g. Stop)
   if (form) { opts.body = form; }
   else if (body) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const res = await fetch(path, opts);
@@ -3593,6 +3594,8 @@ function GeocodeButton() {
   const [running, setRunning] = React.useState(false);
   const [msg, setMsg] = React.useState('');
   const stop = React.useRef(false);
+  const abortCtl = React.useRef(null);   // aborts the in-flight geocode request when Stop is pressed
+  const doStop = () => { stop.current = true; try { abortCtl.current && abortCtl.current.abort(); } catch (e) {} setMsg('Stopping…'); };
   const loadStatus = () => api('/api/cases/geocode/status').then(setSt).catch(() => setHidden(true));
   React.useEffect(() => { loadStatus(); }, []);
   // retryMode=false → only NEW / never-tried addresses (keeps already-located as-is, skips ones
@@ -3603,7 +3606,7 @@ function GeocodeButton() {
     setRunning(true); stop.current = false; let done = 0, failed = 0;
     // Smaller batches = each HTTP request finishes in ~10s instead of ~30-40s, so it stays well under
     // any proxy/gateway/browser request timeout — the usual cause of a "Stopped — error" mid-run.
-    const BATCH = 10;
+    const BATCH = 5;
     const maxBatches = retryMode ? Math.ceil((st.failed_total || 0) / BATCH) + 1 : 100000;
     const url = '/api/cases/geocode?limit=' + BATCH + (retryMode ? '&retry_failed=true' : '') + (monthOnly ? '&month_bucket=current' : '');
     const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -3611,12 +3614,16 @@ function GeocodeButton() {
       for (let i = 0; i < maxBatches && !stop.current; i++) {
         // One transient failure (gateway timeout, rate limit, network blip) shouldn't kill the whole
         // run — retry the batch up to 3 times with a short back-off before giving up.
-        let r = null, lastErr = null;
+        let r = null, lastErr = null, aborted = false;
         for (let attempt = 0; attempt < 3 && !stop.current; attempt++) {
-          try { r = await api(url, { method: 'POST' }); lastErr = null; break; }
-          catch (e) { lastErr = e; setMsg(`Hiccup — retrying (${attempt + 1}/3)…`); await sleep(2500); }
+          abortCtl.current = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+          try { r = await api(url, { method: 'POST', signal: abortCtl.current && abortCtl.current.signal }); lastErr = null; break; }
+          catch (e) {
+            if (stop.current || (e && e.name === 'AbortError')) { aborted = true; break; }
+            lastErr = e; setMsg(`Hiccup — retrying (${attempt + 1}/3)…`); await sleep(2500);
+          }
         }
-        if (stop.current) break;
+        if (aborted || stop.current) { setMsg(`Stopped. Located ${done} this run — progress saved.`); break; }
         if (!r) { setMsg('Stopped — ' + ((lastErr && lastErr.message) || 'network error') + '. Progress is saved; click Geocode again to resume.'); break; }
         done += r.geocoded || 0; failed += r.failed || 0;
         const leftLabel = retryMode ? `${r.failed_total || 0} still unresolved` : `${r.remaining} left`;
@@ -3648,7 +3655,7 @@ function GeocodeButton() {
   );
   if (running) return <>
     <span className="badge" style={{ background: '#FEF3C7', color: '#92400E' }}>📍 {msg || 'Geocoding…'}</span>
-    <button className="btn sm" onClick={() => { stop.current = true; }}>Stop</button>
+    <button className="btn sm" onClick={doStop}>Stop</button>
     {counts}
   </>;
   return <>

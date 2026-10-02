@@ -89,7 +89,7 @@ def _llm_call(prompt: str) -> str | None:
                 json={"model": settings.openrouter_model,
                       "messages": [{"role": "user", "content": prompt}],
                       "temperature": 0.1},
-                timeout=45)
+                timeout=15)
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"]
         except Exception:
@@ -101,7 +101,7 @@ def _llm_call(prompt: str) -> str | None:
                    f"{settings.gemini_model}:generateContent?key={settings.gemini_api_key}")
             r = httpx.post(url, json={"contents": [{"parts": [{"text": prompt}]}],
                                       "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096}},
-                           timeout=45)
+                           timeout=15)
             r.raise_for_status()
             return r.json()["candidates"][0]["content"]["parts"][0]["text"]
         except Exception:

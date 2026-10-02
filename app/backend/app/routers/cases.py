@@ -81,7 +81,8 @@ def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | Non
     # loop below does slow network I/O (LLM + ~1 req/sec HTTP), which must NOT hold a pooled DB
     # connection — doing so is what exhausted the pool ("QueuePool overflow reached").
     rows = _needs_geocode(db.query(
-        models.Case.id, models.Case.address, models.Case.address2, models.Case.pincode),
+        models.Case.id, models.Case.address, models.Case.address2, models.Case.pincode)
+        .filter(models.Case.removed.isnot(True)),
         include_failed=retry_failed, period=period).limit(limit).all()
     batch = [{"id": r[0], "address": r[1], "address2": r[2], "pincode": r[3]} for r in rows]
     db.close()                                  # hand the connection back to the pool during network work
@@ -96,7 +97,7 @@ def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | Non
     with httpx.Client(timeout=15) as client:
         for i, c in enumerate(batch):
             if i:
-                time.sleep(1.0)                  # pace between cases (rate limit)
+                time.sleep(0.5)                  # pace between cases (LocationIQ free tier allows 2 req/s)
             res = _geo.geocode_one(client, c["address"], c["address2"], c["pincode"],
                                    pre_clean=clean_map.get(c["id"]))
             results.append((c["id"], res))
