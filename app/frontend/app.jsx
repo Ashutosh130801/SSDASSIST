@@ -3601,14 +3601,23 @@ function GeocodeButton() {
   const run = async (retryMode, monthOnly) => {
     if (!st || !st.configured) { toast('Set LOCATIONIQ_KEY in the server .env, then restart the backend.'); return; }
     setRunning(true); stop.current = false; let done = 0, failed = 0;
-    // Bound the retry loop so it makes one full pass over the currently-failed set (a still-failing
-    // address stays selectable, which would otherwise loop forever).
-    const pending = monthOnly ? (st.month_remaining || 0) : (st.remaining || 0);
-    const maxBatches = retryMode ? Math.ceil((st.failed_total || 0) / 25) + 1 : 100000;
-    const url = '/api/cases/geocode?limit=25' + (retryMode ? '&retry_failed=true' : '') + (monthOnly ? '&month_bucket=current' : '');
+    // Smaller batches = each HTTP request finishes in ~10s instead of ~30-40s, so it stays well under
+    // any proxy/gateway/browser request timeout — the usual cause of a "Stopped — error" mid-run.
+    const BATCH = 10;
+    const maxBatches = retryMode ? Math.ceil((st.failed_total || 0) / BATCH) + 1 : 100000;
+    const url = '/api/cases/geocode?limit=' + BATCH + (retryMode ? '&retry_failed=true' : '') + (monthOnly ? '&month_bucket=current' : '');
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
     try {
       for (let i = 0; i < maxBatches && !stop.current; i++) {
-        const r = await api(url, { method: 'POST' });
+        // One transient failure (gateway timeout, rate limit, network blip) shouldn't kill the whole
+        // run — retry the batch up to 3 times with a short back-off before giving up.
+        let r = null, lastErr = null;
+        for (let attempt = 0; attempt < 3 && !stop.current; attempt++) {
+          try { r = await api(url, { method: 'POST' }); lastErr = null; break; }
+          catch (e) { lastErr = e; setMsg(`Hiccup — retrying (${attempt + 1}/3)…`); await sleep(2500); }
+        }
+        if (stop.current) break;
+        if (!r) { setMsg('Stopped — ' + ((lastErr && lastErr.message) || 'network error') + '. Progress is saved; click Geocode again to resume.'); break; }
         done += r.geocoded || 0; failed += r.failed || 0;
         const leftLabel = retryMode ? `${r.failed_total || 0} still unresolved` : `${r.remaining} left`;
         setMsg(`${monthOnly ? 'This month: ' : ''}Located ${done} · ${leftLabel}`);
@@ -3622,7 +3631,7 @@ function GeocodeButton() {
                          month_failed_total: monthOnly ? (r.failed_total != null ? r.failed_total : s.month_failed_total) : s.month_failed_total } : s);
         if (!r.processed || (!retryMode && r.remaining === 0)) break;
       }
-    } catch (e) { setMsg('Stopped — ' + (e.message || 'error')); }
+    } catch (e) { setMsg('Stopped — ' + (e.message || 'error') + '. Progress is saved; click Geocode again to resume.'); }
     setRunning(false); loadStatus();
   };
   if (hidden || !st) return null;
