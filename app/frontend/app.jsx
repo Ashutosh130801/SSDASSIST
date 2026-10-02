@@ -3597,35 +3597,44 @@ function GeocodeButton() {
   React.useEffect(() => { loadStatus(); }, []);
   // retryMode=false → only NEW / never-tried addresses (keeps already-located as-is, skips ones
   // already attempted). retryMode=true → re-attempt addresses that were tried but couldn't be pinned.
-  const run = async (retryMode) => {
+  // monthOnly=true → restrict to THIS month's cases (period = current month).
+  const run = async (retryMode, monthOnly) => {
     if (!st || !st.configured) { toast('Set LOCATIONIQ_KEY in the server .env, then restart the backend.'); return; }
     setRunning(true); stop.current = false; let done = 0, failed = 0;
     // Bound the retry loop so it makes one full pass over the currently-failed set (a still-failing
     // address stays selectable, which would otherwise loop forever).
+    const pending = monthOnly ? (st.month_remaining || 0) : (st.remaining || 0);
     const maxBatches = retryMode ? Math.ceil((st.failed_total || 0) / 25) + 1 : 100000;
-    const url = '/api/cases/geocode?limit=25' + (retryMode ? '&retry_failed=true' : '');
+    const url = '/api/cases/geocode?limit=25' + (retryMode ? '&retry_failed=true' : '') + (monthOnly ? '&month_bucket=current' : '');
     try {
       for (let i = 0; i < maxBatches && !stop.current; i++) {
         const r = await api(url, { method: 'POST' });
         done += r.geocoded || 0; failed += r.failed || 0;
         const leftLabel = retryMode ? `${r.failed_total || 0} still unresolved` : `${r.remaining} left`;
-        setMsg(`Located ${done} · ${leftLabel}`);
-        // Keep the pinned / left / unresolved counter live as each batch lands.
+        setMsg(`${monthOnly ? 'This month: ' : ''}Located ${done} · ${leftLabel}`);
+        // Keep the pinned / left / unresolved counter live as each batch lands. When scoped to this
+        // month, r.remaining/r.failed_total are the month's figures — update the month counters too.
         setSt(s => s ? { ...s, with_pin: (s.with_pin || 0) + (r.geocoded || 0),
-                         remaining: (r.remaining != null ? r.remaining : s.remaining),
-                         failed_total: (r.failed_total != null ? r.failed_total : s.failed_total) } : s);
+                         month_with_pin: monthOnly ? (s.month_with_pin || 0) + (r.geocoded || 0) : s.month_with_pin,
+                         remaining: monthOnly ? s.remaining : (r.remaining != null ? r.remaining : s.remaining),
+                         month_remaining: monthOnly ? (r.remaining != null ? r.remaining : s.month_remaining) : s.month_remaining,
+                         failed_total: monthOnly ? s.failed_total : (r.failed_total != null ? r.failed_total : s.failed_total),
+                         month_failed_total: monthOnly ? (r.failed_total != null ? r.failed_total : s.month_failed_total) : s.month_failed_total } : s);
         if (!r.processed || (!retryMode && r.remaining === 0)) break;
       }
     } catch (e) { setMsg('Stopped — ' + (e.message || 'error')); }
     setRunning(false); loadStatus();
   };
   if (hidden || !st) return null;
-  // Always-visible count: pinned / left to locate / unresolved.
+  // Always-visible count: pinned / left to locate / unresolved — overall, then this month.
   const counts = (
     <span className="muted" style={{ fontSize: 11.5, marginLeft: 6 }}>
       📍 <b style={{ color: 'var(--good)' }}>{st.with_pin}</b> pinned · <b>{st.remaining}</b> left
       {st.failed_total ? <> · <b style={{ color: 'var(--warn)' }}>{st.failed_total}</b> unresolved</> : null}
       <span style={{ opacity: .7 }}> (of {st.total})</span>
+      {st.month_total != null ? <span style={{ opacity: .85 }}> · 🗓️ This month: <b style={{ color: 'var(--good)' }}>{st.month_with_pin}</b> located · <b>{st.month_remaining}</b> left
+        {st.month_failed_total ? <> · <b style={{ color: 'var(--warn)' }}>{st.month_failed_total}</b> unresolved</> : null}
+        <span style={{ opacity: .7 }}> (of {st.month_total})</span></span> : null}
     </span>
   );
   if (running) return <>
@@ -3635,7 +3644,10 @@ function GeocodeButton() {
   </>;
   return <>
     <button className="btn sm" title={`${st.with_pin} of ${st.total} cases pinned · ${st.remaining} new to locate${st.failed_total ? ` · ${st.failed_total} unresolved` : ''}`}
-      onClick={() => run(false)}>📍 Geocode addresses{st.remaining ? ` (${st.remaining})` : ''}</button>
+      onClick={() => run(false)}>📍 Geocode all{st.remaining ? ` (${st.remaining})` : ''}</button>
+    <button className="btn sm" style={{ marginLeft: 6 }}
+      title={`Geocode only this month's cases — ${st.month_remaining || 0} new to locate of ${st.month_total || 0}`}
+      onClick={() => run(false, true)}>🗓️ This month{st.month_remaining ? ` (${st.month_remaining})` : ''}</button>
     {!st.remaining && st.failed_total ? <button className="btn sm" style={{ marginLeft: 6 }}
       title="Re-attempt addresses that couldn't be located before" onClick={() => run(true)}>↻ Retry {st.failed_total} unresolved</button> : null}
     {counts}

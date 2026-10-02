@@ -21,15 +21,18 @@ from .. import audit
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 
 
-def _needs_geocode(q, include_failed: bool = False):
+def _needs_geocode(q, include_failed: bool = False, period: str | None = None):
     """Cases that still need a map pin. By default this is only NEW / never-attempted addresses —
     a case we already tried (whether it resolved or not) is left alone, so clicking 'Geocode' again
     processes just the remaining/new ones instead of re-running everything from scratch. Pass
-    include_failed=True to also re-attempt addresses that were tried but couldn't be located."""
+    include_failed=True to also re-attempt addresses that were tried but couldn't be located, and
+    period='YYYY-MM' to restrict to a single upload month (e.g. this month only)."""
     q = q.filter(models.Case.latitude.is_(None)).filter(
         or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
     if not include_failed:
         q = q.filter(models.Case.geo_attempted_at.is_(None))
+    if period:
+        q = q.filter(models.Case.period == period)
     return q
 
 
@@ -58,24 +61,28 @@ def apply_geocode(case: models.Case, res: dict) -> bool:
 
 
 @router.post("/geocode")
-def geocode(limit: int = 40, retry_failed: bool = False, db: Session = Depends(get_db),
+def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | None = None,
+            db: Session = Depends(get_db),
             admin: models.User = Depends(require_roles("admin"))):
     """Fill latitude/longitude for cases that only have an address/pincode, so they pin on the
     field map. Processes up to `limit` per call — call again while `remaining` > 0 (the web
-    button loops this). Uses LocationIQ (LOCATIONIQ_KEY) with a cleaned address and a
-    pincode-centroid fallback; paces ~1 req/sec to respect the free-tier rate limit."""
+    button loops this). Pass month_bucket='current' to geocode only this month's cases. Uses
+    LocationIQ (LOCATIONIQ_KEY) with a cleaned address and a pincode-centroid fallback; paces
+    ~1 req/sec to respect the free-tier rate limit."""
     from .. import geocode as _geo
     from ..database import SessionLocal
     if not _geo.has_key():
         raise HTTPException(status_code=400,
                             detail="Geocoding is not configured — set LOCATIONIQ_KEY in the server .env and restart.")
     import time
+    # 'current' → this month only; anything else → all months (default behaviour).
+    period = _current_period() if month_bucket == "current" else None
     # 1) READ (quick): pull the batch into plain dicts, then RELEASE the DB connection. The geocoding
     # loop below does slow network I/O (LLM + ~1 req/sec HTTP), which must NOT hold a pooled DB
     # connection — doing so is what exhausted the pool ("QueuePool overflow reached").
     rows = _needs_geocode(db.query(
         models.Case.id, models.Case.address, models.Case.address2, models.Case.pincode),
-        include_failed=retry_failed).limit(limit).all()
+        include_failed=retry_failed, period=period).limit(limit).all()
     batch = [{"id": r[0], "address": r[1], "address2": r[2], "pincode": r[3]} for r in rows]
     db.close()                                  # hand the connection back to the pool during network work
 
@@ -110,12 +117,14 @@ def geocode(limit: int = 40, retry_failed: bool = False, db: Session = Depends(g
             else:
                 failed += 1
         w.commit()
-        remaining = _needs_geocode(w.query(models.Case)).count()
-        failed_total = (w.query(models.Case)
-                        .filter(models.Case.removed.isnot(True), models.Case.latitude.is_(None),
-                                models.Case.geo_attempted_at.isnot(None),
-                                or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
-                        .count())
+        remaining = _needs_geocode(w.query(models.Case), period=period).count()
+        _ft = (w.query(models.Case)
+               .filter(models.Case.removed.isnot(True), models.Case.latitude.is_(None),
+                       models.Case.geo_attempted_at.isnot(None),
+                       or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None))))
+        if period:
+            _ft = _ft.filter(models.Case.period == period)
+        failed_total = _ft.count()
     return {"geocoded": geocoded, "failed": failed, "remaining": remaining,
             "failed_total": failed_total, "processed": len(batch)}
 
@@ -136,8 +145,22 @@ def geocode_status(db: Session = Depends(get_db),
                             models.Case.geo_attempted_at.isnot(None),
                             or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
                     .count())
+    # Same counts restricted to THIS month's cases, so the admin can geocode/track just this month.
+    cp = _current_period()
+    _mbase = db.query(models.Case).filter(models.Case.removed.isnot(True), models.Case.period == cp)
+    month_total = _mbase.count()
+    month_with_pin = _mbase.filter(models.Case.latitude.isnot(None)).count()
+    month_remaining = _needs_geocode(
+        db.query(models.Case).filter(models.Case.removed.isnot(True)), period=cp).count()
+    month_failed_total = (db.query(models.Case)
+                          .filter(models.Case.removed.isnot(True), models.Case.period == cp,
+                                  models.Case.latitude.is_(None), models.Case.geo_attempted_at.isnot(None),
+                                  or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
+                          .count())
     return {"total": total, "with_pin": with_pin, "remaining": remaining,
-            "failed_total": failed_total, "configured": _geo.has_key()}
+            "failed_total": failed_total, "configured": _geo.has_key(),
+            "month": cp, "month_total": month_total, "month_with_pin": month_with_pin,
+            "month_remaining": month_remaining, "month_failed_total": month_failed_total}
 
 
 @router.delete("/all")
