@@ -93,6 +93,10 @@ def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | Non
         items = [{"id": c["id"], "raw": ", ".join(str(p) for p in (c["address"], c["address2"], c["pincode"]) if p)}
                  for c in batch]
         clean_map = _geo.llm_clean_batch(items)
+    # How this batch's addresses were cleaned: AI (the LLM returned a cleaned address for the case)
+    # vs the built-in offline cleaner (no AI key, or the AI call failed / skipped this case).
+    ai_cleaned = sum(1 for c in batch if clean_map.get(c["id"]))
+    local_cleaned = len(batch) - ai_cleaned
     results = []                                 # [(case_id, res_dict)]
     with httpx.Client(timeout=15) as client:
         for i, c in enumerate(batch):
@@ -127,7 +131,8 @@ def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | Non
             _ft = _ft.filter(models.Case.period == period)
         failed_total = _ft.count()
     return {"geocoded": geocoded, "failed": failed, "remaining": remaining,
-            "failed_total": failed_total, "processed": len(batch)}
+            "failed_total": failed_total, "processed": len(batch),
+            "ai_cleaned": ai_cleaned, "local_cleaned": local_cleaned}
 
 
 @router.get("/geocode/status")

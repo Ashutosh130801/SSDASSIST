@@ -3603,7 +3603,7 @@ function GeocodeButton() {
   // monthOnly=true → restrict to THIS month's cases (period = current month).
   const run = async (retryMode, monthOnly) => {
     if (!st || !st.configured) { toast('Set LOCATIONIQ_KEY in the server .env, then restart the backend.'); return; }
-    setRunning(true); stop.current = false; let done = 0, failed = 0;
+    setRunning(true); stop.current = false; let done = 0, failed = 0, aiTot = 0, localTot = 0;
     // Smaller batches = each HTTP request finishes in ~10s instead of ~30-40s, so it stays well under
     // any proxy/gateway/browser request timeout — the usual cause of a "Stopped — error" mid-run.
     const BATCH = 5;
@@ -3623,11 +3623,12 @@ function GeocodeButton() {
             lastErr = e; setMsg(`Hiccup — retrying (${attempt + 1}/3)…`); await sleep(2500);
           }
         }
-        if (aborted || stop.current) { setMsg(`Stopped. Located ${done} this run — progress saved.`); break; }
+        if (aborted || stop.current) { setMsg(`Stopped. Located ${done} this run (🤖 ${aiTot} AI / 🔧 ${localTot} local) — progress saved.`); break; }
         if (!r) { setMsg('Stopped — ' + ((lastErr && lastErr.message) || 'network error') + '. Progress is saved; click Geocode again to resume.'); break; }
         done += r.geocoded || 0; failed += r.failed || 0;
+        aiTot += r.ai_cleaned || 0; localTot += r.local_cleaned || 0;
         const leftLabel = retryMode ? `${r.failed_total || 0} still unresolved` : `${r.remaining} left`;
-        setMsg(`${monthOnly ? 'This month: ' : ''}Located ${done} · ${leftLabel}`);
+        setMsg(`${monthOnly ? 'This month: ' : ''}Located ${done} · ${leftLabel} · 🤖 ${aiTot} AI / 🔧 ${localTot} local`);
         // Keep the pinned / left / unresolved counter live as each batch lands. When scoped to this
         // month, r.remaining/r.failed_total are the month's figures — update the month counters too.
         setSt(s => s ? { ...s, with_pin: (s.with_pin || 0) + (r.geocoded || 0),
