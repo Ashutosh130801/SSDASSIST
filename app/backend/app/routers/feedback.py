@@ -6,6 +6,7 @@ and are preserved. Supports per-column filtering, selective row/column download,
 lives updates across viewers.
 """
 import io
+import re
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -83,11 +84,13 @@ def _ist_bounds(d: date):
 
 
 def _fmt_date(dt):
+    # ISO (YYYY-MM-DD) so the sheet's HTML date picker can display it. The Excel download converts
+    # date columns to dd-mm-yyyy for the bank format.
     if not dt:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(IST).strftime("%d-%m-%Y")
+    return dt.astimezone(IST).strftime("%Y-%m-%d")
 
 
 def _scope_feedback(db: Session, user, bank, product, branch=None, month_bucket=None):
@@ -107,25 +110,40 @@ def _scope_feedback(db: Session, user, bank, product, branch=None, month_bucket=
     return q
 
 
-# Normalise a raw call/visit disposition to the bank's TC/FE code list, tolerating spelling/spacing.
-_CODE_ALIAS = {
-    "CALLBACK": "CALL BACK", "CALL BACK": "CALL BACK", "CB": "CALL BACK",
-    "PTP": "PTP", "BPTP": "BPTP", "RTP": "RTP", "PAID": "PAID", "RNR": "RNR",
-    "PAYMENT": "PAID", "PARTIAL": "PTP", "DISPUTE": "DISPUTE", "FRAUD": "FRAUD SUSPECT",
-    "PNC": "PNC", "SNC": "SNC", "LEFT MESSAGE": "LEFT MESSAGE", "NO ANSWER": "RNR",
-    "DOOR LOCK": "DOOR LOCK", "SKIP": "SKIP", "EXPIRED": "CUSTOMER EXPIRED",
-    "CUSTOMER EXPIRED": "CUSTOMER EXPIRED",
+# Map a raw CALL disposition → bank TC code. Covers the dispositions callers actually log
+# (RTP/PTP/RNR/SWITCHED OFF/WRONG NUMBER/BUSY/NOT REACHABLE/DISPUTE/PAID/CALLBACK/…).
+_TC_ALIAS = {
+    "RTP": "RTP", "PTP": "PTP", "BPTP": "BPTP", "RNR": "RNR", "PAID": "PAID", "PAYMENT": "PAID",
+    "PARTIAL": "PTP", "DISPUTE": "DISPUTE", "REFUSED": "RTP", "CALLBACK": "CALL BACK",
+    "CALL BACK": "CALL BACK", "CB": "CALL BACK", "NO_CONTACT": "RNR", "NO CONTACT": "RNR",
+    "SWITCHED OFF": "RNR", "SWITCH OFF": "RNR", "BUSY": "RNR", "NOT REACHABLE": "RNR",
+    "WRONG NUMBER": "PNC", "WRONG_NUMBER": "PNC", "PNC": "PNC", "SNC": "SNC",
+    "LEFT MESSAGE": "LEFT MESSAGE", "NO ANSWER": "RNR", "NO ATTEMPT": "NO ATTEMPT",
+    "EXPIRED": "CUSTOMER EXPIRED", "CUSTOMER EXPIRED": "CUSTOMER EXPIRED", "FRAUD": "FRAUD SUSPECT",
+}
+# Map a raw VISIT disposition → bank FE code (field dispositions: PAID/NOT AVAILABLE/MOVED/
+# WRONG ADDRESS/REFUSED/PTP/DISPUTE/MET CUSTOMER/…).
+_FE_ALIAS = {
+    "PTP": "PTP", "BPTP": "BPTP", "RTP": "RTP", "REFUSED": "RTP", "DISPUTE": "DISPUTE",
+    "PAID": "CLAIMS PAID", "CLAIMS PAID": "CLAIMS PAID", "PAYMENT": "CLAIMS PAID",
+    "NOT AVAILABLE": "DOOR LOCK", "DOOR LOCK": "DOOR LOCK", "NOT AVAIL": "DOOR LOCK",
+    "MOVED": "SHIFTEDR", "PERSON MOVED": "SHIFTEDR", "SHIFTED": "SHIFTEDR",
+    "WRONG ADDRESS": "INCOMPLETE ADDR", "WRONG_ADDRESS": "INCOMPLETE ADDR",
+    "INCOMPLETE ADDR": "INCOMPLETE ADDR", "INCOMPLETE ADDO": "INCOMPLETE ADDO",
+    "SKIP": "SKIP", "RNR": "NO ATTEMPT", "NO ATTEMPT": "NO ATTEMPT", "NO ANSWER": "NO ATTEMPT",
+    "ENTRY RESTRICT": "ENTRY RESTRICT", "EXPIRED": "CUSTOMER EXPIRED",
+    "CUSTOMER EXPIRED": "CUSTOMER EXPIRED", "FRAUD": "FRAUD SUSPECT",
 }
 
 
-def _code_for(disp, allowed):
-    """Map a disposition string onto the allowed TC/FE code set (exact, then alias)."""
+def _code_for(disp, allowed, alias):
+    """Map a disposition string onto the allowed TC/FE code set (exact first, then alias)."""
     if not disp:
         return None
     u = str(disp).strip().upper()
     if u in allowed:
         return u
-    a = _CODE_ALIAS.get(u)
+    a = alias.get(u)
     return a if a in allowed else None
 
 
@@ -139,7 +157,7 @@ def _derive(case, call, visit, ptp_call=None):
         d["visit_date"] = _fmt_date(visit.created_at)
         if visit.note:
             d["fe_remark"] = visit.note
-        fc = _code_for(visit.disposition, _FE)
+        fc = _code_for(visit.disposition, _FE, _FE_ALIAS)
         if fc:
             d["fe_code"] = fc
     else:
@@ -147,7 +165,7 @@ def _derive(case, call, visit, ptp_call=None):
     if call:
         if call.note:
             d["tc_remarks"] = call.note
-        tc = _code_for(call.disposition, _TC)
+        tc = _code_for(call.disposition, _TC, _TC_ALIAS)
         if tc:
             d["tc_code"] = tc
     # PTP date — from the most recent call that has one (not just the latest call overall).
@@ -337,13 +355,28 @@ def download_feedback(bank: str, product: str, day: str | None = None, branch: s
         rows = [r for r in rows if r["id"] in keep]
     keys = [k for k in columns.split(",")] if columns else [c["key"] for c in COLUMNS]
     cols = [c for c in COLUMNS if c["key"] in keys] or COLUMNS
+    date_keys = {c["key"] for c in cols if c.get("type") == "date"}
+
+    def _xl_date(v):
+        """Rows carry ISO yyyy-mm-dd (for the web date-picker); the bank's file wants dd-mm-yyyy."""
+        if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", v):
+            y, m, dd = v.split("-")
+            return f"{dd}-{m}-{y}"
+        return v
 
     wb = Workbook()
     ws = wb.active
     ws.title = "DATA"
     ws.append([c["label"] for c in cols])
     for r in rows:
-        ws.append([r.get(c["key"], "") if r.get(c["key"]) is not None else "" for c in cols])
+        line = []
+        for c in cols:
+            v = r.get(c["key"], "")
+            v = "" if v is None else v
+            if c["key"] in date_keys:
+                v = _xl_date(v)
+            line.append(v)
+        ws.append(line)
     for cell in ws[1]:
         cell.font = cell.font.copy(bold=True)
     ws.freeze_panes = "A2"
