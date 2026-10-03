@@ -377,6 +377,7 @@ private fun DetailFields(case: Case) {
         Field("Card no", case.cardNo)
         Field("Account no", case.accountNo)
         Field("Address", case.address)
+        Field("Address 2", case.address2)
         Field("Pincode", case.pincode)
     }
     SectionTitle("Account")
@@ -447,7 +448,11 @@ private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = b
         case.enr > 0 -> appendLine("ENR: ₹${"%,.0f".format(case.enr)}")
         case.totalOutstanding > 0 -> appendLine("TOS: ₹${"%,.0f".format(case.totalOutstanding)}")
     }
-    case.address?.let { appendLine("Address: $it" + (case.pincode?.let { p -> ", $p" } ?: "")) }
+    val addrFull = listOfNotNull(
+        case.address?.takeIf { it.isNotBlank() },
+        case.address2?.takeIf { it.isNotBlank() }
+    ).joinToString(", ")
+    if (addrFull.isNotBlank()) appendLine("Address: $addrFull" + (case.pincode?.let { p -> ", $p" } ?: ""))
     appendLine("Outcome: ${v.disposition ?: "—"}")
     if (v.paid && v.amount > 0) appendLine("Collected: ₹${"%,.0f".format(v.amount)}")
     if (v.personMoved) appendLine("⚠ Person has moved")

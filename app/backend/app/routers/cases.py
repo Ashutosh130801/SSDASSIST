@@ -1566,7 +1566,7 @@ def _cases_xlsx(cases, title: str) -> bytes:
     cols = [("#", 6), ("Account", 20), ("Card", 20), ("Customer", 26), ("Phone", 15),
             ("Alt Phone", 15), ("Bank", 12), ("Product", 16), ("Bucket", 10), ("Cycle", 8),
             ("Month", 10), ("TOS", 14), ("Pending", 14), ("Received", 14), ("NORM", 12),
-            ("STAB", 12), ("N/S", 8), ("Status", 12), ("Address", 42)]
+            ("STAB", 12), ("N/S", 8), ("Status", 12), ("Address", 42), ("Address 2", 42)]
     wb = Workbook(); ws = wb.active; ws.title = "Cases"
     ws.append([c[0] for c in cols])
     hf = Font(bold=True, color="FFFFFF"); fill = PatternFill("solid", fgColor="0F2A4A")
@@ -1577,11 +1577,11 @@ def _cases_xlsx(cases, title: str) -> bytes:
                    c.bank, c.product, c.bucket, c.cycle, c.month,
                    _fnum(c.total_outstanding), _fnum(c.pending_amount), _fnum(c.received_amount),
                    _fnum(c.norm_amount), _fnum(c.stab_amount), c.norm_stab,
-                   (c.paid_status or c.status or ""), c.address])
+                   (c.paid_status or c.status or ""), c.address, c.address2])
     ws.append(["", "", "", "TOTAL", "", "", "", "", "", "", "",
                sum(_fnum(c.total_outstanding) for c in cases),
                sum(_fnum(c.pending_amount) for c in cases),
-               sum(_fnum(c.received_amount) for c in cases), "", "", "", "", ""])
+               sum(_fnum(c.received_amount) for c in cases), "", "", "", "", "", ""])
     for cell in ws[ws.max_row]:
         cell.font = Font(bold=True)
     for i, (_, w) in enumerate(cols, 1):

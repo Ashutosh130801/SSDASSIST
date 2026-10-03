@@ -170,6 +170,7 @@ data class Case(
     val phone: String? = null,
     @Json(name = "alt_phone") val altPhone: String? = null,
     val address: String? = null,
+    @Json(name = "address2") val address2: String? = null,   // ADD 2 (+ ADD 3) — second address line
     @Json(name = "new_address") val newAddress: String? = null,
     @Json(name = "new_phone") val newPhone: String? = null,
     @Json(name = "new_contact_by") val newContactBy: String? = null,

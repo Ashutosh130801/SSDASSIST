@@ -3595,7 +3595,7 @@ function CaseCard({ c, onVisit, onNav, onDetails }) {
           {tag && <span className={cx('badge', tag.c)}>{tag.t}</span>}
           <span className={cx('badge', p.cls)}>{p.label}</span><PropBadge score={c.propensity} /></div></div>
       <div className="muted" style={{ fontSize: 13, margin: '4px 0 8px' }}>{c.bank} · {c.bucket || '—'} · cyc {c.cycle || '—'}</div>
-      <div style={{ fontSize: 13, color: 'var(--ink-soft)', minHeight: 34 }}>{c.address || 'No address'} {c.pincode ? `(${c.pincode})` : ''}</div>
+      <div style={{ fontSize: 13, color: 'var(--ink-soft)', minHeight: 34 }}>{[c.address, c.address2].filter(Boolean).join(', ') || 'No address'} {c.pincode ? `(${c.pincode})` : ''}</div>
       <div className="stat-row"><span className="k">Pending</span><b className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</b></div>
       {c.is_settlement_case && (c.paid_status || '') !== 'PAID' && <div className="stat-row" style={{ fontSize: 12.5 }}>
         <span className="k">Pending NORM / STAB</span>
