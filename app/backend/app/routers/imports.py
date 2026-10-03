@@ -627,28 +627,41 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
 
 
 @router.get("/batches")
-def recent_batches(limit: int = 40, db: Session = Depends(get_db),
+def recent_batches(limit: int = 25, offset: int = 0, q: str | None = None,
+                   db: Session = Depends(get_db),
                    admin: models.User = Depends(require_roles("admin", "headoffice"))):
-    """Recent portfolio uploads, newest first — so admin/head office can undo a wrong upload.
-    live = cases from this upload still active (not already removed); removed = already pulled out."""
-    from sqlalchemy import func
-    rows = (db.query(models.ImportBatch)
-            .order_by(models.ImportBatch.created_at.desc()).limit(limit).all())
+    """Portfolio uploads, newest first — so admin/head office can undo a wrong upload, however old.
+    Paginated (limit/offset) with an optional text filter `q` (matches filename, bank or product),
+    so older batches stay findable. live = cases still active; removed = already pulled out.
+    Returns {items, total, offset, limit} so the UI can show a Next-page button."""
+    from sqlalchemy import func, or_
+    limit = max(1, min(limit, 200))
+    base = db.query(models.ImportBatch)
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        base = base.filter(or_(models.ImportBatch.filename.ilike(like),
+                               models.ImportBatch.bank.ilike(like),
+                               models.ImportBatch.product.ilike(like)))
+    total = base.count()
+    rows = (base.order_by(models.ImportBatch.created_at.desc())
+            .offset(max(0, offset)).limit(limit).all())
     names = {u.id: u.name for u in db.query(models.User).all()}
-    # counts per batch (live vs removed) in two grouped queries
+    # counts per batch (live vs removed) only for the batches on THIS page
+    ids = [b.id for b in rows] or [-1]
     live = dict(db.query(models.Case.import_batch_id, func.count(models.Case.id))
-                .filter(models.Case.import_batch_id.isnot(None), models.Case.removed.isnot(True))
+                .filter(models.Case.import_batch_id.in_(ids), models.Case.removed.isnot(True))
                 .group_by(models.Case.import_batch_id).all())
     gone = dict(db.query(models.Case.import_batch_id, func.count(models.Case.id))
-                .filter(models.Case.import_batch_id.isnot(None), models.Case.removed.is_(True))
+                .filter(models.Case.import_batch_id.in_(ids), models.Case.removed.is_(True))
                 .group_by(models.Case.import_batch_id).all())
-    return [{
+    items = [{
         "id": b.id, "filename": b.filename, "bank": b.bank, "product": b.product,
         "rows_total": b.rows_total, "rows_imported": b.rows_imported,
         "uploaded_by": names.get(b.uploaded_by) or "—",
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "live": int(live.get(b.id, 0)), "removed": int(gone.get(b.id, 0)),
     } for b in rows]
+    return {"items": items, "total": total, "offset": max(0, offset), "limit": limit}
 
 
 @router.post("/batches/{batch_id}/delete")

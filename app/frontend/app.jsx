@@ -1378,8 +1378,22 @@ function UploadsModal({ onClose, onDone }) {
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState(0);
   const [confirmId, setConfirmId] = useState(null);
-  const load = () => api('/api/import/batches').then(setRows).catch(() => setRows([]));
-  useEffect(() => { load(); }, []);
+  const [q, setQ] = useState('');          // search filename / bank / product
+  const [qInput, setQInput] = useState(''); // debounced input box
+  const [offset, setOffset] = useState(0);
+  const [total, setTotal] = useState(0);
+  const PAGE = 25;
+  const load = (off = offset, query = q) => {
+    setRows(null);
+    const p = new URLSearchParams({ limit: String(PAGE), offset: String(off) });
+    if (query.trim()) p.set('q', query.trim());
+    return api('/api/import/batches?' + p.toString())
+      .then(d => { setRows(d.items || []); setTotal(d.total || 0); })
+      .catch(() => { setRows([]); setTotal(0); });
+  };
+  useEffect(() => { load(offset, q); }, [offset, q]);
+  // debounce the search box so we don't hit the API on every keystroke
+  useEffect(() => { const t = setTimeout(() => { setOffset(0); setQ(qInput); }, 350); return () => clearTimeout(t); }, [qInput]);
   const del = async (b) => {
     setBusy(b.id);
     try {
@@ -1389,6 +1403,8 @@ function UploadsModal({ onClose, onDone }) {
     } catch (e) { toast(e.message || 'Could not undo upload'); }
     finally { setBusy(0); }
   };
+  const from = total === 0 ? 0 : offset + 1;
+  const to = Math.min(offset + PAGE, total);
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 760 }}>
@@ -1397,7 +1413,9 @@ function UploadsModal({ onClose, onDone }) {
           Uploaded a wrong file? Undo it here — every case from that upload moves to the Removed-cases bin
           (reversible: restore them from there if needed).
         </p>
-        {!rows ? <Loader /> : rows.length === 0 ? <p className="muted" style={{ padding: 12 }}>No uploads yet.</p> : (
+        <input className="input" value={qInput} onChange={e => setQInput(e.target.value)}
+          placeholder="🔍 Search uploads — file name, bank or product" style={{ marginBottom: 8 }} />
+        {!rows ? <Loader /> : (rows.length === 0 ? <p className="muted" style={{ padding: 12 }}>{q ? `No uploads match “${q}”.` : 'No uploads yet.'}</p> : (
           <div className="tablewrap" style={{ maxHeight: 420, overflow: 'auto' }}><table>
             <thead><tr><th>When</th><th>Bank · Product</th><th>File</th><th>By</th><th>Live</th><th></th></tr></thead>
             <tbody>{rows.map(b => <tr key={b.id}>
@@ -1415,8 +1433,14 @@ function UploadsModal({ onClose, onDone }) {
                     </span>
                   : <button className="btn sm" disabled={!b.live} onClick={() => setConfirmId(b.id)}>🗑 Undo</button>}
               </td></tr>)}</tbody></table></div>
-        )}
-        <div className="toolbar" style={{ marginTop: 8 }}><div style={{ flex: 1 }} /><button className="btn" onClick={onClose}>Close</button></div>
+        ))}
+        <div className="toolbar" style={{ marginTop: 8, alignItems: 'center' }}>
+          <span className="muted" style={{ fontSize: 12 }}>{total ? `Showing ${from}–${to} of ${total}` : ''}</span>
+          <div style={{ flex: 1 }} />
+          <button className="btn ghost sm" disabled={offset <= 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>‹ Prev</button>
+          <button className="btn ghost sm" disabled={offset + PAGE >= total} onClick={() => setOffset(offset + PAGE)}>Next ›</button>
+          <button className="btn" onClick={onClose} style={{ marginLeft: 8 }}>Close</button>
+        </div>
       </div>
     </div>
   );
