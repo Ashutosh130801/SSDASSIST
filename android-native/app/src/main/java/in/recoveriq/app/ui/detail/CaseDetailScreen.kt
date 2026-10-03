@@ -428,7 +428,7 @@ private fun money(v: Double): String? = if (v > 0.0) "₹${"%,.0f".format(v)}" e
 
 /** WhatsApp caption for a just-logged visit — shared (with the geotagged photo) to anyone the agent picks. */
 private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = buildString {
-    appendLine("🧾 RecoverIQ — Field visit logged")
+    appendLine("🧾 SSD Enterprises — Field visit logged")
     appendLine("Customer: ${case.customerName ?: "—"}")
     case.phone?.let { appendLine("Phone: $it") }
     case.cardNo?.let { appendLine("Card no: $it") }
