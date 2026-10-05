@@ -4303,6 +4303,7 @@ function CaseDrawer({ c, onClose, onChanged }) {
                 <div className="muted" style={{ fontSize: 11.5 }}>{h.by ? `by ${h.by} · ` : ''}{h.at ? fmtDT(h.at) : ''}
                   {h.photo && <a href={h.photo} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📷 photo</a>}
                   {h.lat && <a href={`https://maps.google.com/?q=${h.lat},${h.lng}`} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📍 map</a>}
+                  {h.recording_url && <a href={h.recording_url} target="_blank" rel="noreferrer" style={{ marginLeft: 6, color: 'var(--info)' }}>🎙 recording</a>}
                   {h.ptp_date && <span style={{ marginLeft: 6, color: 'var(--gold-2)' }}>PTP {String(h.ptp_date).slice(0, 10)}</span>}</div>
                 {h.note && h.note !== h.detail && <div style={{ fontSize: 12, marginTop: 2 }}>{h.note}</div>}
               </div>

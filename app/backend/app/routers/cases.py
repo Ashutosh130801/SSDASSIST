@@ -1512,6 +1512,7 @@ def timeline(case_id: int, db: Session = Depends(get_db),
         ev.append({"type": "payment" if is_pay else "call", "at": cl.created_at, "by": users.get(cl.caller_id),
                    "title": "Payment" if is_pay else f"Call — {cl.disposition or ''}",
                    "detail": cl.note or cl.disposition or "", "amount": float(cl.ptp_amount or 0),
+                   "recording_url": getattr(cl, "recording_url", None),
                    "ptp_date": cl.ptp_date.isoformat() if cl.ptp_date else None})
 
     # Every other mutation on this case — live-sheet cell edits, reassigns, DPR updates,

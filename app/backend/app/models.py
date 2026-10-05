@@ -293,6 +293,7 @@ class CallLog(Base):
     ptp_amount = Column(Numeric(14, 2), default=0)
     ptp_date = Column(DateTime(timezone=True), nullable=True)
     note = Column(Text)
+    recording_url = Column(Text, nullable=True)   # dialer call recording (WAV) link, if any
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
     case = relationship("Case", back_populates="calls")

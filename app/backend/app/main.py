@@ -141,6 +141,9 @@ def _ensure_columns():
             "distance_from_case_m": "FLOAT",
             "payment_photo_path": "VARCHAR(255)",
         },
+        "call_logs": {
+            "recording_url": "TEXT",      # dialer call-recording link
+        },
         "devices": {
             "approved_at": "TIMESTAMP",
         },

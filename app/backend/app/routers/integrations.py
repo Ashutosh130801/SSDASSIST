@@ -263,7 +263,8 @@ def ingest_call(body: dict = Body(...), conn: models.DialerConnection = Depends(
     log = models.CallLog(case_id=case.id, caller_id=(agent.id if agent else None),
                          disposition=disp or "PAYMENT",
                          ptp_amount=(Decimal(str(ptp_amt)) if ptp_amt else None),
-                         ptp_date=ptp_dt, note=(body.get("note") or "Dialer call")[:2000])
+                         ptp_date=ptp_dt, note=(body.get("note") or "Dialer call")[:2000],
+                         recording_url=(body.get("recording_url") or None))
     db.add(log)
     case.last_contacted_at = datetime.now(timezone.utc)
     case.disposition = disp or case.disposition

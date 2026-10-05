@@ -697,6 +697,7 @@ def user_calls(uid: int, date: str | None = None, db: Session = Depends(get_db),
             "disposition": cl.disposition, "note": cl.note,
             "ptp_amount": float(cl.ptp_amount or 0),
             "ptp_date": cl.ptp_date.isoformat() if cl.ptp_date else None,
+            "recording_url": getattr(cl, "recording_url", None),
         })
     return {"date": d.isoformat(), "user_id": uid, "name": target.name,
             "count": len(out), "calls": out}
