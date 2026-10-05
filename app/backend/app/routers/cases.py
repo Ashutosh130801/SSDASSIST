@@ -523,7 +523,8 @@ def list_cases(
     if segment:
         q = q.filter(models.Case.segment == segment)
     if branch:
-        q = q.filter(models.Case.branch == branch)
+        # case-insensitive so "VISAKHAPATNAM" and "Visakhapatnam" are one location
+        q = q.filter(func.lower(func.trim(models.Case.branch)) == branch.strip().lower())
     if area:
         q = q.filter(models.Case.team == area)
     if vehicle_type:
@@ -706,7 +707,7 @@ def portfolio_areas(bank: str | None = None, product: str | None = None, branch:
     if product:
         q = q.filter(models.Case.product == product)
     if branch:
-        q = q.filter(models.Case.branch == branch)
+        q = q.filter(func.lower(func.trim(models.Case.branch)) == branch.strip().lower())
     return sorted({(t or "").strip() for (t,) in q.all() if t and str(t).strip()})
 
 
@@ -764,9 +765,13 @@ def product_summary(month_bucket: str | None = None, db: Session = Depends(get_d
         elif per == nxt: d["count_next"] += 1
         if bexp:
             d["branch_split"] = True
-        # per-branch breakdown (only meaningful for split products; cheap to always keep)
-        bk = (br or "").strip() or "— No location —"
-        bd = d["branches"].setdefault(bk, _blank({"branch": bk}))
+        # per-branch breakdown (only meaningful for split products; cheap to always keep).
+        # Merge case-insensitively so "VISAKHAPATNAM" and "Visakhapatnam" are ONE location card;
+        # key on the upper-case form, display Title Case.
+        _braw = (br or "").strip()
+        bkey = _braw.upper() or "— NO LOCATION —"
+        bdisp = _braw.title() if _braw else "— No location —"
+        bd = d["branches"].setdefault(bkey, _blank({"branch": bdisp}))
         bd["count"] += 1; bd["received"] += rc; bd["pending"] += pend
         bd["paid" if is_paid else "unpaid"] += 1
         if per == cur: bd["count_current"] += 1
@@ -849,7 +854,7 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
     if product:
         q = q.filter(models.Case.product == product)
     if branch:
-        q = q.filter(models.Case.branch == branch)
+        q = q.filter(func.lower(func.trim(models.Case.branch)) == branch.strip().lower())
     cycles, fos_ids, caller_ids = set(), set(), set()
     veh_types, brands, oldnew = set(), set(), set()   # AUTO LOANS filter values
     tl_seen = {}                                      # team-lead values (dedupe case-insensitively)
