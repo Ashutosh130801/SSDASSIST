@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -40,6 +42,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.OutlinedButton
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -52,8 +55,8 @@ import `in`.recoveriq.app.location.Tracking
 import `in`.recoveriq.app.ui.AuthViewModel
 import `in`.recoveriq.app.ui.common.AsyncContent
 import `in`.recoveriq.app.ui.common.CaseCard
-import `in`.recoveriq.app.ui.common.EmptyState
 import `in`.recoveriq.app.ui.common.InfoCard
+import `in`.recoveriq.app.ui.common.LogoLoader
 import `in`.recoveriq.app.ui.common.SectionTitle
 import `in`.recoveriq.app.ui.common.rememberLiveKey
 import `in`.recoveriq.app.ui.theme.Bad
@@ -159,9 +162,7 @@ fun OnDutyCard(
 private fun stateRank(s: String) = when (s) { "fresh" -> 0; "touched" -> 1; else -> 2 }
 
 @Composable
-private fun RemindersBanner(vm: AuthViewModel, liveKey: Long, onOpenCase: (Int) -> Unit) {
-    var data by remember { mutableStateOf<RemindersResponse?>(null) }
-    LaunchedEffect(liveKey) { data = runCatching { vm.repo.reminders() }.getOrNull() }
+private fun RemindersBanner(data: RemindersResponse?, onOpenCase: (Int) -> Unit) {
     val d = data ?: return
     if (d.count == 0) return
     InfoCard(Modifier.padding(horizontal = 16.dp)) {
@@ -176,7 +177,8 @@ private fun RemindersBanner(vm: AuthViewModel, liveKey: Long, onOpenCase: (Int) 
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(r.customer ?: r.account ?: "Case", style = MaterialTheme.typography.bodySmall)
+                    Text(r.customer ?: r.account ?: "Case", style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f).padding(end = 8.dp))
                     Text("${if (r.overdue) "⚠ " else ""}${r.ptpDate ?: ""}",
                         style = MaterialTheme.typography.labelSmall, color = if (r.overdue) Bad else Warn)
                 }
@@ -218,24 +220,75 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     var month by rememberSaveable { mutableStateOf<String?>(null) }
     var portfolio by rememberSaveable { mutableStateOf<String?>(null) }   // "bank||product"
     var busy by remember { mutableStateOf(false) }
-    // In-screen Back: step cases -> portfolio list -> (month stays; chips always visible).
-    BackHandler(enabled = portfolio != null) { portfolio = null }
+    // Keep data and scroll state above the lazy items. Live updates must not remove the list
+    // or restart requests whenever the reminders scroll off screen and back into view.
+    val listState = rememberLazyListState()
+    var caseData by remember { mutableStateOf<List<Case>?>(null) }
+    var reminders by remember { mutableStateOf<RemindersResponse?>(null) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+    var retry by remember { mutableStateOf(0) }
+    LaunchedEffect(liveKey, retry) {
+        loadError = null
+        try {
+            caseData = vm.repo.myCases()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            loadError = if (caseData == null) "Couldn't load your accounts. Please retry."
+                else "Couldn't refresh. Showing previously loaded accounts."
+        }
+    }
+    LaunchedEffect(liveKey, retry) {
+        try {
+            reminders = vm.repo.reminders()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Retain existing reminders during a temporary connection failure.
+        }
+    }
+    fun changePortfolio(value: String?) {
+        portfolio = value
+        scope.launch { listState.scrollToItem(0) }
+    }
+    BackHandler(enabled = portfolio != null) { changePortfolio(null) }
 
     fun monthOf(c: Case): String = (c.month ?: "").trim().ifEmpty { "—" }
     fun portKey(c: Case): String = "${(c.bank ?: "—")}||${(c.product ?: "—")}"
 
-    Column(Modifier.fillMaxSize()) {
-        SectionTitle("My accounts", Modifier.padding(start = 16.dp, top = 12.dp))
-        RemindersBanner(vm, liveKey, onOpenCase)
-        AsyncContent(key = liveKey, block = { vm.repo.myCases() }) { cases, _ ->
-            if (cases.isEmpty()) {
-                EmptyState("No cases assigned to you yet.")
-                return@AsyncContent
+    // A single vertical scroll surface for headers, reminders, filters and accounts.
+    // Fixed headers previously consumed almost all available height on small/large-font phones.
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        state = listState,
+        contentPadding = PaddingValues(top = 12.dp, bottom = 160.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item(key = "title") { SectionTitle("My accounts", Modifier.padding(start = 16.dp)) }
+        item(key = "reminders") { RemindersBanner(reminders, onOpenCase) }
+        item(key = "load-status") {
+            loadError?.let { message ->
+                Column(Modifier.padding(horizontal = 16.dp)) {
+                    Text(message, color = Bad)
+                    TextButton(onClick = { retry += 1 }) { Text("Retry") }
+                }
             }
-            val months = cases.map { monthOf(it) }.distinct().sortedDescending()
-            val curMonth = month ?: months.firstOrNull() ?: "—"
+            if (caseData == null && loadError == null) {
+                Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    LogoLoader()
+                }
+            }
+        }
+        val cases = caseData ?: return@LazyColumn
+        if (cases.isEmpty()) {
+            item(key = "empty") { Text("No cases assigned to you yet.", Modifier.padding(16.dp), color = Muted) }
+            return@LazyColumn
+        }
+        val months = cases.map { monthOf(it) }.distinct().sortedDescending()
+        val curMonth = month ?: months.firstOrNull() ?: "—"
 
-            // ---- Month chips (compact, single scrollable line) — months stay separate ----
+        // ---- Month chips (compact, single scrollable line) — months stay separate ----
+        item(key = "months") {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -245,68 +298,63 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
                 months.forEach { m ->
                     val n = cases.count { monthOf(it) == m }
                     FilterChip(selected = curMonth == m,
-                        onClick = { month = m; portfolio = null },
+                        onClick = { month = m; changePortfolio(null) },
                         label = { Text("$m ($n)") })
                 }
             }
-            val monthCases = cases.filter { monthOf(it) == curMonth }
+        }
+        val monthCases = cases.filter { monthOf(it) == curMonth }
 
-            if (portfolio == null) {
-                // ---- Portfolio picker: one card per Bank · Product in this month ----
-                val ports = monthCases.groupBy { portKey(it) }.toList().sortedByDescending { it.second.size }
-                Text("Portfolios in $curMonth", color = Muted,
-                    modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(ports.size) { i ->
-                        val (key, list) = ports[i]
-                        val bank = key.substringBefore("||"); val prod = key.substringAfter("||")
-                        val pend = list.sumOf { it.pendingAmount }
-                        InfoCard(Modifier.fillMaxWidth().clickable { portfolio = key }) {
-                            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("$bank  ·  $prod", fontWeight = FontWeight.Bold, color = BrandBlue)
-                                    Text("${list.size} account${if (list.size == 1) "" else "s"}  ·  pending ₹${"%,.0f".format(pend)}",
-                                        style = MaterialTheme.typography.bodySmall, color = Muted)
-                                }
-                                Text("›", color = Muted, fontWeight = FontWeight.Bold)
-                            }
+        if (portfolio == null) {
+            // ---- Portfolio picker: one card per Bank · Product in this month ----
+            val ports = monthCases.groupBy { portKey(it) }.toList().sortedByDescending { it.second.size }
+            item(key = "portfolio-heading") { Text("Portfolios in $curMonth", color = Muted,
+                modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
+            }
+            items(ports, key = { "portfolio:$curMonth:${it.first}" }) { (key, list) ->
+                val bank = key.substringBefore("||"); val prod = key.substringAfter("||")
+                val pend = list.sumOf { it.pendingAmount }
+                InfoCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth().clickable { changePortfolio(key) }) {
+                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("$bank  ·  $prod", fontWeight = FontWeight.Bold, color = BrandBlue)
+                            Text("${list.size} account${if (list.size == 1) "" else "s"}  ·  pending ₹${"%,.0f".format(pend)}",
+                                style = MaterialTheme.typography.bodySmall, color = Muted)
                         }
+                        Text("›", color = Muted, fontWeight = FontWeight.Bold)
                     }
                 }
-                return@AsyncContent
             }
+            return@LazyColumn
+        }
 
-            // ---- Case list for the selected month + portfolio ----
-            val bank = portfolio!!.substringBefore("||"); val prod = portfolio!!.substringAfter("||")
-            val portCases = monthCases.filter { portKey(it) == portfolio }
-            val pred = CASE_FILTERS.first { it.first == sel }.second
-            val q = query.trim().lowercase()
-            fun matches(c: Case): Boolean {
-                if (q.isEmpty()) return true
-                val digits = q.filter { it.isDigit() }
-                return listOf(c.customerName, c.accountNo, c.cardNo, c.phone, c.altPhone)
-                    .any { it != null && it.lowercase().contains(q) } ||
-                    (digits.isNotEmpty() && listOf(c.accountNo, c.cardNo, c.phone, c.altPhone)
-                        .any { it != null && it.filter { ch -> ch.isDigit() }.contains(digits) })
-            }
-            val comparator = (CASE_SORTS.firstOrNull { it.first == sort } ?: CASE_SORTS.first()).second
-            val ordered = portCases.filter { pred(it) && matches(it) }.sortedWith(comparator)
-            val exportTitle = "$bank · $prod · $curMonth"
-            val exportBase = "Cases_${bank}_${prod}_$curMonth".replace(Regex("[^A-Za-z0-9_-]"), "")
+        // ---- Case list for the selected month + portfolio ----
+        val bank = portfolio!!.substringBefore("||"); val prod = portfolio!!.substringAfter("||")
+        val portCases = monthCases.filter { portKey(it) == portfolio }
+        val pred = CASE_FILTERS.first { it.first == sel }.second
+        val q = query.trim().lowercase()
+        fun matches(c: Case): Boolean {
+            if (q.isEmpty()) return true
+            val digits = q.filter { it.isDigit() }
+            return listOf(c.customerName, c.accountNo, c.cardNo, c.phone, c.altPhone)
+                .any { it != null && it.lowercase().contains(q) } ||
+                (digits.isNotEmpty() && listOf(c.accountNo, c.cardNo, c.phone, c.altPhone)
+                    .any { it != null && it.filter { ch -> ch.isDigit() }.contains(digits) })
+        }
+        val comparator = (CASE_SORTS.firstOrNull { it.first == sort } ?: CASE_SORTS.first()).second
+        val ordered = portCases.filter { pred(it) && matches(it) }.sortedWith(comparator)
+        val exportTitle = "$bank · $prod · $curMonth"
+        val exportBase = "Cases_${bank}_${prod}_$curMonth".replace(Regex("[^A-Za-z0-9_-]"), "")
 
-            // Context bar: which portfolio, change link, and Excel / PDF download of the filtered set.
-            Row(
+        // Context bar: which portfolio, change link, and Excel / PDF download of the filtered set.
+        item(key = "portfolio-context") {
+            FlowRow(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                TextButton(onClick = { portfolio = null }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                TextButton(onClick = { changePortfolio(null) }, contentPadding = PaddingValues(horizontal = 4.dp)) {
                     Text("‹ $bank·$prod", color = BrandBlue, fontWeight = FontWeight.SemiBold)
                 }
-                Spacer(Modifier.weight(1f))
                 Text("${ordered.size}", color = Muted)
                 Spacer(Modifier.size(6.dp))
                 OutlinedButton(onClick = {
@@ -321,7 +369,9 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
                     }
                 }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)) { Text("⬇ PDF") }
             }
-            // Search
+        }
+        // Search
+        item(key = "search") {
             OutlinedTextField(
                 value = query, onValueChange = { query = it }, singleLine = true,
                 leadingIcon = { Icon(Icons.Filled.Search, null) },
@@ -332,7 +382,9 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
                 ),
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
             )
-            // Status + sort — one compact scrollable line each.
+        }
+        // Status + sort — one compact scrollable line each.
+        item(key = "filters") {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
@@ -342,6 +394,8 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
                     FilterChip(selected = sel == label, onClick = { sel = label }, label = { Text("$label ($n)") })
                 }
             }
+        }
+        item(key = "sort") {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
@@ -351,15 +405,16 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
                     FilterChip(selected = sort == label, onClick = { sort = label }, label = { Text(label) })
                 }
             }
-            if (ordered.isEmpty()) {
-                EmptyState(if (q.isEmpty()) "No cases in this filter." else "No cases match \"$query\".")
-            } else {
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(ordered.size) { i -> CaseCard(ordered[i], onClick = { onOpenCase(ordered[i].id) }) }
+        }
+        if (ordered.isEmpty()) {
+            item(key = "empty") {
+                Text(if (q.isEmpty()) "No cases in this filter." else "No cases match \"$query\".",
+                    Modifier.padding(16.dp), color = Muted)
+            }
+        } else {
+            items(ordered, key = { "case:${it.id}" }) { case ->
+                Column(Modifier.padding(horizontal = 16.dp)) {
+                    CaseCard(case, onClick = { onOpenCase(case.id) })
                 }
             }
         }
