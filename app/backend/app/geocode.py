@@ -141,7 +141,9 @@ def llm_clean_batch(items: list[dict]) -> dict:
         for row in arr:
             rid, clean = row.get("id"), (row.get("clean") or "").strip()
             if rid is not None and clean:
-                out[int(rid)] = clean
+                # Keep ids as STRINGS — they can be composite (e.g. "123-1" = case 123, address slot 1),
+                # so int() would throw and drop the whole batch, silently forcing local-only cleaning.
+                out[str(rid)] = clean
         return out
     except Exception:
         return {}

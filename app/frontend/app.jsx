@@ -1935,6 +1935,14 @@ function CasesView({ user }) {
             <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}</>}
         <div style={{ flex: 1 }} />
         {canDpr && <button className="btn" onClick={() => setDprOpen(true)} title="Bulk mark paid/unpaid from a bank DPR file">🏦 DPR update</button>}
+        {isHO && cases && cases.length > 0 && <button className="btn" title="Push the cases shown here into your ViciDial campaign list for auto-dialing"
+          onClick={async () => {
+            if (!window.confirm(`Send ${cases.length} case(s) to the ViciDial campaign list?`)) return;
+            try {
+              const r = await api('/api/integration/vicidial/push', { method: 'POST', body: { case_ids: cases.map(c => c.id) } });
+              toast(`☎ Pushed ${r.pushed} to ViciDial list ${r.list_id}${r.skipped ? ` · ${r.skipped} skipped` : ''}${r.failed ? ` · ${r.failed} failed` : ''}`);
+            } catch (e) { toast(e.message || 'ViciDial push failed', 'err'); }
+          }}>☎ Send to ViciDial</button>}
         {canUploads && <button className="btn" onClick={() => setUploadsOpen(true)} title="Undo a wrong portfolio upload">↩ Undo upload</button>}
         <BackfillAddressButton />
         <CorrectColumnsButton />
@@ -3730,6 +3738,17 @@ function GeocodeButton() {
       onClick={() => run(false, true)}>🗓️ This month{st.month_remaining ? ` (${st.month_remaining})` : ''}</button>
     {!st.remaining && st.failed_total ? <button className="btn sm" style={{ marginLeft: 6 }}
       title="Re-attempt addresses that couldn't be located before" onClick={() => run(true)}>↻ Retry {st.failed_total} unresolved</button> : null}
+    <button className="btn sm" style={{ marginLeft: 6 }}
+      title="Clear this month's existing pins and geocode them all again through the AI cleaner (FOS field-captured pins are kept)"
+      onClick={async () => {
+        if (!window.confirm("Re-run ALL of this month's cases through the AI cleaner? Existing map pins for this month will be recomputed (FOS field pins are kept).")) return;
+        try {
+          const r = await api('/api/cases/geocode/rebuild?month_bucket=current', { method: 'POST' });
+          toast(`Re-armed ${r.rearmed} case(s) — geocoding now via AI…`);
+          await loadStatus();
+          run(false, true);
+        } catch (e) { toast(e.message || 'Could not re-arm', 'err'); }
+      }}>🤖 Re-run month (AI)</button>
     {counts}
   </>;
 }
@@ -7700,8 +7719,31 @@ function ConnectionsView({ user }) {
   const [rows, setRows] = useState(null);
   const [form, setForm] = useState({ name: '', base_url: '', api_key: '', branch: '' });
   const [busy, setBusy] = useState(false);
+  // ViciDial connection form (connect RecoverIQ to the EXISTING office ViciDial — no self-hosted dialer)
+  const [vf, setVf] = useState({ name: 'ViciDial', base_url: '', vici_user: '', vici_pass: '',
+    campaign_id: '', list_id: '', source: 'recoveriq', phone_code: '91', recording_base: '', branch: '', agent_map: '' });
+  const [vbusy, setVbusy] = useState(false);
+  const [dispoUrl, setDispoUrl] = useState('');
   const load = () => api('/api/integration/connections').then(d => setRows(d.connections || [])).catch(() => setRows([]));
   useEffect(() => { load(); }, []);
+  const parseAgentMap = (txt) => {
+    const m = {};
+    (txt || '').split(/[\n,]/).forEach(line => {
+      const p = line.split('=');
+      if (p.length === 2 && p[0].trim() && p[1].trim()) m[p[0].trim().toUpperCase()] = p[1].trim();
+    });
+    return m;
+  };
+  const viciConnect = async () => {
+    if (!vf.base_url || !vf.vici_user) { toast('ViciDial URL and API user are required', 'err'); return; }
+    setVbusy(true);
+    try {
+      const body = { ...vf, agent_map: parseAgentMap(vf.agent_map), recoveriq_base: window.location.origin };
+      const r = await api('/api/integration/vicidial/connect', { method: 'POST', body });
+      setDispoUrl(r.dispo_url || ''); await load();
+      toast('ViciDial saved — now paste the Dispo URL into ViciDial (shown below).');
+    } catch (e) { toast(e.message, 'err'); } finally { setVbusy(false); }
+  };
   const add = async () => {
     if (!form.name || !form.base_url || !form.api_key) { toast('Name, URL and key are required', 'err'); return; }
     setBusy(true);
@@ -7711,8 +7753,13 @@ function ConnectionsView({ user }) {
       toast('Connection added — testing…');
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
-  const test = (id) => api('/api/integration/connections/' + id + '/test', { method: 'POST' })
-    .then(r => { toast(r.ok ? 'Reachable ✓' : 'Not reachable', r.ok ? 'ok' : 'err'); load(); }).catch(e => toast(e.message, 'err'));
+  const test = (c) => {
+    const p = c.kind === 'vicidial'
+      ? api('/api/integration/vicidial/test', { method: 'POST', body: { cid: c.id } })
+      : api('/api/integration/connections/' + c.id + '/test', { method: 'POST' });
+    p.then(r => { toast(r.ok ? 'Reachable ✓' : ('Not reachable' + (r.detail ? ' — ' + r.detail : '')), r.ok ? 'ok' : 'err'); load(); })
+      .catch(e => toast(e.message, 'err'));
+  };
   const toggle = (id) => api('/api/integration/connections/' + id + '/toggle', { method: 'POST' }).then(load);
   const del = (id) => { if (window.confirm('Remove this connection?')) api('/api/integration/connections/' + id, { method: 'DELETE' }).then(load); };
   const dot = (s) => s === 'ok' ? 'var(--good)' : s === 'down' ? 'var(--bad)' : 'var(--ink-dim)';
@@ -7729,8 +7776,39 @@ function ConnectionsView({ user }) {
         </div>
         <button className="btn gold" onClick={add} disabled={busy}>{busy ? 'Adding…' : '+ Add connection'}</button>
       </div>
+
+      {/* ViciDial — connect to the EXISTING office dialer (Zoiper → ViciDial). No self-hosted dialer. */}
       <div className="glass card">
-        {rows === null ? <div className="muted">Loading…</div> : rows.length === 0 ? <div className="muted">No connections yet. Add your Autodialer above.</div> :
+        <div className="section-h"><h3>☎️ ViciDial (existing office dialer)</h3></div>
+        <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
+          Route RecoverIQ's <b>Call</b> button through your current ViciDial so callers keep using Zoiper — no new dialer to host.
+          Dispositions and call recordings come back onto the case automatically. Agents must be <b>logged into the ViciDial agent screen</b> for click-to-call to ring their phone.
+        </p>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="field"><label>Name</label><input className="input" value={vf.name} onChange={e => setVf({ ...vf, name: e.target.value })} placeholder="ViciDial" /></div>
+          <div className="field"><label>ViciDial URL</label><input className="input" value={vf.base_url} onChange={e => setVf({ ...vf, base_url: e.target.value })} placeholder="http://192.168.1.50" /></div>
+          <div className="field"><label>API user</label><input className="input" value={vf.vici_user} onChange={e => setVf({ ...vf, vici_user: e.target.value })} placeholder="apiuser (level 8-9, API + Agent API = 1)" /></div>
+          <div className="field"><label>API password</label><input className="input" type="password" value={vf.vici_pass} onChange={e => setVf({ ...vf, vici_pass: e.target.value })} placeholder="leave blank to keep existing" /></div>
+          <div className="field"><label>Campaign ID</label><input className="input" value={vf.campaign_id} onChange={e => setVf({ ...vf, campaign_id: e.target.value })} placeholder="e.g. RIQ01" /></div>
+          <div className="field"><label>List ID (for campaign push)</label><input className="input" value={vf.list_id} onChange={e => setVf({ ...vf, list_id: e.target.value })} placeholder="e.g. 101" /></div>
+          <div className="field"><label>Source tag</label><input className="input" value={vf.source} onChange={e => setVf({ ...vf, source: e.target.value })} placeholder="recoveriq" /></div>
+          <div className="field"><label>Phone code</label><input className="input" value={vf.phone_code} onChange={e => setVf({ ...vf, phone_code: e.target.value })} placeholder="91" /></div>
+          <div className="field"><label>Recording URL base (optional)</label><input className="input" value={vf.recording_base} onChange={e => setVf({ ...vf, recording_base: e.target.value })} placeholder="http://192.168.1.50/RECORDINGS/MP3" /></div>
+          <div className="field"><label>Branch (optional)</label><input className="input" value={vf.branch} onChange={e => setVf({ ...vf, branch: e.target.value })} placeholder="leave blank for all branches" /></div>
+        </div>
+        <div className="field"><label>Agent map — RecoverIQ emp code = ViciDial agent user (one per line)</label>
+          <textarea className="input" rows={3} value={vf.agent_map} onChange={e => setVf({ ...vf, agent_map: e.target.value })}
+            placeholder={'TC001=8001\nTC002=8002'} /></div>
+        <button className="btn gold" onClick={viciConnect} disabled={vbusy}>{vbusy ? 'Saving…' : '💾 Save ViciDial connection'}</button>
+        {dispoUrl && <div className="glass" style={{ marginTop: 12, padding: 10, borderRadius: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>📋 Paste this into ViciDial → Campaign → "Dispo Call URL"</div>
+          <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>This sends the disposition + recording filename back to RecoverIQ after every call.</div>
+          <textarea className="input mono" rows={3} readOnly value={dispoUrl} style={{ fontSize: 11.5 }} onFocus={e => e.target.select()} />
+        </div>}
+      </div>
+
+      <div className="glass card">
+        {rows === null ? <div className="muted">Loading…</div> : rows.length === 0 ? <div className="muted">No connections yet. Add your Autodialer or ViciDial above.</div> :
           <div className="tablewrap"><table>
             <thead><tr><th>Status</th><th>Name</th><th>URL</th><th>Key</th><th>Branch</th><th>Enabled</th><th></th></tr></thead>
             <tbody>{rows.map(c => <tr key={c.id}>
@@ -7741,7 +7819,7 @@ function ConnectionsView({ user }) {
               <td>{c.branch || '—'}</td>
               <td>{c.enabled ? 'Yes' : 'No'}</td>
               <td style={{ whiteSpace: 'nowrap' }}>
-                <button className="btn ghost sm" onClick={() => test(c.id)}>Test</button>{' '}
+                <button className="btn ghost sm" onClick={() => test(c)}>Test</button>{' '}
                 <button className="btn ghost sm" onClick={() => toggle(c.id)}>{c.enabled ? 'Disable' : 'Enable'}</button>{' '}
                 <button className="btn ghost sm" onClick={() => del(c.id)}>Remove</button></td>
             </tr>)}</tbody></table></div>}

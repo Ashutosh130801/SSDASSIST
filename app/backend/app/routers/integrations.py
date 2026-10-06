@@ -33,10 +33,14 @@ def _mask(k: str) -> str:
 
 
 def _conn_out(c: models.DialerConnection) -> dict:
+    caps = dict(c.capabilities or {})
+    # Never leak the ViciDial API password; report only whether it's set.
+    if "vici_pass" in caps:
+        caps["vici_pass_set"] = bool(caps.pop("vici_pass"))
     return {"id": c.id, "kind": c.kind, "name": c.name, "base_url": c.base_url,
             "api_key_masked": _mask(c.api_key or ""), "branch": c.branch,
             "enabled": bool(c.enabled), "status": c.status,
-            "capabilities": c.capabilities or {},
+            "capabilities": caps,
             "last_seen": c.last_seen.isoformat() if c.last_seen else None}
 
 
@@ -60,8 +64,13 @@ def integration_status(db: Session = Depends(get_db), user: models.User = Depend
     """Lightweight check the frontend polls to decide whether to show dialer widgets."""
     conns = db.query(models.DialerConnection).filter(models.DialerConnection.enabled.is_(True)).all()
     dialers = [c for c in conns if c.kind == "dialer" and c.status == "ok"]
-    return {"dialer": {"connected": bool(dialers), "count": len(dialers),
-                       "names": [c.name for c in dialers]},
+    vicis = [c for c in conns if c.kind == "vicidial"]        # enabled is enough; status set on first call/test
+    # 'dialer.connected' drives the in-app Call button — true if EITHER a standalone dialer or a
+    # ViciDial is connected, so callers get the button in both setups.
+    return {"dialer": {"connected": bool(dialers) or bool(vicis), "count": len(dialers) + len(vicis),
+                       "names": [c.name for c in dialers] + [c.name for c in vicis]},
+            "vicidial": {"connected": bool(vicis), "count": len(vicis),
+                         "names": [c.name for c in vicis]},
             "aivoice": {"connected": any(c.kind == "aivoice" and c.status == "ok" for c in conns)}}
 
 
@@ -152,15 +161,74 @@ def _pick_dialer(db: Session, branch: str | None) -> models.DialerConnection | N
     return rows[0] if rows else None
 
 
+def _pick_vici(db: Session, branch: str | None) -> models.DialerConnection | None:
+    rows = (db.query(models.DialerConnection)
+            .filter(models.DialerConnection.kind == "vicidial",
+                    models.DialerConnection.enabled.is_(True)).all())
+    if branch:
+        for c in rows:
+            if (c.branch or "").strip().lower() == (branch or "").strip().lower():
+                return c
+    return rows[0] if rows else None
+
+
+def _vici_agent_user(conn: models.DialerConnection, user: models.User) -> str | None:
+    """Resolve a RecoverIQ user to their ViciDial agent user id. Uses the connection's agent_map
+    (emp_code → vici user); falls back to the emp_code itself when shops set vici user = emp code."""
+    caps = conn.capabilities or {}
+    amap = {str(k).strip().upper(): str(v).strip() for k, v in (caps.get("agent_map") or {}).items()}
+    code = (user.emp_code or "").strip().upper()
+    return amap.get(code) or (user.emp_code or None)
+
+
 @router.post("/click-to-call")
 def click_to_call(body: dict = Body(...), db: Session = Depends(get_db),
                   user: models.User = Depends(get_current_user)):
-    """Ask the connected dialer to place a call: ring the agent, bridge to the customer."""
+    """Ask the connected dialer to place a call: ring the agent, bridge to the customer.
+    Prefers a connected ViciDial (agc/api.php external_dial on the agent's live session); falls
+    back to a standalone RecoverIQ dialer if that's what's connected instead."""
     case = db.query(models.Case).filter(models.Case.id == int(body.get("case_id") or 0)).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     if not case.phone:
         raise HTTPException(status_code=400, detail="This case has no phone number")
+    # ── ViciDial path (existing office dialer) ────────────────────────────────────
+    vici = _pick_vici(db, case.branch)
+    if vici:
+        caps = vici.capabilities or {}
+        agent_user = _vici_agent_user(vici, user)
+        if not agent_user:
+            raise HTTPException(status_code=400,
+                                detail="No ViciDial agent id mapped for your account. Ask admin to map it in Connections.")
+        phone = "".join(ch for ch in str(case.phone) if ch.isdigit())[-12:]
+        params = {
+            "source": caps.get("source") or "recoveriq",
+            "user": caps.get("vici_user") or "",
+            "pass": caps.get("vici_pass") or "",
+            "agent_user": agent_user,
+            "function": "external_dial",
+            "value": phone,
+            "phone_code": str(caps.get("phone_code") or "91"),
+            "search": "YES", "preview": "NO", "focus": "YES",
+            "vendor_lead_code": str(case.id),
+        }
+        try:
+            with httpx.Client(timeout=8.0, verify=False) as cl:
+                r = cl.get(f"{vici.base_url}/agc/api.php", params=params)
+                txt = (r.text or "").strip()
+            vici.last_seen = datetime.now(timezone.utc)
+            vici.status = "ok" if txt.upper().startswith("SUCCESS") else vici.status
+            db.commit()
+            if not txt.upper().startswith("SUCCESS"):
+                # Most common cause: the agent isn't logged into the ViciDial agent screen.
+                raise HTTPException(status_code=502,
+                                    detail=f"ViciDial: {txt[:180] or 'no response'} — make sure the agent is logged into the ViciDial agent screen with their phone registered.")
+            return {"ok": True, "dialer": vici.name, "via": "vicidial", "agent_user": agent_user, "detail": txt[:200]}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Could not reach ViciDial: {str(e)[:160]}")
+    # ── Standalone RecoverIQ dialer path (fallback) ──────────────────────────────
     conn = _pick_dialer(db, case.branch)
     if not conn:
         raise HTTPException(status_code=400, detail="No dialer connected. Add one in Connections.")
@@ -312,3 +380,219 @@ def ingest_ptp(body: dict = Body(...), conn: models.DialerConnection = Depends(_
         case.follow_up_date = ptp_dt.date()
     db.commit()
     return {"ok": True, "case_id": case.id}
+
+
+# ============================================================ ViciDial connector
+# Connect RecoverIQ to an EXISTING ViciDial (no self-hosted dialer). Click-to-call uses ViciDial's
+# Agent API (external_dial) on the agent's live session; campaign push injects leads via the
+# Non-Agent API (add_lead); dispositions + recordings come BACK via ViciDial's per-call "Dispo Call
+# URL" hitting /vicidial/dispo. All HTTP API — no direct DB access to ViciDial.
+
+def _vici_dispo_url(request_base: str, conn: models.DialerConnection) -> str:
+    """The URL to paste into ViciDial campaign → 'Dispo Call URL'. ViciDial substitutes its own
+    --A--var--B-- tokens at call time."""
+    return (f"{request_base}/api/integration/vicidial/dispo"
+            f"?key={conn.api_key}"
+            "&case=--A--vendor_lead_code--B--"
+            "&dispo=--A--dispo--B--"
+            "&rec=--A--recording_filename--B--"
+            "&agent=--A--user--B--"
+            "&phone=--A--phone_number--B--"
+            "&len=--A--talk_sec--B--")
+
+
+@router.post("/vicidial/connect")
+def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
+                     user: models.User = Depends(require_roles(*ADMIN_ROLES))):
+    """Create or update THE ViciDial connection (one per branch, or one overall). Stores ViciDial
+    API user/pass, campaign/list/source and the emp_code→vici-agent map in capabilities. Returns the
+    Dispo Call URL to paste into ViciDial so dispositions + recordings flow back."""
+    import secrets as _secrets
+    name = (body.get("name") or "ViciDial").strip()
+    base_url = (body.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="ViciDial base_url (e.g. http://192.168.1.50) is required")
+    branch = (body.get("branch") or None)
+    # Find existing vicidial conn for this branch (or the single global one) to update in place.
+    q = db.query(models.DialerConnection).filter(models.DialerConnection.kind == "vicidial")
+    existing = None
+    for c in q.all():
+        if (c.branch or "") == (branch or ""):
+            existing = c
+            break
+    caps_in = {
+        "vici_user": (body.get("vici_user") or "").strip(),
+        "campaign_id": (body.get("campaign_id") or "").strip(),
+        "list_id": (body.get("list_id") or "").strip(),
+        "source": (body.get("source") or "recoveriq").strip(),
+        "phone_code": (body.get("phone_code") or "91").strip(),
+        "recording_base": (body.get("recording_base") or "").strip().rstrip("/"),
+        "agent_map": body.get("agent_map") or {},
+    }
+    if existing:
+        caps = dict(existing.capabilities or {})
+        caps.update({k: v for k, v in caps_in.items() if v not in (None, "", {})})
+        # Only replace the password when a new non-empty one is supplied.
+        if (body.get("vici_pass") or "").strip():
+            caps["vici_pass"] = body["vici_pass"].strip()
+        if isinstance(body.get("agent_map"), dict):
+            caps["agent_map"] = body["agent_map"]
+        existing.name = name or existing.name
+        existing.base_url = base_url
+        existing.branch = branch
+        existing.capabilities = caps
+        existing.enabled = True
+        c = existing
+    else:
+        caps = dict(caps_in)
+        if (body.get("vici_pass") or "").strip():
+            caps["vici_pass"] = body["vici_pass"].strip()
+        c = models.DialerConnection(kind="vicidial", name=name, base_url=base_url,
+                                    api_key=_secrets.token_hex(16), branch=branch,
+                                    enabled=True, status="unknown", capabilities=caps)
+        db.add(c)
+    db.commit(); db.refresh(c)
+    audit.record(db, user, "integration", None, entity_type="integration",
+                 detail=f"ViciDial connection '{name}' set ({base_url})")
+    db.commit()
+    request_base = (body.get("recoveriq_base") or "").strip().rstrip("/")
+    out = _conn_out(c)
+    out["dispo_url"] = _vici_dispo_url(request_base or "https://YOUR-RECOVERIQ-DOMAIN", c)
+    return out
+
+
+@router.post("/vicidial/test")
+def vicidial_test(body: dict = Body(...), db: Session = Depends(get_db),
+                  user: models.User = Depends(require_roles(*ADMIN_ROLES))):
+    """Verify ViciDial API creds with a harmless Non-Agent API call (version)."""
+    c = db.query(models.DialerConnection).filter(models.DialerConnection.id == int(body.get("cid") or 0),
+                                                 models.DialerConnection.kind == "vicidial").first()
+    if not c:
+        raise HTTPException(status_code=404, detail="ViciDial connection not found")
+    caps = c.capabilities or {}
+    params = {"source": caps.get("source") or "recoveriq", "user": caps.get("vici_user") or "",
+              "pass": caps.get("vici_pass") or "", "function": "version"}
+    try:
+        with httpx.Client(timeout=8.0, verify=False) as cl:
+            r = cl.get(f"{c.base_url}/vicidial/non_agent_api.php", params=params)
+            txt = (r.text or "").strip()
+        ok = "VERSION" in txt.upper() or txt.upper().startswith("SUCCESS")
+        c.status = "ok" if ok else "down"
+        c.last_seen = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": ok, "status": c.status, "detail": txt[:200]}
+    except Exception as e:
+        c.status = "down"; db.commit()
+        return {"ok": False, "status": "down", "detail": str(e)[:200]}
+
+
+@router.post("/vicidial/push")
+def vicidial_push(body: dict = Body(...), db: Session = Depends(get_db),
+                  user: models.User = Depends(require_roles(*ADMIN_ROLES))):
+    """Push the selected cases into a ViciDial list as leads (add_lead), tagging each with
+    vendor_lead_code = case id so results map back. Filters: bank, product, branch, period, or an
+    explicit case_ids list. list_id/campaign override the connection defaults when supplied."""
+    c = _pick_vici(db, body.get("branch"))
+    if not c:
+        raise HTTPException(status_code=400, detail="No ViciDial connected. Add one in Connections.")
+    caps = c.capabilities or {}
+    list_id = str(body.get("list_id") or caps.get("list_id") or "").strip()
+    if not list_id:
+        raise HTTPException(status_code=400, detail="A ViciDial list_id is required (set it on the connection or pass it here).")
+    q = db.query(models.Case).filter(models.Case.removed.isnot(True))
+    ids = body.get("case_ids")
+    if ids:
+        q = q.filter(models.Case.id.in_([int(i) for i in ids]))
+    else:
+        for f in ("bank", "product"):
+            if body.get(f):
+                q = q.filter(getattr(models.Case, f) == body[f])
+        if body.get("branch"):
+            from sqlalchemy import func as _f
+            q = q.filter(_f.lower(_f.trim(models.Case.branch)) == str(body["branch"]).strip().lower())
+        if body.get("period"):
+            q = q.filter(models.Case.period == body["period"])
+    cases = q.limit(int(body.get("limit") or 5000)).all()
+    pushed = skipped = failed = 0
+    with httpx.Client(timeout=12.0, verify=False) as cl:
+        for cs in cases:
+            if not cs.phone or (cs.paid_status or "").upper() == "PAID" or getattr(cs, "closed", False):
+                skipped += 1
+                continue
+            phone = "".join(ch for ch in str(cs.phone) if ch.isdigit())[-12:]
+            if not phone:
+                skipped += 1
+                continue
+            params = {
+                "source": caps.get("source") or "recoveriq",
+                "user": caps.get("vici_user") or "", "pass": caps.get("vici_pass") or "",
+                "function": "add_lead", "phone_number": phone,
+                "phone_code": str(caps.get("phone_code") or "91"),
+                "list_id": list_id, "vendor_lead_code": str(cs.id),
+                "first_name": (cs.customer_name or "")[:30],
+                "address3": (cs.bank or ""), "comments": f"{cs.bank}/{cs.product} pend {cs.pending_amount}",
+                "custom_fields": "Y", "duplicate_check": "DUPLIST",
+            }
+            try:
+                r = cl.get(f"{c.base_url}/vicidial/non_agent_api.php", params=params)
+                if (r.text or "").upper().strip().startswith("SUCCESS") or "ADDED TO LIST" in (r.text or "").upper():
+                    pushed += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+    c.last_seen = datetime.now(timezone.utc); db.commit()
+    audit.record(db, user, "integration", None, entity_type="integration",
+                 detail=f"ViciDial push → list {list_id}: {pushed} leads ({skipped} skipped, {failed} failed)")
+    db.commit()
+    return {"ok": True, "list_id": list_id, "pushed": pushed, "skipped": skipped, "failed": failed,
+            "campaign_id": caps.get("campaign_id")}
+
+
+@router.get("/vicidial/dispo")
+def vicidial_dispo(key: str = "", case: str = "", dispo: str = "", rec: str = "",
+                   agent: str = "", phone: str = "", length: str = "",
+                   db: Session = Depends(get_db)):
+    """ViciDial per-call 'Dispo Call URL' target — brings the DISPOSITION + RECORDING back onto the
+    case. Authenticated by ?key= (the connection's api_key). Matches by vendor_lead_code = case id."""
+    conn = (db.query(models.DialerConnection)
+            .filter(models.DialerConnection.kind == "vicidial",
+                    models.DialerConnection.api_key == key).first())
+    if not conn:
+        raise HTTPException(status_code=401, detail="Invalid key")
+    try:
+        cs = db.query(models.Case).filter(models.Case.id == int(case)).first()
+    except Exception:
+        cs = None
+    if not cs:
+        return {"ok": False, "detail": "no case match"}
+    caps = conn.capabilities or {}
+    # Recording URL: ViciDial sends a filename; build a playable URL from the configured base.
+    rec_url = None
+    if rec:
+        base = caps.get("recording_base")
+        rec_url = rec if str(rec).lower().startswith("http") else (f"{base}/{rec}.mp3" if base else None)
+    ag = db.query(models.User).filter(models.User.emp_code == agent).first() if agent else None
+    # Map the ViciDial agent user back to a RecoverIQ user via agent_map if emp_code didn't match.
+    if not ag and agent:
+        amap = {str(v).strip(): str(k).strip() for k, v in (caps.get("agent_map") or {}).items()}
+        emp = amap.get(str(agent).strip())
+        if emp:
+            ag = db.query(models.User).filter(models.User.emp_code == emp).first()
+    d = (dispo or "").upper().strip()
+    note = f"ViciDial call ({dispo or 'dispo'})" + (f" · {length}s" if length else "")
+    db.add(models.CallLog(case_id=cs.id, caller_id=(ag.id if ag else None),
+                          disposition=d or "CALL", note=note[:2000], recording_url=rec_url))
+    cs.last_contacted_at = datetime.now(timezone.utc)
+    if d:
+        cs.disposition = d
+        if d in ("PTP", "PROMISE"):
+            cs.status = "ptp"
+    conn.last_seen = datetime.now(timezone.utc)
+    db.commit()
+    try:
+        from .realtime import notify_data_changed
+        notify_data_changed(cs.bank, cs.product)
+    except Exception:
+        pass
+    return {"ok": True, "case_id": cs.id, "recording": bool(rec_url)}

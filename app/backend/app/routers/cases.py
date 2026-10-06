@@ -184,6 +184,35 @@ def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | Non
             "ai_cleaned": ai_cleaned, "local_cleaned": local_cleaned}
 
 
+@router.post("/geocode/rebuild")
+def geocode_rebuild(month_bucket: str | None = None, db: Session = Depends(get_db),
+                    admin: models.User = Depends(require_roles("admin"))):
+    """RE-ARM cases for a fresh geocode (e.g. to re-run them through the AI cleaner). Clears the
+    'attempted' marker and the geocoded pin for every matching case so the next Geocode run processes
+    them all again — INCLUDING ones already pinned. FOS field-captured pins (location_source='field')
+    are preserved. Pass month_bucket='current' to re-arm only this month; omit for all months.
+    After this, call POST /geocode (with month_bucket=current to match) to actually re-geocode."""
+    period = _current_period() if month_bucket == "current" else None
+    q = db.query(models.Case).filter(models.Case.removed.isnot(True))
+    if period:
+        q = q.filter(models.Case.period == period)
+    # Only re-arm cases that actually have an address/pin to work with.
+    q = q.filter(or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None),
+                     models.Case.address2.isnot(None), models.Case.address3.isnot(None)))
+    n = 0
+    for cs in q.all():
+        cs.geo_attempted_at = None
+        if cs.location_source != "field":          # never wipe a FOS doorstep GPS pin
+            cs.latitude = cs.longitude = cs.geo_precision = None
+            cs.geo_lat = cs.geo_lng = None
+            cs.location_source = None
+        cs.latitude2 = cs.longitude2 = cs.geo_precision2 = None
+        cs.latitude3 = cs.longitude3 = cs.geo_precision3 = None
+        n += 1
+    db.commit()
+    return {"rearmed": n, "scope": "current_month" if period else "all"}
+
+
 @router.get("/geocode/status")
 def geocode_status(db: Session = Depends(get_db),
                    admin: models.User = Depends(require_roles("admin"))):
