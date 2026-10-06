@@ -662,6 +662,7 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
         case_obj.closing_type = ctype
 
     batch = models.ImportBatch(filename=file.filename, bank=default_bank, product=product,
+                               segment=(segment or None), period=period, branch=(branch or None),
                                sheet=sheet, rows_total=len(records), uploaded_by=admin.id)
     db.add(batch)
     db.flush()
@@ -1044,7 +1045,10 @@ def recent_batches(limit: int = 25, offset: int = 0, q: str | None = None,
         like = f"%{q.strip()}%"
         base = base.filter(or_(models.ImportBatch.filename.ilike(like),
                                models.ImportBatch.bank.ilike(like),
-                               models.ImportBatch.product.ilike(like)))
+                               models.ImportBatch.product.ilike(like),
+                               models.ImportBatch.segment.ilike(like),
+                               models.ImportBatch.branch.ilike(like),
+                               models.ImportBatch.period.ilike(like)))
     total = base.count()
     rows = (base.order_by(models.ImportBatch.created_at.desc())
             .offset(max(0, offset)).limit(limit).all())
@@ -1059,6 +1063,8 @@ def recent_batches(limit: int = 25, offset: int = 0, q: str | None = None,
                 .group_by(models.Case.import_batch_id).all())
     items = [{
         "id": b.id, "filename": b.filename, "bank": b.bank, "product": b.product,
+        "segment": getattr(b, "segment", None), "period": getattr(b, "period", None),
+        "branch": getattr(b, "branch", None),
         "rows_total": b.rows_total, "rows_imported": b.rows_imported,
         "uploaded_by": names.get(b.uploaded_by) or "—",
         "created_at": b.created_at.isoformat() if b.created_at else None,

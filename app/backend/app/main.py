@@ -158,6 +158,9 @@ def _ensure_columns():
         },
         "import_batches": {
             "product": "VARCHAR(80)",
+            "segment": "VARCHAR(40)",
+            "period": "VARCHAR(7)",
+            "branch": "VARCHAR(60)",
         },
     }
     insp = inspect(engine)

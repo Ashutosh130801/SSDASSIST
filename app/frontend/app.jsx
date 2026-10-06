@@ -1372,6 +1372,12 @@ function DprModal({ onClose, onDone }) {
     </div>
   );
 }
+// 'YYYY-MM' → "Oct '26" for the uploads list.
+function uploadMonthLbl(p) {
+  if (!p || !/^\d{4}-\d{2}$/.test(p)) return p || '—';
+  const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return M[parseInt(p.slice(5, 7), 10) - 1] + " '" + p.slice(2, 4);
+}
 /* Recent uploads — admin/head office can undo a wrong portfolio upload. Removing an upload
    soft-deletes its cases (they land in the Removed-cases bin and can be restored). */
 function UploadsModal({ onClose, onDone }) {
@@ -1414,13 +1420,16 @@ function UploadsModal({ onClose, onDone }) {
           (reversible: restore them from there if needed).
         </p>
         <input className="input" value={qInput} onChange={e => setQInput(e.target.value)}
-          placeholder="🔍 Search uploads — file name, bank or product" style={{ marginBottom: 8 }} />
+          placeholder="🔍 Search uploads — file, bank, product, segment, month or location" style={{ marginBottom: 8 }} />
         {!rows ? <Loader /> : (rows.length === 0 ? <p className="muted" style={{ padding: 12 }}>{q ? `No uploads match “${q}”.` : 'No uploads yet.'}</p> : (
           <div className="tablewrap" style={{ maxHeight: 420, overflow: 'auto' }}><table>
-            <thead><tr><th>When</th><th>Bank · Product</th><th>File</th><th>By</th><th>Live</th><th></th></tr></thead>
+            <thead><tr><th>When</th><th>Portfolio</th><th>Segment</th><th>Month</th><th>Location</th><th>File</th><th>By</th><th>Live</th><th></th></tr></thead>
             <tbody>{rows.map(b => <tr key={b.id}>
               <td className="muted" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{b.created_at ? fmtDT(b.created_at) : '—'}</td>
               <td><b>{b.bank || '—'}</b> · {b.product || '—'}</td>
+              <td className="muted" style={{ fontSize: 12 }}>{b.segment || '—'}</td>
+              <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{uploadMonthLbl(b.period)}</td>
+              <td className="muted" style={{ fontSize: 12 }}>{b.branch ? '📍 ' + b.branch : '—'}</td>
               <td className="muted" style={{ fontSize: 12, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={b.filename}>{b.filename || '—'}</td>
               <td className="muted" style={{ fontSize: 12 }}>{b.uploaded_by}</td>
               <td className="mono">{b.live}{b.removed ? <span className="muted" style={{ fontSize: 11 }}> (+{b.removed} removed)</span> : ''}</td>
@@ -1806,6 +1815,7 @@ function CasesView({ user }) {
   const [openState, setOpenState] = useState(''); const [cyc, setCyc] = useState('');   // ''|'open'|'closed', cycle day
   const [monthB, setMonthB] = useState('current');   // default to THIS month so months are never mixed. '' | 'current' | 'next'
   const [cardPeriod, setCardPeriod] = useState('');  // exact period ('YYYY-MM') of the opened portfolio card — scopes the case list to that month
+  const [segEdit, setSegEdit] = useState(false); const [segNew, setSegNew] = useState(''); const [segBusy, setSegBusy] = useState(false);
   const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // AREA-wise filter
   const [branchF, setBranchF] = useState('');   // set only for explicit-branch (split) portfolios
   const [flaggedOnly, setFlaggedOnly] = useState(false);   // ⚠ caution-flagged cases only
@@ -2066,15 +2076,7 @@ function CasesView({ user }) {
           {product && <span className="badge allocated">{bank} · {product}{segment ? ' · ' + segment : ''}{branchF ? ' · 📍 ' + branchF : ''}{cardPeriod ? ' · 🗓️ ' + monthLbl(cardPeriod) : ''}</span>}
           {product && ['admin', 'headoffice'].includes(user.role) && <button className="btn ghost sm"
             title="Fix a wrong segment for this whole portfolio (e.g. a BL file uploaded as Credit Card) — no delete / re-upload needed"
-            onClick={async () => {
-              const ns = window.prompt('Change segment for ' + bank + ' · ' + product + (segment ? ' · ' + segment : '') + (branchF ? ' · ' + branchF : '') + '\n\nType the correct segment (Credit Card / PL/BL / AUTO LOANS):', segment || '');
-              if (!ns || !ns.trim() || ns.trim() === segment) return;
-              try {
-                const r = await api('/api/cases/portfolio/set-segment', { method: 'POST', body: { bank, product, segment, branch: branchF || '', period: cardPeriod || '', new_segment: ns.trim() } });
-                toast('✓ Segment changed to ' + r.new_segment + ' for ' + r.updated + ' case(s)');
-                backToProducts();
-              } catch (e) { toast(e.message || 'Could not change segment', 'err'); }
-            }}>✎ Segment</button>}
+            onClick={() => { setSegNew(segment || 'Credit Card'); setSegEdit(true); }}>✎ Segment</button>}
           <input className="input" style={{ maxWidth: 240 }} placeholder="Search name / account / phone / pincode"
             value={q} onChange={e => setQ(e.target.value)} />
           {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>
@@ -2136,6 +2138,34 @@ function CasesView({ user }) {
           </div>
         )}
       </>)}
+      {segEdit && <div className="drawer-bg" onClick={() => !segBusy && setSegEdit(false)}>
+        <div className="glass card" style={{ maxWidth: 440, margin: '12vh auto', padding: 20 }} onClick={e => e.stopPropagation()}>
+          <h3 style={{ marginTop: 0 }}>✎ Change segment</h3>
+          <p className="muted" style={{ fontSize: 13, marginTop: 2 }}>
+            {bank} · {product}{segment ? ' · ' + segment : ''}{branchF ? ' · 📍 ' + branchF : ''}{cardPeriod ? ' · 🗓️ ' + monthLbl(cardPeriod) : ''}
+          </p>
+          <div className="field"><label>New segment</label>
+            <select className="input" value={segNew} onChange={e => setSegNew(e.target.value)}>
+              {(() => {
+                const base = ['Credit Card', 'PL/BL', 'AUTO LOANS'];
+                const opts = segment && !base.includes(segment) ? [segment, ...base] : base;
+                return opts.map(s => <option key={s} value={s}>{s}</option>);
+              })()}
+            </select></div>
+          <p className="muted" style={{ fontSize: 12 }}>Only the segment changes for this portfolio — payments, allocation, visits, calls and history stay as they are.</p>
+          <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
+            <button className="btn" disabled={segBusy} onClick={() => setSegEdit(false)}>Cancel</button>
+            <button className="btn gold" disabled={segBusy || !segNew || segNew === segment} onClick={async () => {
+              setSegBusy(true);
+              try {
+                const r = await api('/api/cases/portfolio/set-segment', { method: 'POST', body: { bank, product, segment, branch: branchF || '', period: cardPeriod || '', new_segment: segNew } });
+                toast('✓ Segment changed to ' + r.new_segment + ' for ' + r.updated + ' case(s)');
+                setSegEdit(false); backToProducts();
+              } catch (e) { toast(e.message || 'Could not change segment', 'err'); } finally { setSegBusy(false); }
+            }}>{segBusy ? 'Applying…' : 'Apply'}</button>
+          </div>
+        </div>
+      </div>}
       {upload && <UploadModal onClose={() => setUpload(false)} onDone={(shouldClose = true) => { load(); if (shouldClose) setUpload(false); }} />}
       {dprOpen && <DprModal onClose={() => setDprOpen(false)} onDone={() => { load(); loadSummary(); }} />}
       {uploadsOpen && <UploadsModal onClose={() => setUploadsOpen(false)} onDone={() => { load(); loadSummary(); }} />}

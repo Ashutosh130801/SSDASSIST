@@ -331,6 +331,9 @@ class ImportBatch(Base):
     filename = Column(String(255))
     bank = Column(String(40))
     product = Column(String(80))                     # the portfolio this upload loaded into
+    segment = Column(String(40), nullable=True)      # segment chosen at upload (Credit Card / PL/BL / …)
+    period = Column(String(7), nullable=True)        # month this upload belongs to, 'YYYY-MM'
+    branch = Column(String(60), nullable=True)       # location chosen at upload (blank = by pincode/FOS)
     sheet = Column(String(80))
     rows_total = Column(Integer, default=0)
     rows_imported = Column(Integer, default=0)
