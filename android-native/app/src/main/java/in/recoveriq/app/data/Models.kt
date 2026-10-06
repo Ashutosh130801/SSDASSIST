@@ -170,15 +170,24 @@ data class Case(
     val phone: String? = null,
     @Json(name = "alt_phone") val altPhone: String? = null,
     val address: String? = null,
-    @Json(name = "address2") val address2: String? = null,   // ADD 2 (+ ADD 3) — second address line
+    @Json(name = "address2") val address2: String? = null,   // ADD 2 — second address line
+    @Json(name = "address3") val address3: String? = null,   // ADD 3 — third address line
     @Json(name = "new_address") val newAddress: String? = null,
     @Json(name = "new_phone") val newPhone: String? = null,
     @Json(name = "new_contact_by") val newContactBy: String? = null,
     @Json(name = "new_contact_at") val newContactAt: String? = null,
     val pincode: String? = null,
+    @Json(name = "pincode2") val pincode2: String? = null,    // pin for address2
+    @Json(name = "pincode3") val pincode3: String? = null,    // pin for address3
     val latitude: Double? = null,
     val longitude: Double? = null,
+    @Json(name = "latitude2") val latitude2: Double? = null,
+    @Json(name = "longitude2") val longitude2: Double? = null,
+    @Json(name = "latitude3") val latitude3: Double? = null,
+    @Json(name = "longitude3") val longitude3: Double? = null,
     @Json(name = "geo_precision") val geoPrecision: String? = null,     // rooftop/locality/pincode/city
+    @Json(name = "geo_precision2") val geoPrecision2: String? = null,
+    @Json(name = "geo_precision3") val geoPrecision3: String? = null,
     @Json(name = "location_source") val locationSource: String? = null, // geocoded | field
     @Json(name = "address_clean") val addressClean: String? = null,
     val digipin: String? = null,

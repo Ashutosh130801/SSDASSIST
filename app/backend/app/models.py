@@ -129,8 +129,18 @@ class Case(Base):
     phone = Column(String(20))
     alt_phone = Column(String(20))
     address = Column(Text)                        # ADD 1 (primary address line)
-    address2 = Column(Text)                        # ADD 2 (+ ADD 3) — kept separate
-    pincode = Column(String(10), index=True)
+    address2 = Column(Text)                        # ADD 2
+    address3 = Column(Text)                        # ADD 3
+    pincode = Column(String(10), index=True)       # pincode for ADD 1
+    pincode2 = Column(String(10))                  # pincode for ADD 2
+    pincode3 = Column(String(10))                  # pincode for ADD 3
+    # Per-address geocode pins (ADD 2 / ADD 3). ADD 1 uses latitude/longitude above.
+    latitude2 = Column(Float)
+    longitude2 = Column(Float)
+    geo_precision2 = Column(String(12))
+    latitude3 = Column(Float)
+    longitude3 = Column(Float)
+    geo_precision3 = Column(String(12))
     # Field-corrected contact: a caller / head-office user adds the customer's latest
     # address / phone discovered mid-cycle. Surfaced to the assigned FOS (+ notified).
     new_address = Column(Text)

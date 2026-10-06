@@ -106,6 +106,355 @@ def _classify_row_tl(rec, by_code, by_name, actor_ids, actor_id):
     return "other_tl", u
 
 
+_BACKFILL_ADDR_FIELDS = ("address", "address2", "address3", "pincode", "pincode2", "pincode3")
+
+
+def _bf_norm(v):
+    return (str(v).strip() or None) if v not in (None, "") else None
+
+
+@router.post("/backfill-addresses")
+async def backfill_addresses(
+        file: UploadFile = File(...),
+        default_bank: str | None = Form(None),
+        commit: bool = Form(False),
+        actor: models.User = Depends(require_roles("admin", "headoffice")),
+        db: Session = Depends(get_db)):
+    """Re-read an ORIGINAL portfolio file and fill ONLY the 2nd/3rd address lines + their pincodes
+    onto cases that already exist. Nothing else is touched — money, allocation, dispositions,
+    payments and history stay as they are. Matches by account_no (+ bank + product when present),
+    across all non-removed months. Any address line that changes is re-armed for geocoding so the
+    next Geocode run pins it. Pass commit=false first for a dry run (default)."""
+    content = await file.read()
+    try:
+        records, sheet = import_workbook(content, default_bank=default_bank)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    rows_with_extra = matched = changed_cases = unmatched = 0
+    field_changes = {f: 0 for f in _BACKFILL_ADDR_FIELDS}
+    for rec in records:
+        k = record_to_case_kwargs(rec)
+        acct = _bf_norm(k.get("account_no"))
+        if not acct:
+            continue
+        # Skip rows that carry no new address data at all.
+        if not any(_bf_norm(k.get(f)) for f in ("address2", "address3", "pincode2", "pincode3")):
+            continue
+        rows_with_extra += 1
+        q = db.query(models.Case).filter(models.Case.account_no == acct,
+                                         models.Case.removed.isnot(True))
+        bank = _bf_norm(k.get("bank")) or _bf_norm(default_bank)
+        prod = _bf_norm(k.get("product"))
+        if bank:
+            q = q.filter(models.Case.bank == bank)
+        if prod:
+            q = q.filter(models.Case.product == prod)
+        cases = q.all()
+        if not cases:
+            unmatched += 1
+            continue
+        for cs in cases:
+            matched += 1
+            touched = False
+            old_a2 = (cs.address2, cs.pincode2)
+            old_a3 = (cs.address3, cs.pincode3)
+            for f in _BACKFILL_ADDR_FIELDS:
+                newv = _bf_norm(k.get(f))
+                if newv and _bf_norm(getattr(cs, f, None)) != newv:
+                    setattr(cs, f, newv)
+                    field_changes[f] += 1
+                    touched = True
+            if touched:
+                changed_cases += 1
+                if (cs.address2, cs.pincode2) != old_a2:
+                    cs.latitude2 = cs.longitude2 = cs.geo_precision2 = None
+                    cs.geo_attempted_at = None
+                if (cs.address3, cs.pincode3) != old_a3:
+                    cs.latitude3 = cs.longitude3 = cs.geo_precision3 = None
+                    cs.geo_attempted_at = None
+
+    if commit and changed_cases:
+        audit.record(db, actor, "backfill_addresses", entity_type="import",
+                     detail=f"{file.filename}: {changed_cases} cases updated (sheets: {sheet})")
+        db.commit()
+    else:
+        db.rollback()
+
+    return {"committed": bool(commit and changed_cases), "file": file.filename, "sheet": sheet,
+            "rows_in_file": len(records), "rows_with_extra_address": rows_with_extra,
+            "cases_matched": matched, "cases_changed": changed_cases,
+            "rows_no_match": unmatched, "field_changes": field_changes}
+
+
+# ── Corrections upload ──────────────────────────────────────────────────────────
+# Re-upload a CORRECTED copy of the ORIGINAL portfolio/case file to fix columns that were wrong in
+# the first upload — WITHOUT deleting the portfolio and losing all the calling/visit/payment progress
+# on it. The admin/HO picks exactly which columns to apply; everything else on the case (received
+# amount, paid status, dispositions, notes, visits, calls, history) is left untouched. If a
+# caller / FOS / team-lead column is corrected, the case is RE-ASSIGNED to the new person.
+# This is NOT the DPR tool (DPR marks paid/unpaid through the payment pipeline) — this only fixes the
+# source case data.
+
+# field -> (label, is_reassignment). Payment/action/feedback fields are deliberately NOT correctable
+# here so progress can never be clobbered. account_no / bank / product are the match key, not editable.
+_CORRECTABLE = {
+    "customer_name": ("Customer name", False),
+    "phone": ("Phone", False),
+    "alt_phone": ("Alt phone", False),
+    "address": ("Address 1", False),
+    "address2": ("Address 2", False),
+    "address3": ("Address 3", False),
+    "pincode": ("Pincode 1", False),
+    "pincode2": ("Pincode 2", False),
+    "pincode3": ("Pincode 3", False),
+    "card_no": ("Card no", False),
+    "branch": ("Branch / location", False),
+    "team": ("Area", False),
+    "cat": ("Category", False),
+    "bucket": ("Bucket", False),
+    "cycle": ("Cycle", False),
+    "enr": ("ENR", False),
+    "norm_amount": ("OD NORM", False),
+    "stab_amount": ("OD STAB", False),
+    "total_outstanding": ("TOS", False),
+    "principal_outstanding": ("POS", False),
+    "min_amount_due": ("MAD", False),
+    "funding_amount": ("Funding amount", False),
+    "vehicle_type": ("Vehicle type", False),
+    "brand": ("Brand", False),
+    "vehicle_num": ("Vehicle no", False),
+    "old_new": ("Old / New", False),
+    "caller_name": ("Telecaller (TC)", True),
+    "fos_name": ("Field officer (FOS)", True),
+    "team_lead": ("Team lead (TL)", True),
+}
+_CORRECT_MONEY = {"enr", "norm_amount", "stab_amount", "total_outstanding",
+                  "principal_outstanding", "min_amount_due", "funding_amount"}
+
+
+def _correct_norm(v):
+    return (str(v).strip() or None) if v not in (None, "") else None
+
+
+def _correct_user_maps(db: Session):
+    """code(UPPER) -> user maps for resolving a corrected TC / FOS / TL cell to a person."""
+    caller_by, fos_by, tl_by, tl_by_name = {}, {}, {}, {}
+    for u in db.query(models.User).all():
+        code = (u.emp_code or "").strip().upper()
+        role = (u.role or "").lower()
+        if code:
+            if role in ("telecaller", "caller") or getattr(u, "also_telecaller", False):
+                caller_by[code] = u
+            if role == "fos" or getattr(u, "also_fos", False):
+                fos_by[code] = u
+            if role == "teamlead":
+                tl_by[code] = u
+        tlc = (getattr(u, "tl_emp_code", None) or "").strip().upper()
+        if tlc and (role == "teamlead" or getattr(u, "also_team_lead", False)):
+            tl_by[tlc] = u
+        if role == "teamlead" and u.name:
+            tl_by_name[u.name.strip().upper()] = u
+    # Fallback: a caller/fos code may belong to someone whose primary role differs — index everyone
+    # by code too so an exact emp-code always resolves.
+    any_by = {}
+    for u in db.query(models.User).all():
+        if u.emp_code:
+            any_by[u.emp_code.strip().upper()] = u
+    return caller_by, fos_by, tl_by, tl_by_name, any_by
+
+
+def _money_eq(a, b):
+    try:
+        from decimal import Decimal as _D
+        return _D(str(a or 0)) == _D(str(b or 0))
+    except Exception:
+        return str(a) == str(b)
+
+
+def _correct_scan(records, default_bank, product, db, want_fields=None):
+    """Match each file row to existing case(s) and compute, per correctable field, which cases would
+    change. Returns (per_field, matched_accounts, unmatched, apply_plan). apply_plan is a list of
+    (case, {field: newvalue}, {reassign dicts}) ready to write when want_fields is given."""
+    caller_by, fos_by, tl_by, tl_by_name, any_by = _correct_user_maps(db)
+    per_field = {}            # field -> {"label","reassign","changes":int,"samples":[...]}
+    for f, (label, isre) in _CORRECTABLE.items():
+        per_field[f] = {"field": f, "label": label, "reassign": isre, "changes": 0, "samples": []}
+    matched_accounts = set()
+    unmatched = 0
+    plan = []
+
+    def resolve_person(field, raw):
+        code = _correct_norm(raw)
+        if not code:
+            return None, None, "blank"
+        key = str(code).strip().upper()
+        if field == "caller_name":
+            u = caller_by.get(key) or any_by.get(key)
+        elif field == "fos_name":
+            u = fos_by.get(key) or any_by.get(key)
+        else:
+            u = tl_by.get(key) or tl_by_name.get(key) or any_by.get(key)
+        return (u, key, "" if u else "unknown")
+
+    for rec in records:
+        k = record_to_case_kwargs(rec)
+        acct = _correct_norm(k.get("account_no"))
+        if not acct:
+            continue
+        q = db.query(models.Case).filter(models.Case.account_no == acct,
+                                         models.Case.removed.isnot(True))
+        bank = _correct_norm(k.get("bank")) or _correct_norm(default_bank)
+        prod = _correct_norm(k.get("product")) or _correct_norm(product)
+        if bank:
+            q = q.filter(models.Case.bank == bank)
+        if prod:
+            q = q.filter(models.Case.product == prod)
+        cases = q.all()
+        if not cases:
+            unmatched += 1
+            continue
+        matched_accounts.add(acct)
+        for cs in cases:
+            row_sets = {}       # field -> new value to set on the case
+            row_reassign = {}   # field -> user to assign
+            for field, (label, isre) in _CORRECTABLE.items():
+                if field not in k:
+                    continue
+                newraw = k.get(field)
+                if isre:
+                    u, code, why = resolve_person(field, newraw)
+                    if why:                               # blank or unknown code → skip (don't unassign)
+                        continue
+                    cur_id = (cs.assigned_caller_id if field == "caller_name"
+                              else cs.assigned_fos_id if field == "fos_name" else None)
+                    if field == "team_lead":
+                        changed = _correct_norm(cs.team_lead) != _correct_norm(u.name)
+                    else:
+                        changed = cur_id != u.id
+                    if not changed:
+                        continue
+                    old_disp = (cs.caller_name if field == "caller_name"
+                                else cs.fos_name if field == "fos_name" else cs.team_lead) or "—"
+                    new_disp = f"{u.name} ({u.emp_code})"
+                    row_reassign[field] = u
+                else:
+                    newv = _correct_norm(newraw)
+                    if newv is None:
+                        continue
+                    curv = getattr(cs, field, None)
+                    if field in _CORRECT_MONEY:
+                        if _money_eq(curv, newraw):
+                            continue
+                        old_disp, new_disp = str(curv), str(newraw)
+                    else:
+                        if _correct_norm(curv) == newv:
+                            continue
+                        old_disp, new_disp = (curv or "—"), newv
+                    row_sets[field] = newraw if field in _CORRECT_MONEY else newv
+                # record the change in preview stats
+                pf = per_field[field]
+                pf["changes"] += 1
+                if len(pf["samples"]) < 5:
+                    pf["samples"].append({"account": acct, "customer": cs.customer_name,
+                                          "old": str(old_disp)[:60], "new": str(new_disp)[:60]})
+            if want_fields and (row_sets or row_reassign):
+                plan.append((cs, {f: v for f, v in row_sets.items() if f in want_fields},
+                             {f: u for f, u in row_reassign.items() if f in want_fields}))
+    return per_field, matched_accounts, unmatched, plan
+
+
+@router.post("/correct/preview")
+async def correct_preview(file: UploadFile = File(...), default_bank: str | None = Form(None),
+                          product: str | None = Form(None),
+                          actor: models.User = Depends(require_roles("admin", "headoffice")),
+                          db: Session = Depends(get_db)):
+    """Re-read a corrected ORIGINAL portfolio file and show which case COLUMNS would change (with
+    before→after samples + a count per column), so the admin/HO can tick exactly which to apply.
+    Nothing is written. account/bank/product identify the case; payments & actions are never shown
+    here because they are never changed by this tool."""
+    content = await file.read()
+    try:
+        records, sheet = import_workbook(content, default_bank=default_bank)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+    per_field, matched, unmatched, _ = _correct_scan(records, default_bank, product, db)
+    cols = [v for v in per_field.values() if v["changes"] > 0]
+    cols.sort(key=lambda x: (-x["changes"], x["label"]))
+    return {"file": file.filename, "sheet": sheet, "rows_in_file": len(records),
+            "accounts_matched": len(matched), "rows_no_match": unmatched, "columns": cols}
+
+
+@router.post("/correct/apply")
+async def correct_apply(file: UploadFile = File(...), default_bank: str | None = Form(None),
+                        product: str | None = Form(None), fields: str = Form(""),
+                        actor: models.User = Depends(require_roles("admin", "headoffice")),
+                        db: Session = Depends(get_db)):
+    """Apply ONLY the selected columns from the corrected file onto the matched cases. Reassigns the
+    case when a TC / FOS / TL column is selected and changed. Leaves received amount, paid status,
+    dispositions, notes, visits, calls and history exactly as they are."""
+    want = {f.strip() for f in (fields or "").split(",") if f.strip() and f.strip() in _CORRECTABLE}
+    if not want:
+        raise HTTPException(status_code=400, detail="Select at least one valid column to update.")
+    content = await file.read()
+    try:
+        records, sheet = import_workbook(content, default_bank=default_bank)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+    _pf, matched, unmatched, plan = _correct_scan(records, default_bank, product, db, want_fields=want)
+
+    cases_changed = 0
+    field_changes = {f: 0 for f in want}
+    reassigned = {"caller_name": 0, "fos_name": 0, "team_lead": 0}
+    for cs, sets, reassign in plan:
+        if not sets and not reassign:
+            continue
+        touched = False
+        addr_changed = False
+        for f, v in sets.items():
+            setattr(cs, f, v)
+            field_changes[f] = field_changes.get(f, 0) + 1
+            touched = True
+            if f in ("address", "pincode"):
+                addr_changed = True
+            if f in ("address2", "pincode2"):
+                cs.latitude2 = cs.longitude2 = cs.geo_precision2 = None
+                cs.geo_attempted_at = None
+            if f in ("address3", "pincode3"):
+                cs.latitude3 = cs.longitude3 = cs.geo_precision3 = None
+                cs.geo_attempted_at = None
+        if addr_changed and cs.location_source != "field":
+            cs.latitude = cs.longitude = None
+            cs.location_source = None
+            cs.geo_attempted_at = None
+        for f, u in reassign.items():
+            if f == "caller_name":
+                cs.assigned_caller_id = u.id
+                cs.caller_name = u.name
+            elif f == "fos_name":
+                cs.assigned_fos_id = u.id
+                cs.fos_name = u.name
+                if u.branch and not cs.branch:
+                    cs.branch = u.branch
+            elif f == "team_lead":
+                cs.team_lead = u.name
+            reassigned[f] = reassigned.get(f, 0) + 1
+            field_changes[f] = field_changes.get(f, 0) + 1
+            touched = True
+        if touched:
+            cases_changed += 1
+
+    if cases_changed:
+        audit.record(db, actor, "correct_columns", entity_type="import",
+                     detail=f"{file.filename}: {cases_changed} cases, columns={sorted(want)} (sheets: {sheet})")
+        db.commit()
+    else:
+        db.rollback()
+    return {"committed": bool(cases_changed), "file": file.filename, "sheet": sheet,
+            "cases_changed": cases_changed, "rows_no_match": unmatched,
+            "field_changes": field_changes, "reassigned": reassigned}
+
+
 @router.post("/preview")
 async def preview(file: UploadFile = File(...), default_bank: str | None = Form(None),
                   product: str | None = Form(None), segment: str | None = Form(None),
@@ -444,22 +793,33 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
         if existing:
             _old_recv = _num(existing.received_amount)
             _old_addr = (existing.address, existing.pincode)
+            _old_addr2 = (existing.address2, existing.pincode2)
+            _old_addr3 = (existing.address3, existing.pincode3)
             # update amounts / status, don't duplicate
             for k in ("funding_amount", "received_amount", "pending_amount", "paid_status",
-                      "disposition", "remarks", "address", "pincode", "phone",
+                      "disposition", "remarks", "address", "address2", "address3",
+                      "pincode", "pincode2", "pincode3", "phone",
                       "enr", "norm_amount", "stab_amount", "rollback_amount", "norm_stab",
                       "total_outstanding", "principal_outstanding",
                       "caller_name", "fos_name", "team", "bucket", "cycle", "final_status"):
                 if kwargs.get(k) is not None:
                     setattr(existing, k, kwargs[k])
-            # If the re-upload changed the address/pincode, this case needs geocoding again —
-            # clear the "attempted" marker (and the geocoded pin, unless a FOS verified it in the
-            # field) so the next Geocode run picks up the NEW address.
+            # If the re-upload changed the primary address/pincode, this case needs geocoding
+            # again — clear the "attempted" marker (and the geocoded pin, unless a FOS verified it
+            # in the field) so the next Geocode run picks up the NEW address.
             if (existing.address, existing.pincode) != _old_addr:
                 existing.geo_attempted_at = None
                 if existing.location_source != "field":
                     existing.latitude = existing.longitude = None
                     existing.location_source = None
+            # Same for the 2nd / 3rd address lines — a changed line clears its own pin + re-arms
+            # geocoding so the next run fills latitude{2,3}/longitude{2,3}.
+            if (existing.address2, existing.pincode2) != _old_addr2:
+                existing.latitude2 = existing.longitude2 = existing.geo_precision2 = None
+                existing.geo_attempted_at = None
+            if (existing.address3, existing.pincode3) != _old_addr3:
+                existing.latitude3 = existing.longitude3 = existing.geo_precision3 = None
+                existing.geo_attempted_at = None
             if kwargs.get("extra"):                 # merge new loan/caller columns
                 existing.extra = {**(existing.extra or {}), **kwargs["extra"]}
             _rawc = kwargs.get("caller_name")

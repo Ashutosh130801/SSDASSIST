@@ -27,6 +27,15 @@ def _ensure_columns():
     wanted = {
         "cases": {
             "address2": "TEXT",
+            "address3": "TEXT",
+            "pincode2": "VARCHAR(10)",
+            "pincode3": "VARCHAR(10)",
+            "latitude2": "DOUBLE PRECISION",
+            "longitude2": "DOUBLE PRECISION",
+            "geo_precision2": "VARCHAR(12)",
+            "latitude3": "DOUBLE PRECISION",
+            "longitude3": "DOUBLE PRECISION",
+            "geo_precision3": "VARCHAR(12)",
             "new_address": "TEXT",
             "new_phone": "VARCHAR(20)",
             "new_contact_by": "VARCHAR(120)",

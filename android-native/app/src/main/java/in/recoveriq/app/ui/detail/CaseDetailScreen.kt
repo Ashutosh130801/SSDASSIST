@@ -376,9 +376,7 @@ private fun DetailFields(case: Case) {
         Field("Alt phone", case.altPhone)
         Field("Card no", case.cardNo)
         Field("Account no", case.accountNo)
-        Field("Address", case.address)
-        Field("Address 2", case.address2)
-        Field("Pincode", case.pincode)
+        AddressBlock(case, ctx)
     }
     SectionTitle("Account")
     InfoCard {
@@ -450,7 +448,8 @@ private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = b
     }
     val addrFull = listOfNotNull(
         case.address?.takeIf { it.isNotBlank() },
-        case.address2?.takeIf { it.isNotBlank() }
+        case.address2?.takeIf { it.isNotBlank() },
+        case.address3?.takeIf { it.isNotBlank() }
     ).joinToString(", ")
     if (addrFull.isNotBlank()) appendLine("Address: $addrFull" + (case.pincode?.let { p -> ", $p" } ?: ""))
     appendLine("Outcome: ${v.disposition ?: "—"}")
@@ -462,6 +461,38 @@ private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = b
         appendLine("Map: https://maps.google.com/?q=${v.lat},${v.lng}")
     }
     append("Agent: ${user.name}")
+}
+
+/* Each address line a case carries (up to 3), with its own pincode and geocoded pin + its own
+   Navigate button. Uses the geotagged coordinate when available, else a maps search of the text. */
+@Composable
+private fun AddressBlock(case: Case, ctx: android.content.Context) {
+    data class Addr(val addr: String?, val pin: String?, val lat: Double?, val lng: Double?)
+    val rows = listOf(
+        Addr(case.address, case.pincode, case.latitude, case.longitude),
+        Addr(case.address2, case.pincode2, case.latitude2, case.longitude2),
+        Addr(case.address3, case.pincode3, case.latitude3, case.longitude3),
+    ).filter { !it.addr.isNullOrBlank() || !it.pin.isNullOrBlank() }
+    if (rows.isEmpty()) { Field("Address", null); return }
+    val multi = rows.size > 1
+    rows.forEachIndexed { i, r ->
+        val label = if (multi) "Address ${i + 1}" else "Address"
+        val text = listOfNotNull(r.addr?.takeIf { it.isNotBlank() },
+            r.pin?.takeIf { it.isNotBlank() }?.let { "($it)" }).joinToString(" ")
+        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Column(Modifier.weight(0.7f)) {
+                Text(label, color = MutedDim, style = MaterialTheme.typography.bodySmall)
+                Text(text.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            }
+            OutlinedButton(
+                onClick = {
+                    if (r.lat != null && r.lng != null) Actions.navigate(ctx, r.lat, r.lng, case.customerName)
+                    else Actions.mapsSearch(ctx, listOfNotNull(r.addr, r.pin).joinToString(", "))
+                },
+                modifier = Modifier.padding(start = 8.dp)
+            ) { Text("Navigate") }
+        }
+    }
 }
 
 @Composable

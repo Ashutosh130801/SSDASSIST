@@ -27,8 +27,17 @@ def _needs_geocode(q, include_failed: bool = False, period: str | None = None):
     processes just the remaining/new ones instead of re-running everything from scratch. Pass
     include_failed=True to also re-attempt addresses that were tried but couldn't be located, and
     period='YYYY-MM' to restrict to a single upload month (e.g. this month only)."""
-    q = q.filter(models.Case.latitude.is_(None)).filter(
-        or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None)))
+    # A case still needs work if ANY of its present address lines lacks its own pin.
+    q = q.filter(
+        or_(
+            and_(models.Case.latitude.is_(None),
+                 or_(models.Case.address.isnot(None), models.Case.pincode.isnot(None))),
+            and_(models.Case.latitude2.is_(None),
+                 or_(models.Case.address2.isnot(None), models.Case.pincode2.isnot(None))),
+            and_(models.Case.latitude3.is_(None),
+                 or_(models.Case.address3.isnot(None), models.Case.pincode3.isnot(None))),
+        )
+    )
     if not include_failed:
         q = q.filter(models.Case.geo_attempted_at.is_(None))
     if period:
@@ -60,6 +69,21 @@ def apply_geocode(case: models.Case, res: dict) -> bool:
     return True
 
 
+def apply_geocode_slot(case: models.Case, res: dict, slot: int) -> bool:
+    """Store a geocode result for the 2nd (slot=2) or 3rd (slot=3) address line into its own
+    latitude{N}/longitude{N}/geo_precision{N} columns, and backfill pincode{N} if missing.
+    Returns True when usable coordinates were stored."""
+    if res.get("pincode") and not getattr(case, f"pincode{slot}", None):
+        setattr(case, f"pincode{slot}", res["pincode"])
+    lat, lng = res.get("lat"), res.get("lng")
+    if lat is None or lng is None:
+        return False
+    setattr(case, f"latitude{slot}", lat)
+    setattr(case, f"longitude{slot}", lng)
+    setattr(case, f"geo_precision{slot}", res.get("precision") or "locality")
+    return True
+
+
 @router.post("/geocode")
 def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | None = None,
             db: Session = Depends(get_db),
@@ -81,43 +105,68 @@ def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | Non
     # loop below does slow network I/O (LLM + ~1 req/sec HTTP), which must NOT hold a pooled DB
     # connection — doing so is what exhausted the pool ("QueuePool overflow reached").
     rows = _needs_geocode(db.query(
-        models.Case.id, models.Case.address, models.Case.address2, models.Case.pincode)
+        models.Case.id, models.Case.address, models.Case.address2, models.Case.address3,
+        models.Case.pincode, models.Case.pincode2, models.Case.pincode3,
+        models.Case.latitude, models.Case.latitude2, models.Case.latitude3)
         .filter(models.Case.removed.isnot(True)),
         include_failed=retry_failed, period=period).limit(limit).all()
-    batch = [{"id": r[0], "address": r[1], "address2": r[2], "pincode": r[3]} for r in rows]
+    batch = [{"id": r[0], "address": r[1], "address2": r[2], "address3": r[3],
+              "pincode": r[4], "pincode2": r[5], "pincode3": r[6],
+              "lat": r[7], "lat2": r[8], "lat3": r[9]} for r in rows]
     db.close()                                  # hand the connection back to the pool during network work
 
-    # 2) NETWORK (slow, no DB held): AI clean pass + per-case geocode.
+    # Which address slots on a case still need a pin: slot 1 (address/pincode), slot 2 (address2/
+    # pincode2) and slot 3 (address3/pincode3) are each geocoded independently into their own columns.
+    def _slots_for(c):
+        out = []
+        if c["lat"] is None and (c["address"] or c["pincode"]):
+            out.append((1, c["address"], c["pincode"]))
+        if c["lat2"] is None and (c["address2"] or c["pincode2"]):
+            out.append((2, c["address2"], c["pincode2"]))
+        if c["lat3"] is None and (c["address3"] or c["pincode3"]):
+            out.append((3, c["address3"], c["pincode3"]))
+        return out
+
+    # 2) NETWORK (slow, no DB held): AI clean pass + per-slot geocode.
+    # Clean every distinct address line across all slots in one LLM batch (keyed "<caseid>-<slot>").
     clean_map = {}
     if _geo.llm_available():
-        items = [{"id": c["id"], "raw": ", ".join(str(p) for p in (c["address"], c["address2"], c["pincode"]) if p)}
-                 for c in batch]
-        clean_map = _geo.llm_clean_batch(items)
-    # How this batch's addresses were cleaned: AI (the LLM returned a cleaned address for the case)
-    # vs the built-in offline cleaner (no AI key, or the AI call failed / skipped this case).
-    ai_cleaned = sum(1 for c in batch if clean_map.get(c["id"]))
-    local_cleaned = len(batch) - ai_cleaned
-    results = []                                 # [(case_id, res_dict)]
+        items = []
+        for c in batch:
+            for slot, addr, pin in _slots_for(c):
+                items.append({"id": f"{c['id']}-{slot}",
+                              "raw": ", ".join(str(p) for p in (addr, pin) if p)})
+        if items:
+            clean_map = _geo.llm_clean_batch(items)
+    ai_cleaned = sum(1 for v in clean_map.values() if v)
+    results = []                                 # [(case_id, slot, res_dict)]
+    _total_slots = 0
     with httpx.Client(timeout=15) as client:
-        for i, c in enumerate(batch):
-            if i:
-                time.sleep(0.5)                  # pace between cases (LocationIQ free tier allows 2 req/s)
-            res = _geo.geocode_one(client, c["address"], c["address2"], c["pincode"],
-                                   pre_clean=clean_map.get(c["id"]))
-            results.append((c["id"], res))
+        first = True
+        for c in batch:
+            for slot, addr, pin in _slots_for(c):
+                _total_slots += 1
+                if not first:
+                    time.sleep(0.5)              # pace between queries (LocationIQ free tier ~2 req/s)
+                first = False
+                res = _geo.geocode_one(client, addr, None, pin,
+                                       pre_clean=clean_map.get(f"{c['id']}-{slot}"))
+                results.append((c["id"], slot, res))
+    local_cleaned = max(_total_slots - ai_cleaned, 0)
 
     # 3) WRITE (quick): re-open a short-lived session, apply results, commit.
     _now = datetime.now(_IST_TZ)
     geocoded = failed = 0
     with SessionLocal() as w:
         by_id = {cs.id: cs for cs in w.query(models.Case).filter(
-            models.Case.id.in_([cid for cid, _ in results] or [-1])).all()}
-        for cid, res in results:
+            models.Case.id.in_([cid for cid, _, _ in results] or [-1])).all()}
+        for cid, slot, res in results:
             cs = by_id.get(cid)
             if cs is None:
                 continue
             cs.geo_attempted_at = _now           # mark as tried (success OR fail) so a repeat run skips it
-            if apply_geocode(cs, res):
+            ok = apply_geocode(cs, res) if slot == 1 else apply_geocode_slot(cs, res, slot)
+            if ok:
                 geocoded += 1
             else:
                 failed += 1

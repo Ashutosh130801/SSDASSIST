@@ -1936,6 +1936,8 @@ function CasesView({ user }) {
         <div style={{ flex: 1 }} />
         {canDpr && <button className="btn" onClick={() => setDprOpen(true)} title="Bulk mark paid/unpaid from a bank DPR file">🏦 DPR update</button>}
         {canUploads && <button className="btn" onClick={() => setUploadsOpen(true)} title="Undo a wrong portfolio upload">↩ Undo upload</button>}
+        <BackfillAddressButton />
+        <CorrectColumnsButton />
         {canUpload && <button className="btn gold" onClick={() => setUpload(true)}>⬆ Upload</button>}
         {isAdmin && <>
           <button className="btn" onClick={allocate} disabled={busy}>⚡ Auto-allocate</button>
@@ -3581,6 +3583,43 @@ function groupCases(cases) {
       pending: buckets.reduce((s, bk) => s + bk.pending, 0) };
   });
 }
+/* Build a Google Maps directions URL for one address line: prefer its geocoded pin, else fall
+   back to the address text + pincode so Navigate still works before geocoding. */
+function addrNavUrl(lat, lng, addr, pin) {
+  const dest = (lat != null && lng != null)
+    ? `${lat},${lng}`
+    : encodeURIComponent([addr, pin].filter(Boolean).join(', '));
+  return `https://www.google.com/maps/dir/?api=1&destination=${dest}`;
+}
+/* The address lines present on a case, each with its own pincode + geocoded pin. Supports up to
+   three separate address columns (address / address2 / address3). */
+function caseAddresses(c) {
+  const rows = [
+    { addr: c.address, pin: c.pincode, lat: c.latitude, lng: c.longitude },
+    { addr: c.address2, pin: c.pincode2, lat: c.latitude2, lng: c.longitude2 },
+    { addr: c.address3, pin: c.pincode3, lat: c.latitude3, lng: c.longitude3 },
+  ];
+  return rows.filter(r => r.addr || r.pin);
+}
+/* Renders each of a case's addresses as its own line with a per-address Navigate button. */
+function AddressList({ c }) {
+  const rows = caseAddresses(c);
+  if (!rows.length) return <div style={{ fontSize: 13, color: 'var(--ink-soft)', minHeight: 34 }}>No address</div>;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '2px 0 4px' }}>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 13, color: 'var(--ink-soft)', flex: 1 }}>
+            {rows.length > 1 && <b style={{ color: 'var(--ink)' }}>{i + 1}. </b>}
+            {r.addr || '—'} {r.pin ? `(${r.pin})` : ''}
+          </div>
+          <a className="btn sm" style={{ whiteSpace: 'nowrap' }} href={addrNavUrl(r.lat, r.lng, r.addr, r.pin)}
+             target="_blank" rel="noreferrer" title={r.lat != null ? 'Directions to geotagged pin' : 'Search this address'}>🧭</a>
+        </div>
+      ))}
+    </div>
+  );
+}
 function CaseCard({ c, onVisit, onNav, onDetails }) {
   const p = casePriority(c);
   const st = caseState(c);
@@ -3595,7 +3634,7 @@ function CaseCard({ c, onVisit, onNav, onDetails }) {
           {tag && <span className={cx('badge', tag.c)}>{tag.t}</span>}
           <span className={cx('badge', p.cls)}>{p.label}</span><PropBadge score={c.propensity} /></div></div>
       <div className="muted" style={{ fontSize: 13, margin: '4px 0 8px' }}>{c.bank} · {c.bucket || '—'} · cyc {c.cycle || '—'}</div>
-      <div style={{ fontSize: 13, color: 'var(--ink-soft)', minHeight: 34 }}>{[c.address, c.address2].filter(Boolean).join(', ') || 'No address'} {c.pincode ? `(${c.pincode})` : ''}</div>
+      <AddressList c={c} />
       <div className="stat-row"><span className="k">Pending</span><b className="mono" style={{ color: 'var(--warn)' }}>{INR(c.pending_amount)}</b></div>
       {c.is_settlement_case && (c.paid_status || '') !== 'PAID' && <div className="stat-row" style={{ fontSize: 12.5 }}>
         <span className="k">Pending NORM / STAB</span>
@@ -3692,6 +3731,167 @@ function GeocodeButton() {
     {!st.remaining && st.failed_total ? <button className="btn sm" style={{ marginLeft: 6 }}
       title="Re-attempt addresses that couldn't be located before" onClick={() => run(true)}>↻ Retry {st.failed_total} unresolved</button> : null}
     {counts}
+  </>;
+}
+
+/* Admin / Head-Office tool: re-read an ORIGINAL portfolio file and fill ONLY the 2nd/3rd address
+   lines + their pincodes onto cases that already exist (money, allocation & history untouched).
+   Picks the file → runs a DRY RUN and shows what would change → an Apply button commits it. */
+function BackfillAddressButton() {
+  const role = (typeof window !== 'undefined') && window.__ssdRole;
+  const fileRef = React.useRef(null);
+  const [busy, setBusy] = React.useState(false);
+  const [preview, setPreview] = React.useState(null);   // dry-run summary
+  const [msg, setMsg] = React.useState('');
+  if (role !== 'admin' && role !== 'headoffice') return null;
+
+  const send = async (f, commit) => {
+    const fd = new FormData();
+    fd.append('file', f);
+    fd.append('commit', commit ? 'true' : 'false');
+    return api('/api/import/backfill-addresses', { method: 'POST', form: fd });
+  };
+  const onPick = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';                     // allow re-picking the same file
+    if (!f) return;
+    setBusy(true); setMsg('Checking “' + f.name + '”…'); setPreview(null);
+    try {
+      const r = await send(f, false);
+      r._file = f;                           // keep the File for the Apply step
+      setPreview(r);
+      setMsg('');
+      if (!r.cases_changed) setMsg('Nothing to fill — no new 2nd/3rd address data matched existing cases.');
+    } catch (err) { setMsg('Could not read file — ' + (err.message || 'error')); }
+    setBusy(false);
+  };
+  const apply = async () => {
+    if (!preview || !preview._file) return;
+    setBusy(true); setMsg('Applying…');
+    try {
+      const r = await send(preview._file, true);
+      setPreview(null);
+      setMsg(`✓ Updated ${r.cases_changed} case(s). Now run Geocode so the new addresses get pins.`);
+    } catch (err) { setMsg('Apply failed — ' + (err.message || 'error')); }
+    setBusy(false);
+  };
+  return <>
+    <input ref={fileRef} type="file" accept=".xlsx,.xlsm,.xls" style={{ display: 'none' }} onChange={onPick} />
+    <button className="btn sm" style={{ marginLeft: 6 }} disabled={busy}
+      title="Fill 2nd/3rd addresses + pincodes onto existing cases from the original portfolio file (nothing else is changed)"
+      onClick={() => fileRef.current && fileRef.current.click()}>🏠 Backfill addresses</button>
+    {preview && preview.cases_changed ? (
+      <span className="badge" style={{ background: '#DBEAFE', color: '#1E40AF', marginLeft: 6 }}>
+        {preview.cases_changed} case(s) would get addr2/addr3 · {preview.rows_no_match} rows no-match
+        <button className="btn sm gold" style={{ marginLeft: 8 }} disabled={busy} onClick={apply}>Apply</button>
+        <button className="btn ghost sm" style={{ marginLeft: 4 }} disabled={busy} onClick={() => { setPreview(null); setMsg(''); }}>Cancel</button>
+      </span>
+    ) : null}
+    {msg && <span className="muted" style={{ fontSize: 11.5, marginLeft: 6 }}>{msg}</span>}
+  </>;
+}
+
+/* Admin / Head-Office tool: re-upload a CORRECTED copy of the ORIGINAL portfolio file to fix columns
+   that were wrong in the first upload — WITHOUT deleting the portfolio and losing calling/visit/
+   payment progress. Preview shows which columns would change (with before→after samples); the user
+   ticks the ones to apply. Correcting a TC/FOS/TL column reassigns the case to the new person.
+   Payments, dispositions, notes, visits, calls and history are never touched. (Not the DPR tool.) */
+function CorrectColumnsButton() {
+  const role = (typeof window !== 'undefined') && window.__ssdRole;
+  const fileRef = React.useRef(null);
+  const [busy, setBusy] = React.useState(false);
+  const [open, setOpen] = React.useState(false);
+  const [prev, setPrev] = React.useState(null);     // preview response
+  const [file, setFile] = React.useState(null);
+  const [sel, setSel] = React.useState({});         // field -> bool
+  const [msg, setMsg] = React.useState('');
+  if (role !== 'admin' && role !== 'headoffice') return null;
+
+  const onPick = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    setBusy(true); setMsg('Checking “' + f.name + '”…'); setPrev(null); setFile(f); setOpen(true);
+    try {
+      const fd = new FormData(); fd.append('file', f);
+      const r = await api('/api/import/correct/preview', { method: 'POST', form: fd });
+      setPrev(r);
+      // Pre-tick every changed column by default.
+      const s = {}; (r.columns || []).forEach(c => { s[c.field] = true; });
+      setSel(s); setMsg('');
+    } catch (err) { setMsg('Could not read file — ' + (err.message || 'error')); }
+    setBusy(false);
+  };
+  const apply = async () => {
+    const fields = Object.keys(sel).filter(f => sel[f]);
+    if (!file || !fields.length) { setMsg('Tick at least one column to update.'); return; }
+    setBusy(true); setMsg('Applying…');
+    try {
+      const fd = new FormData(); fd.append('file', file); fd.append('fields', fields.join(','));
+      const r = await api('/api/import/correct/apply', { method: 'POST', form: fd });
+      const ra = r.reassigned || {};
+      const rebits = ['caller_name', 'fos_name', 'team_lead'].filter(k => ra[k]).map(k =>
+        `${ra[k]} ${k === 'caller_name' ? 'TC' : k === 'fos_name' ? 'FOS' : 'TL'}`).join(', ');
+      toast(`✓ ${r.cases_changed} case(s) corrected${rebits ? ' · reassigned: ' + rebits : ''}`);
+      setOpen(false); setPrev(null); setFile(null);
+    } catch (err) { setMsg('Apply failed — ' + (err.message || 'error')); }
+    setBusy(false);
+  };
+  const toggle = (f) => setSel(s => ({ ...s, [f]: !s[f] }));
+  const nSel = Object.keys(sel).filter(f => sel[f]).length;
+  return <>
+    <input ref={fileRef} type="file" accept=".xlsx,.xlsm,.xls" style={{ display: 'none' }} onChange={onPick} />
+    <button className="btn sm" style={{ marginLeft: 6 }} disabled={busy}
+      title="Re-upload a corrected copy of the original portfolio file and fix only the wrong columns — progress (payments, visits, calls, notes) is kept. Changing TC/FOS/TL reassigns the case."
+      onClick={() => fileRef.current && fileRef.current.click()}>🛠 Correct columns</button>
+    {open && <div className="drawer-bg" onClick={() => !busy && setOpen(false)}>
+      <div className="glass card" style={{ maxWidth: 680, margin: '6vh auto', padding: 18, maxHeight: '86vh', overflow: 'auto' }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ margin: 0 }}>🛠 Correct columns from re-uploaded file</h3>
+          <button className="btn ghost sm" disabled={busy} onClick={() => setOpen(false)}>✕</button>
+        </div>
+        <p className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>
+          {file ? file.name : ''}{prev ? ` · ${prev.accounts_matched} account(s) matched · ${prev.rows_no_match} row(s) with no match` : ''}
+        </p>
+        {!prev && <Loader />}
+        {prev && !(prev.columns || []).length &&
+          <div className="muted" style={{ padding: 12 }}>No differences found — the file matches the current data, nothing to correct.</div>}
+        {prev && (prev.columns || []).length > 0 && <>
+          <div className="muted" style={{ fontSize: 12, margin: '4px 0 8px' }}>
+            Tick the columns to fix. Only these are changed — payments, dispositions, visits, calls and notes stay as they are.
+            A ticked <b>TC / FOS / TL</b> column reassigns the case to the new person.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {prev.columns.map(c => (
+              <label key={c.field} className="glass" style={{ display: 'block', padding: 10, borderRadius: 10, cursor: 'pointer',
+                border: c.reassign ? '1px solid var(--gold)' : '1px solid transparent' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input type="checkbox" checked={!!sel[c.field]} onChange={() => toggle(c.field)} />
+                  <b>{c.label}</b>
+                  {c.reassign && <span className="badge" style={{ background: '#FEF3C7', color: '#92400E' }}>reassigns case</span>}
+                  <span style={{ flex: 1 }} />
+                  <span className="muted" style={{ fontSize: 12 }}>{c.changes} case(s) change</span>
+                </div>
+                {(c.samples || []).length > 0 && <div className="muted" style={{ fontSize: 11.5, marginTop: 6, paddingLeft: 24 }}>
+                  {c.samples.slice(0, 3).map((s, i) => (
+                    <div key={i}>• {s.customer || s.account}: <span style={{ textDecoration: 'line-through', opacity: .7 }}>{s.old}</span> → <b style={{ color: 'var(--good)' }}>{s.new}</b></div>
+                  ))}
+                </div>}
+              </label>
+            ))}
+          </div>
+          <div className="toolbar" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
+            {msg && <span className="muted" style={{ fontSize: 12, flex: 1 }}>{msg}</span>}
+            <button className="btn" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
+            <button className="btn gold" disabled={busy || !nSel} onClick={apply}>Apply {nSel} column{nSel === 1 ? '' : 's'}</button>
+          </div>
+        </>}
+        {prev && !(prev.columns || []).length && <div className="toolbar" style={{ marginTop: 10, justifyContent: 'flex-end' }}>
+          <button className="btn" onClick={() => setOpen(false)}>Close</button></div>}
+      </div>
+    </div>}
+    {msg && !open && <span className="muted" style={{ fontSize: 11.5, marginLeft: 6 }}>{msg}</span>}
   </>;
 }
 
@@ -4165,7 +4365,12 @@ function CaseDrawer({ c, onClose, onChanged }) {
         <div className="section-h"><h3 style={{ fontSize: 14 }}>Account details</h3></div>
         <div className="dl">
           {row('Phone', cur.phone)}{row('Alt phone', cur.alt_phone)}
-          {row('Address 1', cur.address)}{cur.address2 ? row('Address 2', cur.address2) : null}{row('Pincode', cur.pincode)}
+          {caseAddresses(cur).map((r, i) => row(
+            'Address ' + (i + 1),
+            <span>{r.addr || '—'}{r.pin ? ' (' + r.pin + ')' : ''}{' '}
+              <a href={addrNavUrl(r.lat, r.lng, r.addr, r.pin)} target="_blank" rel="noreferrer"
+                 style={{ color: 'var(--gold)' }} title={r.lat != null ? 'Directions to geotagged pin' : 'Search this address'}>🧭 Navigate</a>
+            </span>))}
           {row('Bank / Product', (cur.bank || '') + (cur.product ? ' · ' + cur.product : '') + (cur.segment ? ' · ' + cur.segment : ''))}
           {row('Card no', cur.card_no)}
           {row('Bucket / Cycle', (cur.bucket || '—') + ' · cyc ' + (cur.cycle || '—'))}

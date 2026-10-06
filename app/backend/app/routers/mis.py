@@ -194,9 +194,13 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
     q = _scope(db.query(models.Case), user, bucket=_bucket_for_period(period)).filter(
         models.Case.bank == bank, models.Case.product == product)
     # branch may be a single value or a list — multiple branches combine into one overall MIS.
+    # Match case-INSENSITIVELY: new uploads may store "VISAKHAPATNAM" while the UI sends the merged
+    # Title-Case display ("Visakhapatnam"), so an exact match would silently drop the new rows.
     branches = [branch] if isinstance(branch, str) and branch else (list(branch) if branch else [])
     if branches:
-        q = q.filter(models.Case.branch.in_(branches))
+        _bnorm = [str(b).strip().lower() for b in branches if str(b).strip()]
+        if _bnorm:
+            q = q.filter(_func.lower(_func.trim(models.Case.branch)).in_(_bnorm))
     if period:                          # month-wise MIS: this month vs next month
         q = q.filter(models.Case.period == period)
     if area:                            # full MIS scoped to a single AREA (team) code
@@ -576,7 +580,7 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
         pq = db.query(models.Case).filter(models.Case.bank == bank, models.Case.product == product,
                                           models.Case.removed.isnot(True), models.Case.escalated.isnot(True),
                                           id_col.isnot(None))
-        pq = pq.filter(models.Case.branch == branch) if branch else \
+        pq = pq.filter(_func.lower(_func.trim(models.Case.branch)) == str(branch).strip().lower()) if branch else \
              pq.filter((models.Case.branch.is_(None)) | (models.Case.branch == ""))
         if period:
             pq = pq.filter(models.Case.period == period)

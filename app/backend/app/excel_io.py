@@ -92,12 +92,15 @@ HEADER_MAP = {
     "curraddress": "address", "fulladdress": "address", "completeaddress": "address",
     "address1": "address", "addressline1": "address", "addressline": "address",
     "add1": "address",                                                 # ADD 1 → primary line
-    "add2": "address2", "add3": "address2",                            # ADD 2 / ADD 3 → second line
-    "address2": "address2", "addressline2": "address2",
+    "add2": "address2", "address2": "address2", "addressline2": "address2",   # ADD 2
+    "add3": "address3", "address3": "address3", "addressline3": "address3",   # ADD 3 (now its own line)
     "custaddr": "address", "customeraddr": "address",
-    # Pincode — capture a dedicated column when present (else it's parsed from the address).
+    # Pincode — per-address columns when present (else parsed from each address line).
     "pincode": "pincode", "pin": "pincode", "pincodeno": "pincode", "pinno": "pincode",
     "zip": "pincode", "zipcode": "pincode", "postalcode": "pincode", "postcode": "pincode",
+    "pincode1": "pincode", "pin1": "pincode",
+    "pincode2": "pincode2", "pin2": "pincode2", "add2pincode": "pincode2", "add2pin": "pincode2",
+    "pincode3": "pincode3", "pin3": "pincode3", "add3pincode": "pincode3", "add3pin": "pincode3",
     "bkt": "bucket", "bucket": "bucket", "allocationdpdbracket": "bucket",
     "cyc": "cycle", "cycle": "cycle",
     "month": "month",
@@ -234,7 +237,7 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
                         rec.setdefault("_extra", {})["x_" + field[2:]] = cv
                 elif field in MONEY_FIELDS:
                     rec[field] = to_decimal(val)
-                elif field in ("address", "address2"):          # keep ADD 1 and ADD 2 (+ADD 3) separate
+                elif field in ("address", "address2", "address3"):   # ADD 1 / ADD 2 / ADD 3 each separate
                     cv = _clean(val)
                     if cv:
                         cur = rec.get(field)
@@ -252,13 +255,18 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
                     pc = pc[:-2]
                 m = PIN_RE.search(pc)
                 rec["pincode"] = m.group(1) if m else (pc or None)
-            if not rec.get("pincode"):
-                for _af in ("address", "address2"):
-                    if rec.get(_af):
-                        pc = extract_pincode(rec[_af])
-                        if pc:
-                            rec["pincode"] = pc
-                            break
+            # Per-address pincode: normalise explicit columns, else extract from each address line.
+            for _pf, _af in (("pincode", "address"), ("pincode2", "address2"), ("pincode3", "address3")):
+                if rec.get(_pf):
+                    pc = str(rec[_pf]).strip()
+                    if pc.endswith(".0"):
+                        pc = pc[:-2]
+                    m = PIN_RE.search(pc)
+                    rec[_pf] = m.group(1) if m else (pc or None)
+                elif rec.get(_af):
+                    pc = extract_pincode(rec[_af])
+                    if pc:
+                        rec[_pf] = pc
             # Keep every raw cell value of the row so the importer can recognise an employee ID
             # (e.g. a team-lead code TL001) that appears in a column we don't map by header.
             rec["_cells"] = [str(v).strip() for v in r if v not in (None, "")]
@@ -273,7 +281,8 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
 def record_to_case_kwargs(rec: dict) -> dict:
     fields = {
         "bank", "branch", "product", "account_no", "card_no", "customer_name",
-        "phone", "alt_phone", "address", "address2", "pincode", "bucket", "cycle", "month",
+        "phone", "alt_phone", "address", "address2", "address3",
+        "pincode", "pincode2", "pincode3", "bucket", "cycle", "month",
         "total_outstanding", "principal_outstanding", "min_amount_due",
         "funding_amount", "received_amount", "pending_amount",
         "disposition", "remarks", "final_status",
