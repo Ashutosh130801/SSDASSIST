@@ -26,14 +26,18 @@ def _d(x) -> float:
     return float(x or 0)
 
 
-def _teamlead_member_ids(db: Session, lead: models.User) -> list[int]:
+def _teamlead_member_ids(db: Session, lead: models.User, period: str | None = None) -> list[int]:
     """FOS/caller ids a team lead oversees — derived per-case from the upload sheet:
     the distinct staff assigned to cases whose team_lead field names this lead. A FOS
     or caller only counts here for the cases that carry the lead's name, so the same
-    person can report to different leads on different cases."""
+    person can report to different leads on different cases. Pass period='YYYY-MM' to count
+    only the team working that month (so a past-month-only member doesn't linger)."""
     from .cases import teamlead_case_filter
-    rows = db.query(models.Case.assigned_fos_id, models.Case.assigned_caller_id).filter(
-        teamlead_case_filter(lead)).all()
+    q = db.query(models.Case.assigned_fos_id, models.Case.assigned_caller_id).filter(
+        teamlead_case_filter(lead))
+    if period:
+        q = q.filter(models.Case.period == period)
+    rows = q.all()
     ids = set()
     for fos_id, caller_id in rows:
         if fos_id:

@@ -111,7 +111,15 @@ def _team_activity(db: Session, tl_id: int, d: date_cls) -> dict:
 
 # ---------------------------------------------------------------- scope
 
-def _scope_users(db: Session, viewer: models.User):
+def _tl_member_ids(db: Session, viewer: models.User, period: str | None = None) -> list[int]:
+    """The team-lead's members, derived the SAME way as 'My Team' — the FOS/callers assigned to
+    cases whose team_lead names this lead (not the mostly-empty User.team_lead_id column, which is
+    why attendance used to show only one FOS). period='YYYY-MM' limits it to that month's team."""
+    from .team import _teamlead_member_ids
+    return _teamlead_member_ids(db, viewer, period=period)
+
+
+def _scope_users(db: Session, viewer: models.User, period: str | None = None):
     q = db.query(models.User).filter(models.User.role != "admin", models.User.is_active.is_(True))
     if viewer.role in VIEW_ALL:
         return q
@@ -120,12 +128,13 @@ def _scope_users(db: Session, viewer: models.User):
         ids = select(models.User.id).where(models.User.branch == viewer.branch)
         return q.filter(or_(models.User.branch == viewer.branch, models.User.id.in_(ids)))
     if viewer.role == "teamlead" or getattr(viewer, "also_team_lead", False):
-        return q.filter(or_(models.User.team_lead_id == viewer.id, models.User.id == viewer.id))
+        ids = _tl_member_ids(db, viewer, period) + [viewer.id]
+        return q.filter(models.User.id.in_(ids))
     # everyone else: only themselves
     return q.filter(models.User.id == viewer.id)
 
 
-def _can_view(viewer: models.User, target: models.User, db: Session) -> bool:
+def _can_view(viewer: models.User, target: models.User, db: Session, period: str | None = None) -> bool:
     if viewer.id == target.id:
         return True
     if viewer.role in VIEW_ALL:
@@ -133,7 +142,7 @@ def _can_view(viewer: models.User, target: models.User, db: Session) -> bool:
     if viewer.role == "manager":
         return target.branch == viewer.branch
     if viewer.role == "teamlead" or getattr(viewer, "also_team_lead", False):
-        return target.team_lead_id == viewer.id
+        return target.id in set(_tl_member_ids(db, viewer, period))
     return False
 
 
@@ -579,7 +588,7 @@ def day_board(date: str | None = None, role: str | None = None, user_id: int | N
     d = date_cls.fromisoformat(date) if date else _ist_today()
     if d == _ist_today():
         sweep(db)
-    users = _scope_users(db, user)
+    users = _scope_users(db, user, d.strftime("%Y-%m"))
     if role:
         users = users.filter(models.User.role == role)
     if user_id:
@@ -610,7 +619,7 @@ def user_detail(uid: int, date: str | None = None, db: Session = Depends(get_db)
     target = db.query(models.User).get(uid)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if not _can_view(user, target, db):
+    if not _can_view(user, target, db, (date[:7] if date else _ist_today().strftime("%Y-%m"))):
         raise HTTPException(status_code=403, detail="Not allowed to view this employee's attendance.")
     d = date_cls.fromisoformat(date) if date else _ist_today()
     a = db.query(models.Attendance).filter(
@@ -638,7 +647,7 @@ def user_visits(uid: int, date: str | None = None, db: Session = Depends(get_db)
     target = db.query(models.User).get(uid)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if not _can_view(user, target, db):
+    if not _can_view(user, target, db, (date[:7] if date else _ist_today().strftime("%Y-%m"))):
         raise HTTPException(status_code=403, detail="Not allowed to view this employee's visits.")
     d = date_cls.fromisoformat(date) if date else _ist_today()
     start, end = _day_window_utc(d)
@@ -676,7 +685,7 @@ def user_calls(uid: int, date: str | None = None, db: Session = Depends(get_db),
     target = db.query(models.User).get(uid)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if not _can_view(user, target, db):
+    if not _can_view(user, target, db, (date[:7] if date else _ist_today().strftime("%Y-%m"))):
         raise HTTPException(status_code=403, detail="Not allowed to view this employee's call logs.")
     d = date_cls.fromisoformat(date) if date else _ist_today()
     start, end = _day_window_utc(d)
@@ -714,7 +723,7 @@ def month_sheet(month: str | None = None, role: str | None = None, user_id: int 
     days = [first + timedelta(days=i) for i in range(ndays)]
     today = _ist_today()
 
-    users = _scope_users(db, user)
+    users = _scope_users(db, user, m)
     if role:
         users = users.filter(models.User.role == role)
     if user_id:
@@ -776,7 +785,7 @@ def presence_snapshot(ids: str | None = None, db: Session = Depends(get_db),
         idlist = [int(x) for x in ids.split(",") if x.strip().isdigit()]
         us = db.query(models.User).filter(models.User.id.in_(idlist)).all() if idlist else []
     else:
-        us = _scope_users(db, user).all()
+        us = _scope_users(db, user, _ist_today().strftime("%Y-%m")).all()
     # Anyone checked out today counts as offline, even if a browser tab keeps beating.
     out_today = set()
     if us:
