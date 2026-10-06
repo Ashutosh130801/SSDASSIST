@@ -4,7 +4,7 @@ from datetime import datetime, time, timedelta, timezone
 import io
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select
@@ -835,8 +835,15 @@ def product_summary(month_bucket: str | None = None, db: Session = Depends(get_d
         rc = float(recv or 0)
         pend = max(0.0, base - rc)
         is_paid = (pstat or "").upper() == "PAID"
-        key = (b, p)
-        d = agg.setdefault(key, _blank({"segment": s, "branch_split": False, "branches": {}}))
+        # Group by BANK + PRODUCT + SEGMENT so a product uploaded under two segments (e.g. a BL file
+        # left on the default 'Credit Card') shows as its own card and its cases are never hidden by
+        # the drill-down's segment filter. Normalise the segment so blanks collapse to one bucket.
+        sg = (s or "").strip()
+        # ...and by PERIOD (upload month), so each month is its own card — months stay separate and
+        # the card can show which month it is, alongside the segment.
+        pr = (per or "").strip()
+        key = (b, p, sg, pr)
+        d = agg.setdefault(key, _blank({"segment": sg, "period": pr, "branch_split": False, "branches": {}}))
         d["count"] += 1; d["received"] += rc; d["pending"] += pend
         d["paid" if is_paid else "unpaid"] += 1
         if per == cur: d["count_current"] += 1
@@ -855,10 +862,12 @@ def product_summary(month_bucket: str | None = None, db: Session = Depends(get_d
         if per == cur: bd["count_current"] += 1
         elif per == nxt: bd["count_next"] += 1
     out = []
-    for (b, p), d in agg.items():
+    for (b, p, sg, pr), d in agg.items():
         branches = sorted(d.pop("branches").values(), key=lambda x: x["branch"]) if d["branch_split"] else []
         out.append({"bank": b or "—", "product": p or "—", "branch": "", **d, "branches": branches})
-    out.sort(key=lambda x: (x["bank"], x["product"]))
+    # newest month first, then bank / product / segment
+    out.sort(key=lambda x: (x.get("period") or "", x["bank"], x["product"], x.get("segment") or ""), reverse=True)
+    out.sort(key=lambda x: (x["bank"], x["product"], x.get("segment") or ""))
     return out
 
 
@@ -969,6 +978,37 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
             "brands": sorted(brands, key=str.lower),
             "old_new": sorted(oldnew, key=str.lower),
             "team_leads": sorted(tl_seen.values(), key=str.lower)}
+
+
+@router.post("/portfolio/set-segment")
+def set_portfolio_segment(body: dict = Body(...), db: Session = Depends(get_db),
+                          actor: models.User = Depends(require_roles("admin", "headoffice"))):
+    """Re-tag the SEGMENT of a whole portfolio in place (e.g. a BL file uploaded on the default
+    'Credit Card'), without deleting or re-uploading. Scope by bank + product + current segment
+    (+ optional branch / period). Only the segment changes — allocation, payments, visits, calls
+    and history are untouched."""
+    new_seg = (body.get("new_segment") or "").strip()
+    bank = (body.get("bank") or "").strip()
+    product = (body.get("product") or "").strip()
+    if not (new_seg and bank and product):
+        raise HTTPException(status_code=400, detail="bank, product and new_segment are required")
+    q = db.query(models.Case).filter(models.Case.removed.isnot(True),
+                                     models.Case.bank == bank, models.Case.product == product)
+    cur_seg = (body.get("segment") or "").strip()
+    if cur_seg:
+        q = q.filter(func.coalesce(models.Case.segment, "") == cur_seg)
+    if (body.get("branch") or "").strip():
+        q = q.filter(func.lower(func.trim(models.Case.branch)) == body["branch"].strip().lower())
+    if (body.get("period") or "").strip():
+        q = q.filter(models.Case.period == body["period"].strip())
+    rows = q.all()
+    for c in rows:
+        c.segment = new_seg
+    from .. import audit
+    audit.record(db, actor, "set_segment", entity_type="portfolio",
+                 detail=f"{bank}/{product}{(' · ' + cur_seg) if cur_seg else ''} → segment '{new_seg}' ({len(rows)} cases)")
+    db.commit()
+    return {"ok": True, "updated": len(rows), "new_segment": new_seg}
 
 
 @router.get("/removed", response_model=list[schemas.CaseOut])

@@ -238,6 +238,7 @@ _CORRECTABLE = {
     "pincode2": ("Pincode 2", False),
     "pincode3": ("Pincode 3", False),
     "card_no": ("Card no", False),
+    "segment": ("Segment", False),
     "branch": ("Branch / location", False),
     "team": ("Area", False),
     "cat": ("Category", False),

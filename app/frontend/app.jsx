@@ -1805,6 +1805,7 @@ function CasesView({ user }) {
   const [paid, setPaid] = useState(''); const [q, setQ] = useState('');
   const [openState, setOpenState] = useState(''); const [cyc, setCyc] = useState('');   // ''|'open'|'closed', cycle day
   const [monthB, setMonthB] = useState('current');   // default to THIS month so months are never mixed. '' | 'current' | 'next'
+  const [cardPeriod, setCardPeriod] = useState('');  // exact period ('YYYY-MM') of the opened portfolio card — scopes the case list to that month
   const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // AREA-wise filter
   const [branchF, setBranchF] = useState('');   // set only for explicit-branch (split) portfolios
   const [flaggedOnly, setFlaggedOnly] = useState(false);   // ⚠ caution-flagged cases only
@@ -1831,7 +1832,8 @@ function CasesView({ user }) {
     if (paid) p.set('paid_status', paid); if (q) p.set('search', q);
     if (openState) p.set('closed', openState === 'closed' ? 'true' : 'false');
     if (cyc) p.set('cyc', cyc);
-    if (monthB) p.set('month_bucket', monthB);
+    // Scope to the opened card's exact month when set; otherwise use the section month chips.
+    if (cardPeriod) p.set('period', cardPeriod); else if (monthB) p.set('month_bucket', monthB);
     if (area) p.set('area', area);
     if (cyclesSel.length) p.set('cycles', cyclesSel.join(','));
     if (fosSel.length) p.set('fos_ids', fosSel.join(','));
@@ -1840,7 +1842,7 @@ function CasesView({ user }) {
     if (brandF) p.set('brand', brandF);
     if (oldNew) p.set('old_new', oldNew);
     api('/api/cases?' + p).then(setCases);
-  }, [bank, product, segment, branchF, paid, q, openState, cyc, monthB, area, cyclesSel, fosSel, callerSel, vehType, brandF, oldNew]);
+  }, [bank, product, segment, branchF, paid, q, openState, cyc, monthB, cardPeriod, area, cyclesSel, fosSel, callerSel, vehType, brandF, oldNew]);
   useEffect(() => { api('/api/users').then(us => { const m = {}; (us || []).forEach(u => { m[u.id] = u.name; }); setStaff(m); }).catch(() => {}); }, []);
   // Section-wide month: reload bank + product cards whenever the month changes.
   useEffect(() => { loadSummary(); loadBanks(); }, [monthB]);
@@ -1861,14 +1863,21 @@ function CasesView({ user }) {
   // Month stays the section-wide context (not reset per product) — clean month-wise separation.
   const openProduct = (c, branchVal = '') => {
     setBank(c.bank === '—' ? '' : c.bank); setProduct(c.product === '—' ? '' : c.product);
-    setSegment(c.segment || ''); setBranchF(branchVal || ''); clearFilters(); setMode('list');
+    setSegment(c.segment || ''); setBranchF(branchVal || ''); setCardPeriod(c.period || '');
+    clearFilters(); setMode('list');
   };
   // Click a product card: split (explicit-branch) products open their location cards first; others go straight to cases.
   const openProductCard = (c) => { if (c.branch_split && (c.branches || []).length) setBranchProduct({ ...c }); else openProduct(c); };
   const backToProducts = () => {
-    setProduct(''); setSegment(''); setBranchF(''); setArea(''); setAreas([]); clearFilters();
+    setProduct(''); setSegment(''); setBranchF(''); setCardPeriod(''); setArea(''); setAreas([]); clearFilters();
     setBranchProduct(null); setMode('products');
     loadSummary(); loadBanks();
+  };
+  // 'YYYY-MM' → short month label, e.g. "Oct '26".
+  const monthLbl = (p) => {
+    if (!p || !/^\d{4}-\d{2}$/.test(p)) return p || '';
+    const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return M[parseInt(p.slice(5, 7), 10) - 1] + " '" + p.slice(2, 4);
   };
   // Products of the currently-selected bank (from the bank-grouped product summary).
   const bankProducts = (summary || []).filter(c => (c.bank || '—') === bankSel);
@@ -1996,14 +2005,14 @@ function CasesView({ user }) {
           <div>
             <div className="toolbar">
               <button className="btn ghost" onClick={() => setBranchProduct(null)}>← {branchProduct.bank} products</button>
-              <span className="badge allocated">{branchProduct.bank} · {branchProduct.product} · locations</span>
+              <span className="badge allocated">{branchProduct.bank} · {branchProduct.product}{branchProduct.segment ? ' · ' + branchProduct.segment : ''}{branchProduct.period ? ' · 🗓️ ' + monthLbl(branchProduct.period) : ''} · locations</span>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: 14 }}>
               {(branchProduct.branches || []).map((br, i) => (
                 <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => openProduct(branchProduct, br.branch)}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <b style={{ fontSize: 15 }}>📍 {br.branch}</b><span className="badge allocated">{br.count}</span></div>
-                  <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{branchProduct.product}</div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{[branchProduct.product, branchProduct.segment, branchProduct.period && '🗓️ ' + monthLbl(branchProduct.period)].filter(Boolean).join(' · ')}</div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 14 }}>
                     <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(br.received)}</b></div>
                     <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(br.pending)}</b></div></div>
@@ -2023,8 +2032,9 @@ function CasesView({ user }) {
                 {bankProducts.map((c, i) => (
                   <div key={i} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => openProductCard(c)}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <b style={{ fontSize: 15 }}>{c.product}</b><span className="badge allocated">{c.count}</span></div>
-                    <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{[c.segment, c.branch_split && `📍 ${(c.branches || []).length} locations`].filter(Boolean).join(' · ') || ' '}</div>
+                      <b style={{ fontSize: 15 }}>{c.product}{c.segment ? ' · ' + c.segment : ''}</b><span className="badge allocated">{c.count}</span></div>
+                    {c.period && <div style={{ fontSize: 11.5, marginTop: 3 }}><span className="badge" style={{ background: '#EEF2FF', color: '#3730A3' }}>🗓️ {monthLbl(c.period)}</span></div>}
+                    <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{[c.branch_split && `📍 ${(c.branches || []).length} locations`].filter(Boolean).join(' · ') || ' '}</div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
                       <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(c.received)}</b></div>
                       <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(c.pending)}</b></div></div>
@@ -2053,7 +2063,18 @@ function CasesView({ user }) {
       ) : (<>
         <div className="toolbar">
           {product && <button className="btn ghost" onClick={backToProducts}>← Products</button>}
-          {product && <span className="badge allocated">{bank} · {product}{segment ? ' · ' + segment : ''}{branchF ? ' · 📍 ' + branchF : ''}</span>}
+          {product && <span className="badge allocated">{bank} · {product}{segment ? ' · ' + segment : ''}{branchF ? ' · 📍 ' + branchF : ''}{cardPeriod ? ' · 🗓️ ' + monthLbl(cardPeriod) : ''}</span>}
+          {product && ['admin', 'headoffice'].includes(user.role) && <button className="btn ghost sm"
+            title="Fix a wrong segment for this whole portfolio (e.g. a BL file uploaded as Credit Card) — no delete / re-upload needed"
+            onClick={async () => {
+              const ns = window.prompt('Change segment for ' + bank + ' · ' + product + (segment ? ' · ' + segment : '') + (branchF ? ' · ' + branchF : '') + '\n\nType the correct segment (Credit Card / PL/BL / AUTO LOANS):', segment || '');
+              if (!ns || !ns.trim() || ns.trim() === segment) return;
+              try {
+                const r = await api('/api/cases/portfolio/set-segment', { method: 'POST', body: { bank, product, segment, branch: branchF || '', period: cardPeriod || '', new_segment: ns.trim() } });
+                toast('✓ Segment changed to ' + r.new_segment + ' for ' + r.updated + ' case(s)');
+                backToProducts();
+              } catch (e) { toast(e.message || 'Could not change segment', 'err'); }
+            }}>✎ Segment</button>}
           <input className="input" style={{ maxWidth: 240 }} placeholder="Search name / account / phone / pincode"
             value={q} onChange={e => setQ(e.target.value)} />
           {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>

@@ -70,6 +70,7 @@ def extract_pincode(address):
 # map normalized header -> canonical field
 HEADER_MAP = {
     "bank": "bank",
+    "segment": "segment", "seg": "segment",   # portfolio segment column (optional; else set at upload)
     "cusname": "customer_name", "names": "customer_name", "name": "customer_name",
     "customername": "customer_name", "custname": "customer_name", "customorname": "customer_name",
     "phone": "phone", "phoneno": "phone", "phonenumber": "phone", "phoneno1": "phone",
@@ -280,7 +281,7 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
 
 def record_to_case_kwargs(rec: dict) -> dict:
     fields = {
-        "bank", "branch", "product", "account_no", "card_no", "customer_name",
+        "bank", "branch", "product", "segment", "account_no", "card_no", "customer_name",
         "phone", "alt_phone", "address", "address2", "address3",
         "pincode", "pincode2", "pincode3", "bucket", "cycle", "month",
         "total_outstanding", "principal_outstanding", "min_amount_due",
