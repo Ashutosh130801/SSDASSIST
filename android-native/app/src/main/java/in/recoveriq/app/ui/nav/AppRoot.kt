@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SpaceDashboard
@@ -96,6 +97,7 @@ import `in`.recoveriq.app.ui.detail.CaseDetailScreen
 import `in`.recoveriq.app.ui.fos.FieldAgentTrackingScreen
 import `in`.recoveriq.app.ui.fos.FieldTrackingScreen
 import `in`.recoveriq.app.ui.fos.MyCasesScreen
+import `in`.recoveriq.app.ui.fos.MyVisitsScreen
 import `in`.recoveriq.app.ui.theme.BrandBlue
 import `in`.recoveriq.app.ui.theme.CardWhite
 import `in`.recoveriq.app.ui.theme.Muted
@@ -449,6 +451,7 @@ private fun navEntriesFor(
                 FieldAgentTrackingScreen(vm, user, onNeedTrackingPermissions, onRequestBatteryExemption)
             },
             NavEntry("fcases", "My Accounts", Icons.Filled.Receipt) { MyCasesScreen(vm, onOpenCase) },
+            NavEntry("myvisits", "Today's Visits", Icons.Filled.FactCheck) { MyVisitsScreen(vm, onOpenCase) },
             NavEntry("fmap", "Field Tracking", Icons.Filled.Map) { FieldTrackingScreen(vm) },
             NavEntry("myperf", "My Performance", Icons.Filled.EmojiEvents) { MyPerformanceScreen(vm, user) },
             todo,

@@ -106,6 +106,24 @@ def _classify_row_tl(rec, by_code, by_name, actor_ids, actor_id):
     return "other_tl", u
 
 
+@router.get("/portfolios")
+def list_portfolios(actor: models.User = Depends(require_roles("admin", "headoffice")),
+                    db: Session = Depends(get_db)):
+    """Month-wise list of portfolios (period → bank/product/branch with a case count) so the
+    admin/HO can pick exactly which portfolio an update/correction file applies to before uploading."""
+    from sqlalchemy import func as _f
+    rows = (db.query(models.Case.period, models.Case.bank, models.Case.product, models.Case.branch,
+                     _f.count(models.Case.id))
+            .filter(models.Case.removed.isnot(True))
+            .group_by(models.Case.period, models.Case.bank, models.Case.product, models.Case.branch)
+            .all())
+    out = [{"period": p or "—", "bank": b or "—", "product": pr or "—",
+            "branch": br or "", "count": int(n)} for (p, b, pr, br, n) in rows]
+    # newest month first, then bank/product
+    out.sort(key=lambda x: (x["period"], x["bank"], x["product"], x["branch"]), reverse=True)
+    return {"portfolios": out}
+
+
 _BACKFILL_ADDR_FIELDS = ("address", "address2", "address3", "pincode", "pincode2", "pincode3")
 
 
@@ -118,6 +136,10 @@ async def backfill_addresses(
         file: UploadFile = File(...),
         default_bank: str | None = Form(None),
         commit: bool = Form(False),
+        scope_bank: str | None = Form(None),
+        scope_product: str | None = Form(None),
+        scope_branch: str | None = Form(None),
+        scope_period: str | None = Form(None),
         actor: models.User = Depends(require_roles("admin", "headoffice")),
         db: Session = Depends(get_db)):
     """Re-read an ORIGINAL portfolio file and fill ONLY the 2nd/3rd address lines + their pincodes
@@ -144,12 +166,19 @@ async def backfill_addresses(
         rows_with_extra += 1
         q = db.query(models.Case).filter(models.Case.account_no == acct,
                                          models.Case.removed.isnot(True))
-        bank = _bf_norm(k.get("bank")) or _bf_norm(default_bank)
-        prod = _bf_norm(k.get("product"))
+        # A chosen portfolio scope (period/bank/product/branch) wins over the file's own columns,
+        # so an update file is confined to exactly the portfolio the admin picked.
+        bank = _bf_norm(scope_bank) or _bf_norm(k.get("bank")) or _bf_norm(default_bank)
+        prod = _bf_norm(scope_product) or _bf_norm(k.get("product"))
         if bank:
             q = q.filter(models.Case.bank == bank)
         if prod:
             q = q.filter(models.Case.product == prod)
+        if _bf_norm(scope_period):
+            q = q.filter(models.Case.period == _bf_norm(scope_period))
+        if _bf_norm(scope_branch):
+            from sqlalchemy import func as _f
+            q = q.filter(_f.lower(_f.trim(models.Case.branch)) == _bf_norm(scope_branch).lower())
         cases = q.all()
         if not cases:
             unmatched += 1
@@ -272,7 +301,7 @@ def _money_eq(a, b):
         return str(a) == str(b)
 
 
-def _correct_scan(records, default_bank, product, db, want_fields=None):
+def _correct_scan(records, default_bank, product, db, want_fields=None, scope=None):
     """Match each file row to existing case(s) and compute, per correctable field, which cases would
     change. Returns (per_field, matched_accounts, unmatched, apply_plan). apply_plan is a list of
     (case, {field: newvalue}, {reassign dicts}) ready to write when want_fields is given."""
@@ -304,12 +333,19 @@ def _correct_scan(records, default_bank, product, db, want_fields=None):
             continue
         q = db.query(models.Case).filter(models.Case.account_no == acct,
                                          models.Case.removed.isnot(True))
-        bank = _correct_norm(k.get("bank")) or _correct_norm(default_bank)
-        prod = _correct_norm(k.get("product")) or _correct_norm(product)
+        sc = scope or {}
+        # A chosen portfolio scope wins over the file's own bank/product columns.
+        bank = _correct_norm(sc.get("bank")) or _correct_norm(k.get("bank")) or _correct_norm(default_bank)
+        prod = _correct_norm(sc.get("product")) or _correct_norm(k.get("product")) or _correct_norm(product)
         if bank:
             q = q.filter(models.Case.bank == bank)
         if prod:
             q = q.filter(models.Case.product == prod)
+        if _correct_norm(sc.get("period")):
+            q = q.filter(models.Case.period == _correct_norm(sc.get("period")))
+        if _correct_norm(sc.get("branch")):
+            from sqlalchemy import func as _f
+            q = q.filter(_f.lower(_f.trim(models.Case.branch)) == _correct_norm(sc.get("branch")).lower())
         cases = q.all()
         if not cases:
             unmatched += 1
@@ -367,18 +403,20 @@ def _correct_scan(records, default_bank, product, db, want_fields=None):
 @router.post("/correct/preview")
 async def correct_preview(file: UploadFile = File(...), default_bank: str | None = Form(None),
                           product: str | None = Form(None),
+                          scope_bank: str | None = Form(None), scope_product: str | None = Form(None),
+                          scope_branch: str | None = Form(None), scope_period: str | None = Form(None),
                           actor: models.User = Depends(require_roles("admin", "headoffice")),
                           db: Session = Depends(get_db)):
     """Re-read a corrected ORIGINAL portfolio file and show which case COLUMNS would change (with
     before→after samples + a count per column), so the admin/HO can tick exactly which to apply.
-    Nothing is written. account/bank/product identify the case; payments & actions are never shown
-    here because they are never changed by this tool."""
+    Scoped to the chosen portfolio (period/bank/product/branch). Nothing is written."""
     content = await file.read()
     try:
         records, sheet = import_workbook(content, default_bank=default_bank)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
-    per_field, matched, unmatched, _ = _correct_scan(records, default_bank, product, db)
+    scope = {"bank": scope_bank, "product": scope_product, "branch": scope_branch, "period": scope_period}
+    per_field, matched, unmatched, _ = _correct_scan(records, default_bank, product, db, scope=scope)
     cols = [v for v in per_field.values() if v["changes"] > 0]
     cols.sort(key=lambda x: (-x["changes"], x["label"]))
     return {"file": file.filename, "sheet": sheet, "rows_in_file": len(records),
@@ -388,11 +426,14 @@ async def correct_preview(file: UploadFile = File(...), default_bank: str | None
 @router.post("/correct/apply")
 async def correct_apply(file: UploadFile = File(...), default_bank: str | None = Form(None),
                         product: str | None = Form(None), fields: str = Form(""),
+                        scope_bank: str | None = Form(None), scope_product: str | None = Form(None),
+                        scope_branch: str | None = Form(None), scope_period: str | None = Form(None),
                         actor: models.User = Depends(require_roles("admin", "headoffice")),
                         db: Session = Depends(get_db)):
-    """Apply ONLY the selected columns from the corrected file onto the matched cases. Reassigns the
-    case when a TC / FOS / TL column is selected and changed. Leaves received amount, paid status,
-    dispositions, notes, visits, calls and history exactly as they are."""
+    """Apply ONLY the selected columns from the corrected file onto the matched cases, confined to the
+    chosen portfolio (period/bank/product/branch). Reassigns the case when a TC / FOS / TL column is
+    selected and changed. Leaves received amount, paid status, dispositions, notes, visits, calls and
+    history exactly as they are."""
     want = {f.strip() for f in (fields or "").split(",") if f.strip() and f.strip() in _CORRECTABLE}
     if not want:
         raise HTTPException(status_code=400, detail="Select at least one valid column to update.")
@@ -401,7 +442,8 @@ async def correct_apply(file: UploadFile = File(...), default_bank: str | None =
         records, sheet = import_workbook(content, default_bank=default_bank)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
-    _pf, matched, unmatched, plan = _correct_scan(records, default_bank, product, db, want_fields=want)
+    scope = {"bank": scope_bank, "product": scope_product, "branch": scope_branch, "period": scope_period}
+    _pf, matched, unmatched, plan = _correct_scan(records, default_bank, product, db, want_fields=want, scope=scope)
 
     cases_changed = 0
     field_changes = {f: 0 for f in want}

@@ -427,6 +427,45 @@ data class VisitOut(
     @Json(name = "created_at") val createdAt: String,
 )
 
+// ---- My visits today (FOS) ----
+@JsonClass(generateAdapter = true)
+data class OfficerDayVisits(
+    val officer: OfficerBrief? = null,
+    val date: String = "",
+    val count: Int = 0,
+    val collected: Double = 0.0,
+    val visits: List<DayVisit> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class OfficerBrief(val id: Int = 0, val name: String? = null, val branch: String? = null)
+
+@JsonClass(generateAdapter = true)
+data class DayVisit(
+    val id: Int = 0,
+    @Json(name = "case_id") val caseId: Int = 0,
+    val time: String = "",
+    val lat: Double? = null,
+    val lng: Double? = null,
+    val customer: String? = null,
+    val account: String? = null,
+    val bank: String? = null,
+    val product: String? = null,
+    val phone: String? = null,
+    val address: String? = null,
+    val disposition: String? = null,
+    val paid: Boolean = false,
+    val amount: Double = 0.0,
+    @Json(name = "norm_stab") val normStab: String? = null,
+    @Json(name = "person_moved") val personMoved: Boolean = false,
+    @Json(name = "location_correct") val locationCorrect: Boolean? = null,
+    @Json(name = "off_location") val offLocation: Boolean = false,
+    @Json(name = "distance_m") val distanceM: Double? = null,
+    val note: String? = null,
+    val photo: String? = null,
+    @Json(name = "payment_photo") val paymentPhoto: String? = null,
+)
+
 // ---- AI Assist ----
 @JsonClass(generateAdapter = true)
 data class AIRequest(val prompt: String, val context: String? = null)

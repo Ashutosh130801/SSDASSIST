@@ -194,6 +194,11 @@ interface ApiService {
     @GET("api/visits/case/{id}")
     suspend fun visitsForCase(@Path("id") id: Int): List<VisitOut>
 
+    // A field officer's own visits for a day (defaults to today) — each joined to its case.
+    @GET("api/visits/officer/{id}/day")
+    suspend fun officerDayVisits(@Path("id") id: Int,
+                                 @Query("date") date: String? = null): OfficerDayVisits
+
     @Multipart
     @POST("api/visits")
     suspend fun createVisit(

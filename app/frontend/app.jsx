@@ -3753,21 +3753,85 @@ function GeocodeButton() {
   </>;
 }
 
+/* Month-wise portfolio picker shown BEFORE an update/correction file is uploaded, so the change is
+   confined to exactly the portfolio the admin chose (avoids an account that exists in several
+   portfolios being touched by mistake). Calls onPick({bank,product,branch,period,label}). */
+function PortfolioScopePicker({ title, onPick, onClose }) {
+  const [rows, setRows] = React.useState(null);
+  const [q, setQ] = React.useState('');
+  React.useEffect(() => {
+    api('/api/import/portfolios').then(d => setRows(d.portfolios || [])).catch(() => setRows([]));
+  }, []);
+  // Group by month (period), newest first.
+  const groups = React.useMemo(() => {
+    const f = (rows || []).filter(r => {
+      if (!q) return true;
+      const s = (r.bank + ' ' + r.product + ' ' + (r.branch || '') + ' ' + r.period).toLowerCase();
+      return s.includes(q.toLowerCase());
+    });
+    const g = {};
+    f.forEach(r => { (g[r.period] = g[r.period] || []).push(r); });
+    return Object.keys(g).sort().reverse().map(p => [p, g[p]]);
+  }, [rows, q]);
+  return (
+    <div className="drawer-bg" onClick={onClose}>
+      <div className="glass card" style={{ maxWidth: 620, margin: '6vh auto', padding: 18, maxHeight: '86vh', overflow: 'auto' }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ margin: 0 }}>{title}</h3>
+          <button className="btn ghost sm" onClick={onClose}>✕</button>
+        </div>
+        <p className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>Pick the portfolio (month-wise) you're updating, then choose the file.</p>
+        <input className="input" style={{ marginBottom: 10 }} value={q} onChange={e => setQ(e.target.value)} placeholder="🔍 Search bank / product / branch / month" />
+        {rows === null ? <Loader /> : groups.length === 0 ? <div className="muted" style={{ padding: 12 }}>No portfolios found.</div> :
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {groups.map(([period, items]) => (
+              <div key={period}>
+                <div style={{ fontWeight: 700, fontSize: 13, margin: '2px 0 6px', color: 'var(--gold)' }}>🗓️ {period}</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {items.map((r, i) => (
+                    <button key={i} className="glass" style={{ textAlign: 'left', padding: 10, borderRadius: 10, cursor: 'pointer', border: '1px solid transparent' }}
+                      onClick={() => onPick({ bank: r.bank === '—' ? '' : r.bank, product: r.product === '—' ? '' : r.product,
+                        branch: r.branch || '', period: r.period === '—' ? '' : r.period,
+                        label: `${r.bank} · ${r.product}${r.branch ? ' · ' + r.branch : ''} · ${r.period}` })}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                        <b>{r.bank} · {r.product}{r.branch ? ' · ' + r.branch : ''}</b>
+                        <span className="muted" style={{ fontSize: 12 }}>{r.count} case(s)</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>}
+      </div>
+    </div>
+  );
+}
+
 /* Admin / Head-Office tool: re-read an ORIGINAL portfolio file and fill ONLY the 2nd/3rd address
    lines + their pincodes onto cases that already exist (money, allocation & history untouched).
-   Picks the file → runs a DRY RUN and shows what would change → an Apply button commits it. */
+   Choose the portfolio (month-wise) → pick the file → DRY RUN → Apply. */
 function BackfillAddressButton() {
   const role = (typeof window !== 'undefined') && window.__ssdRole;
   const fileRef = React.useRef(null);
   const [busy, setBusy] = React.useState(false);
   const [preview, setPreview] = React.useState(null);   // dry-run summary
   const [msg, setMsg] = React.useState('');
+  const [pickOpen, setPickOpen] = React.useState(false);
+  const [scope, setScope] = React.useState(null);       // chosen portfolio
   if (role !== 'admin' && role !== 'headoffice') return null;
 
   const send = async (f, commit) => {
     const fd = new FormData();
     fd.append('file', f);
     fd.append('commit', commit ? 'true' : 'false');
+    if (scope) {
+      fd.append('scope_bank', scope.bank || '');
+      fd.append('scope_product', scope.product || '');
+      fd.append('scope_branch', scope.branch || '');
+      fd.append('scope_period', scope.period || '');
+    }
     return api('/api/import/backfill-addresses', { method: 'POST', form: fd });
   };
   const onPick = async (e) => {
@@ -3796,9 +3860,12 @@ function BackfillAddressButton() {
   };
   return <>
     <input ref={fileRef} type="file" accept=".xlsx,.xlsm,.xls" style={{ display: 'none' }} onChange={onPick} />
+    {pickOpen && <PortfolioScopePicker title="🏠 Backfill addresses — choose portfolio"
+      onClose={() => setPickOpen(false)}
+      onPick={(s) => { setScope(s); setPickOpen(false); setMsg('Portfolio: ' + s.label); setTimeout(() => fileRef.current && fileRef.current.click(), 50); }} />}
     <button className="btn sm" style={{ marginLeft: 6 }} disabled={busy}
       title="Fill 2nd/3rd addresses + pincodes onto existing cases from the original portfolio file (nothing else is changed)"
-      onClick={() => fileRef.current && fileRef.current.click()}>🏠 Backfill addresses</button>
+      onClick={() => { setPreview(null); setPickOpen(true); }}>🏠 Backfill addresses</button>
     {preview && preview.cases_changed ? (
       <span className="badge" style={{ background: '#DBEAFE', color: '#1E40AF', marginLeft: 6 }}>
         {preview.cases_changed} case(s) would get addr2/addr3 · {preview.rows_no_match} rows no-match
@@ -3824,15 +3891,26 @@ function CorrectColumnsButton() {
   const [file, setFile] = React.useState(null);
   const [sel, setSel] = React.useState({});         // field -> bool
   const [msg, setMsg] = React.useState('');
+  const [pickOpen, setPickOpen] = React.useState(false);
+  const [scope, setScope] = React.useState(null);   // chosen portfolio
   if (role !== 'admin' && role !== 'headoffice') return null;
 
+  const addScope = (fd) => {
+    if (scope) {
+      fd.append('scope_bank', scope.bank || '');
+      fd.append('scope_product', scope.product || '');
+      fd.append('scope_branch', scope.branch || '');
+      fd.append('scope_period', scope.period || '');
+    }
+    return fd;
+  };
   const onPick = async (e) => {
     const f = e.target.files && e.target.files[0];
     e.target.value = '';
     if (!f) return;
     setBusy(true); setMsg('Checking “' + f.name + '”…'); setPrev(null); setFile(f); setOpen(true);
     try {
-      const fd = new FormData(); fd.append('file', f);
+      const fd = addScope(new FormData()); fd.append('file', f);
       const r = await api('/api/import/correct/preview', { method: 'POST', form: fd });
       setPrev(r);
       // Pre-tick every changed column by default.
@@ -3846,7 +3924,7 @@ function CorrectColumnsButton() {
     if (!file || !fields.length) { setMsg('Tick at least one column to update.'); return; }
     setBusy(true); setMsg('Applying…');
     try {
-      const fd = new FormData(); fd.append('file', file); fd.append('fields', fields.join(','));
+      const fd = addScope(new FormData()); fd.append('file', file); fd.append('fields', fields.join(','));
       const r = await api('/api/import/correct/apply', { method: 'POST', form: fd });
       const ra = r.reassigned || {};
       const rebits = ['caller_name', 'fos_name', 'team_lead'].filter(k => ra[k]).map(k =>
@@ -3860,9 +3938,12 @@ function CorrectColumnsButton() {
   const nSel = Object.keys(sel).filter(f => sel[f]).length;
   return <>
     <input ref={fileRef} type="file" accept=".xlsx,.xlsm,.xls" style={{ display: 'none' }} onChange={onPick} />
+    {pickOpen && <PortfolioScopePicker title="🛠 Correct columns — choose portfolio"
+      onClose={() => setPickOpen(false)}
+      onPick={(s) => { setScope(s); setPickOpen(false); setTimeout(() => fileRef.current && fileRef.current.click(), 50); }} />}
     <button className="btn sm" style={{ marginLeft: 6 }} disabled={busy}
       title="Re-upload a corrected copy of the original portfolio file and fix only the wrong columns — progress (payments, visits, calls, notes) is kept. Changing TC/FOS/TL reassigns the case."
-      onClick={() => fileRef.current && fileRef.current.click()}>🛠 Correct columns</button>
+      onClick={() => { setPrev(null); setFile(null); setPickOpen(true); }}>🛠 Correct columns</button>
     {open && <div className="drawer-bg" onClick={() => !busy && setOpen(false)}>
       <div className="glass card" style={{ maxWidth: 680, margin: '6vh auto', padding: 18, maxHeight: '86vh', overflow: 'auto' }}
         onClick={e => e.stopPropagation()}>
@@ -3870,6 +3951,7 @@ function CorrectColumnsButton() {
           <h3 style={{ margin: 0 }}>🛠 Correct columns from re-uploaded file</h3>
           <button className="btn ghost sm" disabled={busy} onClick={() => setOpen(false)}>✕</button>
         </div>
+        {scope && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Portfolio: <b>{scope.label}</b></div>}
         <p className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>
           {file ? file.name : ''}{prev ? ` · ${prev.accounts_matched} account(s) matched · ${prev.rows_no_match} row(s) with no match` : ''}
         </p>

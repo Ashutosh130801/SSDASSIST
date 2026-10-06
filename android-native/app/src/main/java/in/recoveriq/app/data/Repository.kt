@@ -144,6 +144,12 @@ class Repository(context: Context) {
     suspend fun callsForCase(id: Int): List<CallOut> = Api.service.callsForCase(id)
     suspend fun visitsForCase(id: Int): List<VisitOut> = Api.service.visitsForCase(id)
 
+    /** The signed-in FOS's own visits for a day (default today), each joined to its case. */
+    suspend fun myVisitsForDay(date: String? = null): OfficerDayVisits {
+        val uid = session.user()?.id ?: throw IllegalStateException("Not signed in")
+        return Api.service.officerDayVisits(uid, date)
+    }
+
     suspend fun logCall(body: CallCreate): CallOut = Api.service.logCall(body)
 
     suspend fun liveOfficers(): List<OfficerLocation> = Api.service.liveOfficers()
