@@ -216,30 +216,61 @@ async def backfill_addresses(
             "rows_no_match": unmatched, "field_changes": field_changes}
 
 
-# ── Re-link allocation (code-only) ──────────────────────────────────────────────
+# ── Re-link allocation ───────────────────────────────────────────────────────────
 # Some already-imported cases never got linked to a FOS / caller account: the sheet carried the
-# person's EMP CODE (e.g. FO048 / TC012) but at the moment of that upload the account didn't exist
-# yet, was inactive, or wasn't the right role — so only the raw text was stored (assigned_*_id null).
-# Such cases are invisible to that officer's app (My Cases scopes by assigned_fos_id) and split off
-# in the MIS ranking. This re-runs the SAME strict, code-only match now, and links any orphan whose
-# stored fos_name / caller_name text is an exact active employee code. No name / fuzzy matching.
+# person's EMP CODE (e.g. FO048 / TC012) OR their full NAME, but at the moment of that upload the
+# account didn't exist yet, was inactive, or wasn't the right role — so only the raw text was stored
+# (assigned_*_id null). Such cases are invisible to that officer's app (My Cases scopes by
+# assigned_fos_id) and split off in the MIS ranking. This re-links any orphan whose stored
+# fos_name / caller_name text is an exact active employee CODE, and (as a fallback) an exact full
+# NAME — but a name shared by two or more active accounts is skipped, so a name can never mis-assign.
 def _relink_code_maps(db):
-    """EMP-CODE → active user maps for FOS and caller, incl. dual-role second ids (code-only)."""
+    """Resolvers for FOS and caller: try exact EMP CODE first (incl. dual-role second ids), then
+    exact full NAME. Returns (resolve_fos, resolve_caller); each takes the raw cell text and returns
+    a user or None. Names that map to >1 active account are dropped from the name index."""
     users = db.query(models.User).all()
-    fos_by, caller_by = {}, {}
+    fos_code, caller_code = {}, {}
+    fos_name_hits, caller_name_hits = {}, {}      # NAME -> set(user ids), to detect duplicates
+    fos_name, caller_name = {}, {}
     for u in users:
         if not u.is_active:
             continue
         code = (u.emp_code or "").strip().upper()
+        nm = (u.name or "").strip().upper()
         if code and u.role == "fos":
-            fos_by[code] = u
+            fos_code[code] = u
         if code and u.role == "telecaller":
-            caller_by[code] = u
+            caller_code[code] = u
         if getattr(u, "also_field_agent", False) and getattr(u, "fos_emp_code", None):
-            fos_by.setdefault(u.fos_emp_code.strip().upper(), u)
+            fos_code.setdefault(u.fos_emp_code.strip().upper(), u)
         if getattr(u, "also_caller", False) and getattr(u, "tc_emp_code", None):
-            caller_by.setdefault(u.tc_emp_code.strip().upper(), u)
-    return fos_by, caller_by
+            caller_code.setdefault(u.tc_emp_code.strip().upper(), u)
+        # NAME index — a FOS (or field-hatted caller) can own field cases; a caller (or
+        # call-hatted FOS) can own calling cases. Track every account that answers to a name.
+        if nm:
+            if u.role == "fos" or getattr(u, "also_field_agent", False):
+                fos_name_hits.setdefault(nm, set()).add(u.id)
+                fos_name[nm] = u
+            if u.role == "telecaller" or getattr(u, "also_caller", False):
+                caller_name_hits.setdefault(nm, set()).add(u.id)
+                caller_name[nm] = u
+    # Drop any name shared by 2+ active accounts — ambiguous, never auto-linked.
+    for nm, ids in fos_name_hits.items():
+        if len(ids) > 1:
+            fos_name.pop(nm, None)
+    for nm, ids in caller_name_hits.items():
+        if len(ids) > 1:
+            caller_name.pop(nm, None)
+
+    def _resolve_fos(raw):
+        key = str(raw or "").strip().upper()
+        return fos_code.get(key) or fos_name.get(key) if key else None
+
+    def _resolve_caller(raw):
+        key = str(raw or "").strip().upper()
+        return caller_code.get(key) or caller_name.get(key) if key else None
+
+    return _resolve_fos, _resolve_caller
 
 
 @router.post("/relink-allocation")
@@ -251,10 +282,10 @@ def relink_allocation(
         scope_period: str | None = Form(None),
         actor: models.User = Depends(require_roles("admin", "headoffice")),
         db: Session = Depends(get_db)):
-    """Link orphan cases (no FOS/caller id but a code in the name text) to the matching active
-    account by EXACT employee code only. Pass commit=false for a dry run (default). Optional
-    portfolio scope (bank/product/branch/period) confines the pass to one portfolio."""
-    fos_by, caller_by = _relink_code_maps(db)
+    """Link orphan cases (no FOS/caller id but a code or full name in the text) to the matching
+    active account — exact employee code first, then exact full name (names shared by 2+ accounts
+    are skipped). Pass commit=false for a dry run (default). Optional portfolio scope confines it."""
+    resolve_fos, resolve_caller = _relink_code_maps(db)
     q = db.query(models.Case).filter(models.Case.removed.isnot(True))
     sb, sp = _bf_norm(scope_bank), _bf_norm(scope_product)
     if sb:
@@ -276,7 +307,7 @@ def relink_allocation(
     samples = []
     for cs in q.all():
         if cs.assigned_fos_id is None and cs.fos_name:
-            u = fos_by.get(str(cs.fos_name).strip().upper())
+            u = resolve_fos(cs.fos_name)
             if u:
                 if commit:
                     cs.assigned_fos_id = u.id
@@ -289,7 +320,7 @@ def relink_allocation(
                     samples.append({"account_no": cs.account_no, "role": "FOS",
                                     "was": cs.fos_name, "linked_to": f"{u.name} ({u.emp_code})"})
         if cs.assigned_caller_id is None and cs.caller_name:
-            u = caller_by.get(str(cs.caller_name).strip().upper())
+            u = resolve_caller(cs.caller_name)
             if u:
                 if commit:
                     cs.assigned_caller_id = u.id
@@ -302,7 +333,7 @@ def relink_allocation(
 
     if commit and (fos_linked or caller_linked):
         audit.record(db, actor, "relink_allocation", entity_type="import",
-                     detail=f"code-only re-link: {fos_linked} FOS + {caller_linked} caller "
+                     detail=f"re-link (code+name): {fos_linked} FOS + {caller_linked} caller "
                             f"(scope: {sb or 'all'}/{sp or 'all'}/{_bf_norm(scope_branch) or 'all'}/{_bf_norm(scope_period) or 'all'})")
         db.commit()
     else:
