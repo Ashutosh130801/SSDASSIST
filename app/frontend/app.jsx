@@ -3950,8 +3950,13 @@ function RelinkAllocationButton() {
     try {
       const r = await run(false);
       setPreview(r);
-      if (!r.fos_linked && !r.caller_linked) setMsg('Nothing to re-link — every case with a code already matches an account.');
-      else setMsg('');
+      const n = (r.fos_linked || 0) + (r.caller_linked || 0);
+      if (!n) {
+        const un = (r.fos_unresolved || 0) + (r.caller_unresolved || 0);
+        const mis = (r.fos_mislinked || 0) + (r.caller_mislinked || 0);
+        if (un || mis) setMsg(`Nothing could be auto-linked. ${un} case(s) have a name/code that matches no active account; ${mis} are already linked to a different account. See details below.`);
+        else setMsg('Nothing to re-link — every case already points to a valid account.');
+      } else setMsg('');
     } catch (err) { setMsg('Scan failed — ' + (err.message || 'error')); }
     setBusy(false);
   };
@@ -3960,24 +3965,41 @@ function RelinkAllocationButton() {
     try {
       const r = await run(true);
       setPreview(null);
-      setMsg(`✓ Linked ${r.fos_linked} FOS + ${r.caller_linked} caller case(s). They now appear in those officers' apps.`);
+      setMsg(`✓ Linked ${r.fos_linked} FOS + ${r.caller_linked} caller case(s). Current/next-month ones now appear in those officers' apps.`);
     } catch (err) { setMsg('Apply failed — ' + (err.message || 'error')); }
     setBusy(false);
   };
+  const n = preview ? (preview.fos_linked || 0) + (preview.caller_linked || 0) : 0;
   return <>
     <button className="btn sm" style={{ marginLeft: 6 }} disabled={busy}
-      title="Link orphan cases (code in the name text, no account linked) to the matching FOS/caller by exact employee code"
+      title="Link orphan cases (code/name in the text, no account linked, or linked to a deleted account) to the matching FOS/caller"
       onClick={check}>🔗 Re-link FOS/caller</button>
-    {preview && (preview.fos_linked || preview.caller_linked) ? (
+    {preview && n ? (
       <span className="badge" style={{ background: '#DCFCE7', color: '#166534', marginLeft: 6 }}>
         {preview.fos_linked} FOS + {preview.caller_linked} caller would link
         {(preview.by_person || []).slice(0, 4).map((p, i) =>
           <span key={i} style={{ marginLeft: 6, opacity: .85 }}>· {p.who} ({p.count})</span>)}
+        {(preview.period_linked || []).length > 1 &&
+          <span style={{ marginLeft: 6, opacity: .7 }}>· months: {preview.period_linked.map(p => `${p.period}(${p.count})`).join(', ')}</span>}
         <button className="btn sm gold" style={{ marginLeft: 8 }} disabled={busy} onClick={apply}>Apply</button>
         <button className="btn ghost sm" style={{ marginLeft: 4 }} disabled={busy} onClick={() => { setPreview(null); setMsg(''); }}>Cancel</button>
       </span>
     ) : null}
     {msg && <span className="muted" style={{ fontSize: 11.5, marginLeft: 6 }}>{msg}</span>}
+    {preview && !n && ((preview.mislinked_samples || []).length > 0 || (preview.unresolved_samples || []).length > 0) ? (
+      <div className="glass card" style={{ marginTop: 8, padding: 10, fontSize: 12, maxWidth: 680 }}>
+        {(preview.mislinked_samples || []).length > 0 && <>
+          <b>Already linked to a different account</b> <span className="muted">(left untouched — reassign via Correct columns if wrong):</span>
+          <div style={{ marginTop: 4 }}>{preview.mislinked_samples.slice(0, 8).map((s, i) =>
+            <div key={i} style={{ padding: '2px 0' }}>{s.role} · acct {s.account_no || '—'}: sheet says “{s.text}” → currently <b>{s.currently}</b>, text matches <b>{s.text_matches}</b></div>)}</div>
+        </>}
+        {(preview.unresolved_samples || []).length > 0 && <>
+          <b style={{ display: 'block', marginTop: (preview.mislinked_samples || []).length ? 8 : 0 }}>No active account matches</b>
+          <div style={{ marginTop: 4 }}>{preview.unresolved_samples.slice(0, 8).map((s, i) =>
+            <div key={i} style={{ padding: '2px 0' }}>{s.role} · acct {s.account_no || '—'}: “{s.text}” — no active {s.role} with this code/name</div>)}</div>
+        </>}
+      </div>
+    ) : null}
   </>;
 }
 

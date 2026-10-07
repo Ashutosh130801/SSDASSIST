@@ -282,10 +282,14 @@ def relink_allocation(
         scope_period: str | None = Form(None),
         actor: models.User = Depends(require_roles("admin", "headoffice")),
         db: Session = Depends(get_db)):
-    """Link orphan cases (no FOS/caller id but a code or full name in the text) to the matching
-    active account — exact employee code first, then exact full name (names shared by 2+ accounts
-    are skipped). Pass commit=false for a dry run (default). Optional portfolio scope confines it."""
+    """Link orphan cases to the matching active account — exact employee code first, then exact full
+    name (names shared by 2+ accounts are skipped). Repairs cases whose id is NULL *or* points to a
+    deleted account (stale link). Pass commit=false for a dry run (default). The dry run also reports
+    cases it can't fix (text matches no active account) and cases already linked to a DIFFERENT valid
+    account (left untouched), so you can see exactly why something isn't linking. Optional scope."""
     resolve_fos, resolve_caller = _relink_code_maps(db)
+    valid_ids = {u.id for u in db.query(models.User.id).all()}
+    umap = {u.id: u for u in db.query(models.User).all()}
     q = db.query(models.Case).filter(models.Case.removed.isnot(True))
     sb, sp = _bf_norm(scope_bank), _bf_norm(scope_product)
     if sb:
@@ -297,39 +301,75 @@ def relink_allocation(
     if _bf_norm(scope_branch):
         from sqlalchemy import func as _f
         q = q.filter(_f.lower(_f.trim(models.Case.branch)) == _bf_norm(scope_branch).lower())
-    # Only cases that are missing at least one id but carry a text label to match on.
-    q = q.filter(or_(
-        and_(models.Case.assigned_fos_id.is_(None), models.Case.fos_name.isnot(None)),
-        and_(models.Case.assigned_caller_id.is_(None), models.Case.caller_name.isnot(None))))
+    # Any case that carries a FOS or caller text label is a candidate (we decide per-case whether
+    # its current id is missing / stale / valid).
+    q = q.filter(or_(models.Case.fos_name.isnot(None), models.Case.caller_name.isnot(None)))
 
     fos_linked, caller_linked = 0, 0
-    by_person = {}                       # code -> count, for a readable summary
-    samples = []
+    fos_unresolved, caller_unresolved = 0, 0          # text present, no active account matches
+    fos_mislinked, caller_mislinked = 0, 0            # already linked to a DIFFERENT valid account
+    by_person = {}
+    samples, unresolved_samples, mislinked_samples = [], [], []
+    period_linked = {}                                # period -> count of newly-linked cases
+
+    def _need(cur):
+        """True when a case's current id must be (re)linked: it's missing or points to a dead user."""
+        return cur is None or cur not in valid_ids
+
     for cs in q.all():
-        if cs.assigned_fos_id is None and cs.fos_name:
+        # ── FOS ──
+        if cs.fos_name:
+            cur = cs.assigned_fos_id
             u = resolve_fos(cs.fos_name)
-            if u:
-                if commit:
-                    cs.assigned_fos_id = u.id
-                    cs.fos_name = u.name
-                    if u.branch and not (cs.branch or "").strip():
-                        cs.branch = u.branch
-                fos_linked += 1
-                by_person[f"FOS {u.emp_code} · {u.name}"] = by_person.get(f"FOS {u.emp_code} · {u.name}", 0) + 1
-                if len(samples) < 50:
-                    samples.append({"account_no": cs.account_no, "role": "FOS",
-                                    "was": cs.fos_name, "linked_to": f"{u.name} ({u.emp_code})"})
-        if cs.assigned_caller_id is None and cs.caller_name:
+            if _need(cur):
+                if u:
+                    if commit:
+                        cs.assigned_fos_id = u.id
+                        cs.fos_name = u.name
+                        if u.branch and not (cs.branch or "").strip():
+                            cs.branch = u.branch
+                    fos_linked += 1
+                    period_linked[cs.period or "—"] = period_linked.get(cs.period or "—", 0) + 1
+                    by_person[f"FOS {u.emp_code} · {u.name}"] = by_person.get(f"FOS {u.emp_code} · {u.name}", 0) + 1
+                    if len(samples) < 50:
+                        samples.append({"account_no": cs.account_no, "role": "FOS", "period": cs.period,
+                                        "was": cs.fos_name, "linked_to": f"{u.name} ({u.emp_code})"})
+                else:
+                    fos_unresolved += 1
+                    if len(unresolved_samples) < 30:
+                        unresolved_samples.append({"account_no": cs.account_no, "role": "FOS", "text": cs.fos_name})
+            elif u and u.id != cur:                   # already on a valid but different account
+                fos_mislinked += 1
+                if len(mislinked_samples) < 30:
+                    cu = umap.get(cur)
+                    mislinked_samples.append({"account_no": cs.account_no, "role": "FOS", "text": cs.fos_name,
+                                              "currently": f"{cu.name} ({cu.emp_code})" if cu else f"#{cur}",
+                                              "text_matches": f"{u.name} ({u.emp_code})"})
+        # ── Caller ──
+        if cs.caller_name:
+            cur = cs.assigned_caller_id
             u = resolve_caller(cs.caller_name)
-            if u:
-                if commit:
-                    cs.assigned_caller_id = u.id
-                    cs.caller_name = u.name
-                caller_linked += 1
-                by_person[f"Caller {u.emp_code} · {u.name}"] = by_person.get(f"Caller {u.emp_code} · {u.name}", 0) + 1
-                if len(samples) < 50:
-                    samples.append({"account_no": cs.account_no, "role": "Caller",
-                                    "was": cs.caller_name, "linked_to": f"{u.name} ({u.emp_code})"})
+            if _need(cur):
+                if u:
+                    if commit:
+                        cs.assigned_caller_id = u.id
+                        cs.caller_name = u.name
+                    caller_linked += 1
+                    by_person[f"Caller {u.emp_code} · {u.name}"] = by_person.get(f"Caller {u.emp_code} · {u.name}", 0) + 1
+                    if len(samples) < 50:
+                        samples.append({"account_no": cs.account_no, "role": "Caller", "period": cs.period,
+                                        "was": cs.caller_name, "linked_to": f"{u.name} ({u.emp_code})"})
+                else:
+                    caller_unresolved += 1
+                    if len(unresolved_samples) < 30:
+                        unresolved_samples.append({"account_no": cs.account_no, "role": "Caller", "text": cs.caller_name})
+            elif u and u.id != cur:
+                caller_mislinked += 1
+                if len(mislinked_samples) < 30:
+                    cu = umap.get(cur)
+                    mislinked_samples.append({"account_no": cs.account_no, "role": "Caller", "text": cs.caller_name,
+                                              "currently": f"{cu.name} ({cu.emp_code})" if cu else f"#{cur}",
+                                              "text_matches": f"{u.name} ({u.emp_code})"})
 
     if commit and (fos_linked or caller_linked):
         audit.record(db, actor, "relink_allocation", entity_type="import",
@@ -341,9 +381,15 @@ def relink_allocation(
 
     return {"committed": bool(commit and (fos_linked or caller_linked)),
             "fos_linked": fos_linked, "caller_linked": caller_linked,
+            "fos_unresolved": fos_unresolved, "caller_unresolved": caller_unresolved,
+            "fos_mislinked": fos_mislinked, "caller_mislinked": caller_mislinked,
+            "period_linked": sorted([{"period": k, "count": v} for k, v in period_linked.items()],
+                                    key=lambda x: str(x["period"])),
             "by_person": sorted([{"who": k, "count": v} for k, v in by_person.items()],
                                 key=lambda x: -x["count"]),
-            "samples": samples}
+            "samples": samples,
+            "unresolved_samples": unresolved_samples,
+            "mislinked_samples": mislinked_samples}
 
 
 # ── Corrections upload ──────────────────────────────────────────────────────────
