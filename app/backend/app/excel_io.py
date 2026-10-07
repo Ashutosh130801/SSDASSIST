@@ -82,7 +82,11 @@ HEADER_MAP = {
     "altphone": "alt_phone", "alternatemobile": "alt_phone", "alternatephone": "alt_phone",
     "secondarymobile": "alt_phone", "altmobile": "alt_phone",
     "accountno": "account_no", "accno": "account_no", "acc.no": "account_no", "accno.": "account_no",
+    "accountnumber": "account_no", "loanaccountno": "account_no", "loanaccountnumber": "account_no",
+    "loanno": "account_no", "loannumber": "account_no", "lan": "account_no",
     "ccno": "card_no", "cardno": "card_no",
+    "cardnumber": "card_no", "creditcardno": "card_no", "creditcardnumber": "card_no",
+    "branch": "branch", "branchname": "branch",
     "cardtype": "product", "product": "product",
     # Address — accept the common header variants seen across bank allocation files.
     "address": "address", "add": "address", "addr": "address",
@@ -122,10 +126,12 @@ HEADER_MAP = {
     "enr": "enr", "emios": "_emi_os", "emi0s": "_emi_os",
     "normstab": "norm_stab", "nstab": "norm_stab", "ns": "norm_stab",
     "caller": "_caller", "tcname": "_caller",
+    "callername": "_caller", "telecaller": "_caller", "telecallername": "_caller",
     # Explicit employee-ID columns (the codes generated for staff, e.g. TC001/FO001/TL001).
     "callerid": "_caller", "callercode": "_caller", "callerempid": "_caller",
     "callerempcode": "_caller", "tcid": "_caller", "tccode": "_caller", "tcempid": "_caller",
     "fos": "_fos", "fosname": "_fos",
+    "fieldofficer": "_fos", "fieldofficername": "_fos",
     "fosid": "_fos", "foscode": "_fos", "fosempid": "_fos", "fosempcode": "_fos",
     "area": "_area", "aera": "_area",                       # AERA = common misspelling of AREA
     "team": "team_lead", "teamlead": "team_lead", "teamleadname": "team_lead",
@@ -205,7 +211,7 @@ def _find_header_row(ws, max_scan=8):
     return best_row, best_hits
 
 
-def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
+def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None, metadata=None):
     wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
     sheets = [sheet_name] if sheet_name else wb.sheetnames
 
@@ -222,6 +228,12 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
         if not rows:
             continue
         headers = [_norm(h) for h in rows[0]]
+        if metadata is not None:
+            metadata.setdefault("headers", []).extend(
+                {"sheet": sn, "row": hdr_row, "column": idx + 1,
+                 "heading": str(raw), "mapped_field": HEADER_MAP.get(headers[idx])}
+                for idx, raw in enumerate(rows[0]) if raw is not None and str(raw).strip()
+            )
         col_field = {idx: HEADER_MAP[h] for idx, h in enumerate(headers) if h in HEADER_MAP}
         if not col_field:
             continue
@@ -237,16 +249,21 @@ def import_workbook(file_bytes: bytes, default_bank=None, sheet_name=None):
                     if cv is not None:
                         rec.setdefault("_extra", {})["x_" + field[2:]] = cv
                 elif field in MONEY_FIELDS:
-                    rec[field] = to_decimal(val)
+                    # An empty source cell is not a request to erase an existing amount.
+                    if _clean(val) is not None:
+                        rec[field] = to_decimal(val)
                 elif field in ("address", "address2", "address3"):   # ADD 1 / ADD 2 / ADD 3 each separate
                     cv = _clean(val)
                     if cv:
                         cur = rec.get(field)
                         rec[field] = f"{cur}, {cv}" if cur and cv not in cur else cv if not cur else cur
                 else:
-                    rec[field] = _clean(val)
-            # must have at least a name or account no to be a real case
-            if not rec.get("customer_name") and not rec.get("account_no"):
+                    # A second alias column must not erase a populated first alias with a blank.
+                    cv = _clean(val)
+                    if cv is not None:
+                        rec[field] = cv
+            # Card-only files also carry real cases (e.g. the ICICI FR layout).
+            if not any(rec.get(f) for f in ("customer_name", "account_no", "card_no")):
                 continue
             rec["bank"] = rec.get("bank") or default_bank
             # Normalise a dedicated pincode column (Excel may read it as a number).

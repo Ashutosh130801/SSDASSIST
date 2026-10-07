@@ -4071,6 +4071,7 @@ function CorrectColumnsButton() {
 
   const addScope = (fd) => {
     if (scope) {
+      fd.append('scope_selected', 'true');
       fd.append('scope_bank', scope.bank || '');
       fd.append('scope_product', scope.product || '');
       fd.append('scope_branch', scope.branch || '');
@@ -4127,11 +4128,33 @@ function CorrectColumnsButton() {
         </div>
         {scope && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Portfolio: <b>{scope.label}</b></div>}
         <p className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>
-          {file ? file.name : ''}{prev ? ` · ${prev.accounts_matched} account(s) matched · ${prev.rows_no_match} row(s) with no match` : ''}
+          {file ? file.name : ''}{prev ? ` · ${prev.accounts_matched} case(s) matched · ${prev.rows_no_match} row(s) skipped` : ''}
         </p>
-        {!prev && <Loader />}
+        {!prev && busy && <Loader />}
+        {msg && <div role="status" style={{ padding: '8px 0', color: busy ? 'var(--muted)' : 'var(--bad)' }}>{msg}</div>}
+        {prev && <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+          Matched rows: {prev.matched_by_account || 0} by account number · {prev.matched_by_card || 0} by card number.
+          {!!prev.rows_missing_identifier && <div>{prev.rows_missing_identifier} row(s) have neither an account nor a card number.</div>}
+          {!!prev.rows_ambiguous && <div>{prev.rows_ambiguous} row(s) match multiple cases in this portfolio and were skipped.</div>}
+          {!!prev.unresolved_assignments && <div>{prev.unresolved_assignments} staff assignment cell(s) could not be resolved. Use active TC/FOS employee IDs as in Upload; existing assignments are kept.</div>}
+        </div>}
+        {prev && (prev.detected_columns || []).length > 0 && <details style={{ marginBottom: 12 }}>
+          <summary style={{ cursor: 'pointer' }}>Detected headings ({prev.detected_columns.length}) — same mapping as Upload</summary>
+          <p className="muted" style={{ fontSize: 12 }}>Correctable fields can be selected below when values differ. Matching fields identify the portfolio/case. Protected fields use their payment, scheduling or feedback workflows. Unrecognised headings are not applied.</p>
+          <div className="tablewrap" style={{ maxHeight: 280, overflow: 'auto' }}><table>
+            <thead><tr><th>Sheet / column</th><th>Your heading</th><th>Mapped field</th><th>Use</th></tr></thead>
+            <tbody>{prev.detected_columns.map((h, i) => <tr key={i}>
+              <td>{h.sheet} · {h.column}</td><td>{h.heading}</td><td>{h.label}</td>
+              <td>{({ correctable: 'Correctable', matching: 'Matching', protected: 'Protected', derived: 'ENR calculation', ignored: 'Ignored by Upload', unrecognised: 'Not recognised' })[h.use] || h.use}</td>
+            </tr>)}</tbody>
+          </table></div>
+        </details>}
         {prev && !(prev.columns || []).length &&
-          <div className="muted" style={{ padding: 12 }}>No differences found — the file matches the current data, nothing to correct.</div>}
+          <div className="muted" style={{ padding: 12 }}>{!prev.rows_in_file
+            ? 'No case rows were detected. Check the headings and sheet contents.'
+            : !prev.accounts_matched
+              ? 'No cases matched in the selected portfolio. Check the month, bank, product, branch and account/card numbers. No changes will be applied.'
+              : 'No differences in correctable columns for the matched cases. Protected columns are not updated here.'}</div>}
         {prev && (prev.columns || []).length > 0 && <>
           <div className="muted" style={{ fontSize: 12, margin: '4px 0 8px' }}>
             Tick the columns to fix. Only these are changed — payments, dispositions, visits, calls and notes stay as they are.
@@ -4143,7 +4166,8 @@ function CorrectColumnsButton() {
                 border: c.reassign ? '1px solid var(--gold)' : '1px solid transparent' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={!!sel[c.field]} onChange={() => toggle(c.field)} />
-                  <b>{c.label}</b>
+                  <b>{(c.source_headings || []).length ? c.source_headings.join(' / ') : c.label}</b>
+                  {(c.source_headings || []).length > 0 && <span className="muted" style={{ fontSize: 11 }}>{c.label}</span>}
                   {c.reassign && <span className="badge" style={{ background: '#FEF3C7', color: '#92400E' }}>reassigns case</span>}
                   <span style={{ flex: 1 }} />
                   <span className="muted" style={{ fontSize: 12 }}>{c.changes} case(s) change</span>
@@ -4157,7 +4181,6 @@ function CorrectColumnsButton() {
             ))}
           </div>
           <div className="toolbar" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
-            {msg && <span className="muted" style={{ fontSize: 12, flex: 1 }}>{msg}</span>}
             <button className="btn" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
             <button className="btn gold" disabled={busy || !nSel} onClick={apply}>Apply {nSel} column{nSel === 1 ? '' : 's'}</button>
           </div>

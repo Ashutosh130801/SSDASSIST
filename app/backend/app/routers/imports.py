@@ -8,7 +8,7 @@ import io
 from .. import models
 from ..database import get_db
 from ..deps import require_roles
-from ..excel_io import import_workbook, record_to_case_kwargs, export_cases
+from ..excel_io import import_workbook, record_to_case_kwargs, export_cases, HEADER_MAP
 from ..allocation import run_allocation
 from .. import audit, closing
 
@@ -445,6 +445,7 @@ _CORRECTABLE = {
     "principal_outstanding": ("POS", False),
     "min_amount_due": ("MAD", False),
     "funding_amount": ("Funding amount", False),
+    "rollback_amount": ("Rollback target", False),
     "vehicle_type": ("Vehicle type", False),
     "brand": ("Brand", False),
     "vehicle_num": ("Vehicle no", False),
@@ -453,8 +454,39 @@ _CORRECTABLE = {
     "fos_name": ("Field officer (FOS)", True),
     "team_lead": ("Team lead (TL)", True),
 }
+# Use the upload parser's own extra-field mappings, rather than a second heading dictionary.
+# Scheduling/contact feedback is owned by the corresponding workflows, not source corrections.
+_CORRECT_PROTECTED_EXTRA = {"x_ptp_date", "x_paid_date", "x_mode_of_payment", "x_due_date",
+                            "x_traced_contact", "x_traced_address"}
+_CORRECT_EXTRA = {"x_" + v[2:] for v in HEADER_MAP.values() if v.startswith("x:")} - _CORRECT_PROTECTED_EXTRA
+_CORRECTABLE.update({f: (f[2:].replace("_", " ").title(), False) for f in sorted(_CORRECT_EXTRA)})
 _CORRECT_MONEY = {"enr", "norm_amount", "stab_amount", "total_outstanding",
-                  "principal_outstanding", "min_amount_due", "funding_amount"}
+                  "principal_outstanding", "min_amount_due", "funding_amount", "rollback_amount"}
+
+
+def _correct_headers(metadata):
+    """Explain every source heading using exactly the same map as the upload parser."""
+    out = []
+    for h in metadata.get("headers", []):
+        raw = h["mapped_field"]
+        field = {"_caller": "caller_name", "_fos": "fos_name", "_area": "team"}.get(raw, raw)
+        if field and field.startswith("x:"):
+            field = "x_" + field[2:]
+        if field in _CORRECTABLE:
+            use = "correctable"
+        elif field in ("account_no", "bank", "product"):
+            use = "matching"
+        elif field == "_emi_os":
+            use = "derived"
+        elif field == "_ignore":
+            use = "ignored"
+        elif field:
+            use = "protected"
+        else:
+            use = "unrecognised"
+        out.append({**h, "field": field, "use": use,
+                    "label": _CORRECTABLE.get(field, (field or "Not recognised", False))[0]})
+    return out
 
 
 def _correct_norm(v):
@@ -464,28 +496,27 @@ def _correct_norm(v):
 def _correct_user_maps(db: Session):
     """code(UPPER) -> user maps for resolving a corrected TC / FOS / TL cell to a person."""
     caller_by, fos_by, tl_by, tl_by_name = {}, {}, {}, {}
-    for u in db.query(models.User).all():
+    for u in db.query(models.User).filter(models.User.is_active.is_(True)).all():
         code = (u.emp_code or "").strip().upper()
         role = (u.role or "").lower()
         if code:
-            if role in ("telecaller", "caller") or getattr(u, "also_telecaller", False):
+            if role in ("telecaller", "caller"):
                 caller_by[code] = u
-            if role == "fos" or getattr(u, "also_fos", False):
+            if role == "fos":
                 fos_by[code] = u
             if role == "teamlead":
                 tl_by[code] = u
+        if getattr(u, "also_caller", False) and getattr(u, "tc_emp_code", None):
+            caller_by[u.tc_emp_code.strip().upper()] = u
+        if getattr(u, "also_field_agent", False) and getattr(u, "fos_emp_code", None):
+            fos_by[u.fos_emp_code.strip().upper()] = u
         tlc = (getattr(u, "tl_emp_code", None) or "").strip().upper()
         if tlc and (role == "teamlead" or getattr(u, "also_team_lead", False)):
             tl_by[tlc] = u
-        if role == "teamlead" and u.name:
-            tl_by_name[u.name.strip().upper()] = u
-    # Fallback: a caller/fos code may belong to someone whose primary role differs — index everyone
-    # by code too so an exact emp-code always resolves.
-    any_by = {}
-    for u in db.query(models.User).all():
-        if u.emp_code:
-            any_by[u.emp_code.strip().upper()] = u
-    return caller_by, fos_by, tl_by, tl_by_name, any_by
+        if (role == "teamlead" or getattr(u, "also_team_lead", False)) and u.name:
+            name = u.name.strip().upper()
+            tl_by_name[name] = None if name in tl_by_name else u
+    return caller_by, fos_by, tl_by, tl_by_name
 
 
 def _money_eq(a, b):
@@ -496,17 +527,20 @@ def _money_eq(a, b):
         return str(a) == str(b)
 
 
-def _correct_scan(records, default_bank, product, db, want_fields=None, scope=None):
+def _correct_scan(records, default_bank, product, db, want_fields=None, scope=None, diagnostics=None):
     """Match each file row to existing case(s) and compute, per correctable field, which cases would
     change. Returns (per_field, matched_accounts, unmatched, apply_plan). apply_plan is a list of
     (case, {field: newvalue}, {reassign dicts}) ready to write when want_fields is given."""
-    caller_by, fos_by, tl_by, tl_by_name, any_by = _correct_user_maps(db)
+    caller_by, fos_by, tl_by, tl_by_name = _correct_user_maps(db)
     per_field = {}            # field -> {"label","reassign","changes":int,"samples":[...]}
     for f, (label, isre) in _CORRECTABLE.items():
         per_field[f] = {"field": f, "label": label, "reassign": isre, "changes": 0, "samples": []}
     matched_accounts = set()
     unmatched = 0
     plan = []
+    stats = diagnostics if diagnostics is not None else {}
+    stats.update(rows_missing_identifier=0, rows_ambiguous=0, matched_by_account=0, matched_by_card=0)
+    stats["unresolved_assignments"] = 0
 
     def resolve_person(field, raw):
         code = _correct_norm(raw)
@@ -514,24 +548,33 @@ def _correct_scan(records, default_bank, product, db, want_fields=None, scope=No
             return None, None, "blank"
         key = str(code).strip().upper()
         if field == "caller_name":
-            u = caller_by.get(key) or any_by.get(key)
+            u = caller_by.get(key)
         elif field == "fos_name":
-            u = fos_by.get(key) or any_by.get(key)
+            u = fos_by.get(key)
         else:
-            u = tl_by.get(key) or tl_by_name.get(key) or any_by.get(key)
+            u = tl_by.get(key) or tl_by_name.get(key)
         return (u, key, "" if u else "unknown")
 
     for rec in records:
         k = record_to_case_kwargs(rec)
+        k.update({f: v for f, v in (k.get("extra") or {}).items() if f in _CORRECT_EXTRA})
         acct = _correct_norm(k.get("account_no"))
-        if not acct:
+        card = _correct_norm(k.get("card_no"))
+        if not acct and not card:
+            stats["rows_missing_identifier"] += 1
+            unmatched += 1
             continue
-        q = db.query(models.Case).filter(models.Case.account_no == acct,
-                                         models.Case.removed.isnot(True))
+        q = db.query(models.Case).filter(models.Case.removed.isnot(True))
         sc = scope or {}
+        if sc.get("selected"):
+            # Empty values in a chosen portfolio mean an empty dimension, not 'all portfolios'.
+            from sqlalchemy import func as _f
+            for dimension in ("bank", "product", "period"):
+                q = q.filter(_f.coalesce(getattr(models.Case, dimension), "") == (sc.get(dimension) or ""))
+            q = q.filter(_f.lower(_f.trim(_f.coalesce(models.Case.branch, ""))) == (sc.get("branch") or "").strip().lower())
         # A chosen portfolio scope wins over the file's own bank/product columns.
-        bank = _correct_norm(sc.get("bank")) or _correct_norm(k.get("bank")) or _correct_norm(default_bank)
-        prod = _correct_norm(sc.get("product")) or _correct_norm(k.get("product")) or _correct_norm(product)
+        bank = None if sc.get("selected") else (_correct_norm(sc.get("bank")) or _correct_norm(k.get("bank")) or _correct_norm(default_bank))
+        prod = None if sc.get("selected") else (_correct_norm(sc.get("product")) or _correct_norm(k.get("product")) or _correct_norm(product))
         if bank:
             q = q.filter(models.Case.bank == bank)
         if prod:
@@ -541,11 +584,19 @@ def _correct_scan(records, default_bank, product, db, want_fields=None, scope=No
         if _correct_norm(sc.get("branch")):
             from sqlalchemy import func as _f
             q = q.filter(_f.lower(_f.trim(models.Case.branch)) == _correct_norm(sc.get("branch")).lower())
-        cases = q.all()
+        # Prefer the account number. Fall back to a card ONLY when the file has no account;
+        # never silently use a different card's case to repair a mistyped account number.
+        column = models.Case.account_no if acct else models.Case.card_no
+        cases = q.filter(column == (acct or card)).limit(2).all()
         if not cases:
             unmatched += 1
             continue
-        matched_accounts.add(acct)
+        if len(cases) > 1:
+            stats["rows_ambiguous"] += 1
+            unmatched += 1
+            continue
+        stats["matched_by_account" if acct else "matched_by_card"] += 1
+        matched_accounts.add(cases[0].id)
         for cs in cases:
             row_sets = {}       # field -> new value to set on the case
             row_reassign = {}   # field -> user to assign
@@ -556,6 +607,8 @@ def _correct_scan(records, default_bank, product, db, want_fields=None, scope=No
                 if isre:
                     u, code, why = resolve_person(field, newraw)
                     if why:                               # blank or unknown code → skip (don't unassign)
+                        if why != "blank":
+                            stats["unresolved_assignments"] += 1
                         continue
                     cur_id = (cs.assigned_caller_id if field == "caller_name"
                               else cs.assigned_fos_id if field == "fos_name" else None)
@@ -573,7 +626,7 @@ def _correct_scan(records, default_bank, product, db, want_fields=None, scope=No
                     newv = _correct_norm(newraw)
                     if newv is None:
                         continue
-                    curv = getattr(cs, field, None)
+                    curv = (cs.extra or {}).get(field) if field in _CORRECT_EXTRA else getattr(cs, field, None)
                     if field in _CORRECT_MONEY:
                         if _money_eq(curv, newraw):
                             continue
@@ -587,7 +640,7 @@ def _correct_scan(records, default_bank, product, db, want_fields=None, scope=No
                 pf = per_field[field]
                 pf["changes"] += 1
                 if len(pf["samples"]) < 5:
-                    pf["samples"].append({"account": acct, "customer": cs.customer_name,
+                    pf["samples"].append({"account": acct or card, "customer": cs.customer_name,
                                           "old": str(old_disp)[:60], "new": str(new_disp)[:60]})
             if want_fields and (row_sets or row_reassign):
                 plan.append((cs, {f: v for f, v in row_sets.items() if f in want_fields},
@@ -598,6 +651,7 @@ def _correct_scan(records, default_bank, product, db, want_fields=None, scope=No
 @router.post("/correct/preview")
 async def correct_preview(file: UploadFile = File(...), default_bank: str | None = Form(None),
                           product: str | None = Form(None),
+                          scope_selected: bool = Form(False),
                           scope_bank: str | None = Form(None), scope_product: str | None = Form(None),
                           scope_branch: str | None = Form(None), scope_period: str | None = Form(None),
                           actor: models.User = Depends(require_roles("admin", "headoffice")),
@@ -606,21 +660,32 @@ async def correct_preview(file: UploadFile = File(...), default_bank: str | None
     before→after samples + a count per column), so the admin/HO can tick exactly which to apply.
     Scoped to the chosen portfolio (period/bank/product/branch). Nothing is written."""
     content = await file.read()
+    metadata = {}
     try:
-        records, sheet = import_workbook(content, default_bank=default_bank)
+        records, sheet = import_workbook(content, default_bank=default_bank, metadata=metadata)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
-    scope = {"bank": scope_bank, "product": scope_product, "branch": scope_branch, "period": scope_period}
-    per_field, matched, unmatched, _ = _correct_scan(records, default_bank, product, db, scope=scope)
+    scope = {"bank": scope_bank, "product": scope_product, "branch": scope_branch, "period": scope_period,
+             "selected": scope_selected}
+    diagnostics = {}
+    per_field, matched, unmatched, _ = _correct_scan(records, default_bank, product, db, scope=scope,
+                                                   diagnostics=diagnostics)
     cols = [v for v in per_field.values() if v["changes"] > 0]
+    detected = _correct_headers(metadata)
+    for column in cols:
+        column["source_headings"] = list(dict.fromkeys(
+            h["heading"] for h in detected if h["field"] == column["field"]
+        ))
     cols.sort(key=lambda x: (-x["changes"], x["label"]))
     return {"file": file.filename, "sheet": sheet, "rows_in_file": len(records),
-            "accounts_matched": len(matched), "rows_no_match": unmatched, "columns": cols}
+            "accounts_matched": len(matched), "rows_no_match": unmatched, "columns": cols,
+            "detected_columns": detected, **diagnostics}
 
 
 @router.post("/correct/apply")
 async def correct_apply(file: UploadFile = File(...), default_bank: str | None = Form(None),
                         product: str | None = Form(None), fields: str = Form(""),
+                        scope_selected: bool = Form(False),
                         scope_bank: str | None = Form(None), scope_product: str | None = Form(None),
                         scope_branch: str | None = Form(None), scope_period: str | None = Form(None),
                         actor: models.User = Depends(require_roles("admin", "headoffice")),
@@ -637,8 +702,11 @@ async def correct_apply(file: UploadFile = File(...), default_bank: str | None =
         records, sheet = import_workbook(content, default_bank=default_bank)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
-    scope = {"bank": scope_bank, "product": scope_product, "branch": scope_branch, "period": scope_period}
-    _pf, matched, unmatched, plan = _correct_scan(records, default_bank, product, db, want_fields=want, scope=scope)
+    scope = {"bank": scope_bank, "product": scope_product, "branch": scope_branch, "period": scope_period,
+             "selected": scope_selected}
+    diagnostics = {}
+    _pf, matched, unmatched, plan = _correct_scan(records, default_bank, product, db, want_fields=want,
+                                                scope=scope, diagnostics=diagnostics)
 
     cases_changed = 0
     field_changes = {f: 0 for f in want}
@@ -649,7 +717,10 @@ async def correct_apply(file: UploadFile = File(...), default_bank: str | None =
         touched = False
         addr_changed = False
         for f, v in sets.items():
-            setattr(cs, f, v)
+            if f in _CORRECT_EXTRA:
+                cs.extra = {**(cs.extra or {}), f: v}
+            else:
+                setattr(cs, f, v)
             field_changes[f] = field_changes.get(f, 0) + 1
             touched = True
             if f in ("address", "pincode"):
@@ -689,7 +760,7 @@ async def correct_apply(file: UploadFile = File(...), default_bank: str | None =
         db.rollback()
     return {"committed": bool(cases_changed), "file": file.filename, "sheet": sheet,
             "cases_changed": cases_changed, "rows_no_match": unmatched,
-            "field_changes": field_changes, "reassigned": reassigned}
+            "field_changes": field_changes, "reassigned": reassigned, **diagnostics}
 
 
 @router.post("/preview")
