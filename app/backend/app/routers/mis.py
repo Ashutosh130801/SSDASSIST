@@ -190,7 +190,7 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
                 caller_ids: list | None = None, paid: str | None = None,
                 team_leads: list | None = None) -> dict:
     from .cases import propensity as _prop, _bucket_for_period
-    from sqlalchemy import func as _func
+    from sqlalchemy import func as _func, or_ as _or
     q = _scope(db.query(models.Case), user, bucket=_bucket_for_period(period)).filter(
         models.Case.bank == bank, models.Case.product == product)
     # branch may be a single value or a list — multiple branches combine into one overall MIS.
@@ -210,7 +210,14 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
         q = q.filter(_func.lower(_func.trim(_func.coalesce(models.Case.cycle, ""))).in_(
             [str(c).strip().lower() for c in cycles]))
     if fos_ids:
-        q = q.filter(models.Case.assigned_fos_id.in_(fos_ids))
+        _real_fos = [i for i in fos_ids if i and i > 0]
+        _fos_conds = []
+        if _real_fos:
+            _fos_conds.append(models.Case.assigned_fos_id.in_(_real_fos))
+        if 0 in fos_ids:                                 # "No FOS (caller-only)" sentinel
+            _fos_conds.append(models.Case.assigned_fos_id.is_(None))
+        if _fos_conds:
+            q = q.filter(_or(*_fos_conds))
     if caller_ids:
         q = q.filter(models.Case.assigned_caller_id.in_(caller_ids))
     if team_leads:
@@ -251,7 +258,8 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
     # back to the FOS/CALLER NAME printed in the upload sheet, so EVERY field officer associated
     # with the portfolio still appears in the analytics (not lumped into one "Unassigned" bucket).
     # Only truly blank rows show as "Unassigned".
-    _ppl = {u.id: (u.name, u.emp_code) for u in db.query(models.User).all()}
+    _users = db.query(models.User).all()
+    _ppl = {u.id: (u.name, u.emp_code) for u in _users}
 
     def _person_label(uid):
         if uid and uid in _ppl:
@@ -259,21 +267,37 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
             return f"{nm} ({code})" if code else (nm or None)
         return None
 
+    # Resolve the RAW FOS/caller text printed in the sheet back to a system user when it
+    # matches a known employee code or full name. Some rows get linked to a user at import
+    # time (assigned_fos_id set) and some don't (only the raw string kept) — without this,
+    # the same officer splits into two rows: "NAME (CODE)" and a bare "CODE"/"NAME".
+    def _nz(s): return " ".join((s or "").strip().lower().split())
+    _by_code = {_nz(u.emp_code): u.id for u in _users if u.emp_code}
+    _by_name = {_nz(u.name): u.id for u in _users if u.name}
+
+    def _resolve(raw):
+        n = _nz(raw)
+        if not n:
+            return None
+        return _by_code.get(n) or _by_name.get(n)
+
     # Some cases are CALLER-ONLY (no FOS in the sheet) — these are worked only by callers.
     # They still count in the portfolio; in the FOS-wise pivot they group under a clear
     # "No FOS (caller-only)" bucket instead of being mistaken for a mis-configured row.
     def _fos_label(c):
-        return _person_label(c.assigned_fos_id) or (c.fos_name or "").strip() or "— No FOS (caller-only) —"
+        uid = c.assigned_fos_id or _resolve(c.fos_name)
+        return _person_label(uid) or (c.fos_name or "").strip() or "— No FOS (caller-only) —"
 
     def _caller_label(c):
-        return _person_label(c.assigned_caller_id) or (c.caller_name or "").strip() or "— No caller —"
+        uid = c.assigned_caller_id or _resolve(c.caller_name)
+        return _person_label(uid) or (c.caller_name or "").strip() or "— No caller —"
 
     # Per-PERSON pivots exclude escalated cases (they were pulled off the FOS/caller, so they must
     # not count in that person's performance — same rule as the individual scorecard & RTSB).
     # Portfolio-level tables (area / category / DPD / overall) keep every case.
     cases_own = [c for c in cases if not getattr(c, "escalated", False)]
-    by_fos = _group(cases_own, _fos_label, lambda c: c.assigned_fos_id)
-    by_caller_g = _group(cases_own, _caller_label, lambda c: c.assigned_caller_id)
+    by_fos = _group(cases_own, _fos_label, lambda c: c.assigned_fos_id or _resolve(c.fos_name))
+    by_caller_g = _group(cases_own, _caller_label, lambda c: c.assigned_caller_id or _resolve(c.caller_name))
     leaderboard = _leaderboard(by_fos)                 # FOS performance vs the one target
     caller_leaderboard = _leaderboard(by_caller_g)     # caller performance vs the same target
 

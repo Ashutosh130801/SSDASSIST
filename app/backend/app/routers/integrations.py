@@ -34,9 +34,11 @@ def _mask(k: str) -> str:
 
 def _conn_out(c: models.DialerConnection) -> dict:
     caps = dict(c.capabilities or {})
-    # Never leak the ViciDial API password; report only whether it's set.
+    # Never leak the ViciDial API / SFTP passwords; report only whether they're set.
     if "vici_pass" in caps:
         caps["vici_pass_set"] = bool(caps.pop("vici_pass"))
+    if "sftp_pass" in caps:
+        caps["sftp_pass_set"] = bool(caps.pop("sftp_pass"))
     return {"id": c.id, "kind": c.kind, "name": c.name, "base_url": c.base_url,
             "api_key_masked": _mask(c.api_key or ""), "branch": c.branch,
             "enabled": bool(c.enabled), "status": c.status,
@@ -427,6 +429,12 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
         "source": (body.get("source") or "recoveriq").strip(),
         "phone_code": (body.get("phone_code") or "91").strip(),
         "recording_base": (body.get("recording_base") or "").strip().rstrip("/"),
+        # Recordings fetched over SFTP (when they aren't served over HTTP). RecoverIQ streams the
+        # file on demand using these creds and the folder they live in.
+        "sftp_host": (body.get("sftp_host") or "").strip(),
+        "sftp_port": (body.get("sftp_port") or "").strip(),
+        "sftp_user": (body.get("sftp_user") or "").strip(),
+        "sftp_base": (body.get("sftp_base") or "").strip(),
         "agent_map": body.get("agent_map") or {},
     }
     if existing:
@@ -435,6 +443,8 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
         # Only replace the password when a new non-empty one is supplied.
         if (body.get("vici_pass") or "").strip():
             caps["vici_pass"] = body["vici_pass"].strip()
+        if (body.get("sftp_pass") or "").strip():
+            caps["sftp_pass"] = body["sftp_pass"].strip()
         if isinstance(body.get("agent_map"), dict):
             caps["agent_map"] = body["agent_map"]
         existing.name = name or existing.name
@@ -447,6 +457,8 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
         caps = dict(caps_in)
         if (body.get("vici_pass") or "").strip():
             caps["vici_pass"] = body["vici_pass"].strip()
+        if (body.get("sftp_pass") or "").strip():
+            caps["sftp_pass"] = body["sftp_pass"].strip()
         c = models.DialerConnection(kind="vicidial", name=name, base_url=base_url,
                                     api_key=_secrets.token_hex(16), branch=branch,
                                     enabled=True, status="unknown", capabilities=caps)
@@ -567,11 +579,16 @@ def vicidial_dispo(key: str = "", case: str = "", dispo: str = "", rec: str = ""
     if not cs:
         return {"ok": False, "detail": "no case match"}
     caps = conn.capabilities or {}
-    # Recording URL: ViciDial sends a filename; build a playable URL from the configured base.
+    # Recording URL. Priority: an absolute URL ViciDial already sent → SFTP fetch (when the
+    # recordings live on the server's filesystem, reached over SFTP) → an HTTP recording base.
     rec_url = None
     if rec:
-        base = caps.get("recording_base")
-        rec_url = rec if str(rec).lower().startswith("http") else (f"{base}/{rec}.mp3" if base else None)
+        if str(rec).lower().startswith("http"):
+            rec_url = rec
+        elif caps.get("sftp_host"):
+            rec_url = _rec_signed_url(conn.id, rec)          # /api/integration/recording?... streams over SFTP
+        elif caps.get("recording_base"):
+            rec_url = f"{caps['recording_base']}/{rec}.mp3"
     ag = db.query(models.User).filter(models.User.emp_code == agent).first() if agent else None
     # Map the ViciDial agent user back to a RecoverIQ user via agent_map if emp_code didn't match.
     if not ag and agent:
@@ -596,3 +613,191 @@ def vicidial_dispo(key: str = "", case: str = "", dispo: str = "", rec: str = ""
     except Exception:
         pass
     return {"ok": True, "case_id": cs.id, "recording": bool(rec_url)}
+
+
+# ============================================================ recording fetch over SFTP
+# When ViciDial's recordings aren't served over HTTP (they live on the server filesystem, reached
+# via SFTP), RecoverIQ streams a recording on demand over SFTP. The playable link is a SIGNED,
+# EXPIRING URL (HMAC with the app secret) so it needs no login header and can be used in an <audio>
+# tag, yet can't be forged or shared forever.
+import hashlib as _hashlib
+import hmac as _hmac
+import time as _time
+import base64 as _b64
+
+
+def _rec_secret() -> bytes:
+    from ..config import get_settings
+    return (get_settings().secret_key or "dev-secret-change-me").encode()
+
+
+def _rec_sig(conn_id: int, filename: str, exp: int) -> str:
+    msg = f"{conn_id}|{filename}|{exp}".encode()
+    return _b64.urlsafe_b64encode(_hmac.new(_rec_secret(), msg, _hashlib.sha256).digest()[:18]).decode()
+
+
+def _rec_signed_url(conn_id: int, filename: str, ttl_days: int = 7) -> str:
+    exp = int(_time.time()) + ttl_days * 86400
+    from urllib.parse import quote
+    return (f"/api/integration/recording?conn={conn_id}&f={quote(filename)}"
+            f"&exp={exp}&sig={_rec_sig(conn_id, filename, exp)}")
+
+
+@router.get("/recording")
+def fetch_recording(conn: int, f: str, exp: int, sig: str, db: Session = Depends(get_db)):
+    """Stream a call recording that lives on the ViciDial server's filesystem, fetched over SFTP.
+    Authenticated by the signed, expiring URL (?sig=&exp=) built when the call result came in — so
+    it plays in an <audio> element without a login header. Looks for the file directly under the
+    configured SFTP base, then (bounded) searches sub-folders by exact name."""
+    if int(exp) < int(_time.time()):
+        raise HTTPException(status_code=410, detail="Recording link expired")
+    if not _hmac.compare_digest(sig, _rec_sig(conn, f, int(exp))):
+        raise HTTPException(status_code=403, detail="Bad signature")
+    c = db.query(models.DialerConnection).filter(models.DialerConnection.id == conn,
+                                                 models.DialerConnection.kind == "vicidial").first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    caps = c.capabilities or {}
+    host = caps.get("sftp_host")
+    if not host:
+        raise HTTPException(status_code=400, detail="SFTP not configured for this connection")
+    try:
+        import paramiko
+    except Exception:
+        raise HTTPException(status_code=501, detail="paramiko not installed on the RecoverIQ server (pip install paramiko)")
+    # harden the filename — no path traversal; keep just the basename.
+    base_name = (f or "").replace("\\", "/").split("/")[-1].strip()
+    if not base_name or base_name.startswith("."):
+        raise HTTPException(status_code=400, detail="Bad filename")
+    port = int(caps.get("sftp_port") or 22)
+    # One or more roots (comma-separated). Recordings are partitioned per ViciDial USER GROUP and
+    # then by YEAR/MONTH, e.g. /home/ICICI/2026/06/<file>. So a base of "/home" plus the date parsed
+    # from the filename lets us jump straight to the right folder without a full crawl.
+    roots = [r.strip().rstrip("/") or "/" for r in str(caps.get("sftp_base") or "/").split(",") if r.strip()] or ["/"]
+    exts = ["", ".mp3", ".wav", ".gsm"]
+    import re as _re
+    dm = _re.search(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})", base_name)   # a YYYYMMDD stamp in the filename
+    yy, mm, dd = (dm.group(1), dm.group(2), dm.group(3)) if dm else (None, None, None)
+
+    cli = paramiko.SSHClient()
+    cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        cli.connect(host, port=port, username=caps.get("sftp_user") or "",
+                    password=caps.get("sftp_pass") or "", timeout=10, look_for_keys=False, allow_agent=False)
+        sftp = cli.open_sftp()
+        import stat as _stat
+
+        # ViciDial's recording_filename often omits the channel suffix (-all/-in/-out) and the
+        # extension, so match the stem too. e.g. given "20261007-100451_AXIS001_7036765403_AXIS"
+        # the real file is "…_AXIS-all.mp3".
+        name_variants = [base_name] + [base_name + sfx for sfx in ("-all", "-in", "-out")]
+
+        def _file_in(d, prefix_ok=False):
+            """Find the recording in directory d — exact name (with suffix/extension variants), or
+            (when prefix_ok, used only for the targeted date folder) any file that starts with the
+            stem and is an audio file."""
+            for nm in name_variants:
+                for e in exts:
+                    p = f"{d}/{nm}{e}"
+                    try:
+                        sftp.stat(p); return p
+                    except Exception:
+                        pass
+            if prefix_ok:
+                try:
+                    for en in sftp.listdir(d):
+                        low = en.lower()
+                        if en.startswith(base_name) and low.endswith((".mp3", ".wav", ".gsm")):
+                            return f"{d}/{en}"
+                except Exception:
+                    pass
+            return None
+
+        def _subdirs(d):
+            try:
+                return [e.filename for e in sftp.listdir_attr(d) if _stat.S_ISDIR(e.st_mode)]
+            except Exception:
+                return []
+
+        def _date_dirs(base):
+            """Candidate date-partitioned folders under a base: base, base/YYYY/MM, base/YYYY/MM/DD."""
+            out = [base]
+            if yy:
+                out += [f"{base}/{yy}/{mm}", f"{base}/{yy}/{mm}/{dd}", f"{base}/{yy}-{mm}", f"{base}/{yy}{mm}"]
+            return out
+
+        found = None
+        # 1) Try each root directly, and its date-partitioned subfolders.
+        for base in roots:
+            for d in _date_dirs(base):
+                found = _file_in(d, prefix_ok=True)
+                if found:
+                    break
+            if found:
+                break
+        # 2) One level of group folders under each root (e.g. /home/ICICI, /home/AXIS), then date dirs.
+        if not found:
+            for base in roots:
+                for grp in _subdirs(base):
+                    for d in _date_dirs(f"{base}/{grp}"):
+                        found = _file_in(d, prefix_ok=True)
+                        if found:
+                            break
+                    if found:
+                        break
+                if found:
+                    break
+        # 3) Last resort: bounded recursive search by exact name.
+        if not found:
+            targets = {base_name} | {base_name + e for e in exts if e}
+            stack = [(r, 0) for r in roots]
+            seen = 0
+            while stack and not found and seen < 6000:
+                d, depth = stack.pop()
+                try:
+                    entries = sftp.listdir_attr(d)
+                except Exception:
+                    continue
+                for en in entries:
+                    seen += 1
+                    full = f"{d}/{en.filename}"
+                    if _stat.S_ISDIR(en.st_mode):
+                        if depth < 5:
+                            stack.append((full, depth + 1))
+                    elif en.filename in targets:
+                        found = full
+                        break
+        if not found:
+            cli.close()
+            raise HTTPException(status_code=404, detail="Recording file not found on the server")
+
+        ctype = "audio/wav" if found.lower().endswith(".wav") else "audio/mpeg"
+        fh = sftp.open(found, "rb")
+        fh.prefetch()
+
+        def _gen():
+            try:
+                while True:
+                    chunk = fh.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                try: fh.close()
+                except Exception: pass
+                try: cli.close()
+                except Exception: pass
+
+        from fastapi.responses import StreamingResponse
+        dl = found.split("/")[-1]
+        return StreamingResponse(_gen(), media_type=ctype,
+                                 headers={"Content-Disposition": f'inline; filename="{dl}"',
+                                          "Cache-Control": "private, max-age=3600"})
+    except HTTPException:
+        try: cli.close()
+        except Exception: pass
+        raise
+    except Exception as e:
+        try: cli.close()
+        except Exception: pass
+        raise HTTPException(status_code=502, detail=f"Could not fetch recording over SFTP: {str(e)[:160]}")

@@ -571,7 +571,14 @@ def list_cases(
             [c.lower() for c in _cyc_list]))
     _fos_list = [int(x) for x in (fos_ids or "").split(",") if x.strip().isdigit()]
     if _fos_list:
-        q = q.filter(models.Case.assigned_fos_id.in_(_fos_list))
+        _real_fos = [i for i in _fos_list if i > 0]
+        _conds = []
+        if _real_fos:
+            _conds.append(models.Case.assigned_fos_id.in_(_real_fos))
+        if 0 in _fos_list:                              # "No FOS (caller-only)" sentinel
+            _conds.append(models.Case.assigned_fos_id.is_(None))
+        if _conds:
+            q = q.filter(or_(*_conds))
     _caller_list = [int(x) for x in (caller_ids or "").split(",") if x.strip().isdigit()]
     if _caller_list:
         q = q.filter(models.Case.assigned_caller_id.in_(_caller_list))
@@ -945,11 +952,14 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
     cycles, fos_ids, caller_ids = set(), set(), set()
     veh_types, brands, oldnew = set(), set(), set()   # AUTO LOANS filter values
     tl_seen = {}                                      # team-lead values (dedupe case-insensitively)
+    no_fos_present = False                             # any caller-only case (no FOS allocated)
     for cyc, fid, cid, vt, br, on, tl in q.all():
         if cyc is not None and str(cyc).strip():
             cycles.add(str(cyc).strip())
         if fid:
             fos_ids.add(fid)
+        else:
+            no_fos_present = True
         if cid:
             caller_ids.add(cid)
         if vt and str(vt).strip():
@@ -966,13 +976,16 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
         out = [{"id": i, "name": umap[i].name if i in umap else f"#{i}",
                 "code": (umap[i].emp_code if i in umap else None)} for i in ids]
         return sorted(out, key=lambda x: (x["name"] or "").lower())
+    _fos_opts = _people(fos_ids)
+    if no_fos_present:                                 # sentinel so the dropdown can pick caller-only cases
+        _fos_opts.append({"id": 0, "name": "No FOS (caller-only)", "code": None})
     def _cyc_sort(c):
         try:
             return (0, int(c))
         except (TypeError, ValueError):
             return (1, c)
     return {"cycles": sorted(cycles, key=_cyc_sort),
-            "fos": _people(fos_ids), "callers": _people(caller_ids),
+            "fos": _fos_opts, "callers": _people(caller_ids),
             # AUTO LOANS filter options (only non-empty when the portfolio has vehicle data)
             "vehicle_types": sorted(veh_types, key=str.lower),
             "brands": sorted(brands, key=str.lower),

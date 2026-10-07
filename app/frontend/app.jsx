@@ -1965,6 +1965,7 @@ function CasesView({ user }) {
         {canUploads && <button className="btn" onClick={() => setUploadsOpen(true)} title="Undo a wrong portfolio upload">↩ Undo upload</button>}
         <BackfillAddressButton />
         <CorrectColumnsButton />
+        <RelinkAllocationButton />
         {canUpload && <button className="btn gold" onClick={() => setUpload(true)}>⬆ Upload</button>}
         {isAdmin && <>
           <button className="btn" onClick={allocate} disabled={busy}>⚡ Auto-allocate</button>
@@ -3920,6 +3921,58 @@ function BackfillAddressButton() {
     {preview && preview.cases_changed ? (
       <span className="badge" style={{ background: '#DBEAFE', color: '#1E40AF', marginLeft: 6 }}>
         {preview.cases_changed} case(s) would get addr2/addr3 · {preview.rows_no_match} rows no-match
+        <button className="btn sm gold" style={{ marginLeft: 8 }} disabled={busy} onClick={apply}>Apply</button>
+        <button className="btn ghost sm" style={{ marginLeft: 4 }} disabled={busy} onClick={() => { setPreview(null); setMsg(''); }}>Cancel</button>
+      </span>
+    ) : null}
+    {msg && <span className="muted" style={{ fontSize: 11.5, marginLeft: 6 }}>{msg}</span>}
+  </>;
+}
+
+/* Admin / Head-Office tool: link orphan cases (a FOS/caller CODE sits in the name text but no account
+   was linked at upload time — e.g. the account didn't exist yet) to the matching ACTIVE account by
+   EXACT employee code only. Fixes cases missing from an officer's app + the split FOS ranking rows.
+   Dry-run first (shows who/how many), then Apply. No name/fuzzy matching; nothing else is touched. */
+function RelinkAllocationButton() {
+  const role = (typeof window !== 'undefined') && window.__ssdRole;
+  const [busy, setBusy] = React.useState(false);
+  const [preview, setPreview] = React.useState(null);
+  const [msg, setMsg] = React.useState('');
+  if (role !== 'admin' && role !== 'headoffice') return null;
+
+  const run = async (commit) => {
+    const fd = new FormData();
+    fd.append('commit', commit ? 'true' : 'false');
+    return api('/api/import/relink-allocation', { method: 'POST', form: fd });
+  };
+  const check = async () => {
+    setBusy(true); setMsg('Scanning for unlinked cases…'); setPreview(null);
+    try {
+      const r = await run(false);
+      setPreview(r);
+      if (!r.fos_linked && !r.caller_linked) setMsg('Nothing to re-link — every case with a code already matches an account.');
+      else setMsg('');
+    } catch (err) { setMsg('Scan failed — ' + (err.message || 'error')); }
+    setBusy(false);
+  };
+  const apply = async () => {
+    setBusy(true); setMsg('Linking…');
+    try {
+      const r = await run(true);
+      setPreview(null);
+      setMsg(`✓ Linked ${r.fos_linked} FOS + ${r.caller_linked} caller case(s). They now appear in those officers' apps.`);
+    } catch (err) { setMsg('Apply failed — ' + (err.message || 'error')); }
+    setBusy(false);
+  };
+  return <>
+    <button className="btn sm" style={{ marginLeft: 6 }} disabled={busy}
+      title="Link orphan cases (code in the name text, no account linked) to the matching FOS/caller by exact employee code"
+      onClick={check}>🔗 Re-link FOS/caller</button>
+    {preview && (preview.fos_linked || preview.caller_linked) ? (
+      <span className="badge" style={{ background: '#DCFCE7', color: '#166534', marginLeft: 6 }}>
+        {preview.fos_linked} FOS + {preview.caller_linked} caller would link
+        {(preview.by_person || []).slice(0, 4).map((p, i) =>
+          <span key={i} style={{ marginLeft: 6, opacity: .85 }}>· {p.who} ({p.count})</span>)}
         <button className="btn sm gold" style={{ marginLeft: 8 }} disabled={busy} onClick={apply}>Apply</button>
         <button className="btn ghost sm" style={{ marginLeft: 4 }} disabled={busy} onClick={() => { setPreview(null); setMsg(''); }}>Cancel</button>
       </span>
@@ -7854,7 +7907,8 @@ function ConnectionsView({ user }) {
   const [busy, setBusy] = useState(false);
   // ViciDial connection form (connect RecoverIQ to the EXISTING office ViciDial — no self-hosted dialer)
   const [vf, setVf] = useState({ name: 'ViciDial', base_url: '', vici_user: '', vici_pass: '',
-    campaign_id: '', list_id: '', source: 'recoveriq', phone_code: '91', recording_base: '', branch: '', agent_map: '' });
+    campaign_id: '', list_id: '', source: 'recoveriq', phone_code: '91', recording_base: '', branch: '', agent_map: '',
+    sftp_host: '', sftp_port: '22', sftp_user: '', sftp_pass: '', sftp_base: '' });
   const [vbusy, setVbusy] = useState(false);
   const [dispoUrl, setDispoUrl] = useState('');
   const load = () => api('/api/integration/connections').then(d => setRows(d.connections || [])).catch(() => setRows([]));
@@ -7926,8 +7980,16 @@ function ConnectionsView({ user }) {
           <div className="field"><label>List ID (for campaign push)</label><input className="input" value={vf.list_id} onChange={e => setVf({ ...vf, list_id: e.target.value })} placeholder="e.g. 101" /></div>
           <div className="field"><label>Source tag</label><input className="input" value={vf.source} onChange={e => setVf({ ...vf, source: e.target.value })} placeholder="recoveriq" /></div>
           <div className="field"><label>Phone code</label><input className="input" value={vf.phone_code} onChange={e => setVf({ ...vf, phone_code: e.target.value })} placeholder="91" /></div>
-          <div className="field"><label>Recording URL base (optional)</label><input className="input" value={vf.recording_base} onChange={e => setVf({ ...vf, recording_base: e.target.value })} placeholder="http://192.168.1.50/RECORDINGS/MP3" /></div>
+          <div className="field"><label>Recording URL base (optional)</label><input className="input" value={vf.recording_base} onChange={e => setVf({ ...vf, recording_base: e.target.value })} placeholder="http://192.168.1.50/RECORDINGS/MP3 — leave blank if using SFTP below" /></div>
           <div className="field"><label>Branch (optional)</label><input className="input" value={vf.branch} onChange={e => setVf({ ...vf, branch: e.target.value })} placeholder="leave blank for all branches" /></div>
+        </div>
+        <div style={{ fontSize: 12.5, fontWeight: 600, margin: '10px 0 4px' }}>🔐 Recording access over SFTP <span className="muted" style={{ fontWeight: 400 }}>(use this when recordings aren't served over HTTP — RecoverIQ streams them over SFTP)</span></div>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="field"><label>SFTP host</label><input className="input" value={vf.sftp_host} onChange={e => setVf({ ...vf, sftp_host: e.target.value })} placeholder="192.168.75.250 (same server)" /></div>
+          <div className="field"><label>SFTP port</label><input className="input" value={vf.sftp_port} onChange={e => setVf({ ...vf, sftp_port: e.target.value })} placeholder="22" /></div>
+          <div className="field"><label>SFTP user</label><input className="input" value={vf.sftp_user} onChange={e => setVf({ ...vf, sftp_user: e.target.value })} placeholder="admin" /></div>
+          <div className="field"><label>SFTP password</label><input className="input" type="password" value={vf.sftp_pass} onChange={e => setVf({ ...vf, sftp_pass: e.target.value })} placeholder="leave blank to keep existing" /></div>
+          <div className="field" style={{ gridColumn: '1 / -1' }}><label>Recordings folder on the server</label><input className="input" value={vf.sftp_base} onChange={e => setVf({ ...vf, sftp_base: e.target.value })} placeholder="/home   (recordings are under /home/<GROUP>/<year>/<month>) — comma-separate multiple roots" /></div>
         </div>
         <div className="field"><label>Agent map — RecoverIQ emp code = ViciDial agent user (one per line)</label>
           <textarea className="input" rows={3} value={vf.agent_map} onChange={e => setVf({ ...vf, agent_map: e.target.value })}

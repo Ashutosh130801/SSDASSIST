@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, and_
 from datetime import datetime, date, timezone
 import io
 
@@ -214,6 +214,105 @@ async def backfill_addresses(
             "rows_in_file": len(records), "rows_with_extra_address": rows_with_extra,
             "cases_matched": matched, "cases_changed": changed_cases,
             "rows_no_match": unmatched, "field_changes": field_changes}
+
+
+# ── Re-link allocation (code-only) ──────────────────────────────────────────────
+# Some already-imported cases never got linked to a FOS / caller account: the sheet carried the
+# person's EMP CODE (e.g. FO048 / TC012) but at the moment of that upload the account didn't exist
+# yet, was inactive, or wasn't the right role — so only the raw text was stored (assigned_*_id null).
+# Such cases are invisible to that officer's app (My Cases scopes by assigned_fos_id) and split off
+# in the MIS ranking. This re-runs the SAME strict, code-only match now, and links any orphan whose
+# stored fos_name / caller_name text is an exact active employee code. No name / fuzzy matching.
+def _relink_code_maps(db):
+    """EMP-CODE → active user maps for FOS and caller, incl. dual-role second ids (code-only)."""
+    users = db.query(models.User).all()
+    fos_by, caller_by = {}, {}
+    for u in users:
+        if not u.is_active:
+            continue
+        code = (u.emp_code or "").strip().upper()
+        if code and u.role == "fos":
+            fos_by[code] = u
+        if code and u.role == "telecaller":
+            caller_by[code] = u
+        if getattr(u, "also_field_agent", False) and getattr(u, "fos_emp_code", None):
+            fos_by.setdefault(u.fos_emp_code.strip().upper(), u)
+        if getattr(u, "also_caller", False) and getattr(u, "tc_emp_code", None):
+            caller_by.setdefault(u.tc_emp_code.strip().upper(), u)
+    return fos_by, caller_by
+
+
+@router.post("/relink-allocation")
+def relink_allocation(
+        commit: bool = Form(False),
+        scope_bank: str | None = Form(None),
+        scope_product: str | None = Form(None),
+        scope_branch: str | None = Form(None),
+        scope_period: str | None = Form(None),
+        actor: models.User = Depends(require_roles("admin", "headoffice")),
+        db: Session = Depends(get_db)):
+    """Link orphan cases (no FOS/caller id but a code in the name text) to the matching active
+    account by EXACT employee code only. Pass commit=false for a dry run (default). Optional
+    portfolio scope (bank/product/branch/period) confines the pass to one portfolio."""
+    fos_by, caller_by = _relink_code_maps(db)
+    q = db.query(models.Case).filter(models.Case.removed.isnot(True))
+    sb, sp = _bf_norm(scope_bank), _bf_norm(scope_product)
+    if sb:
+        q = q.filter(models.Case.bank == sb)
+    if sp:
+        q = q.filter(models.Case.product == sp)
+    if _bf_norm(scope_period):
+        q = q.filter(models.Case.period == _bf_norm(scope_period))
+    if _bf_norm(scope_branch):
+        from sqlalchemy import func as _f
+        q = q.filter(_f.lower(_f.trim(models.Case.branch)) == _bf_norm(scope_branch).lower())
+    # Only cases that are missing at least one id but carry a text label to match on.
+    q = q.filter(or_(
+        and_(models.Case.assigned_fos_id.is_(None), models.Case.fos_name.isnot(None)),
+        and_(models.Case.assigned_caller_id.is_(None), models.Case.caller_name.isnot(None))))
+
+    fos_linked, caller_linked = 0, 0
+    by_person = {}                       # code -> count, for a readable summary
+    samples = []
+    for cs in q.all():
+        if cs.assigned_fos_id is None and cs.fos_name:
+            u = fos_by.get(str(cs.fos_name).strip().upper())
+            if u:
+                if commit:
+                    cs.assigned_fos_id = u.id
+                    cs.fos_name = u.name
+                    if u.branch and not (cs.branch or "").strip():
+                        cs.branch = u.branch
+                fos_linked += 1
+                by_person[f"FOS {u.emp_code} · {u.name}"] = by_person.get(f"FOS {u.emp_code} · {u.name}", 0) + 1
+                if len(samples) < 50:
+                    samples.append({"account_no": cs.account_no, "role": "FOS",
+                                    "was": cs.fos_name, "linked_to": f"{u.name} ({u.emp_code})"})
+        if cs.assigned_caller_id is None and cs.caller_name:
+            u = caller_by.get(str(cs.caller_name).strip().upper())
+            if u:
+                if commit:
+                    cs.assigned_caller_id = u.id
+                    cs.caller_name = u.name
+                caller_linked += 1
+                by_person[f"Caller {u.emp_code} · {u.name}"] = by_person.get(f"Caller {u.emp_code} · {u.name}", 0) + 1
+                if len(samples) < 50:
+                    samples.append({"account_no": cs.account_no, "role": "Caller",
+                                    "was": cs.caller_name, "linked_to": f"{u.name} ({u.emp_code})"})
+
+    if commit and (fos_linked or caller_linked):
+        audit.record(db, actor, "relink_allocation", entity_type="import",
+                     detail=f"code-only re-link: {fos_linked} FOS + {caller_linked} caller "
+                            f"(scope: {sb or 'all'}/{sp or 'all'}/{_bf_norm(scope_branch) or 'all'}/{_bf_norm(scope_period) or 'all'})")
+        db.commit()
+    else:
+        db.rollback()
+
+    return {"committed": bool(commit and (fos_linked or caller_linked)),
+            "fos_linked": fos_linked, "caller_linked": caller_linked,
+            "by_person": sorted([{"who": k, "count": v} for k, v in by_person.items()],
+                                key=lambda x: -x["count"]),
+            "samples": samples}
 
 
 # ── Corrections upload ──────────────────────────────────────────────────────────
