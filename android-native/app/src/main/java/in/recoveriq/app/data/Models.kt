@@ -233,6 +233,10 @@ data class Case(
     val escalated: Boolean? = false,
     @Json(name = "esc_prev_fos_id") val escPrevFosId: Int? = null,
     @Json(name = "esc_prev_caller_id") val escPrevCallerId: Int? = null,
+    @Json(name = "joint_fos_id") val jointFosId: Int? = null,
+    @Json(name = "joint_fos_name") val jointFosName: String? = null,
+    @Json(name = "joint_note") val jointNote: String? = null,
+    @Json(name = "joint_for_me") val jointForMe: Boolean? = false,
     @Json(name = "review_color") val reviewColor: String? = null,   // my personal highlight colour
     @Json(name = "review_note") val reviewNote: String? = null,
     val propensity: Int? = null,

@@ -645,6 +645,7 @@ def list_cases(
             ns = nmap.get(c.id, [])
             c.notes = ns
             c.notes_text = join_notes(ns)
+    attach_joint_display(rows, db, user)
     return rows
 
 
@@ -1206,6 +1207,110 @@ def bulk_reassign(body: BulkReassign, db: Session = Depends(get_db),
             changed += 1
     db.commit()
     return {"updated": changed, "requested": len(body.case_ids)}
+
+
+# ── Joint allocation ─────────────────────────────────────────────────────────────
+# A SECOND FOS is sent to a new address when the customer isn't at the original one. The case stays
+# allocated to the primary FOS (keeps the target/allocation); the joint FOS sees it in a SEPARATE
+# "Joint cases" list. It does NOT count in the joint FOS's own caseload/performance until HE logs a
+# PAID visit — at which point the collection credit moves to him (handled in visits + collection_fos_id).
+def collection_fos_id(case) -> int | None:
+    """Who gets COLLECTION credit for a case: the joint FOS once he's logged a paid visit,
+    otherwise the primary (allocated) FOS. Allocation/target always stay with the primary."""
+    if getattr(case, "joint_fos_id", None) and getattr(case, "joint_collected_at", None):
+        return case.joint_fos_id
+    return case.assigned_fos_id
+
+
+def attach_joint_display(cases, db, viewer=None):
+    """Set transient joint_fos_name + joint_for_me on each case for CaseOut serialization."""
+    ids = {c.joint_fos_id for c in cases if getattr(c, "joint_fos_id", None)}
+    names = {}
+    if ids:
+        names = {u.id: u.name for u in db.query(models.User.id, models.User.name)
+                 .filter(models.User.id.in_(ids)).all()}
+    vid = getattr(viewer, "id", None)
+    for c in cases:
+        c.joint_fos_name = names.get(getattr(c, "joint_fos_id", None))
+        c.joint_for_me = bool(vid and getattr(c, "joint_fos_id", None) == vid)
+    return cases
+
+
+class JointAllocateIn(BaseModel):
+    case_ids: list[int]
+    fos_id: int
+    note: str | None = None
+
+
+@router.post("/joint-allocate")
+def joint_allocate(body: JointAllocateIn, db: Session = Depends(get_db),
+                   user: models.User = Depends(require_roles("admin", "headoffice", "teamlead", "manager"))):
+    """Joint-allocate selected cases to a SECOND FOS (any active FOS). The case stays with its
+    primary FOS; the joint FOS gets it in a separate list to visit the new address and collect."""
+    if not body.case_ids:
+        raise HTTPException(status_code=400, detail="No cases selected")
+    fos = db.query(models.User).filter(models.User.id == body.fos_id, models.User.is_active == True).first()
+    if not fos or not (fos.role == "fos" or getattr(fos, "also_field_agent", False)):
+        raise HTTPException(status_code=400, detail="Pick an active field officer (FOS)")
+    cases = _scope(db.query(models.Case), user).filter(models.Case.id.in_(body.case_ids)).all()
+    if not cases:
+        raise HTTPException(status_code=404, detail="No matching cases in your scope")
+    now = datetime.now(_IST_TZ)
+    changed = 0
+    for case in cases:
+        if case.assigned_fos_id == fos.id:
+            continue                                   # already the primary — nothing to joint
+        case.joint_fos_id = fos.id
+        case.joint_assigned_at = now
+        case.joint_assigned_by = user.id
+        case.joint_collected_at = None                 # fresh joint — not yet collected by them
+        case.joint_note = (body.note or "").strip()[:200] or None
+        audit.record(db, user, "joint_allocate", case,
+                     detail=f"Joint FOS → {fos.name} ({fos.emp_code or ''})"
+                            + (f" · {body.note}" if (body.note or '').strip() else ""),
+                     target_user_id=fos.id)
+        audit.stamp_case(case, user)
+        changed += 1
+    db.commit()
+    return {"joint_allocated": changed, "fos": fos.name, "fos_id": fos.id}
+
+
+@router.post("/joint-unallocate")
+def joint_unallocate(body: dict = Body(...), db: Session = Depends(get_db),
+                     user: models.User = Depends(require_roles("admin", "headoffice", "teamlead", "manager"))):
+    """Remove the joint FOS from selected cases (only if they haven't already collected)."""
+    ids = [int(x) for x in (body.get("case_ids") or []) if str(x).isdigit()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="No cases selected")
+    cases = _scope(db.query(models.Case), user).filter(models.Case.id.in_(ids)).all()
+    changed = 0
+    for case in cases:
+        if not case.joint_fos_id:
+            continue
+        case.joint_fos_id = None
+        case.joint_assigned_at = None
+        case.joint_assigned_by = None
+        case.joint_note = None
+        # keep joint_collected_at history as-is (a past collection credit stays recorded)
+        audit.record(db, user, "joint_unallocate", case, detail="Joint FOS removed")
+        audit.stamp_case(case, user)
+        changed += 1
+    db.commit()
+    return {"joint_unallocated": changed}
+
+
+@router.get("/joint-mine", response_model=list[schemas.CaseOut])
+def joint_mine(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """The current FOS's JOINT cases — allocated to someone else, but sent to this FOS for a
+    new-address visit. Shown in a separate list; they don't count in his own cases/performance
+    until he logs a paid visit. Once collected, they drop off this list."""
+    cases = (db.query(models.Case)
+             .filter(models.Case.joint_fos_id == user.id,
+                     models.Case.joint_collected_at.is_(None),
+                     models.Case.removed.isnot(True))
+             .order_by(models.Case.joint_assigned_at.desc()).all())
+    attach_joint_display(cases, db, user)
+    return cases
 
 
 class PaymentIn(BaseModel):

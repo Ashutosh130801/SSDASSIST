@@ -58,6 +58,10 @@ interface ApiService {
         @Query("limit") limit: Int = 500,
     ): List<Case>
 
+    // Joint cases: cases another FOS owns that were sent to me for a new-address visit.
+    @GET("api/cases/joint-mine")
+    suspend fun jointMine(): List<Case>
+
     // Export the given (already-filtered) cases as a styled Excel or PDF file.
     @Streaming
     @POST("api/cases/export")

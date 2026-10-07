@@ -150,6 +150,9 @@ class Repository(context: Context) {
         return Api.service.officerDayVisits(uid, date)
     }
 
+    // Joint cases sent to me (another FOS owns them) for a new-address visit.
+    suspend fun jointCases(): List<Case> = Api.service.jointMine()
+
     suspend fun logCall(body: CallCreate): CallOut = Api.service.logCall(body)
 
     suspend fun liveOfficers(): List<OfficerLocation> = Api.service.liveOfficers()

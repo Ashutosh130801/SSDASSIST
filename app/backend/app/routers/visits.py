@@ -38,7 +38,10 @@ async def create_visit(
     case = db.query(models.Case).filter(models.Case.id == case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if user.role == "fos" and case.assigned_fos_id != user.id:
+    # A FOS may visit a case allocated to him OR one JOINTLY allocated to him (secondary FOS sent
+    # to a new address). Either is allowed; anything else is blocked.
+    _is_joint_fos = bool(user.role == "fos" and case.joint_fos_id == user.id and case.assigned_fos_id != user.id)
+    if user.role == "fos" and case.assigned_fos_id != user.id and not _is_joint_fos:
         raise HTTPException(status_code=403, detail="This case is not assigned to you")
     # A field visit is proof-of-visit / an observation — always allow it, even when the case is
     # already PAID or has closed for the month (the FOS may still need to record a doorstep visit,
@@ -98,6 +101,11 @@ async def create_visit(
         # for plain cases) is reached; below that it stays PARTIAL and is excluded from cash.
         from .. import paymath
         paymath.recompute(case)
+        # Joint allocation: the moment the JOINT (secondary) FOS logs a paid visit, the collection
+        # credit for this case moves to him. The case stays allocated to the primary FOS; from now
+        # on collection_fos_id(case) returns the joint FOS, so the collected cash counts for him.
+        if _is_joint_fos and case.joint_collected_at is None:
+            case.joint_collected_at = datetime.now(IST)
     if latitude and longitude and location_correct:
         # FOS confirmed the doorstep location — this GPS becomes the case's canonical pin
         # (overrides the geocoded guess, which we keep in geo_lat/geo_lng). DIGIPIN follows.

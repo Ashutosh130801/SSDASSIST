@@ -244,6 +244,13 @@ class CaseBase(BaseModel):
     escalated_to: Optional[int] = None
     esc_prev_fos_id: Optional[int] = None
     esc_prev_caller_id: Optional[int] = None
+    # Joint allocation — a secondary FOS sent to a new address.
+    joint_fos_id: Optional[int] = None
+    joint_fos_name: Optional[str] = None        # resolved display name (transient)
+    joint_note: Optional[str] = None
+    joint_assigned_at: Optional[datetime] = None
+    joint_collected_at: Optional[datetime] = None
+    joint_for_me: Optional[bool] = None         # true when the viewer IS the joint FOS (transient)
     extra: Optional[dict] = None
     account_no: Optional[str] = None
     card_no: Optional[str] = None

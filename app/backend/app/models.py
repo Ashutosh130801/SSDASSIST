@@ -218,6 +218,18 @@ class Case(Base):
     assigned_caller_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     allocation_reason = Column(String(120))
 
+    # JOINT allocation — a SECOND FOS sent to a new address (customer not available at the
+    # original one). The case stays allocated to the PRIMARY (assigned_fos_id) and keeps counting
+    # in the primary's allocation/target. The joint FOS sees it in a SEPARATE "Joint cases" list;
+    # it does NOT count in his own cases/performance UNTIL he logs a PAID visit himself. The moment
+    # he collects, joint_collected_at is stamped and the COLLECTION credit (paid amount) moves to
+    # the joint FOS (the primary keeps the allocation but loses that collection credit).
+    joint_fos_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    joint_assigned_at = Column(DateTime(timezone=True), nullable=True)
+    joint_assigned_by = Column(Integer, nullable=True)          # HO/TL who joint-allocated
+    joint_collected_at = Column(DateTime(timezone=True), nullable=True)  # set when joint FOS logs a paid visit
+    joint_note = Column(String(200))                            # reason / new-address note
+
     # Caution flag — a red mark drawing attention to a case that needs manual review
     # (e.g. an old RTP "Refuse to Pay" that was wrongly sitting in PTP).
     flagged = Column(Boolean, default=False, index=True)

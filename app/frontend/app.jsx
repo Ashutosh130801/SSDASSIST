@@ -1793,6 +1793,48 @@ function AllocTransferModal({ onClose, onDone }) {
   );
 }
 
+/* Joint-allocate selected cases to a SECOND FOS (new-address visit). The case stays with its
+   primary FOS; the joint FOS gets it in a separate list to visit and collect. HO + TL → any FOS. */
+function JointAllocateModal({ caseIds, onClose, onDone }) {
+  const [users, setUsers] = useState(null);
+  const [fosId, setFosId] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api('/api/users').then(setUsers).catch(() => setUsers([])); }, []);
+  const foses = (users || []).filter(u => (u.role === 'fos' || u.also_field_agent) && u.is_active !== false);
+  const apply = async () => {
+    if (!fosId) { toast('Choose a field officer'); return; }
+    setBusy(true);
+    try {
+      const r = await api('/api/cases/joint-allocate', { method: 'POST',
+        body: { case_ids: caseIds, fos_id: Number(fosId), note: note.trim() || null } });
+      toast(`Joint-allocated ${r.joint_allocated} case(s) to ${r.fos}.`);
+      onDone && onDone();
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 520, width: '96%' }}>
+        <div className="section-h"><h3>🤝 Joint allocate {caseIds.length} case{caseIds.length === 1 ? '' : 's'}</h3>
+          <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>Send a second FOS to a new address. The case stays with its primary FOS and keeps counting in the primary's performance. The joint FOS sees it in a separate "Joint cases" list; it only counts for him once he logs a paid visit.</p>
+        <div className="field"><label>Joint field officer (any FOS)</label>
+          <select className="input" value={fosId} onChange={e => setFosId(e.target.value)}>
+            <option value="">— select FOS —</option>
+            {foses.map(u => <option key={u.id} value={u.id}>{u.name} ({u.emp_code || '—'}){u.branch ? ` · ${u.branch}` : ''}</option>)}
+          </select></div>
+        <div className="field"><label>Note (new address / reason) — optional</label>
+          <input className="input" value={note} maxLength={200} onChange={e => setNote(e.target.value)}
+            placeholder="e.g. Customer shifted to Kondapur — visit new address" /></div>
+        <div className="toolbar" style={{ marginTop: 10 }}>
+          <button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
+          <button className="btn gold" disabled={busy || !fosId} onClick={apply}>{busy ? 'Allocating…' : 'Joint allocate'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CasesView({ user }) {
   const canUpload = user.role === 'admin' || user.role === 'backend' || user.role === 'headoffice';
   const canDpr = ['admin', 'headoffice', 'backend', 'manager', 'teamlead'].includes(user.role);
@@ -1800,6 +1842,7 @@ function CasesView({ user }) {
   const canReassign = ['admin', 'manager', 'teamlead', 'headoffice'].includes(user.role);
   const [reassignOpen, setReassignOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
+  const [jointOpen, setJointOpen] = useState(false);
   const isAdmin = user.role === 'admin';
   const isHO = ['headoffice', 'admin'].includes(user.role);   // head office / admin may remove/restore cases
   const canUploads = ['headoffice', 'admin'].includes(user.role);  // …and undo a whole upload batch
@@ -2111,6 +2154,9 @@ function CasesView({ user }) {
             {canReassign && <button className="btn" onClick={() => setTransferOpen(true)} title="Move a caller/FOS/TL's cases to someone else">🔀 Transfer by person</button>}
             {pickedIds.length > 0 && canReassign && <button className="btn gold"
               onClick={() => setReassignOpen(true)}>🔀 Re-allocate {pickedIds.length}</button>}
+            {pickedIds.length > 0 && canReassign && <button className="btn"
+              title="Send a second FOS to a new address — case stays with the primary FOS"
+              onClick={() => setJointOpen(true)}>🤝 Joint allocate {pickedIds.length}</button>}
             {pickedIds.length > 0 && isHO && <button className="btn" style={{ background: 'var(--bad)', color: '#fff', border: 'none' }}
               onClick={() => setDelOpen(true)}>🗑 Delete {pickedIds.length} selected</button>}</>}
         </div>
@@ -2197,6 +2243,8 @@ function CasesView({ user }) {
         onDone={() => { setReassignOpen(false); clearPicks(); load(); loadSummary(); }} />}
       {transferOpen && <AllocTransferModal onClose={() => setTransferOpen(false)}
         onDone={() => { setTransferOpen(false); load(); loadSummary(); }} />}
+      {jointOpen && <JointAllocateModal caseIds={pickedIds} onClose={() => setJointOpen(false)}
+        onDone={() => { setJointOpen(false); clearPicks(); load(); }} />}
       {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
     </div>
   );
@@ -8157,10 +8205,44 @@ function TLPortfoliosView({ user }) {
   </div>);
 }
 
+/* FOS "Joint Cases" — cases another FOS owns, sent to this FOS for a new-address visit. Visiting +
+   logging a paid visit credits the collection to him; the case then drops off this list. */
+function JointCasesView({ config }) {
+  const [rows, setRows] = useState(null);
+  const [drawer, setDrawer] = useState(null);
+  const load = () => api('/api/cases/joint-mine').then(setRows).catch(() => setRows([]));
+  useEffect(() => { load(); }, []);
+  if (!rows) return <Loader />;
+  const navUrl = (c) => c.latitude && c.longitude
+    ? `https://www.google.com/maps/search/?api=1&query=${c.latitude},${c.longitude}`
+    : (c.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.address)}` : null);
+  return (
+    <div>
+      <div className="section-h"><h3>🤝 Joint Cases</h3></div>
+      <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>Cases another FOS owns, sent to you to visit a new address and collect. They count for you only after you log a <b>paid visit</b> — then they drop off this list.</p>
+      {rows.length === 0 ? <div className="glass card muted" style={{ padding: 16 }}>No joint cases right now.</div> :
+        <div className="glass card" style={{ padding: 6 }}>
+          <div className="tablewrap"><table>
+            <thead><tr><th>Customer</th><th>Bank</th><th>Primary FOS</th><th>Pending</th><th>New-address note</th><th></th></tr></thead>
+            <tbody>{rows.map(c => <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrawer(c)}>
+              <td><b>{c.customer_name || '—'}</b><div className="muted" style={{ fontSize: 12 }}>{c.phone}</div></td>
+              <td>{c.bank}</td>
+              <td className="muted">{c.fos_name || '—'}</td>
+              <td className="mono">{INR(c.pending_amount)}</td>
+              <td className="muted" style={{ fontSize: 12 }}>{c.joint_note || '—'}</td>
+              <td onClick={e => e.stopPropagation()}>{navUrl(c) && <a className="btn sm" href={navUrl(c)} target="_blank" rel="noreferrer">🧭 Navigate</a>}</td>
+            </tr>)}</tbody>
+          </table></div>
+        </div>}
+      {drawer && <CaseDrawer c={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
+    </div>
+  );
+}
+
 const NAV = {
   admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
-  fos: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['fcases', '🗂️', 'My Accounts'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
+  fos: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['fcases', '🗂️', 'My Accounts'], ['jointcases', '🤝', 'Joint Cases'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   teamlead: [['tldash', '👥', 'My Team'], ['portfolios', '🗂️', 'My Portfolios'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['audit', '📜', 'Audit Log'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
@@ -8265,6 +8347,7 @@ const TOUR_DESC = {
   myperf: 'My Performance — how much you’ve achieved (FTD / MTD / LMTD / Overall), broken down per portfolio, with a live leaderboard.',
   cases: 'Portfolios & Accounts — browse every portfolio; open any case for full details, payments and history.',
   fcases: 'My Accounts — your assigned field cases grouped by bank & bucket. Search, filter, or view them on a map.',
+  jointcases: 'Joint Cases — cases another FOS owns, sent to you for a new-address visit. Visit and collect; it counts for you only once you log a paid visit.',
   sheet: 'Live Sheet — an editable spreadsheet of your cases. Log payments and edits here and they sync instantly for everyone.',
   queue: 'Calling — your call queue: who’s due now, contacted today, upcoming and paid. Search, filter by status/bank/bucket to work faster.',
   ptp: 'PTP Tracker — promise-to-pay cases split into overdue / due today / upcoming so you chase the right ones first.',
@@ -9352,6 +9435,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'templates': return <TemplatesView />;
       case 'legal': return <LegalView />;
       case 'fcases': return <FOCases config={config} />;
+      case 'jointcases': return <JointCasesView config={config} />;
       case 'fmap': return <FOLiveMap config={config} />;
       case 'queue': return <CallQueue />;
       case 'myperf': return <MyPerformance user={user} />;

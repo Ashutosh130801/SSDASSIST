@@ -396,6 +396,16 @@ def employee_dashboard(uid: int, month_bucket: str | None = "current", db: Sessi
     today_d = datetime.now(IST).date()
     total_enr = sum(_d(c.enr) for c in cases)
     recovered = sum(_d(c.received_amount) for c in cases)
+    # Joint allocation: a case collected by a JOINT FOS credits its collection to HIM, not the
+    # primary. Remove joint-collected-away cash from this (primary) user's recovered; add cash this
+    # user collected as a joint FOS on cases allocated to someone else. Allocation/target stay primary.
+    recovered -= sum(_d(c.received_amount) for c in cases
+                     if getattr(c, "joint_collected_at", None) and getattr(c, "joint_fos_id", None)
+                     and c.joint_fos_id != u.id)
+    _joint_in = db.query(models.Case).filter(models.Case.joint_fos_id == u.id,
+                                             models.Case.joint_collected_at.isnot(None),
+                                             models.Case.removed.isnot(True)).all()
+    recovered += sum(_d(c.received_amount) for c in _joint_in if c.assigned_fos_id != u.id)
     pending_amt = sum(_d(c.pending_amount) for c in cases)
     resolved = sum(1 for c in cases if paid(c))
 

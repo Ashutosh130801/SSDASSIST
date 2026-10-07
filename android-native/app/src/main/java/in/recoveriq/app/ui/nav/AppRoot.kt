@@ -98,6 +98,7 @@ import `in`.recoveriq.app.ui.fos.FieldAgentTrackingScreen
 import `in`.recoveriq.app.ui.fos.FieldTrackingScreen
 import `in`.recoveriq.app.ui.fos.MyCasesScreen
 import `in`.recoveriq.app.ui.fos.MyVisitsScreen
+import `in`.recoveriq.app.ui.fos.JointCasesScreen
 import `in`.recoveriq.app.ui.theme.BrandBlue
 import `in`.recoveriq.app.ui.theme.CardWhite
 import `in`.recoveriq.app.ui.theme.Muted
@@ -452,6 +453,7 @@ private fun navEntriesFor(
             },
             NavEntry("fcases", "My Accounts", Icons.Filled.Receipt) { MyCasesScreen(vm, onOpenCase) },
             NavEntry("myvisits", "Today's Visits", Icons.Filled.FactCheck) { MyVisitsScreen(vm, onOpenCase) },
+            NavEntry("jointcases", "Joint Cases", Icons.Filled.Handshake) { JointCasesScreen(vm, onOpenCase) },
             NavEntry("fmap", "Field Tracking", Icons.Filled.Map) { FieldTrackingScreen(vm) },
             NavEntry("myperf", "My Performance", Icons.Filled.EmojiEvents) { MyPerformanceScreen(vm, user) },
             todo,

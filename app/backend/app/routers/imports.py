@@ -117,8 +117,26 @@ def list_portfolios(actor: models.User = Depends(require_roles("admin", "headoff
             .filter(models.Case.removed.isnot(True))
             .group_by(models.Case.period, models.Case.bank, models.Case.product, models.Case.branch)
             .all())
-    out = [{"period": p or "—", "bank": b or "—", "product": pr or "—",
-            "branch": br or "", "count": int(n)} for (p, b, pr, br, n) in rows]
+    # Merge branches that differ only by CASE/whitespace (e.g. "Visakhapatnam" vs "VISAKHAPATNAM")
+    # into ONE portfolio, so a single correction/backfill file covers both. The scope endpoints
+    # already match branch case-insensitively, so the chosen display label updates every variant.
+    merged = {}
+    for (p, b, pr, br, n) in rows:
+        key = (p or "—", b or "—", pr or "—", (br or "").strip().lower())
+        if key not in merged:
+            merged[key] = {"period": p or "—", "bank": b or "—", "product": pr or "—",
+                           "branch": (br or "").strip(), "count": 0, "_variants": {}}
+        merged[key]["count"] += int(n)
+        v = (br or "").strip()
+        if v:
+            merged[key]["_variants"][v] = merged[key]["_variants"].get(v, 0) + int(n)
+    out = []
+    for m in merged.values():
+        # Display the variant that has the most cases (the one people actually use most).
+        if m["_variants"]:
+            m["branch"] = max(m["_variants"].items(), key=lambda kv: kv[1])[0]
+        m.pop("_variants", None)
+        out.append(m)
     # newest month first, then bank/product
     out.sort(key=lambda x: (x["period"], x["bank"], x["product"], x["branch"]), reverse=True)
     return {"portfolios": out}
