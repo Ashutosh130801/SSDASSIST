@@ -9,16 +9,17 @@ All panels/actions on the RecoverIQ side are optional — they only light up whe
 connected and healthy. Nothing here changes core behaviour when no dialer exists.
 """
 from decimal import Decimal
-from datetime import datetime, timezone, time
+from datetime import datetime, timezone, time, timedelta
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Header, Body
+from fastapi import APIRouter, Depends, HTTPException, Header, Body, Response, Request
 from sqlalchemy.orm import Session
 
 from .. import models
 from ..database import get_db
 from ..deps import get_current_user, require_roles
 from .. import audit
+from ..vicidial_test_call import TestCallRequest, validate_test_call, send_test_call
 
 router = APIRouter(prefix="/api/integration", tags=["integration"])
 
@@ -403,6 +404,33 @@ def _vici_dispo_url(request_base: str, conn: models.DialerConnection) -> str:
             "&len=--A--talk_sec--B--")
 
 
+def _vici_screenpop_url(request_base: str, conn: models.DialerConnection) -> str:
+    """Legacy callback URL. Kept for existing integrations, not required for screen-pop:
+    RecoverIQ now reads agent_status directly and verifies case access before opening."""
+    return (f"{request_base}/api/integration/vicidial/screenpop"
+            f"?key={conn.api_key}"
+            "&agent=--A--user--B--"
+            "&case=--A--vendor_lead_code--B--"
+            "&phone=--A--phone_number--B--")
+
+
+def _vici_start_call_url(request_base: str, conn: models.DialerConnection) -> str:
+    from urllib.parse import quote
+    return (f"VAR{request_base.rstrip('/')}/api/integration/vicidial/start-call"
+            f"?key={quote(conn.api_key, safe='')}"
+            "&agent=--A--user--B--&case=--A--vendor_lead_code--B--&call_id=--A--call_id--B--")
+
+
+@router.get("/vicidial/{cid}/start-call-url")
+def start_call_setup(cid: int, request: Request, response: Response, db: Session = Depends(get_db),
+                     user: models.User = Depends(require_roles(*ADMIN_ROLES))):
+    conn = db.query(models.DialerConnection).filter_by(id=cid, kind="vicidial").first()
+    if not conn:
+        raise HTTPException(404, "ViciDial connection not found")
+    response.headers["Cache-Control"] = "no-store, private"
+    return {"start_call_url": _vici_start_call_url(str(request.base_url), conn)}
+
+
 @router.post("/vicidial/connect")
 def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
                      user: models.User = Depends(require_roles(*ADMIN_ROLES))):
@@ -470,6 +498,8 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
     request_base = (body.get("recoveriq_base") or "").strip().rstrip("/")
     out = _conn_out(c)
     out["dispo_url"] = _vici_dispo_url(request_base or "https://YOUR-RECOVERIQ-DOMAIN", c)
+    out["screenpop_url"] = _vici_screenpop_url(request_base or "https://YOUR-RECOVERIQ-DOMAIN", c)
+    out["start_call_url"] = _vici_start_call_url(request_base or "https://YOUR-RECOVERIQ-DOMAIN", c)
     return out
 
 
@@ -496,6 +526,32 @@ def vicidial_test(body: dict = Body(...), db: Session = Depends(get_db),
     except Exception as e:
         c.status = "down"; db.commit()
         return {"ok": False, "status": "down", "detail": str(e)[:200]}
+
+
+@router.post("/vicidial/{cid}/test-call")
+def vicidial_test_call(cid: int, body: TestCallRequest, response: Response,
+                      db: Session = Depends(get_db),
+                      user: models.User = Depends(require_roles(*ADMIN_ROLES))):
+    """Place one explicitly confirmed real test call on this exact connection."""
+    response.headers["Cache-Control"] = "no-store"
+    conn = db.query(models.DialerConnection).filter_by(id=cid, kind="vicidial").first()
+    if not conn:
+        raise HTTPException(404, "ViciDial connection not found.")
+    if not conn.enabled:
+        raise HTTPException(409, "Enable this ViciDial connection before placing a test call.")
+    agent, code, phone = validate_test_call(body)
+    # Save an audit intent before contacting the external dialer, without full phone/credentials.
+    entry = audit.record(db, user, "vicidial_test_call", entity_type="integration",
+                         detail=f"Test call requested on connection {conn.id}, agent {agent}, number ending {phone[-4:]}",
+                         meta={"connection_id": conn.id, "agent_user": agent, "state": "requested"})
+    db.commit()
+    result = send_test_call(conn, agent, code, phone)
+    entry.meta = {**entry.meta, "state": result["state"]}
+    if result["ok"]:
+        conn.last_seen = datetime.now(timezone.utc)
+        conn.status = "ok"
+    db.commit()
+    return result
 
 
 @router.post("/vicidial/push")
@@ -613,6 +669,156 @@ def vicidial_dispo(key: str = "", case: str = "", dispo: str = "", rec: str = ""
     except Exception:
         pass
     return {"ok": True, "case_id": cs.id, "recording": bool(rec_url)}
+
+
+# ============================================================ legacy screen-pop callback
+# Kept for compatibility. The UI does NOT trust these records as evidence of a connected
+# conversation: my-live-call independently queries ViciDial's live agent state.
+@router.api_route("/vicidial/screenpop", methods=["GET", "POST"])
+def vicidial_screenpop(key: str = "", agent: str = "", case: str = "", phone: str = "",
+                       db: Session = Depends(get_db)):
+    from fastapi.responses import HTMLResponse
+    conn = (db.query(models.DialerConnection)
+            .filter(models.DialerConnection.kind == "vicidial",
+                    models.DialerConnection.api_key == key,
+                    models.DialerConnection.enabled.is_(True)).first())
+    if not conn:
+        return HTMLResponse("<!doctype html><title>RecoverIQ</title>invalid key", status_code=401)
+    ag = (agent or "").strip()
+    try:
+        cid = int(case)
+    except Exception:
+        cid = None
+    if ag and cid:
+        # Supersede any earlier un-consumed pop for this agent, then record the new one.
+        db.query(models.ScreenPop).filter(models.ScreenPop.conn_id == conn.id,
+                                           models.ScreenPop.agent_user == ag,
+                                           models.ScreenPop.consumed.is_(False)) \
+            .update({models.ScreenPop.consumed: True})
+        db.add(models.ScreenPop(conn_id=conn.id, agent_user=ag, case_id=cid, phone=(phone or "")[:30]))
+        # Opportunistic cleanup: drop pops older than ~1 day so the table stays tiny.
+        cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+        db.query(models.ScreenPop).filter(models.ScreenPop.created_at < cutoff).delete()
+        conn.last_seen = datetime.now(timezone.utc)
+        db.commit()
+    # Harmless tiny page in case ViciDial opens it in the agent's web-form iframe.
+    return HTMLResponse("<!doctype html><meta charset=utf-8><title>RecoverIQ</title>"
+                        "<body style='font-family:system-ui;padding:14px;color:#1E40AF'>"
+                        "RecoverIQ — callback received. Open RecoverIQ for live-call screen-pop.</body>",
+                        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+
+@router.api_route("/vicidial/start-call", methods=["GET", "POST"])
+def vicidial_start_call(response: Response, key: str = "", agent: str = "", case: str = "", call_id: str = "",
+                        db: Session = Depends(get_db)):
+    """ViciDial Start Call URL callback; query parameters also supported on POST.
+
+    Commit first, then send an opaque event key only to the mapped user's sockets.
+    Full case access is checked again by the authenticated event/detail endpoints.
+    """
+    import re
+    from sqlalchemy.exc import IntegrityError
+    from ..vicidial_live import agent_for, connection_for, event_key, LiveCallError
+    from .cases import _scope
+    from .realtime import notify_user
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    conn = db.query(models.DialerConnection).filter_by(kind="vicidial", api_key=key, enabled=True).first() if key else None
+    if not conn:
+        raise HTTPException(401, "Invalid integration key")
+    agent, call_id, case = agent.strip(), call_id.strip(), case.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{2,60}", agent) or not re.fullmatch(r"[0-9]{1,18}", case) or int(case) <= 0 or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", call_id) or "--A--" in call_id:
+        raise HTTPException(422, "Valid agent, case ID and unique call_id are required; check ViciDial variable substitution")
+    try:
+        candidates = db.query(models.User).filter(models.User.is_active.is_(True)).all()
+        recipients = []
+        for person in candidates:
+            if agent_for(conn, person) == agent:
+                selected = connection_for(db, person)
+                if selected and selected.id == conn.id:
+                    recipients.append(person)
+        if len(recipients) != 1:
+            raise HTTPException(409, "Agent must map to exactly one active RecoverIQ employee in this connection")
+        person = recipients[0]
+    except LiveCallError as exc:
+        raise HTTPException(409, str(exc)) from None
+    # Callbacks have no active-view JWT. Accept any explicitly granted view here; the
+    # receiving browser still must pass its current view's scope at the event endpoint.
+    from ..deps import allowed_views
+    from types import SimpleNamespace
+    attributes = {column.name: getattr(person, column.name) for column in models.User.__table__.columns}
+    cs = None
+    for view in allowed_views(person):
+        scoped_user = SimpleNamespace(**{**attributes, "role": view})
+        cs = _scope(db.query(models.Case), scoped_user).filter(models.Case.id == int(case)).first()
+        if cs:
+            break
+    if not cs or (conn.branch and conn.branch.strip().casefold() != (cs.branch or "").strip().casefold()):
+        raise HTTPException(404, "Case unavailable to this agent/branch")
+    identity = event_key(conn.id, agent, call_id, cs.id)
+    event = db.query(models.PredictiveCallEvent).filter_by(event_key=identity).first()
+    duplicate = event is not None
+    if not event:
+        event = models.PredictiveCallEvent(event_key=identity, conn_id=conn.id, user_id=person.id,
+            agent_user=agent, case_id=cs.id, call_id=call_id)
+        db.add(event)
+        conn.last_seen = datetime.now(timezone.utc)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            event = db.query(models.PredictiveCallEvent).filter_by(event_key=identity).first()
+            if not event:
+                raise
+            duplicate = True
+    timestamp = event.created_at.replace(tzinfo=timezone.utc) if event.created_at.tzinfo is None else event.created_at
+    should_notify = event.user_id == person.id and timestamp >= datetime.now(timezone.utc) - timedelta(minutes=2)
+    # One-day deduplication history. Delayed/duplicate events cannot refresh created_at.
+    db.query(models.PredictiveCallEvent).filter(models.PredictiveCallEvent.created_at < datetime.now(timezone.utc) - timedelta(days=1)).delete(synchronize_session=False)
+    db.commit()
+    if should_notify:
+        notify_user(person.id, {"type": "predictive_screenpop", "event_id": identity})
+    return {"ok": True, "duplicate": duplicate}
+
+
+@router.get("/vicidial/events/{identity}")
+def predictive_event(identity: str, response: Response, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from ..vicidial_live import connection_for, agent_for, LiveCallError
+    from .cases import _scope
+    response.headers["Cache-Control"] = "no-store, private"
+    event = db.query(models.PredictiveCallEvent).filter_by(event_key=identity, user_id=user.id).first()
+    if not event:
+        raise HTTPException(404, "Call event not found")
+    try:
+        conn = connection_for(db, user)
+    except LiveCallError as exc:
+        raise HTTPException(409, str(exc)) from None
+    if not conn or conn.id != event.conn_id or agent_for(conn, user) != event.agent_user:
+        raise HTTPException(404, "Call event unavailable")
+    latest = db.query(models.PredictiveCallEvent).filter_by(conn_id=conn.id, agent_user=event.agent_user).order_by(models.PredictiveCallEvent.id.desc()).first()
+    timestamp = event.created_at.replace(tzinfo=timezone.utc) if event.created_at.tzinfo is None else event.created_at
+    if latest.id != event.id or timestamp < datetime.now(timezone.utc) - timedelta(minutes=2):
+        return {"state": "expired"}
+    cs = _scope(db.query(models.Case), user).filter(models.Case.id == event.case_id).first()
+    if not cs or (conn.branch and conn.branch.strip().casefold() != (cs.branch or "").strip().casefold()):
+        raise HTTPException(404, "Case unavailable to this agent/branch")
+    return {"state": "connected", "event_id": event.event_key, "case_id": cs.id, "agent_user": event.agent_user, "call_id": event.call_id}
+
+
+@router.get("/vicidial/my-live-call")
+def vicidial_my_live_call(response: Response, db: Session = Depends(get_db),
+                          user: models.User = Depends(get_current_user)):
+    """Read ViciDial live state for the JWT user, not a browser-supplied agent ID.
+
+    No Web Form callback is needed. Reading does not consume the event: clients retry case
+    loading safely and deduplicate the call identity after successfully opening the drawer.
+    """
+    from ..vicidial_live import live_call_for, LiveCallError
+    response.headers["Cache-Control"] = "no-store, private"
+    try:
+        return live_call_for(db, user)
+    except LiveCallError as exc:
+        return {"state": "error", "detail": str(exc), "poll_after_ms": 15000}
 
 
 # ============================================================ recording fetch over SFTP

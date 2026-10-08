@@ -720,3 +720,32 @@ class DialerConnection(Base):
     capabilities = Column(JSON, nullable=True)
     last_seen = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class ScreenPop(Base):
+    """Legacy Web Form callback records. Kept for compatibility, not used for live delivery.
+    New Start Call callbacks use PredictiveCallEvent below."""
+    __tablename__ = "screen_pops"
+    id = Column(Integer, primary_key=True, index=True)
+    conn_id = Column(Integer, index=True)
+    agent_user = Column(String(60), index=True)      # ViciDial agent user id
+    case_id = Column(Integer, index=True)
+    phone = Column(String(30), nullable=True)
+    consumed = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class PredictiveCallEvent(Base):
+    """Authenticated Start Call callbacks. Persist before notifying the user's socket.
+
+    Separate from legacy ScreenPop rows so existing databases need no ALTER migration.
+    """
+    __tablename__ = "predictive_call_events"
+    id = Column(Integer, primary_key=True)
+    event_key = Column(String(64), unique=True, nullable=False, index=True)
+    conn_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    agent_user = Column(String(60), nullable=False)
+    case_id = Column(Integer, nullable=False)
+    call_id = Column(String(120), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)

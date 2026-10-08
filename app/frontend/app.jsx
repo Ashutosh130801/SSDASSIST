@@ -67,7 +67,9 @@ async function api(path, { method, body, form, auth = true, signal } = {}) {
   if (!res.ok) {
     let msg = res.statusText;
     if (ct.includes('json')) { try { msg = (await res.json()).detail || msg; } catch {} }
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    const error = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    error.status = res.status;
+    throw error;
   }
   if (ct.includes('json')) return res.json();
   return res;
@@ -4521,8 +4523,10 @@ const TL_ICON = { created: '🆕', allocated: '📌', visit: '📍', call: '📞
 const REVIEW_SWATCHES = [['red', '#EF4444'], ['amber', '#F59E0B'], ['green', '#22C55E'], ['blue', '#3B82F6'], ['purple', '#8B5CF6'], ['pink', '#EC4899'], ['grey', '#94A3B8']];
 const REVIEW_HEX = Object.fromEntries(REVIEW_SWATCHES);
 
-function CaseDrawer({ c, onClose, onChanged }) {
-  useBackClose(true, onClose);   // Back button closes the case, returning to the list/section
+function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, focusOnOpen = false }) {
+  useBackClose(manageBack, onClose);   // Predictive drawer stack owns a single Back handler.
+  const drawerRef = React.useRef(null);
+  useEffect(() => { if (focusOnOpen && drawerRef.current) drawerRef.current.focus(); }, [focusOnOpen]);
   const [cur, setCur] = useState(c); const [hist, setHist] = useState(null); const [tab, setTab] = useState('call');
   const [tpls, setTpls] = useState([]); const [tplId, setTplId] = useState(''); const [msg, setMsg] = useState('');
   const [dispo, setDispo] = useState('PTP'); const [amt, setAmt] = useState(''); const [ptpDate, setPtpDate] = useState('');
@@ -4616,8 +4620,9 @@ function CaseDrawer({ c, onClose, onChanged }) {
   };
   const row = (k, v) => <React.Fragment key={k}><div className="dt">{k}</div><div className="dd">{v || '—'}</div></React.Fragment>;
   return (
-    <div className="drawer-bg" onClick={onClose}>
-      <div className="drawer glass" onClick={e => e.stopPropagation()}>
+    <div className="drawer-bg" onClick={onClose} style={notice ? { zIndex: 2600 } : undefined}>
+      <div className="drawer glass" ref={drawerRef} tabIndex={-1} role="dialog" aria-label={'Case ' + c.id} onClick={e => e.stopPropagation()}>
+        {notice && <div role="status" style={{ padding: '8px 12px', marginBottom: 10, background: 'rgba(37,99,235,.10)', color: 'var(--info)', borderRadius: 8 }}>{notice}</div>}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
           <div><div className="brandfont" style={{ fontSize: 19, fontWeight: 600 }}>{cur.customer_name || '—'}</div>
             <div className="muted" style={{ fontSize: 13 }}>{cur.account_no || 'no account'} · {cur.bank || ''}</div></div>
@@ -5819,7 +5824,9 @@ function useDataChanged(cb) {
       if (m.type === 'broadcast') { window.dispatchEvent(new CustomEvent('ssd-broadcast', { detail: m })); return; }
       if (m.type === 'data_changed' || m.type === 'case_update') { clearTimeout(timer); timer = setTimeout(() => ref.current(m), 700); }
     } });
-    return () => { clearTimeout(timer); conn.close(); };
+    const localChange = () => { clearTimeout(timer); timer = setTimeout(() => ref.current({ type: 'case_update' }), 700); };
+    window.addEventListener('ssd-case-changed', localChange);
+    return () => { clearTimeout(timer); conn.close(); window.removeEventListener('ssd-case-changed', localChange); };
   }, []);
 }
 
@@ -7994,6 +8001,49 @@ function SupportView({ user }) {
 
 /* Connections — pair RecoverIQ with the standalone Autodialer (and later AI-Voice). Admin/HO only.
    When a dialer here is connected + healthy, case screens get a "Call via dialer" button. */
+function ViciDialTestCall({ connection, onClose, onAccepted }) {
+  const [agent, setAgent] = useState('');
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState(String(connection.capabilities?.phone_code || '91'));
+  const [confirmed, setConfirmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const inFlight = useRef(false);
+  const submit = async e => {
+    e.preventDefault();
+    if (inFlight.current || result || !confirmed) return;
+    inFlight.current = true; setBusy(true);
+    try {
+      const r = await api('/api/integration/vicidial/' + connection.id + '/test-call', {
+        method: 'POST', body: { agent_user: agent.trim(), phone_number: phone.trim(), phone_code: code.trim(), confirmed: true }
+      });
+      setResult(r);
+      if (r.ok) onAccepted();
+    } catch (e) {
+      setResult({ ok: false, detail: (e.message || 'Request failed.') + ' Check the ViciDial agent session before trying again; do not assume the call was cancelled.' });
+    } finally { inFlight.current = false; setBusy(false); }
+  };
+  return <section className="glass card" aria-labelledby="vici-test-title">
+    <div className="section-h"><h3 id="vici-test-title">Test call — {connection.name}</h3><button className="btn ghost sm" disabled={busy} onClick={onClose}>Close</button></div>
+    <p className="muted" style={{ overflowWrap: 'anywhere' }}>{connection.base_url}{connection.branch ? ' · ' + connection.branch : ' · Global connection'}</p>
+    <p>This places a <b>real outbound call</b> using this saved connection. Log the agent into ViciDial with Zoiper/audio connected, pause predictive dialing, and finish any active customer call first.</p>
+    <form onSubmit={submit}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 12 }}>
+        <div className="field"><label htmlFor="vici-test-agent">ViciDial agent user ID</label><input id="vici-test-agent" className="input" autoFocus required maxLength={20} autoComplete="off" placeholder="e.g. 8001" value={agent} disabled={busy || !!result} onChange={e => setAgent(e.target.value)} /><small className="muted">Agent login ID, not the API user or RecoverIQ employee code.</small></div>
+        <div className="field"><label htmlFor="vici-test-code">Country code</label><input id="vici-test-code" className="input" required inputMode="numeric" pattern="[1-9][0-9]{0,2}" maxLength={3} value={code} disabled={busy || !!result} onChange={e => setCode(e.target.value)} /></div>
+        <div className="field"><label htmlFor="vici-test-phone">Test customer number</label><input id="vici-test-phone" className="input" required type="tel" maxLength={40} autoComplete="off" placeholder="10-digit number or +91…" value={phone} disabled={busy || !!result} onChange={e => setPhone(e.target.value)} /><small className="muted">National number without country code, or international format starting with +.</small></div>
+      </div>
+      <p className="muted">No RecoverIQ case is required or updated. ViciDial may create a test lead and recording in the agent's manual-dial list; normal calling charges apply.</p>
+      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, margin: '16px 0' }}><input type="checkbox" checked={confirmed} disabled={busy || !!result} onChange={e => setConfirmed(e.target.checked)} style={{ marginTop: 4 }} /><span>I have permission to call this test number and the selected agent is ready.</span></label>
+      {result && <div role={result.ok ? 'status' : 'alert'} style={{ padding: 12, marginBottom: 12, border: '1px solid var(--line)', borderRadius: 10, overflowWrap: 'anywhere' }}><b>{result.ok ? 'Dial command accepted' : 'Test call not confirmed'}</b><p style={{ marginBottom: 0 }}>{result.detail}</p></div>}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <button className="btn gold" type="submit" disabled={busy || !!result || !confirmed || !agent.trim() || !phone.trim() || !code.trim()}>{busy ? 'Sending once…' : 'Place test call'}</button>
+        {result && <button className="btn" type="button" onClick={() => { setResult(null); setConfirmed(false); }}>Prepare another test</button>}
+      </div>
+    </form>
+  </section>;
+}
+
 function ConnectionsView({ user }) {
   const [rows, setRows] = useState(null);
   const [form, setForm] = useState({ name: '', base_url: '', api_key: '', branch: '' });
@@ -8004,6 +8054,8 @@ function ConnectionsView({ user }) {
     sftp_host: '', sftp_port: '22', sftp_user: '', sftp_pass: '', sftp_base: '' });
   const [vbusy, setVbusy] = useState(false);
   const [dispoUrl, setDispoUrl] = useState('');
+  const [startCallUrl, setStartCallUrl] = useState('');
+  const [testCallConnection, setTestCallConnection] = useState(null);
   const load = () => api('/api/integration/connections').then(d => setRows(d.connections || [])).catch(() => setRows([]));
   useEffect(() => { load(); }, []);
   const parseAgentMap = (txt) => {
@@ -8020,7 +8072,7 @@ function ConnectionsView({ user }) {
     try {
       const body = { ...vf, agent_map: parseAgentMap(vf.agent_map), recoveriq_base: window.location.origin };
       const r = await api('/api/integration/vicidial/connect', { method: 'POST', body });
-      setDispoUrl(r.dispo_url || ''); await load();
+      setDispoUrl(r.dispo_url || ''); setStartCallUrl(r.start_call_url || ''); await load();
       toast('ViciDial saved — now paste the Dispo URL into ViciDial (shown below).');
     } catch (e) { toast(e.message, 'err'); } finally { setVbusy(false); }
   };
@@ -8064,6 +8116,7 @@ function ConnectionsView({ user }) {
           Route RecoverIQ's <b>Call</b> button through your current ViciDial so callers keep using Zoiper — no new dialer to host.
           Dispositions and call recordings come back onto the case automatically. Agents must be <b>logged into the ViciDial agent screen</b> for click-to-call to ring their phone.
         </p>
+        <p className="muted" style={{ fontSize: 13 }}><b>Predictive screen-pop uses push delivery:</b> paste the generated URL into ViciDial's <b>Start Call URL</b>, not Web Form. RecoverIQ receives the callback and sends the matching case to your agent over its authenticated WebSocket. Enable <code>agent_status</code> (level 7+, View Reports and relevant groups) for a one-time recovery check on reconnect/return to the tab. No regular two-second polling. Map each employee uniquely and allocate their cases. Keep the dialer login/audio session active. Start Call URL does not cover manual dialing.</p>
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div className="field"><label>Name</label><input className="input" value={vf.name} onChange={e => setVf({ ...vf, name: e.target.value })} placeholder="ViciDial" /></div>
           <div className="field"><label>ViciDial URL</label><input className="input" value={vf.base_url} onChange={e => setVf({ ...vf, base_url: e.target.value })} placeholder="http://192.168.1.50" /></div>
@@ -8088,6 +8141,11 @@ function ConnectionsView({ user }) {
           <textarea className="input" rows={3} value={vf.agent_map} onChange={e => setVf({ ...vf, agent_map: e.target.value })}
             placeholder={'TC001=8001\nTC002=8002'} /></div>
         <button className="btn gold" onClick={viciConnect} disabled={vbusy}>{vbusy ? 'Saving…' : '💾 Save ViciDial connection'}</button>
+        {startCallUrl && <div className="glass" style={{ marginTop: 12, padding: 10, borderRadius: 10 }}>
+          <b>Paste into ViciDial → Campaign → Start Call URL</b>
+          <p className="muted" style={{ fontSize: 12 }}>Keep the VAR prefix. Verify the URL starts with your publicly reachable RecoverIQ HTTPS domain. This URL contains a secret: do not share it or put it in screenshots/logs. Existing campaigns may already have a callback—preserve their integration when configuring this.</p>
+          <textarea className="input mono" rows={3} readOnly value={startCallUrl} onFocus={e => e.target.select()} />
+        </div>}
         {dispoUrl && <div className="glass" style={{ marginTop: 12, padding: 10, borderRadius: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>📋 Paste this into ViciDial → Campaign → "Dispo Call URL"</div>
           <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>This sends the disposition + recording filename back to RecoverIQ after every call.</div>
@@ -8095,6 +8153,7 @@ function ConnectionsView({ user }) {
         </div>}
       </div>
 
+      {testCallConnection && <ViciDialTestCall key={testCallConnection.id} connection={testCallConnection} onClose={() => setTestCallConnection(null)} onAccepted={load} />}
       <div className="glass card">
         {rows === null ? <div className="muted">Loading…</div> : rows.length === 0 ? <div className="muted">No connections yet. Add your Autodialer or ViciDial above.</div> :
           <div className="tablewrap"><table>
@@ -8108,6 +8167,8 @@ function ConnectionsView({ user }) {
               <td>{c.enabled ? 'Yes' : 'No'}</td>
               <td style={{ whiteSpace: 'nowrap' }}>
                 <button className="btn ghost sm" onClick={() => test(c)}>Test</button>{' '}
+                {c.kind === 'vicidial' && user.role !== 'it_support_view' && <button className="btn ghost sm" disabled={!c.enabled || !!testCallConnection} onClick={() => setTestCallConnection(c)}>Test call</button>}{' '}
+                {c.kind === 'vicidial' && <button className="btn ghost sm" onClick={() => api('/api/integration/vicidial/' + c.id + '/start-call-url').then(r => setStartCallUrl(r.start_call_url)).catch(e => toast(e.message, 'err'))}>Start Call URL</button>}{' '}
                 <button className="btn ghost sm" onClick={() => toggle(c.id)}>{c.enabled ? 'Disable' : 'Enable'}</button>{' '}
                 <button className="btn ghost sm" onClick={() => del(c.id)}>Remove</button></td>
             </tr>)}</tbody></table></div>}
@@ -9383,6 +9444,60 @@ function ChatWidget({ user }) {
   </>;
 }
 
+function PredictiveScreenPop({ user }) {
+  const [live, setLive] = useState({ state: 'checking' });
+  const [pops, setPops] = useState([]);
+  const closeTop = () => setPops(previous => previous.slice(0, -1));
+  // Do not push/pop browser history for automatic events: doing so would also trigger
+  // the existing underlying editor's Back listener and discard its unsaved draft.
+  useEffect(() => {
+    if (!pops.length) return;
+    const escape = e => { if (e.key === 'Escape') { e.stopImmediatePropagation(); setPops(previous => previous.slice(0, -1)); } };
+    window.addEventListener('keydown', escape, true);
+    return () => window.removeEventListener('keydown', escape, true);
+  }, [pops.length > 0]);
+  useEffect(() => {
+    if (!window.RecoverIQPredictive) { setLive({ state: 'error', detail: 'Screen-pop script could not load. Reload RecoverIQ or ask your administrator to deploy predictive-screenpop.js.' }); return; }
+    const storageKey = 'riq_predictive_seen_' + user.id + '_' + user.role;
+    let saved = [];
+    try { const value = JSON.parse(sessionStorage.getItem(storageKey) || '[]'); if (Array.isArray(value)) saved = value.filter(x => typeof x === 'string').slice(-100); } catch (e) {}
+    const watcher = window.RecoverIQPredictive.createWatcher({
+      request: api, subscribe: ssdWS, seen: new Set(saved), onStatus: setLive,
+      remember: ids => { try { sessionStorage.setItem(storageKey, JSON.stringify(ids)); } catch (e) {} },
+      onCall: (c, call) => {
+        setPops(previous => {
+          // Bring an already-open case forward without resetting its unsaved disposition.
+          const existing = previous.find(p => p.c.id === c.id);
+          return [...previous.filter(p => p.c.id !== c.id), existing ? { ...existing, call } : { c, call }];
+        });
+        toast('Connected call — opening case #' + c.id);
+      }
+    });
+    const wake = () => { if (!document.hidden) watcher.poll(); };
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('online', wake);
+    watcher.start();
+    return () => { watcher.stop(); document.removeEventListener('visibilitychange', wake); window.removeEventListener('online', wake); };
+  }, [user.id, user.role]);
+  const labels = { checking: 'Connecting live screen-pop…', waiting: 'Predictive screen-pop ready • push delivery', connected: 'Latest call received', logged_out: 'Dialer session signed out — waiting for call events', unmapped: 'Dialer agent not mapped', unavailable: 'Connected case access needs attention', unmatched: 'Connected lead not linked', error: 'Screen-pop needs attention' };
+  return <>
+    {live.state !== 'disabled' && <div role="status" aria-live="polite" className="glass" style={{ padding: '8px 12px', marginBottom: 10, borderRadius: 10, fontSize: 12, overflowWrap: 'anywhere' }}>
+      <b>☎ {labels[live.state] || 'Predictive screen-pop'}</b>{live.detail && <span> — {live.detail}</span>}
+      {live.state === 'connected' && <button className="btn ghost sm" style={{ marginLeft: 8 }} onClick={async () => {
+        try { const c = await api('/api/cases/' + live.case_id); setPops(previous => {
+          const existing = previous.find(p => p.c.id === c.id);
+          return [...previous.filter(p => p.c.id !== c.id), existing || { c, call: live }];
+        }); } catch (e) { toast(e.message, 'err'); }
+      }}>Open latest call case</button>}
+    </div>}
+    {pops.map((pop, index) => <div key={pop.c.id} style={{ display: index === pops.length - 1 ? 'contents' : 'none' }}>
+      <CaseDrawer c={pop.c} manageBack={false} focusOnOpen={index === pops.length - 1} onClose={closeTop}
+        notice={'Received call • Agent ' + pop.call.agent_user + ' • Case #' + pop.c.id + (pops.length > 1 ? ' • Close to return to your previous open case (draft kept).' : '')}
+        onChanged={() => window.dispatchEvent(new CustomEvent('ssd-case-changed'))} />
+    </div>)}
+  </>;
+}
+
 function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, onSwitchView }) {
   // Expose the viewer's role so shared perf components can hide peer comparisons from front-line staff.
   try { window.__ssdRole = user.role; } catch (e) {}
@@ -9517,6 +9632,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
         {user.role === 'it_support_view' && <div className="glass card" style={{ margin: '0 0 12px', padding: '8px 12px', borderLeft: '3px solid var(--info)', fontSize: 13 }}>
           👁️ <b>IT Support View</b> — read-only. You can view and download everything, but changes are disabled (any edit will be blocked).
         </div>}
+        <PredictiveScreenPop key={user.id + ':' + user.role} user={user} />
         {render()}
         {notifCase && <CaseDrawer c={{ id: notifCase }} onClose={() => setNotifCase(null)} onChanged={() => {}} />}
         {trackOnboard && <NativeTrackingOnboard onDone={() => { try { localStorage.setItem('ssd_trackonboard', '1'); } catch (e) {} setTrackOnboard(false); }} />}

@@ -1,4 +1,10 @@
-# Connect RecoverIQ to ViciDial — What to provide & what to do
+# Archived planning notes — not the current setup guide
+
+**Superseded:** use the [complete ViciDial connection guide](VICIDIAL_COMPLETE_SETUP_GUIDE.md) for the current implementation, step-by-step setup, tests and production blockers.
+
+The original notes below describe a proposed connector, not verified current behaviour. In particular, the current connector does **not** require MySQL access, implement a recording poller or phone/time fallback matching, or encrypt stored credentials at application level. Do not follow the old blanket administrator-permission or production-readiness claims below.
+
+## Original planning document (historical reference only)
 
 Your dialer stack is **ViciDial** (a predictive dialer on top of Asterisk + MySQL), and agents talk
 on **Zoiper** registered to it. ViciDial already **places calls, records them, and logs dispositions**.

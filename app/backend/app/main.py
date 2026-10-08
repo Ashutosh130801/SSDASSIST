@@ -566,6 +566,8 @@ for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, d
 @app.on_event("startup")
 async def _capture_loop():
     import asyncio
+    from .log_redaction import install
+    install()
     from .routers import realtime as _rt
     _rt.set_loop(asyncio.get_running_loop())
     asyncio.create_task(_attendance_sweeper())

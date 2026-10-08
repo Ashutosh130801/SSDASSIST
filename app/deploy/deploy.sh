@@ -43,7 +43,7 @@ gcloud run deploy "$SERVICE" \
   --region "$REGION" \
   --allow-unauthenticated \
   --add-cloudsql-instances "$CONN" \
-  --memory 512Mi --cpu 1 --min-instances 0 --max-instances 4 --timeout 60 \
+  --memory 512Mi --cpu 1 --min-instances 0 --max-instances 1 --timeout 3600 \
   --set-env-vars "DATABASE_URL=${DATABASE_URL}" \
   --set-env-vars "SECRET_KEY=${SECRET_KEY}" \
   --set-env-vars "GOOGLE_MAPS_API_KEY=${MAPS_KEY}" \

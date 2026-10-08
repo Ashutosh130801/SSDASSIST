@@ -9,6 +9,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError
 
 from ..security import decode_token
+from ..database import SessionLocal
+from .. import models
 
 router = APIRouter()
 
@@ -113,6 +115,19 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+def _socket_identity(token):
+    """Check token lifetime and current account state; no long-lived DB session."""
+    try:
+        payload = decode_token(token)
+        with SessionLocal() as db:
+            user = db.query(models.User).filter_by(id=int(payload.get("sub")), is_active=True).first()
+            if user:
+                return user.id, user.name, user.role
+    except (JWTError, TypeError, ValueError):
+        pass
+    return None
+
+
 @router.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     """Authenticate via ?token=<JWT>, then stream server→client events:
@@ -123,15 +138,12 @@ async def ws_endpoint(ws: WebSocket):
     if not token:
         await ws.close(code=1008)
         return
-    try:
-        payload = decode_token(token)
-        user_id = int(payload.get("sub"))
-        uname = payload.get("name") or "Someone"
-        urole = payload.get("role") or ""
-    except (JWTError, TypeError, ValueError):
+    identity = await asyncio.to_thread(_socket_identity, token)
+    if not identity:
         await ws.close(code=1008)
         return
-
+    user_id, uname, urole = identity
+    set_loop(asyncio.get_running_loop())
     await manager.connect(ws, user_id)
     try:
         while True:
@@ -139,7 +151,20 @@ async def ws_endpoint(ws: WebSocket):
             #   {"type":"editing","case_id":N,"field":"remarks"}
             #   {"type":"editing_stop","case_id":N}
             import json
-            raw = await ws.receive_text()
+            try:
+                raw = await asyncio.wait_for(ws.receive_text(), timeout=25)
+            except asyncio.TimeoutError:
+                if not await asyncio.to_thread(_socket_identity, token):
+                    await ws.close(code=1008)
+                    break
+                await ws.send_json({"type": "heartbeat"})
+                continue
+            # Receiving traffic must not bypass expiry checks.
+            try:
+                decode_token(token)
+            except JWTError:
+                await ws.close(code=1008)
+                break
             try:
                 msg = json.loads(raw)
             except (ValueError, TypeError):
@@ -161,4 +186,6 @@ async def ws_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(ws, user_id)
     except Exception:
+        manager.disconnect(ws, user_id)
+    finally:
         manager.disconnect(ws, user_id)
