@@ -376,7 +376,8 @@ class Leave(Base):
     leave_type = Column(String(20))                 # Casual / Sick / Earned / Unpaid
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
-    days = Column(Integer, default=0)
+    days = Column(Integer, default=0)               # calendar-day count (half-day stores 1, counts 0.5)
+    half_day = Column(Boolean, default=False)       # single-date half-day leave (0.5 day)
     reason = Column(Text)
     status = Column(String(20), default="pending", index=True)   # pending / approved / rejected
     approver_id = Column(Integer, ForeignKey("users.id"), nullable=True)

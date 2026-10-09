@@ -131,6 +131,7 @@ class LeaveCreate(BaseModel):
     start_date: date
     end_date: date
     reason: Optional[str] = None
+    half_day: Optional[bool] = False
 
 
 class LeaveOut(BaseModel):
@@ -141,6 +142,8 @@ class LeaveOut(BaseModel):
     start_date: date
     end_date: date
     days: int
+    half_day: Optional[bool] = False
+    days_effective: Optional[float] = None       # 0.5 for a half-day, else = days
     reason: Optional[str]
     status: str
     approver_id: Optional[int]

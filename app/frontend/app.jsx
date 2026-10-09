@@ -5372,15 +5372,18 @@ function ArchiveView({ user }) {
 
 /* ============================== Leave management ============================== */
 const LEAVE_TYPES = ['Casual', 'Sick', 'Earned', 'Unpaid'];
+const leaveDays = l => l.days_effective ?? (l.half_day ? 0.5 : Number(l.days || 0));
+const leaveDuration = l => l.half_day ? '0.5 (Half day)' : leaveDays(l);
 function LeaveView({ user }) {
   const [bal, setBal] = useState(null); const [mine, setMine] = useState(null);
   const [team, setTeam] = useState(null); const [ins, setIns] = useState(null);
   // HR + head office approve leave org-wide, alongside admin/manager.
   const isMgr = ['admin', 'manager', 'hr', 'headoffice'].includes(user.role);
-  // Leave history (all employees) is an HR / manager function — admin is left out of it.
-  const canSeeHistory = ['manager', 'hr', 'headoffice'].includes(user.role);
+  // Leave history + per-employee balances — HR / manager / head office / admin.
+  const canSeeHistory = ['admin', 'manager', 'hr', 'headoffice'].includes(user.role);
   const [ltype, setLtype] = useState('Casual'); const [s1, setS1] = useState(''); const [s2, setS2] = useState('');
   const [reason, setReason] = useState(''); const [busy, setBusy] = useState(false);
+  const [half, setHalf] = useState(false);          // half-day leave (single date, 0.5)
   // Leave history (all employees) — filters + search, HR/admin/manager/head office.
   const [hist, setHist] = useState(null);
   const [hf, setHf] = useState({ status: 'all', type: 'all', from: '', to: '', q: '', role: 'all' });
@@ -5416,11 +5419,14 @@ function LeaveView({ user }) {
   };
   useEffect(() => { load(); }, []);
   useEffect(() => { loadHist(); }, [hf.status, hf.type, hf.from, hf.to, hf.role]);
+  useDataChanged(load);
   useEffect(() => { loadBals(); }, [balRole]);
   const apply = async () => {
-    if (!s1 || !s2) return; setBusy(true);
-    try { await api('/api/leaves', { method: 'POST', body: { leave_type: ltype, start_date: s1, end_date: s2, reason } });
-      toast('Leave applied.'); setReason(''); setS1(''); setS2(''); load();
+    if (busy || !s1 || (!half && !s2)) return;
+    if (!half && s2 < s1) { toast('End date must be on or after start date.', 'err'); return; }
+    setBusy(true);
+    try { await api('/api/leaves', { method: 'POST', body: { leave_type: ltype, start_date: s1, end_date: half ? s1 : s2, half_day: half, reason } });
+      toast(half ? 'Half-day leave requested (0.5 day).' : 'Leave applied.'); setReason(''); setS1(''); setS2(''); setHalf(false); load();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
   const decide = async (id, d) => { try { await api(`/api/leaves/${id}/${d}`, { method: 'POST' }); toast(d === 'approve' ? 'Approved' : 'Rejected'); load(); } catch (e) { toast(e.message, 'err'); } };
@@ -5431,7 +5437,7 @@ function LeaveView({ user }) {
       {isMgr && ins && <div className="kpis">
         <div className="glass kpi"><div className="l">Pending approvals</div><div className="v">{ins.pending}</div></div>
         <div className="glass kpi"><div className="l">On leave today</div><div className="v">{ins.on_leave_today.length}</div>
-          <div className="sub">{ins.on_leave_today.map(x => x.name).join(', ') || '—'}</div></div>
+          <div className="sub">{ins.on_leave_today.map(x => x.name + (x.half_day ? ' (half day)' : '')).join(', ') || '—'}</div></div>
         <div className="glass kpi"><div className="l">Upcoming (7 days)</div><div className="v">{ins.upcoming_week}</div></div>
       </div>}
       {isMgr && team && <div className="glass card" style={{ marginBottom: 16 }}>
@@ -5441,7 +5447,7 @@ function LeaveView({ user }) {
             <thead><tr><th>Who</th><th>Type</th><th>Dates</th><th>Days</th><th>Reason</th><th></th></tr></thead>
             <tbody>{team.map(l => <tr key={l.id}>
               <td><b>{l.user_name}</b><div className="muted" style={{ fontSize: 11.5 }}>{l.user_branch}</div></td>
-              <td>{l.leave_type}</td><td className="muted">{l.start_date} → {l.end_date}</td><td className="mono">{l.days}</td>
+              <td>{l.leave_type}</td><td className="muted">{l.start_date} → {l.end_date}</td><td className="mono">{leaveDuration(l)}</td>
               <td className="muted">{l.reason || '—'}</td>
               <td style={{ whiteSpace: 'nowrap' }}>{l.user_id === user.id
                 ? <span className="muted" style={{ fontSize: 11.5 }}>Your request — sent to Admin</span>
@@ -5451,14 +5457,16 @@ function LeaveView({ user }) {
       <div className="grid2" style={{ gridTemplateColumns: '1.2fr 1fr' }}>
         <div className="glass card">
           <div className="section-h"><h3 style={{ fontSize: 15 }}>Apply for leave</h3></div>
+          <div className="field"><label htmlFor="leave-duration">Duration</label><select id="leave-duration" className="input" value={half ? 'half' : 'full'} disabled={busy} onChange={e => { const h = e.target.value === 'half'; setHalf(h); if (h) setS2(s1); }}><option value="full">Full day / multiple days</option><option value="half">Half day (0.5 day)</option></select></div>
           <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
             <div className="field"><label>Type</label><select className="input" value={ltype} onChange={e => setLtype(e.target.value)}>{LEAVE_TYPES.map(t => <option key={t}>{t}</option>)}</select></div>
             <div className="field"><label>Balance</label><div className="input" style={{ display: 'flex', alignItems: 'center' }}>{curBal ? (curBal.remaining != null ? `${curBal.remaining} of ${curBal.allowance} left` : 'no limit') : '—'}</div></div>
-            <div className="field"><label>From</label><input className="input" type="date" value={s1} onChange={e => setS1(e.target.value)} /></div>
-            <div className="field"><label>To</label><input className="input" type="date" value={s2} onChange={e => setS2(e.target.value)} /></div>
+            <div className="field"><label htmlFor="leave-start">{half ? 'Date' : 'From'}</label><input id="leave-start" className="input" type="date" value={s1} disabled={busy} onChange={e => { setS1(e.target.value); if (half) setS2(e.target.value); }} /></div>
+            {!half && <div className="field"><label htmlFor="leave-end">To</label><input id="leave-end" className="input" type="date" min={s1 || undefined} value={s2} disabled={busy} onChange={e => setS2(e.target.value)} /></div>}
           </div>
+          {half && <p className="muted" style={{ fontSize: 12 }}>Single-date request. Once approved: 0.5 day leave; the remaining half is based on attendance. Pending requests do not change attendance.</p>}
           <div className="field"><label>Reason</label><textarea className="input" value={reason} onChange={e => setReason(e.target.value)} /></div>
-          <button className="btn gold block" onClick={apply} disabled={busy || !s1 || !s2}>Apply for leave</button>
+          <button className="btn gold block" onClick={apply} disabled={busy || !s1 || (!half && (!s2 || s2 < s1))}>{busy ? 'Submitting…' : half ? 'Request half-day leave' : 'Apply for leave'}</button>
         </div>
         <div className="glass card">
           <div className="section-h"><h3 style={{ fontSize: 15 }}>My balances (this year)</h3></div>
@@ -5474,7 +5482,7 @@ function LeaveView({ user }) {
           <div className="tablewrap"><table>
             <thead><tr><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Reason</th></tr></thead>
             <tbody>{mine.map(l => <tr key={l.id}>
-              <td>{l.leave_type}</td><td className="muted">{l.start_date} → {l.end_date}</td><td className="mono">{l.days}</td>
+              <td>{l.leave_type}</td><td className="muted">{l.start_date} → {l.end_date}</td><td className="mono">{leaveDuration(l)}</td>
               <td><span className={cx('badge', stBadge(l.status))}>{l.status}</span></td><td className="muted">{l.reason || '—'}</td>
             </tr>)}</tbody></table></div>}
       </div>
@@ -5512,12 +5520,12 @@ function LeaveView({ user }) {
               <thead><tr><th>Who</th><th>Role</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Approver</th><th>Reason</th></tr></thead>
               <tbody>{months.map(ym => <React.Fragment key={ym}>
                 <tr><td colSpan={8} style={{ background: 'var(--line)', fontWeight: 700, fontSize: 12.5, color: 'var(--ink)' }}>
-                  🗓️ {monthLabel(ym)} · {groups[ym].length} request{groups[ym].length === 1 ? '' : 's'} · {groups[ym].reduce((a, l) => a + (l.days || 0), 0)} days
+                  🗓️ {monthLabel(ym)} · {groups[ym].length} request{groups[ym].length === 1 ? '' : 's'} · {groups[ym].reduce((a, l) => a + leaveDays(l), 0)} days
                 </td></tr>
                 {groups[ym].map(l => <tr key={l.id}>
                   <td><b>{l.user_name}</b><div className="muted" style={{ fontSize: 11.5 }}>{l.user_branch || '—'}</div></td>
                   <td className="muted">{(ROLE_OPTS.find(r => r[0] === l.user_role) || [, l.user_role])[1] || '—'}</td>
-                  <td>{l.leave_type}</td><td className="muted" style={{ whiteSpace: 'nowrap' }}>{l.start_date} → {l.end_date}</td><td className="mono">{l.days}</td>
+                  <td>{l.leave_type}</td><td className="muted" style={{ whiteSpace: 'nowrap' }}>{l.start_date} → {l.end_date}</td><td className="mono">{leaveDuration(l)}</td>
                   <td><span className={cx('badge', stBadge(l.status))}>{l.status}</span></td>
                   <td className="muted">{l.approver_name || '—'}</td><td className="muted">{l.reason || '—'}</td>
                 </tr>)}
@@ -8618,7 +8626,10 @@ const isMobileDevice = () => { try { return /android|iphone|ipad|ipod|mobile|win
 const fmtDur = (s) => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h}h ${m}m` : `${m}m`; };
 // Attendance times render in IST via the shared helper (treats naive server times as UTC).
 const fmtTime = fmtTimeIST;
-const ATT_COLOR = { present: '#16A34A', P: '#16A34A', L: '#D97706', A: '#DC2626', W: '#94A3B8', LV: '#2563EB', leave: '#2563EB', absent: '#DC2626', weekoff: '#94A3B8' };
+const ATT_COLOR = { half_leave: '#7C3AED', HD: '#7C3AED', present: '#16A34A', P: '#16A34A', L: '#D97706', A: '#DC2626', W: '#94A3B8', LV: '#2563EB', leave: '#2563EB', absent: '#DC2626', weekoff: '#94A3B8' };
+const attendanceLabel = r => r.half_day_leave || r.status === 'half_leave'
+  ? 'Half-day leave' + (r.check_in_at ? (r.late ? ' · checked in late' : ' · checked in') : ' · no check-in')
+  : r.status === 'leave' ? 'Leave' : r.late ? 'Late' : ({ present: 'Present', weekoff: 'Week-off', absent: 'Absent' }[r.status] || r.status || '');
 
 function PresenceBadge({ p }) {
   if (!p) return null;
@@ -8771,6 +8782,7 @@ function AttendanceView({ user }) {
   const loadMon = () => { const p = new URLSearchParams(); p.set('month', month); if (role) p.set('role', role); api('/api/attendance/month?' + p).then(setMon).catch(() => setMon(null)); };
   useEffect(() => { if (tab === 'today') loadDay(); }, [tab, date, role]);
   useEffect(() => { if (tab === 'month') loadMon(); }, [tab, month, role]);
+  useDataChanged(() => { if (tab === 'today') loadDay(); else loadMon(); });
   useEffect(() => { if (tab !== 'today') return; const t = setInterval(loadDay, 30000); return () => clearInterval(t); }, [tab, date, role]);
   const roles = day ? [...new Set(day.rows.map(r => r.role))].sort() : [];
   // Locations (branches) present in the currently-loaded data — drives the location filter chips.
@@ -8781,6 +8793,7 @@ function AttendanceView({ user }) {
   const online = r => r.presence && (r.presence.state === 'active' || r.presence.state === 'idle');
   const passStat = r => statF === '' || (statF === 'present' && r.status === 'present') || (statF === 'late' && r.late)
     || (statF === 'absent' && r.status === 'absent') || (statF === 'leave' && r.status === 'leave')
+    || (statF === 'half_leave' && (r.half_day_leave || r.status === 'half_leave'))
     || (statF === 'online' && online(r));
   const passLoc = r => !loc || (r.branch || '').trim().toLowerCase() === loc.toLowerCase();
   // Base set = location + search filtered (but NOT the status KPI filter), so the KPI counts
@@ -8790,6 +8803,7 @@ function AttendanceView({ user }) {
   // applied filters together. Role is already applied server-side; location + search are applied above.
   const summary = { present: baseRows.filter(r => r.status === 'present').length, late: baseRows.filter(r => r.late).length,
     absent: baseRows.filter(r => r.status === 'absent').length, leave: baseRows.filter(r => r.status === 'leave').length,
+    half_leave: baseRows.filter(r => r.half_day_leave || r.status === 'half_leave').length,
     online: baseRows.filter(r => online(r)).length, total: baseRows.length };
   const rows = baseRows.filter(r => passStat(r));
   const people = (mon ? mon.people : []).filter(p => passLoc(p) && (!q || (p.name || '').toLowerCase().includes(q.toLowerCase()) || (p.emp_code || '').toLowerCase().includes(q.toLowerCase())));
@@ -8797,12 +8811,12 @@ function AttendanceView({ user }) {
   // Human-readable summary of exactly which filters are applied — printed/exported as a caption
   // so the sheet says e.g. "Field Agent · Absent". Uses the same filtered `rows` shown on screen.
   const filterLabel = () => { const parts = []; if (loc) parts.push('📍 ' + loc); if (role) parts.push(roleName(role)); if (statF) parts.push(statF === 'online' ? 'Online now' : statF.charAt(0).toUpperCase() + statF.slice(1)); if (q) parts.push('“' + q + '”'); return parts.length ? parts.join(' · ') : 'All staff'; };
-  const DAY_COLS = ['Name', 'Emp ID', 'Role', 'Status', 'Presence', 'Check-in', 'Check-out', 'Worked', 'Idle', 'Calls', 'Visits', 'Collected'];
+  const DAY_COLS = ['Name', 'Emp ID', 'Role', 'Status', 'Present days', 'Leave days', 'Absent days', 'Presence', 'Check-in', 'Check-out', 'Worked', 'Idle', 'Calls', 'Visits', 'Collected'];
   const dayCell = (r) => {
-    const st = r.late ? 'Late' : r.status === 'present' ? 'Present' : r.status === 'leave' ? 'Leave' : r.status === 'weekoff' ? 'Week-off' : r.status === 'absent' ? 'Absent' : (r.status || '');
+    const st = attendanceLabel(r);
     const pres = r.presence ? (r.presence.state === 'active' ? 'Active' : r.presence.state === 'idle' ? 'Idle' : 'Offline') : 'Offline';
     const act = r.show_activity;
-    return [r.name || '', r.emp_code || '', roleName(r.role), st, pres, fmtTime(r.check_in_at) || '', fmtTime(r.check_out_at) || '', fmtDur(r.worked_seconds) || '', fmtDur(r.idle_seconds) || '', act ? (r.calls || 0) : '—', act ? (r.visits || 0) : '—', act ? money(r.collected) : '—'];
+    return [r.name || '', r.emp_code || '', roleName(r.role), st, r.present_days ?? '', r.leave_days ?? '', r.absent_days ?? '', pres, fmtTime(r.check_in_at) || '', fmtTime(r.check_out_at) || '', fmtDur(r.worked_seconds) || '', fmtDur(r.idle_seconds) || '', act ? (r.calls || 0) : '—', act ? (r.visits || 0) : '—', act ? money(r.collected) : '—'];
   };
   const printDay = () => {
     const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -8830,7 +8844,7 @@ function AttendanceView({ user }) {
     const tag = (filterLabel() === 'All staff' ? 'all' : filterLabel().replace(/[^a-z0-9]+/gi, '-')).toLowerCase();
     saveBlob(`Attendance_${date}_${tag}.csv`, blob);   // routes through native Save-As in the desktop app
   };
-  const stTag = (r) => { const s = r.late ? 'Late' : r.status === 'present' ? 'Present' : r.status === 'leave' ? 'Leave' : r.status === 'weekoff' ? 'Week-off' : r.status === 'absent' ? 'Absent' : r.status; const c = ATT_COLOR[r.late ? 'L' : r.status] || '#64748B'; return <span style={{ color: c, fontWeight: 700, fontSize: 12.5 }}>{s}</span>; };
+  const stTag = (r) => { const c = ATT_COLOR[r.half_day_leave ? 'HD' : r.late ? 'L' : r.status] || '#64748B'; return <span style={{ color: c, fontWeight: 700, fontSize: 12.5 }}>{attendanceLabel(r)}</span>; };
   return <div>
     <div className="toolbar" style={{ marginBottom: 10 }}>
       <div className={cx('chip', tab === 'today' && 'on')} onClick={() => setTab('today')}>📅 Day</div>
@@ -8859,6 +8873,7 @@ function AttendanceView({ user }) {
       <div className="kpi-row" style={{ marginBottom: 10 }}>
         {[['present', 'Present', summary.present, 'var(--good)'], ['late', 'Late', summary.late, 'var(--warn)'],
           ['absent', 'Absent', summary.absent, 'var(--bad)'], ['leave', 'On leave', summary.leave, 'var(--info)'],
+          ['half_leave', 'Half-day leave', summary.half_leave, '#7C3AED'],
           ['online', 'Online now', summary.online, 'var(--ink)']].map(([key, label, val, color]) =>
           <div key={key} className="glass card" onClick={() => setStatF(statF === key ? '' : key)}
             style={{ cursor: 'pointer', border: statF === key ? '2px solid ' + color : undefined }}>
@@ -8893,19 +8908,19 @@ function AttendanceView({ user }) {
       <table className="tbl" style={{ minWidth: 900, fontSize: 12 }}>
         <thead><tr><th style={{ position: 'sticky', left: 0, background: 'var(--glass-2)' }}>Name</th>
           {mon.days.map(d => <th key={d} style={{ padding: '6px 3px' }}>{d.slice(8)}</th>)}
-          <th>P</th><th>Late</th><th>Lv</th><th>Abs</th><th>Hrs</th></tr></thead>
+          <th>P</th><th>Late</th><th>Lv</th><th>Abs</th><th>HD</th><th>Hrs</th></tr></thead>
         <tbody>
           {people.map(p => <tr key={p.user_id}>
             <td style={{ position: 'sticky', left: 0, background: 'var(--glass-2)', cursor: 'pointer' }} onClick={() => setDetail({ id: p.user_id, date: month + '-01' })}><b>{p.name}</b><div className="muted" style={{ fontSize: 10 }}>{p.emp_code || ''}</div></td>
             {mon.days.map(d => { const v = p.days[d] || ''; return <td key={d} style={{ textAlign: 'center', color: ATT_COLOR[v] || '#94A3B8', fontWeight: 700 }}>{v}</td>; })}
             <td style={{ textAlign: 'center' }}>{p.present}</td><td style={{ textAlign: 'center', color: 'var(--warn)' }}>{p.late}</td>
             <td style={{ textAlign: 'center', color: 'var(--info)' }}>{p.leave}</td><td style={{ textAlign: 'center', color: 'var(--bad)' }}>{p.absent}</td>
-            <td style={{ textAlign: 'center' }}>{p.worked_hours}</td>
+            <td style={{ textAlign: 'center', color: '#7C3AED' }}>{p.half_days || 0}</td><td style={{ textAlign: 'center' }}>{p.worked_hours}</td>
           </tr>)}
-          {people.length === 0 && <tr><td colSpan={mon.days.length + 6} className="muted" style={{ textAlign: 'center', padding: 20 }}>No data.</td></tr>}
+          {people.length === 0 && <tr><td colSpan={mon.days.length + 7} className="muted" style={{ textAlign: 'center', padding: 20 }}>No data.</td></tr>}
         </tbody>
       </table>
-      <div className="muted" style={{ fontSize: 11, padding: '6px 10px' }}>Legend: <b style={{ color: '#16A34A' }}>P</b> Present · <b style={{ color: '#D97706' }}>L</b> Late · <b style={{ color: '#2563EB' }}>LV</b> Leave · <b style={{ color: '#DC2626' }}>A</b> Absent · <b style={{ color: '#94A3B8' }}>W</b> Week-off</div>
+      <div className="muted" style={{ fontSize: 11, padding: '6px 10px' }}>Legend: P Present · L Late · LV Leave · HD Half-day leave · A Absent · W Week-off. HD = 0.5 leave + 0.5 present if checked in; otherwise 0.5 absent for past dates only. HD total counts requests/dates, not extra credited days.</div>
     </div>)}
 
     {detail && <AttendanceDetail id={detail.id} date={detail.date} onClose={() => setDetail(null)} />}
@@ -8955,7 +8970,7 @@ function AttendanceDetail({ id, date, onClose }) {
           {d.row.show_activity && <div className="glass card" onClick={(d.row.calls || 0) > 0 ? toggleCalls : undefined} style={(d.row.calls || 0) > 0 ? { cursor: 'pointer', outline: calls !== null ? '2px solid var(--brand)' : 'none' } : {}} title={(d.row.calls || 0) > 0 ? 'Click to see call logs' : ''}><div className="k">Calls{d.row.team_total ? ' (team)' : ''}{(d.row.calls || 0) > 0 ? ' 🔽' : ''}</div><b>{d.row.calls || 0}</b></div>}
           {d.row.show_activity && <div className="glass card" onClick={(d.row.visits || 0) > 0 ? toggleVisits : undefined} style={(d.row.visits || 0) > 0 ? { cursor: 'pointer', outline: visits !== null ? '2px solid var(--brand)' : 'none' } : {}} title={(d.row.visits || 0) > 0 ? 'Click to see logged visits with photos' : ''}><div className="k">Visits{d.row.team_total ? ' (team)' : ''}{(d.row.visits || 0) > 0 ? ' 🔽' : ''}</div><b>{d.row.visits || 0}</b></div>}
           {d.row.show_activity && <div className="glass card"><div className="k">Collected{d.row.team_total ? ' (team)' : ''}</div><b style={{ color: 'var(--good)' }}>{money(d.row.collected)}</b></div>}
-          <div className="glass card"><div className="k">Status</div><b style={{ color: ATT_COLOR[d.row.late ? 'L' : d.row.status] || '#64748B' }}>{d.row.late ? 'Present (late)' : (d.row.status || '').replace(/^\w/, c => c.toUpperCase())}</b></div>
+          <div className="glass card"><div className="k">Status</div><b style={{ color: ATT_COLOR[d.row.half_day_leave ? 'HD' : d.row.late ? 'L' : d.row.status] || '#64748B' }}>{attendanceLabel(d.row)}</b>{d.row.half_day_leave && <div className="muted">{d.row.leave_days} leave · {d.row.present_days} present · {d.row.absent_days} absent</div>}</div>
         </div>
         {d.row.check_in_lat != null && <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>📍 Check-in location: {d.row.check_in_lat.toFixed(5)}, {d.row.check_in_lng.toFixed(5)} · <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${d.row.check_in_lat},${d.row.check_in_lng}`}>view on map</a></div>}
         {d.row.role === 'fos' && d.row.live_lat != null && <div style={{ fontSize: 12, marginBottom: 8, color: 'var(--good)', fontWeight: 600 }}>🛰 Live location ({fmtTime(d.row.live_at)}): {d.row.live_lat.toFixed(5)}, {d.row.live_lng.toFixed(5)} · <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${d.row.live_lat},${d.row.live_lng}`}>track on map</a></div>}

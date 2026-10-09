@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -43,6 +44,7 @@ import `in`.recoveriq.app.ui.common.EmptyState
 import `in`.recoveriq.app.ui.common.InfoCard
 import `in`.recoveriq.app.ui.common.SectionTitle
 import `in`.recoveriq.app.ui.common.StatusChip
+import `in`.recoveriq.app.ui.common.rememberLiveKey
 import `in`.recoveriq.app.ui.theme.Bad
 import `in`.recoveriq.app.ui.theme.BrandBlue
 import `in`.recoveriq.app.ui.theme.Good
@@ -53,6 +55,9 @@ import kotlinx.coroutines.launch
 fun LeaveScreen(vm: AuthViewModel, user: User) {
     var refresh by remember { mutableIntStateOf(0) }
     var showApply by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val live = rememberLiveKey()
     val scope = rememberCoroutineScope()
     val canApprove = user.isManager || user.isAdmin || user.role == "hr" || user.role == "headoffice"
     // Leave history (all employees) is an HR / manager function — admin is left out of it.
@@ -65,7 +70,7 @@ fun LeaveScreen(vm: AuthViewModel, user: User) {
     Scaffold(
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { showApply = true },
+                onClick = { if (!busy) { error = null; showApply = true } },
                 icon = { Icon(Icons.Filled.Add, null) },
                 text = { Text("Apply") },
                 containerColor = BrandBlue,
@@ -77,8 +82,9 @@ fun LeaveScreen(vm: AuthViewModel, user: User) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 12.dp, bottom = 90.dp),
         ) {
+            error?.let { message -> item { Text(message, color = Bad) } }
             item {
-                AsyncContent(key = refresh, block = { vm.repo.leaveBalance() }) { bal, _ ->
+                AsyncContent(key = "$refresh:$live", block = { vm.repo.leaveBalance() }) { bal, _ ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         bal.forEach { b ->
                             InfoCard(Modifier.weight(1f)) {
@@ -92,12 +98,16 @@ fun LeaveScreen(vm: AuthViewModel, user: User) {
             }
             item { SectionTitle(if (canApprove) "Pending approvals" else "My leave") }
             item {
-                AsyncContent(key = refresh, block = { vm.repo.leaves(status = if (canApprove) "pending" else null, scope = if (canApprove) "team" else "mine") }) { leaves, _ ->
+                AsyncContent(key = "$refresh:$live", block = { vm.repo.leaves(status = if (canApprove) "pending" else null, scope = if (canApprove) "team" else "mine") }) { leaves, _ ->
                     if (leaves.isEmpty()) EmptyState(if (canApprove) "Nothing to approve." else "No leave records.")
                     else Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         leaves.forEach { lv ->
-                            LeaveCard(lv, canApprove && lv.userId != user.id) { approve ->
-                                scope.launch { runCatching { vm.repo.decideLeave(lv.id, approve) }; refresh++ }
+                            LeaveCard(lv, canApprove && !busy && lv.userId != user.id) { approve ->
+                                if (!busy) { busy = true; error = null; scope.launch {
+                                    runCatching { vm.repo.decideLeave(lv.id, approve) }
+                                        .onSuccess { refresh++ }.onFailure { error = leaveError(it) }
+                                    busy = false
+                                } }
                             }
                         }
                     }
@@ -106,7 +116,7 @@ fun LeaveScreen(vm: AuthViewModel, user: User) {
             if (!canApprove) {
                 item { SectionTitle("My leave history") }
                 item {
-                    AsyncContent(key = refresh, block = { vm.repo.leaves(scope = "mine") }) { leaves, _ ->
+                    AsyncContent(key = "$refresh:$live", block = { vm.repo.leaves(scope = "mine") }) { leaves, _ ->
                         if (leaves.isEmpty()) EmptyState("No leave records.")
                         else Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             leaves.forEach { lv -> LeaveCard(lv, false) {} }
@@ -133,7 +143,7 @@ fun LeaveScreen(vm: AuthViewModel, user: User) {
                 }
                 item {
                     AsyncContent(
-                        key = "hist:$histStatus:$histType:$histQ:$refresh",
+                        key = "hist:$histStatus:$histType:$histQ:$refresh:$live",
                         block = {
                             vm.repo.leaves(
                                 status = histStatus.takeIf { it != "all" },
@@ -154,9 +164,22 @@ fun LeaveScreen(vm: AuthViewModel, user: User) {
     }
 
     if (showApply) ApplyLeaveDialog(
-        onDismiss = { showApply = false },
-        onConfirm = { body -> scope.launch { runCatching { vm.repo.applyLeave(body) }; showApply = false; refresh++ } },
+        busy = busy, error = error,
+        onDismiss = { if (!busy) showApply = false },
+        onConfirm = { body -> if (!busy) { busy = true; error = null; scope.launch {
+            runCatching { vm.repo.applyLeave(body) }
+                .onSuccess { showApply = false; refresh++ }.onFailure { error = leaveError(it) }
+            busy = false
+        } } },
     )
+}
+
+private fun leaveError(t: Throwable): String {
+    if (t is retrofit2.HttpException) {
+        val detail = runCatching { org.json.JSONObject(t.response()?.errorBody()?.string() ?: "{}").optString("detail") }.getOrNull()
+        if (!detail.isNullOrBlank()) return detail
+    }
+    return "Could not save the leave request. Check your connection and try again."
 }
 
 @Composable
@@ -165,7 +188,7 @@ private fun LeaveCard(lv: Leave, canApprove: Boolean, onDecide: (Boolean) -> Uni
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column(Modifier.weight(1f)) {
                 Text(lv.userName ?: (lv.leaveType ?: "Leave"), fontWeight = FontWeight.SemiBold)
-                Text("${lv.leaveType} · ${lv.days} day${if (lv.days > 1) "s" else ""}",
+                Text("${lv.leaveType} · ${lv.daysEffective ?: if (lv.halfDay == true) 0.5 else lv.days.toDouble()} day(s)${if (lv.halfDay == true) " · Half day" else ""}",
                     style = MaterialTheme.typography.bodySmall, color = Muted)
                 Text("${DateUtil.humanDate(lv.startDate)} → ${DateUtil.humanDate(lv.endDate)}",
                     style = MaterialTheme.typography.bodySmall, color = Muted)
@@ -184,12 +207,13 @@ private fun LeaveCard(lv: Leave, canApprove: Boolean, onDecide: (Boolean) -> Uni
 }
 
 @Composable
-private fun ApplyLeaveDialog(onDismiss: () -> Unit, onConfirm: (LeaveCreate) -> Unit) {
+private fun ApplyLeaveDialog(busy: Boolean, error: String?, onDismiss: () -> Unit, onConfirm: (LeaveCreate) -> Unit) {
     val types = listOf("Casual", "Sick", "Earned", "Unpaid")
     var type by remember { mutableStateOf("Casual") }
     var startIso by remember { mutableStateOf(DateUtil.plusDaysIso(0)) }
     var endIso by remember { mutableStateOf(DateUtil.plusDaysIso(0)) }
     var reason by remember { mutableStateOf("") }
+    var halfDay by remember { mutableStateOf(false) }
     val days = DateUtil.daysInclusive(startIso, endIso)
 
     AlertDialog(
@@ -201,26 +225,31 @@ private fun ApplyLeaveDialog(onDismiss: () -> Unit, onConfirm: (LeaveCreate) -> 
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text("Type", style = MaterialTheme.typography.labelSmall, color = Muted)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     types.forEach { t -> FilterChip(selected = type == t, onClick = { type = t }, label = { Text(t) }) }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(selected = !halfDay, enabled = !busy, onClick = { halfDay = false }, label = { Text("Full day(s)") })
+                    FilterChip(selected = halfDay, enabled = !busy, onClick = { halfDay = true; endIso = startIso }, label = { Text("Half day (0.5)") })
                 }
                 DatePickerField("Start date", startIso) { picked ->
                     startIso = picked
-                    if ((DateUtil.millisFromIso(endIso) ?: 0) < (DateUtil.millisFromIso(picked) ?: 0)) endIso = picked
+                    if (halfDay || (DateUtil.millisFromIso(endIso) ?: 0) < (DateUtil.millisFromIso(picked) ?: 0)) endIso = picked
                 }
-                DatePickerField("End date", endIso) { picked ->
+                if (!halfDay) DatePickerField("End date", endIso) { picked ->
                     endIso = if ((DateUtil.millisFromIso(picked) ?: 0) < (DateUtil.millisFromIso(startIso) ?: 0)) startIso else picked
                 }
-                Text("Duration: $days day${if (days > 1) "s" else ""}",
+                Text(if (halfDay) "Duration: 0.5 day. Counts in attendance only after approval." else "Duration: $days day${if (days > 1) "s" else ""}",
                     style = MaterialTheme.typography.labelSmall, color = Muted)
                 Fld(reason, "Reason (optional)") { reason = it }
+                error?.let { Text(it, color = Bad) }
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                onConfirm(LeaveCreate(leaveType = type, startDate = startIso, endDate = endIso, reason = reason.ifBlank { null }))
-            }) { Text("Submit") }
+            TextButton(enabled = !busy && days > 0, onClick = {
+                onConfirm(LeaveCreate(leaveType = type, startDate = startIso, endDate = if (halfDay) startIso else endIso, reason = reason.ifBlank { null }, halfDay = halfDay))
+            }) { Text(if (busy) "Submitting…" else "Submit") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(enabled = !busy, onClick = onDismiss) { Text("Cancel") } },
     )
 }

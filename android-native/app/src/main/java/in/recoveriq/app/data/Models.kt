@@ -517,6 +517,10 @@ data class AttRow(
     val role: String? = null,
     val status: String = "absent",
     val late: Boolean = false,
+    @Json(name = "half_day_leave") val halfDayLeave: Boolean = false,
+    @Json(name = "present_days") val presentDays: Double = 0.0,
+    @Json(name = "leave_days") val leaveDays: Double = 0.0,
+    @Json(name = "absent_days") val absentDays: Double = 0.0,
     @Json(name = "check_in_at") val checkInAt: String? = null,
     @Json(name = "check_out_at") val checkOutAt: String? = null,
     @Json(name = "check_in_lat") val checkInLat: Double? = null,
@@ -554,6 +558,7 @@ data class HeartbeatResp(
 
 @JsonClass(generateAdapter = true)
 data class AttDaySummary(
+    @Json(name = "half_leave") val halfLeave: Int = 0,
     val present: Int = 0, val late: Int = 0, val absent: Int = 0,
     val leave: Int = 0, val online: Int = 0, val total: Int = 0,
 )
@@ -654,6 +659,8 @@ data class Leave(
     @Json(name = "start_date") val startDate: String,
     @Json(name = "end_date") val endDate: String,
     val days: Int,
+    @Json(name = "half_day") val halfDay: Boolean? = false,
+    @Json(name = "days_effective") val daysEffective: Double? = null,
     val reason: String? = null,
     val status: String,
     @Json(name = "user_name") val userName: String? = null,
@@ -667,15 +674,16 @@ data class LeaveCreate(
     @Json(name = "start_date") val startDate: String,
     @Json(name = "end_date") val endDate: String,
     val reason: String? = null,
+    @Json(name = "half_day") val halfDay: Boolean = false,
 )
 
 @JsonClass(generateAdapter = true)
 data class LeaveBalance(
     val type: String,
     val allowance: Int? = null,
-    val used: Int = 0,
-    val pending: Int = 0,
-    val remaining: Int? = null,
+    val used: Double = 0.0,
+    val pending: Double = 0.0,
+    val remaining: Double? = null,
 )
 
 // ---- Profile change requests ----

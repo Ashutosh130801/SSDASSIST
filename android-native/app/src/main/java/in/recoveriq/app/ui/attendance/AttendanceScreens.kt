@@ -302,7 +302,12 @@ private fun Any?.rowsOf(): List<Map<String, Any?>> =
 private fun Any?.mapOf2(): Map<String, Any?> = (this as? Map<String, Any?>) ?: emptyMap()
 
 private fun Any?.i(): Int = (this as? Number)?.toInt() ?: 0
+private fun Any?.dayUnits(): String {
+    val n = (this as? Number)?.toDouble() ?: 0.0
+    return if (n == n.toInt().toDouble()) n.toInt().toString() else n.toString()
+}
 private fun letterColor(v: String): Color = when (v) {
+    "HD" -> Color(0xFF7C3AED)
     "P" -> Good; "L" -> Warn; "LV" -> BrandBlue; "A" -> Color(0xFFDC2626); "W" -> MutedDim; else -> MutedDim
 }
 
@@ -345,7 +350,7 @@ fun AttendanceScreen(vm: AuthViewModel, user: User) {
                                 color = BrandBlue, style = MaterialTheme.typography.labelSmall)
                             days.forEach { d -> Text(d.takeLast(2), Modifier.width(22.dp),
                                 fontWeight = FontWeight.Bold, color = Muted, style = MaterialTheme.typography.labelSmall) }
-                            listOf("P", "L", "LV", "A", "Hrs").forEach { h -> Text(h, Modifier.width(34.dp),
+                            listOf("P", "L", "LV", "A", "HD", "Hrs").forEach { h -> Text(h, Modifier.width(34.dp),
                                 fontWeight = FontWeight.Bold, color = BrandBlue, style = MaterialTheme.typography.labelSmall) }
                         }
                         people.forEach { p ->
@@ -358,16 +363,17 @@ fun AttendanceScreen(vm: AuthViewModel, user: User) {
                                     Text(v, Modifier.width(22.dp), color = letterColor(v),
                                         fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
                                 }
-                                Text("${p["present"].i()}", Modifier.width(34.dp), style = MaterialTheme.typography.labelSmall)
+                                Text(p["present"].dayUnits(), Modifier.width(34.dp), style = MaterialTheme.typography.labelSmall)
                                 Text("${p["late"].i()}", Modifier.width(34.dp), color = Warn, style = MaterialTheme.typography.labelSmall)
-                                Text("${p["leave"].i()}", Modifier.width(34.dp), color = BrandBlue, style = MaterialTheme.typography.labelSmall)
-                                Text("${p["absent"].i()}", Modifier.width(34.dp), color = Color(0xFFDC2626), style = MaterialTheme.typography.labelSmall)
+                                Text(p["leave"].dayUnits(), Modifier.width(34.dp), color = BrandBlue, style = MaterialTheme.typography.labelSmall)
+                                Text(p["absent"].dayUnits(), Modifier.width(34.dp), color = Color(0xFFDC2626), style = MaterialTheme.typography.labelSmall)
+                                Text("${p["half_days"].i()}", Modifier.width(34.dp), color = Color(0xFF7C3AED), style = MaterialTheme.typography.labelSmall)
                                 Text("${(p["worked_hours"] as? Number)?.toDouble() ?: 0.0}", Modifier.width(34.dp), style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
                 }
-                Text("P Present · L Late · LV Leave · A Absent · W Week-off. Download the full sheet from the web app.",
+                Text("P Present · L Late · LV Leave · HD Half-day leave · A Absent · W Week-off. HD = 0.5 leave plus 0.5 present if checked in; otherwise 0.5 absent on past dates only.",
                     color = Muted, style = MaterialTheme.typography.labelSmall)
             }
             return@Column
@@ -380,6 +386,7 @@ fun AttendanceScreen(vm: AuthViewModel, user: User) {
                 Kpi("Absent", d.summary.absent.toString(), Color(0xFFDC2626), Modifier.weight(1f))
                 Kpi("Online", d.summary.online.toString(), BrandBlue, Modifier.weight(1f))
             }
+            Text("On leave: ${d.summary.leave} full day · ${d.summary.halfLeave} half day", color = BrandBlue, style = MaterialTheme.typography.bodySmall)
             OutlinedTextField(value = q, onValueChange = { q = it }, singleLine = true,
                 label = { Text("Search name / ID") }, modifier = Modifier.fillMaxWidth())
             if (roles.isNotEmpty()) {
@@ -422,8 +429,9 @@ private fun openMap(ctx: Context, lat: Double, lng: Double) {
 @Composable
 private fun AttCard(r: AttRow) {
     val ctx = LocalContext.current
-    val statusColor = when { r.late -> Warn; r.status == "present" -> Good; r.status == "leave" -> BrandBlue; r.status == "absent" -> Color(0xFFDC2626); else -> MutedDim }
-    val statusText = if (r.late) "Present (late)" else (r.status.replaceFirstChar { it.uppercase() })
+    val half = r.halfDayLeave || r.status == "half_leave"
+    val statusColor = when { half -> Color(0xFF7C3AED); r.status == "leave" -> BrandBlue; r.late -> Warn; r.status == "present" -> Good; r.status == "absent" -> Color(0xFFDC2626); else -> MutedDim }
+    val statusText = if (half) "Half-day leave" else if (r.status == "leave") "Leave" else if (r.late) "Present (late)" else (r.status.replaceFirstChar { it.uppercase() })
     InfoCard {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column(Modifier.weight(1f)) {
@@ -434,6 +442,7 @@ private fun AttCard(r: AttRow) {
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(statusText, color = statusColor, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                if (half) Text("${r.leaveDays} leave · ${r.presentDays} present · ${r.absentDays} absent", style = MaterialTheme.typography.labelSmall, color = Muted)
                 Text("In ${hhmm(r.checkInAt)} · Out ${hhmm(r.checkOutAt)}",
                     style = MaterialTheme.typography.labelSmall, color = Muted)
                 Text("Worked ${fmtDur(r.workedSeconds)} · Idle ${fmtDur(r.idleSeconds)}",

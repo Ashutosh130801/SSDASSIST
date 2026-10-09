@@ -1,12 +1,13 @@
 from datetime import datetime, timezone, timedelta, date
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user, require_roles
+from ..leave_policy import effective_days
+from .. import audit
 
 router = APIRouter(prefix="/api/leaves", tags=["leaves"])
 
@@ -23,8 +24,40 @@ def _names(db):
     return {u.id: (u.name, u.branch, u.role) for u in db.query(models.User).all()}
 
 
+def _eff_days(lv):
+    """Effective leave days: a half-day counts 0.5, otherwise the calendar-day count."""
+    return effective_days(lv)
+
+
+def _overlap(db, uid, start, end, exclude=None):
+    q = db.query(models.Leave).filter(models.Leave.user_id == uid,
+        models.Leave.status.in_(("pending", "approved")),
+        models.Leave.start_date <= end, models.Leave.end_date >= start)
+    if exclude is not None:
+        q = q.filter(models.Leave.id != exclude)
+    return q.first()
+
+
+def _changed():
+    from .realtime import notify_data_changed
+    notify_data_changed()
+
+
+def _year_totals(db, uids, year):
+    start, end = date(year, 1, 1), date(year, 12, 31)
+    totals = {}
+    for lv in db.query(models.Leave).filter(models.Leave.user_id.in_(uids),
+            models.Leave.status.in_(("approved", "pending")),
+            models.Leave.start_date <= end, models.Leave.end_date >= start).all():
+        entry = totals.setdefault(lv.user_id, {}).setdefault(lv.leave_type, {"approved": 0.0, "pending": 0.0})
+        entry[lv.status] += effective_days(lv, start, end)
+    return totals
+
+
 def _out(lv, names):
     d = schemas.LeaveOut.model_validate(lv)
+    d.half_day = bool(lv.half_day)
+    d.days_effective = _eff_days(lv)
     nm = names.get(lv.user_id, (None, None, None))
     d.user_name, d.user_branch, d.user_role = nm[0], nm[1], nm[2]
     if lv.approver_id:
@@ -58,12 +91,21 @@ def apply_leave(body: schemas.LeaveCreate, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail=f"leave_type must be one of {LEAVE_TYPES}")
     if body.end_date < body.start_date:
         raise HTTPException(status_code=400, detail="end date must be on or after start date")
+    half = bool(getattr(body, "half_day", False))
+    if half and body.start_date != body.end_date:
+        raise HTTPException(status_code=400, detail="A half-day leave must be for a single date (From = To).")
+    db.query(models.User).filter_by(id=user.id).with_for_update().first()
+    if _overlap(db, user.id, body.start_date, body.end_date):
+        raise HTTPException(409, "A pending or approved leave already covers this date range.")
     days = (body.end_date - body.start_date).days + 1
     lv = models.Leave(user_id=user.id, leave_type=body.leave_type, start_date=body.start_date,
-                      end_date=body.end_date, days=days, reason=body.reason, status="pending")
+                      end_date=body.end_date, days=days, half_day=half, reason=body.reason, status="pending")
     db.add(lv)
+    audit.record(db, user, "leave_requested", entity_type="leave", target_user_id=user.id,
+                 detail=f"{body.leave_type}: {body.start_date} to {body.end_date}, {0.5 if half else days} day(s)")
     db.commit()
     db.refresh(lv)
+    _changed()
     return _out(lv, _names(db))
 
 
@@ -79,7 +121,7 @@ def list_leaves(status: str | None = None, scope: str = "auto",
     Optional history filters: status, leave_type, from_date/to_date (overlap), q (name/branch/type/reason)."""
     query = db.query(models.Leave)
     want_team = scope == "team" or (scope == "auto" and user.role in ("admin", "manager", "hr", "headoffice"))
-    if not want_team or user.role in ("fos", "telecaller"):
+    if not want_team or user.role not in ("admin", "manager", "hr", "headoffice"):
         query = query.filter(models.Leave.user_id == user.id)
     elif user.role == "manager":
         from sqlalchemy import select
@@ -113,16 +155,9 @@ def list_leaves(status: str | None = None, scope: str = "auto",
 @router.get("/balance")
 def balance(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     year = _today().year
-    jan1 = date(year, 1, 1)
-    rows = (db.query(models.Leave.leave_type, models.Leave.status, func.coalesce(func.sum(models.Leave.days), 0))
-            .filter(models.Leave.user_id == user.id, models.Leave.start_date >= jan1)
-            .group_by(models.Leave.leave_type, models.Leave.status).all())
-    used, pending = {}, {}
-    for lt, st, d in rows:
-        if st == "approved":
-            used[lt] = used.get(lt, 0) + int(d)
-        elif st == "pending":
-            pending[lt] = pending.get(lt, 0) + int(d)
+    totals = _year_totals(db, [user.id], year).get(user.id, {})
+    used = {t: v["approved"] for t, v in totals.items()}
+    pending = {t: v["pending"] for t, v in totals.items()}
     out = []
     for t in LEAVE_TYPES:
         allow = DEFAULT_ALLOWANCE.get(t, 0)
@@ -148,17 +183,7 @@ def balances(role: str | None = None, q: str | None = None, year: int | None = N
     users = users.order_by(models.User.name).all()
     uids = [u.id for u in users]
     # Sum approved/pending days per (user, type) within the year.
-    agg = {}
-    if uids:
-        rows = (db.query(models.Leave.user_id, models.Leave.leave_type, models.Leave.status,
-                         func.coalesce(func.sum(models.Leave.days), 0))
-                .filter(models.Leave.user_id.in_(uids),
-                        models.Leave.start_date >= jan1, models.Leave.start_date <= dec31)
-                .group_by(models.Leave.user_id, models.Leave.leave_type, models.Leave.status).all())
-        for uid, lt, st, d in rows:
-            agg.setdefault(uid, {}).setdefault(lt, {"approved": 0, "pending": 0})
-            if st in ("approved", "pending"):
-                agg[uid][lt][st] += int(d)
+    agg = _year_totals(db, uids, yr) if uids else {}
     out = []
     for u in users:
         per = agg.get(u.id, {})
@@ -196,11 +221,25 @@ def decide(leave_id: int, decision: str, db: Session = Depends(get_db),
         raise HTTPException(status_code=403, detail="You can't approve your own leave — it goes to an Administrator.")
     if not _can_manage(actor, target):
         raise HTTPException(status_code=403, detail="Not allowed to decide this request")
+    db.query(models.User).filter_by(id=lv.user_id).with_for_update().first()
+    db.refresh(lv)
+    desired = "approved" if decision == "approve" else "rejected"
+    if lv.status == desired:
+        return _out(lv, _names(db))
+    if lv.status != "pending":
+        raise HTTPException(409, "This request has already been decided.")
+    if decision == "approve" and lv.half_day and lv.start_date != lv.end_date:
+        raise HTTPException(400, "Half-day leave must cover a single date. Reject this request and ask the employee to reapply.")
+    if decision == "approve" and _overlap(db, lv.user_id, lv.start_date, lv.end_date, lv.id):
+        raise HTTPException(409, "Another pending or approved request overlaps these dates. Resolve it first.")
     lv.status = "approved" if decision == "approve" else "rejected"
     lv.approver_id = actor.id
     lv.decided_at = datetime.now(timezone.utc)
+    audit.record(db, actor, "leave_" + lv.status, entity_type="leave", target_user_id=lv.user_id,
+                 detail=f"Leave #{lv.id}: {_eff_days(lv)} day(s), {lv.start_date} to {lv.end_date}")
     db.commit()
     db.refresh(lv)
+    _changed()
     return _out(lv, _names(db))
 
 
@@ -223,6 +262,7 @@ def insights(db: Session = Depends(get_db),
     return {
         "pending": q_pending.count(),
         "on_leave_today": [{"name": names.get(l.user_id, ("", ""))[0], "type": l.leave_type,
+                            "half_day": bool(l.half_day), "days_effective": _eff_days(l),
                             "until": l.end_date.isoformat()} for l in q_today.all()],
         "upcoming_week": q_upcoming.count(),
     }

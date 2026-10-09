@@ -20,6 +20,7 @@ from .. import models, audit, presence
 from ..database import get_db
 from ..deps import get_current_user, require_roles
 from ..storage import save_photo, resolve as resolve_photo
+from ..leave_policy import day_credit
 
 router = APIRouter(prefix="/api/attendance", tags=["attendance"])
 
@@ -148,18 +149,17 @@ def _can_view(viewer: models.User, target: models.User, db: Session, period: str
 
 # ---------------------------------------------------------------- leave lookup
 
+def _leave_for(db: Session, uid: int, d: date_cls):
+    """Return the approved Leave covering date d (or None). Prefers a FULL-day leave over a
+    half-day if both somehow overlap, so the day is only 'half' when the leave truly is."""
+    rows = db.query(models.Leave).filter(models.Leave.user_id == uid,
+        models.Leave.status == "approved", models.Leave.start_date <= d,
+        models.Leave.end_date >= d).all()
+    return next((lv for lv in rows if not lv.half_day), rows[0] if rows else None)
+
+
 def _on_leave(db: Session, uid: int, d: date_cls) -> bool:
-    try:
-        rows = db.query(models.Leave).filter(models.Leave.user_id == uid,
-                                             models.Leave.status == "approved").all()
-        for lv in rows:
-            s = getattr(lv, "start_date", None)
-            e = getattr(lv, "end_date", None) or s
-            if s and s <= d <= (e or s):
-                return True
-    except Exception:
-        pass
-    return False
+    return _leave_for(db, uid, d) is not None
 
 
 # ---------------------------------------------------------------- helpers
@@ -217,10 +217,12 @@ def _row_out(db: Session, u: models.User, a: models.Attendance | None, d: date_c
             out["presence"] = {**out["presence"], "state": "offline", "idle_seconds": 0}
     elif d.weekday() == 6:                       # Sunday = weekly off
         out["status"] = "weekoff"
-    elif _on_leave(db, u.id, d):
-        out["status"] = "leave"
     elif d > _ist_today():
         out["status"] = "—"
+    _lv = _leave_for(db, u.id, d)
+    credit = day_credit(a, _lv, d, _ist_today())
+    out.update(status=credit["status"], late=bool(credit["late"]), half_day_leave=bool(credit["half_days"]),
+               present_days=credit["present"], leave_days=credit["leave"], absent_days=credit["absent"])
     # FOS carry a LIVE location (their latest GPS ping that day) so attendance can link to
     # live tracking; others just have their check-in point. (Reuses the ping fetched above.)
     if u.role == "fos" and fos_lp:
@@ -606,6 +608,7 @@ def day_board(date: str | None = None, role: str | None = None, user_id: int | N
         "late": sum(1 for r in rows if r["late"]),
         "absent": sum(1 for r in rows if r["status"] == "absent"),
         "leave": sum(1 for r in rows if r["status"] == "leave"),
+        "half_leave": sum(1 for r in rows if r["status"] == "half_leave" or r.get("half_day_leave")),
         "online": sum(1 for r in rows if r["presence"]["state"] in ("active", "idle")),
         "total": len(rows),
     }
@@ -744,32 +747,26 @@ def month_sheet(month: str | None = None, role: str | None = None, user_id: int 
         per_day = {}
         present = late = leave = absent = weekoff = 0
         worked = 0
+        half = 0
         for d in days:
             a = arows.get(u.id, {}).get(d.isoformat())
+            lv = _leave_for(db, u.id, d)
+            credit = day_credit(a, lv, d, today)
             if a and a.check_in_at:
-                st = "L" if a.late else "P"       # Late still counts present
-                present += 1
-                late += 1 if a.late else 0
-                # Anyone who never checked out that day: stop the clock at their last
-                # activity (FOS last GPS ping / anyone's last heartbeat) instead of 'now'.
+                # Anyone who never checked out that day: stop the clock at their last activity.
                 eo = None
                 if not a.check_out_at:
                     _fs, _fe = _day_window_utc(d)
                     eo, _ = _work_end(db, u.id, u, _fs, _fe, a)
                 worked += _live_worked(a, eo)
-            elif d.weekday() == 6:
-                st = "W"; weekoff += 1
-            elif _on_leave(db, u.id, d):
-                st = "LV"; leave += 1
-            elif d > today:
-                st = ""
-            else:
-                st = "A"; absent += 1
-            per_day[d.isoformat()] = st
+            present += credit["present"]; leave += credit["leave"]; absent += credit["absent"]
+            late += credit["late"]; weekoff += credit["weekoff"]; half += credit["half_days"]
+            per_day[d.isoformat()] = credit["code"]
         people.append({
             "user_id": u.id, "name": u.name, "emp_code": u.emp_code, "role": u.role,
             "branch": u.branch, "days": per_day,
-            "present": present, "late": late, "leave": leave, "absent": absent,
+            "present": round(present, 1), "late": late, "leave": round(leave, 1),
+            "absent": round(absent, 1), "half_days": half,
             "weekoff": weekoff, "worked_hours": round(worked / 3600.0, 1),
         })
     return {"month": m, "days": [d.isoformat() for d in days], "people": people,
@@ -820,20 +817,20 @@ def download_month(month: str | None = None, role: str | None = None, user_id: i
     HEAD = PatternFill("solid", fgColor="1D4ED8")
     HEADF = Font(bold=True, color="FFFFFF", size=11)
     THIN = Border(*[Side(style="thin", color="D6DEEA")] * 4)
-    COLOR = {"P": "C6EFCE", "L": "FFEB9C", "LV": "BDD7EE", "W": "E2E8F0", "A": "FFC7CE"}
+    COLOR = {"P": "C6EFCE", "L": "FFEB9C", "LV": "BDD7EE", "HD": "DDD6FE", "W": "E2E8F0", "A": "FFC7CE"}
 
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"Attendance {m}"
     header = ["Emp", "Name", "Role", "Branch"] + [d[8:] for d in days] + \
-             ["Present", "Late", "Leave", "Absent", "Week-off", "Work hrs"]
+             ["Present", "Late", "Leave", "Absent", "Week-off", "Work hrs", "Half-day leaves"]
     ws.append(header)
     for c in ws[1]:
         c.fill = HEAD; c.font = HEADF; c.alignment = Alignment(horizontal="center"); c.border = THIN
     for p in people:
         row = [p["emp_code"] or "", p["name"], p["role"], p["branch"] or ""] + \
               [p["days"].get(d, "") for d in days] + \
-              [p["present"], p["late"], p["leave"], p["absent"], p["weekoff"], p["worked_hours"]]
+              [p["present"], p["late"], p["leave"], p["absent"], p["weekoff"], p["worked_hours"], p["half_days"]]
         ws.append(row)
         r = ws.max_row
         for i, d in enumerate(days):
@@ -847,6 +844,14 @@ def download_month(month: str | None = None, role: str | None = None, user_id: i
         w = max((len(str(c.value)) for c in col if c.value is not None), default=6)
         ws.column_dimensions[col[0].column_letter].width = min(max(w + 1, 4), 26)
 
+    legend = wb.create_sheet("Legend")
+    legend.append(["Code", "Meaning"])
+    for code, meaning in [("P", "Present"), ("L", "Present, late"), ("LV", "Full-day approved leave"),
+                          ("HD", "0.5 approved leave + 0.5 present if checked in; otherwise 0.5 absent only for past dates"),
+                          ("W", "Weekly off"), ("A", "Absent")]:
+        legend.append([code, meaning])
+    legend.column_dimensions["A"].width = 12
+    legend.column_dimensions["B"].width = 110
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     audit.record(db, user, "download", None, entity_type="download",
                  detail=f"Downloaded attendance sheet {m}")

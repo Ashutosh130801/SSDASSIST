@@ -167,6 +167,9 @@ def _ensure_columns():
             "period": "VARCHAR(7)",
             "branch": "VARCHAR(60)",
         },
+        "leaves": {
+            "half_day": "BOOLEAN DEFAULT FALSE",
+        },
     }
     insp = inspect(engine)
     with engine.begin() as conn:
@@ -177,6 +180,9 @@ def _ensure_columns():
             for name, ddl in cols.items():
                 if name not in existing:
                     conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {ddl}'))
+        # Earlier interrupted builds added a nullable flag. Preserve old full-day requests.
+        if insp.has_table("leaves"):
+            conn.execute(text('UPDATE leaves SET half_day = FALSE WHERE half_day IS NULL'))
 
 
 _ensure_columns()
