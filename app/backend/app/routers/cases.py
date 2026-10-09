@@ -1833,46 +1833,147 @@ def _cases_xlsx(cases, title: str) -> bytes:
 
 
 def _cases_pdf(cases, title: str, user) -> bytes:
+    """A readable account worksheet: one full-width CARD per case that GROWS to fit every detail —
+    all phone numbers (phone / alt / new), all three addresses with their pincodes, the full money
+    breakdown (TOS, NORM, STAB, N/S, pending, received), portfolio, disposition/PTP — plus a tick
+    box + write-in 'Collected / Remarks' line the officer fills in the field. Nothing is truncated."""
     from fpdf import FPDF
     from datetime import datetime as _dt
-    heads = ["#", "Account / Card", "Customer", "Phone", "Bank / Product", "Bucket",
-             "TOS", "Pending", "Recd", "N/S", "Status"]
-    widths = [8, 45, 44, 26, 44, 18, 23, 23, 23, 12, 25]   # ≈ 291mm (A4 landscape usable)
 
-    class PDF(FPDF):
-        def header(self):
-            self.set_font("Helvetica", "B", 14); self.set_text_color(15, 42, 74)
-            self.cell(0, 8, f"RecoverIQ  -  {title}", new_x="LMARGIN", new_y="NEXT")
-            self.set_font("Helvetica", "", 8.5); self.set_text_color(90, 90, 90)
-            self.cell(0, 5, f"{user.name}   -   {len(cases)} accounts   -   generated "
-                            f"{_dt.now().strftime('%d-%b-%Y %H:%M')}", new_x="LMARGIN", new_y="NEXT")
-            self.ln(1.5)
-            self.set_font("Helvetica", "B", 7.6); self.set_fill_color(15, 42, 74)
-            self.set_text_color(255, 255, 255)
-            for h, w in zip(heads, widths):
-                self.cell(w, 7, h, border=0, fill=True, align="L")
-            self.ln(7); self.set_text_color(20, 20, 20)
+    PAGE_W, PAGE_H, M = 210.0, 297.0, 10.0
+    CARD_W = PAGE_W - 2 * M
+    LHR, LHA = 4.4, 4.0                 # info-row and address-line heights
+    GAP = 4.0
 
-    pdf = PDF(orientation="L", unit="mm", format="A4")
-    pdf.set_auto_page_break(auto=True, margin=12)
-    pdf.add_page()
-    pdf.set_font("Helvetica", "", 7.4)
-    shade = False
+    def s1(v):
+        return str(v if v is not None else "").strip().encode("latin-1", "replace").decode("latin-1")
+
+    def g(c, a):
+        v = getattr(c, a, None)
+        return v if (v is not None and str(v).strip() != "") else None
+
+    def status_of(c):
+        st = (s1(getattr(c, "paid_status", "")) or s1(getattr(c, "status", ""))).upper()
+        d = s1(getattr(c, "disposition", "")).upper()
+        if st == "PAID":
+            return "PAID", (22, 163, 74)
+        if "PTP" in d or st == "PTP":
+            return "PTP", (217, 119, 6)
+        if st == "PARTIAL":
+            return "PARTIAL", (202, 138, 4)
+        return (st or "OPEN")[:12], (220, 38, 38)
+
+    def addr_rows(c):
+        rows = []
+        for a, p, lbl in (("address", "pincode", "Address 1"), ("address2", "pincode2", "Address 2"),
+                          ("address3", "pincode3", "Address 3")):
+            av, pv = g(c, a), g(c, p)
+            if av or pv:
+                rows.append((lbl, (s1(av) + (f"  -  PIN {s1(pv)}" if pv else "")).strip()))
+        if g(c, "new_address"):
+            rows.append(("New address", s1(g(c, "new_address"))))
+        return rows or [("Address", "-")]
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=False)
+    pdf.set_title(f"RecoverIQ - {s1(title)}")
+
+    def nlines(txt, w):
+        try:
+            return max(1, len(pdf.multi_cell(w, LHA, txt, dry_run=True, output="LINES")))
+        except Exception:
+            cpl = max(16, int(w / 1.65))
+            return max(1, -(-len(txt) // cpl))
+
+    def banner(first):
+        pdf.add_page()
+        pdf.set_fill_color(15, 42, 74); pdf.rect(0, 0, PAGE_W, 22, "F")
+        pdf.set_xy(M, 5); pdf.set_font("Helvetica", "B", 15); pdf.set_text_color(255, 255, 255)
+        pdf.cell(CARD_W, 7, s1(f"RecoverIQ  -  {title}")[:70])
+        pdf.set_xy(M, 13.5); pdf.set_font("Helvetica", "", 8.5); pdf.set_text_color(205, 216, 232)
+        pdf.cell(CARD_W, 5, f"{s1(user.name)[:44]}    {len(cases)} accounts    {_dt.now().strftime('%d-%b-%Y %H:%M')}")
+        if first:
+            pdf.set_xy(M, 24.5); pdf.set_font("Helvetica", "B", 9); pdf.set_text_color(15, 42, 74)
+            pdf.cell(CARD_W, 6, f"Total pending  Rs {sum(_fnum(c.pending_amount) for c in cases):,.0f}"
+                                f"        Total received  Rs {sum(_fnum(c.received_amount) for c in cases):,.0f}")
+            return 33.0
+        return 27.0
+
+    def measure(c):
+        pdf.set_font("Helvetica", "", 7.8)
+        a = sum(nlines(f"{lbl}: {val}", CARD_W - 10) for lbl, val in addr_rows(c))
+        return 9.0 + 4 * LHR + 1.2 + a * LHA + 4.0 + 6.5
+
+    def card(y, idx, c):
+        h = measure(c)
+        label, col = status_of(c)
+        pdf.set_draw_color(223, 229, 237); pdf.set_line_width(0.2)
+        pdf.set_fill_color(249, 251, 253); pdf.rect(M, y, CARD_W, h, "DF")
+        pdf.set_fill_color(*col); pdf.rect(M, y, 2.4, h, "F")                 # left accent
+        pdf.rect(M + 2.4, y, CARD_W - 2.4, 7.4, "F")                          # header band
+        pad, inner = M + 5, CARD_W - 10
+        # header: name | status | pending
+        pdf.set_xy(M + 5, y + 1.5); pdf.set_font("Helvetica", "B", 9.8); pdf.set_text_color(255, 255, 255)
+        pdf.cell(CARD_W - 74, 4.6, s1(f"{idx}. {c.customer_name or '-'}")[:72])
+        pdf.set_xy(M + CARD_W - 68, y + 1.6); pdf.set_font("Helvetica", "B", 7.6)
+        pdf.cell(30, 4.4, s1(label)[:14], align="C")
+        pdf.set_xy(M + CARD_W - 38, y + 1.5); pdf.set_font("Helvetica", "B", 8.6)
+        pdf.cell(33, 4.6, f"Pend Rs {_fnum(c.pending_amount):,.0f}", align="R")
+        yy = y + 9.0
+        pdf.set_text_color(45, 45, 45)
+        # numbers: account / card / phone / alt / new phone
+        nums = [f"A/c {c.account_no or '-'}"]
+        if g(c, "card_no"): nums.append(f"Card {s1(g(c, 'card_no'))}")
+        nums.append(f"Ph {c.phone or '-'}")
+        if g(c, "alt_phone"): nums.append(f"Alt {s1(g(c, 'alt_phone'))}")
+        if g(c, "new_phone"): nums.append(f"New Ph {s1(g(c, 'new_phone'))}")
+        pdf.set_xy(pad, yy); pdf.set_font("Helvetica", "", 7.8)
+        pdf.cell(inner, LHR, s1("    ".join(nums))[:140]); yy += LHR
+        # portfolio + month + status
+        pdf.set_xy(pad, yy)
+        pdf.cell(inner, LHR, s1(f"{c.bank or '-'} / {c.product or '-'}   |   Bkt {c.bucket or '-'}"
+                                f"   |   Cyc {c.cycle or '-'}" + (f"   |   {s1(g(c,'month'))}" if g(c, "month") else "")
+                                + f"   |   Status {s1(c.paid_status or c.status or '-')}")[:140]); yy += LHR
+        # money breakdown
+        pdf.set_xy(pad, yy); pdf.set_font("Helvetica", "B", 7.8); pdf.set_text_color(30, 30, 30)
+        pdf.cell(inner, LHR, f"Pending Rs {_fnum(c.pending_amount):,.0f}   Received Rs {_fnum(c.received_amount):,.0f}"
+                             f"   TOS {_fnum(c.total_outstanding):,.0f}   NORM {_fnum(g(c,'norm_amount')):,.0f}"
+                             f"   STAB {_fnum(g(c,'stab_amount')):,.0f}   N/S {c.norm_stab or '-'}"); yy += LHR
+        # FOS / caller / disposition / PTP
+        _ptp = ""
+        try:
+            _ptp = f"   PTP {str(c.follow_up_date)[:10]}" if (c.follow_up_date and (c.disposition or '').upper() == 'PTP') else ""
+        except Exception:
+            _ptp = ""
+        pdf.set_xy(pad, yy); pdf.set_font("Helvetica", "", 7.6); pdf.set_text_color(70, 70, 70)
+        pdf.cell(inner, LHR, s1(f"FOS {c.fos_name or '-'}   Caller {g(c,'caller_name') or '-'}"
+                                f"   Dispo {c.disposition or '-'}{_ptp}")[:140]); yy += LHR + 1.2
+        # addresses (full, wrapped)
+        pdf.set_font("Helvetica", "", 7.6); pdf.set_text_color(35, 35, 35)
+        for lbl, val in addr_rows(c):
+            pdf.set_xy(pad, yy)
+            pdf.multi_cell(inner, LHA, f"{lbl}: {val}", align="L")
+            yy = pdf.get_y()
+        # action row: tick box + write-in collected + remarks
+        ry = y + h - 6.2
+        pdf.set_draw_color(205, 211, 219); pdf.set_line_width(0.2)
+        pdf.line(M + 4, ry - 1.6, M + CARD_W - 4, ry - 1.6)
+        pdf.set_draw_color(40, 40, 40); pdf.set_line_width(0.5)
+        pdf.rect(pad, ry, 4.6, 4.6, "D")
+        pdf.set_xy(pad + 6, ry - 0.3); pdf.set_font("Helvetica", "B", 8); pdf.set_text_color(25, 25, 25)
+        pdf.cell(16, 5, "Visited")
+        pdf.set_xy(pad + 26, ry - 0.3); pdf.set_font("Helvetica", "", 7.6); pdf.set_text_color(70, 70, 70)
+        pdf.cell(66, 5, "Collected Rs ________________")
+        pdf.set_xy(pad + 96, ry - 0.3); pdf.cell(inner - 96, 5, "Remarks ______________________")
+        return h
+
+    y = banner(True)
     for i, c in enumerate(cases, 1):
-        acct = (c.account_no or c.card_no or "")[:24]
-        row = [str(i), acct, (c.customer_name or "")[:24], (c.phone or "")[:14],
-               f"{c.bank or ''} / {c.product or ''}"[:24], (c.bucket or "")[:9],
-               f"{_fnum(c.total_outstanding):,.0f}", f"{_fnum(c.pending_amount):,.0f}",
-               f"{_fnum(c.received_amount):,.0f}", (c.norm_stab or "")[:5],
-               (c.paid_status or c.status or "")[:12]]
-        pdf.set_fill_color(244, 247, 251) if shade else pdf.set_fill_color(255, 255, 255)
-        for val, w in zip(row, widths):
-            pdf.cell(w, 6, val, border=0, fill=True, align="L")
-        pdf.ln(6); shade = not shade
-    pdf.ln(2); pdf.set_font("Helvetica", "B", 8.5); pdf.set_text_color(15, 42, 74)
-    pdf.cell(0, 6, f"Total pending  Rs {sum(_fnum(c.pending_amount) for c in cases):,.0f}"
-                   f"      Total received  Rs {sum(_fnum(c.received_amount) for c in cases):,.0f}",
-             new_x="LMARGIN", new_y="NEXT")
+        h = measure(c)
+        if y + h > PAGE_H - M:
+            y = banner(False)
+        card(y, i, c)
+        y += h + GAP
     return bytes(pdf.output())
 
 

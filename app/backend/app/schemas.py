@@ -148,6 +148,7 @@ class LeaveOut(BaseModel):
     created_at: datetime
     user_name: Optional[str] = None
     user_branch: Optional[str] = None
+    user_role: Optional[str] = None
     approver_name: Optional[str] = None
 
 

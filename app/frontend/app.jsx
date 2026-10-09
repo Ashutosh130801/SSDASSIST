@@ -5383,25 +5383,40 @@ function LeaveView({ user }) {
   const [reason, setReason] = useState(''); const [busy, setBusy] = useState(false);
   // Leave history (all employees) — filters + search, HR/admin/manager/head office.
   const [hist, setHist] = useState(null);
-  const [hf, setHf] = useState({ status: 'all', type: 'all', from: '', to: '', q: '' });
+  const [hf, setHf] = useState({ status: 'all', type: 'all', from: '', to: '', q: '', role: 'all' });
+  // Roles to offer in the leave filters (label, value).
+  const ROLE_OPTS = [['all', 'All roles'], ['fos', 'FOS'], ['telecaller', 'Caller'], ['teamlead', 'Team Lead'],
+    ['manager', 'Manager'], ['headoffice', 'Head Office'], ['hr', 'HR'], ['backend', 'Back office'], ['admin', 'Admin']];
   const loadHist = () => {
     if (!canSeeHistory) return;
     const p = new URLSearchParams({ scope: 'team' });
     if (hf.status !== 'all') p.set('status', hf.status);
     if (hf.type !== 'all') p.set('leave_type', hf.type);
+    if (hf.role !== 'all') p.set('role', hf.role);
     if (hf.from) p.set('from_date', hf.from);
     if (hf.to) p.set('to_date', hf.to);
     if (hf.q.trim()) p.set('q', hf.q.trim());
     api('/api/leaves?' + p.toString()).then(setHist).catch(() => setHist([]));
   };
+  // Per-employee balances (taken + remaining) — HR/HO/admin/manager.
+  const [bals, setBals] = useState(null);
+  const [balRole, setBalRole] = useState('all'); const [balQ, setBalQ] = useState('');
+  const loadBals = () => {
+    if (!canSeeHistory) return;
+    const p = new URLSearchParams();
+    if (balRole !== 'all') p.set('role', balRole);
+    if (balQ.trim()) p.set('q', balQ.trim());
+    api('/api/leaves/balances?' + p.toString()).then(setBals).catch(() => setBals({ rows: [] }));
+  };
   const load = () => {
     api('/api/leaves/balance').then(setBal).catch(() => {});
     api('/api/leaves?scope=mine').then(setMine).catch(() => setMine([]));
     if (isMgr) { api('/api/leaves?scope=team&status=pending').then(setTeam).catch(() => setTeam([])); api('/api/leaves/insights').then(setIns).catch(() => {}); }
-    loadHist();
+    loadHist(); loadBals();
   };
   useEffect(() => { load(); }, []);
-  useEffect(() => { loadHist(); }, [hf.status, hf.type, hf.from, hf.to]);
+  useEffect(() => { loadHist(); }, [hf.status, hf.type, hf.from, hf.to, hf.role]);
+  useEffect(() => { loadBals(); }, [balRole]);
   const apply = async () => {
     if (!s1 || !s2) return; setBusy(true);
     try { await api('/api/leaves', { method: 'POST', body: { leave_type: ltype, start_date: s1, end_date: s2, reason } });
@@ -5472,6 +5487,11 @@ function LeaveView({ user }) {
           {[['all', 'All types'], ...LEAVE_TYPES.map(t => [t, t])].map(([v, l]) =>
             <div key={v} className={cx('chip', hf.type === v && 'on')} onClick={() => setHf(s => ({ ...s, type: v }))}>{l}</div>)}
         </div>
+        <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          <span className="muted" style={{ fontSize: 12 }}>Role:</span>
+          {ROLE_OPTS.map(([v, l]) =>
+            <div key={v} className={cx('chip', hf.role === v && 'on')} onClick={() => setHf(s => ({ ...s, role: v }))}>{l}</div>)}
+        </div>
         <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
           <div className="field" style={{ margin: 0 }}><label style={{ fontSize: 11 }}>From</label><input className="input" type="date" value={hf.from} onChange={e => setHf(s => ({ ...s, from: e.target.value }))} /></div>
           <div className="field" style={{ margin: 0 }}><label style={{ fontSize: 11 }}>To</label><input className="input" type="date" value={hf.to} onChange={e => setHf(s => ({ ...s, to: e.target.value }))} /></div>
@@ -5483,13 +5503,49 @@ function LeaveView({ user }) {
             <button className="btn sm" style={{ alignSelf: 'flex-end' }} onClick={() => setHf({ status: 'all', type: 'all', from: '', to: '', q: '' })}>Clear</button>}
         </div>
         {!hist ? <Loader /> : hist.length === 0 ? <p className="muted">No leave records match.</p> :
+          (() => {
+            const monthLabel = (ym) => { try { const [y, m] = ym.split('-'); return new Date(y, m - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' }); } catch { return ym; } };
+            const groups = {};
+            hist.forEach(l => { const k = String(l.start_date || '').slice(0, 7) || '—'; (groups[k] = groups[k] || []).push(l); });
+            const months = Object.keys(groups).sort().reverse();
+            return <div className="tablewrap"><table>
+              <thead><tr><th>Who</th><th>Role</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Approver</th><th>Reason</th></tr></thead>
+              <tbody>{months.map(ym => <React.Fragment key={ym}>
+                <tr><td colSpan={8} style={{ background: 'var(--line)', fontWeight: 700, fontSize: 12.5, color: 'var(--ink)' }}>
+                  🗓️ {monthLabel(ym)} · {groups[ym].length} request{groups[ym].length === 1 ? '' : 's'} · {groups[ym].reduce((a, l) => a + (l.days || 0), 0)} days
+                </td></tr>
+                {groups[ym].map(l => <tr key={l.id}>
+                  <td><b>{l.user_name}</b><div className="muted" style={{ fontSize: 11.5 }}>{l.user_branch || '—'}</div></td>
+                  <td className="muted">{(ROLE_OPTS.find(r => r[0] === l.user_role) || [, l.user_role])[1] || '—'}</td>
+                  <td>{l.leave_type}</td><td className="muted" style={{ whiteSpace: 'nowrap' }}>{l.start_date} → {l.end_date}</td><td className="mono">{l.days}</td>
+                  <td><span className={cx('badge', stBadge(l.status))}>{l.status}</span></td>
+                  <td className="muted">{l.approver_name || '—'}</td><td className="muted">{l.reason || '—'}</td>
+                </tr>)}
+              </React.Fragment>)}</tbody></table></div>;
+          })()}
+      </div>}
+      {canSeeHistory && <div className="glass card" style={{ marginTop: 16 }}>
+        <div className="section-h"><h3 style={{ fontSize: 15 }}>Per-employee leave balance {bals && bals.year ? `(${bals.year})` : ''}</h3></div>
+        <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          <span className="muted" style={{ fontSize: 12 }}>Role:</span>
+          {ROLE_OPTS.map(([v, l]) => <div key={v} className={cx('chip', balRole === v && 'on')} onClick={() => setBalRole(v)}>{l}</div>)}
+          <div className="field" style={{ margin: 0, minWidth: 180 }}>
+            <input className="input" placeholder="Search name / emp code…" value={balQ}
+              onChange={e => setBalQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') loadBals(); }} /></div>
+          <button className="btn sm" onClick={loadBals}>Search</button>
+        </div>
+        {!bals ? <Loader /> : (bals.rows || []).length === 0 ? <p className="muted">No employees match.</p> :
           <div className="tablewrap"><table>
-            <thead><tr><th>Who</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Approver</th><th>Reason</th></tr></thead>
-            <tbody>{hist.map(l => <tr key={l.id}>
-              <td><b>{l.user_name}</b><div className="muted" style={{ fontSize: 11.5 }}>{l.user_branch || '—'}</div></td>
-              <td>{l.leave_type}</td><td className="muted" style={{ whiteSpace: 'nowrap' }}>{l.start_date} → {l.end_date}</td><td className="mono">{l.days}</td>
-              <td><span className={cx('badge', stBadge(l.status))}>{l.status}</span></td>
-              <td className="muted">{l.approver_name || '—'}</td><td className="muted">{l.reason || '—'}</td>
+            <thead><tr><th>Employee</th><th>Role</th><th>Branch</th>
+              {LEAVE_TYPES.filter(t => t !== 'Unpaid').map(t => <th key={t} style={{ textAlign: 'center' }}>{t}</th>)}
+              <th style={{ textAlign: 'center' }}>Taken</th><th style={{ textAlign: 'center' }}>Remaining</th></tr></thead>
+            <tbody>{bals.rows.map(r => <tr key={r.user_id}>
+              <td><b>{r.name}</b>{r.emp_code ? <span className="muted" style={{ fontSize: 11 }}> ({r.emp_code})</span> : ''}</td>
+              <td className="muted">{(ROLE_OPTS.find(x => x[0] === r.role) || [, r.role])[1] || '—'}</td>
+              <td className="muted">{r.branch || '—'}</td>
+              {LEAVE_TYPES.filter(t => t !== 'Unpaid').map(t => { const b = r.types.find(x => x.type === t) || {}; return <td key={t} style={{ textAlign: 'center' }} className="mono">{(b.remaining != null ? b.remaining : '—')}<span className="muted" style={{ fontSize: 10.5 }}>/{b.allowance}</span></td>; })}
+              <td style={{ textAlign: 'center', fontWeight: 700 }}>{r.total_taken}{r.total_pending ? <span className="muted" style={{ fontSize: 10.5, fontWeight: 400 }}> (+{r.total_pending}p)</span> : ''}</td>
+              <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--good)' }}>{r.total_remaining}</td>
             </tr>)}</tbody></table></div>}
       </div>}
     </div>
@@ -5709,6 +5765,45 @@ function LegalView() {
 }
 
 /* ============================== Security (2FA + passkeys) ============================== */
+/* Self-service: a user views / enters / changes their OWN ViciDial agent ID. Shows the id the admin
+   mapped (if any); saving writes it into the ViciDial connection's agent_map (added or updated). */
+function MyViciAgent() {
+  const [data, setData] = React.useState(null);
+  const [val, setVal] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const load = () => api('/api/integration/vicidial/my-agent')
+    .then(d => { setData(d); setVal(d.agent_user || ''); })
+    .catch(() => setData({ connected: false }));
+  React.useEffect(() => { load(); }, []);
+  if (!data || !data.connected) return null;        // hide when no ViciDial is set up
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api('/api/integration/vicidial/my-agent', { method: 'POST', body: { agent_user: val.trim() } });
+      toast('Saved your ViciDial agent ID');
+      load();
+    } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  return (
+    <div className="glass card">
+      <div className="section-h"><h3>☎ My ViciDial agent ID</h3></div>
+      <p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>
+        This links your click-to-call and the live screen-pop to your ViciDial agent login.
+        {data.explicit ? ' Your admin mapped this — you can change it if it’s wrong.'
+          : ` Not set yet — it currently defaults to your employee code (${data.effective || '—'}). Enter your real ViciDial agent login ID if different.`}
+      </p>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input className="input" style={{ maxWidth: 220 }} value={val} maxLength={60}
+          placeholder="e.g. 8001" onChange={e => setVal(e.target.value)} />
+        <button className="btn gold" disabled={busy} onClick={save}>{busy ? 'Saving…' : '💾 Save'}</button>
+        {data.explicit && val.trim() && <button className="btn ghost sm" disabled={busy}
+          onClick={() => { setVal(''); }}>Clear</button>}
+      </div>
+      <p className="muted" style={{ fontSize: 11, marginTop: 8 }}>Tip: this is your ViciDial <b>agent login ID</b> (the one you sign into the dialer with), not your RecoverIQ login or the API user.</p>
+    </div>
+  );
+}
+
 function SecurityView({ user }) {
   const [st, setSt] = useState(null);         // { enabled }
   const [setup, setSetup] = useState(null);   // { secret, otpauth_url }
@@ -5727,6 +5822,7 @@ function SecurityView({ user }) {
   const delKey = async (id) => { if (!confirm('Remove this passkey?')) return; try { await api('/api/auth/webauthn/' + id, { method: 'DELETE' }); load(); } catch (e) { toast(e.message, 'err'); } };
   return (
     <div className="grid2" style={{ alignItems: 'start' }}>
+      <MyViciAgent />
       <div className="glass card">
         <div className="section-h"><h3>Two-factor authentication</h3>
           {st && <span className={cx('badge', st.enabled ? 'paid' : 'unpaid')}>{st.enabled ? 'ON' : 'OFF'}</span>}</div>

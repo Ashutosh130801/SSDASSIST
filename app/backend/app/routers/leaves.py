@@ -20,15 +20,15 @@ def _today():
 
 
 def _names(db):
-    return {u.id: (u.name, u.branch) for u in db.query(models.User).all()}
+    return {u.id: (u.name, u.branch, u.role) for u in db.query(models.User).all()}
 
 
 def _out(lv, names):
     d = schemas.LeaveOut.model_validate(lv)
-    nm = names.get(lv.user_id, (None, None))
-    d.user_name, d.user_branch = nm[0], nm[1]
+    nm = names.get(lv.user_id, (None, None, None))
+    d.user_name, d.user_branch, d.user_role = nm[0], nm[1], nm[2]
     if lv.approver_id:
-        d.approver_name = names.get(lv.approver_id, (None, None))[0]
+        d.approver_name = names.get(lv.approver_id, (None, None, None))[0]
     return d
 
 
@@ -37,8 +37,11 @@ def _can_manage(actor, target_user):
         return False
     if actor.id == target_user.id:
         return False                      # nobody approves their own leave
-    # An HR's / head office's own leave is approved by an Administrator only.
-    if target_user.role in ("hr", "headoffice"):
+    # HEAD OFFICE's leave can be approved by HR (or an Administrator).
+    if target_user.role == "headoffice":
+        return actor.role in ("admin", "hr")
+    # An HR's own leave is still approved by an Administrator only.
+    if target_user.role == "hr":
         return actor.role == "admin"
     # HR and head office approve everyone else's leave (any staff, any branch). Admin too.
     if actor.role in ("admin", "hr", "headoffice"):
@@ -68,6 +71,7 @@ def apply_leave(body: schemas.LeaveCreate, db: Session = Depends(get_db),
 def list_leaves(status: str | None = None, scope: str = "auto",
                 leave_type: str | None = None, from_date: date | None = None,
                 to_date: date | None = None, q: str | None = None,
+                role: str | None = None,
                 db: Session = Depends(get_db),
                 user: models.User = Depends(get_current_user)):
     """scope=mine -> only my leaves; scope=team -> branch/all (admin/manager);
@@ -90,7 +94,11 @@ def list_leaves(status: str | None = None, scope: str = "auto",
         query = query.filter(models.Leave.end_date >= from_date)
     if to_date:
         query = query.filter(models.Leave.start_date <= to_date)
-    rows = query.order_by(models.Leave.created_at.desc()).all()
+    if role and role != "all":                       # filter by the applicant's role
+        from sqlalchemy import select as _select
+        query = query.filter(models.Leave.user_id.in_(
+            _select(models.User.id).where(models.User.role == role)))
+    rows = query.order_by(models.Leave.start_date.desc(), models.Leave.created_at.desc()).all()
     names = _names(db)
     out = [_out(lv, names) for lv in rows]
     if q:
@@ -122,6 +130,57 @@ def balance(db: Session = Depends(get_db), user: models.User = Depends(get_curre
         out.append({"type": t, "allowance": allow, "used": u, "pending": pending.get(t, 0),
                     "remaining": (allow - u) if t != "Unpaid" else None})
     return out
+
+
+@router.get("/balances")
+def balances(role: str | None = None, q: str | None = None, year: int | None = None,
+             db: Session = Depends(get_db),
+             actor: models.User = Depends(require_roles("admin", "manager", "hr", "headoffice"))):
+    """Per-EMPLOYEE leave summary for HR/HO/admin (manager = own branch): days taken (approved),
+    pending, and remaining per type + overall. Filter by role / name search / year."""
+    yr = year or _today().year
+    jan1, dec31 = date(yr, 1, 1), date(yr, 12, 31)
+    users = db.query(models.User).filter(models.User.is_active == True)
+    if actor.role == "manager":
+        users = users.filter(models.User.branch == actor.branch)
+    if role and role != "all":
+        users = users.filter(models.User.role == role)
+    users = users.order_by(models.User.name).all()
+    uids = [u.id for u in users]
+    # Sum approved/pending days per (user, type) within the year.
+    agg = {}
+    if uids:
+        rows = (db.query(models.Leave.user_id, models.Leave.leave_type, models.Leave.status,
+                         func.coalesce(func.sum(models.Leave.days), 0))
+                .filter(models.Leave.user_id.in_(uids),
+                        models.Leave.start_date >= jan1, models.Leave.start_date <= dec31)
+                .group_by(models.Leave.user_id, models.Leave.leave_type, models.Leave.status).all())
+        for uid, lt, st, d in rows:
+            agg.setdefault(uid, {}).setdefault(lt, {"approved": 0, "pending": 0})
+            if st in ("approved", "pending"):
+                agg[uid][lt][st] += int(d)
+    out = []
+    for u in users:
+        per = agg.get(u.id, {})
+        types = []
+        tot_taken = tot_remaining = tot_pending = 0
+        for t in LEAVE_TYPES:
+            allow = DEFAULT_ALLOWANCE.get(t, 0)
+            taken = per.get(t, {}).get("approved", 0)
+            pend = per.get(t, {}).get("pending", 0)
+            rem = (allow - taken) if t != "Unpaid" else None
+            types.append({"type": t, "allowance": allow, "taken": taken, "pending": pend, "remaining": rem})
+            tot_taken += taken; tot_pending += pend
+            if rem is not None:
+                tot_remaining += rem
+        out.append({"user_id": u.id, "name": u.name, "role": u.role, "branch": u.branch,
+                    "emp_code": u.emp_code, "types": types,
+                    "total_allowance": sum(DEFAULT_ALLOWANCE[t] for t in LEAVE_TYPES if t != "Unpaid"),
+                    "total_taken": tot_taken, "total_pending": tot_pending, "total_remaining": tot_remaining})
+    if q:
+        s = q.lower().strip()
+        out = [r for r in out if s in (r["name"] or "").lower() or s in (r["emp_code"] or "").lower()]
+    return {"year": yr, "rows": out}
 
 
 @router.post("/{leave_id}/{decision}", response_model=schemas.LeaveOut)

@@ -498,7 +498,6 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
     request_base = (body.get("recoveriq_base") or "").strip().rstrip("/")
     out = _conn_out(c)
     out["dispo_url"] = _vici_dispo_url(request_base or "https://YOUR-RECOVERIQ-DOMAIN", c)
-    out["screenpop_url"] = _vici_screenpop_url(request_base or "https://YOUR-RECOVERIQ-DOMAIN", c)
     out["start_call_url"] = _vici_start_call_url(request_base or "https://YOUR-RECOVERIQ-DOMAIN", c)
     return out
 
@@ -819,6 +818,70 @@ def vicidial_my_live_call(response: Response, db: Session = Depends(get_db),
         return live_call_for(db, user)
     except LiveCallError as exc:
         return {"state": "error", "detail": str(exc), "poll_after_ms": 15000}
+
+
+# ---- Self-service: each user views / sets their OWN ViciDial agent id in the connection's map ----
+@router.get("/vicidial/my-agent")
+def vici_my_agent(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """The current user's own ViciDial agent id. Shows the explicit map value if admin set one,
+    else the implicit fallback (= their employee code). Used by the self-service card."""
+    from ..vicidial_live import connection_for, LiveCallError
+    try:
+        conn = connection_for(db, user)
+    except LiveCallError:
+        conn = None
+    if not conn:
+        return {"connected": False}
+    caps = conn.capabilities or {}
+    amap = {str(k).strip().upper(): str(v).strip() for k, v in (caps.get("agent_map") or {}).items()}
+    code = (user.emp_code or "").strip().upper()
+    mapped = amap.get(code)
+    return {"connected": True, "emp_code": user.emp_code, "explicit": bool(mapped),
+            "agent_user": mapped or "", "effective": mapped or (user.emp_code or ""),
+            "connection": conn.name}
+
+
+@router.post("/vicidial/my-agent")
+def vici_set_my_agent(body: dict = Body(...), db: Session = Depends(get_db),
+                      user: models.User = Depends(get_current_user)):
+    """Let a user set / change / clear their OWN ViciDial agent id in the connection's agent_map
+    (keyed by their employee code). Added if missing, updated if present. Rejects an id already
+    mapped to a different employee so the live screen-pop match stays unique."""
+    import re
+    from sqlalchemy.orm.attributes import flag_modified
+    from ..vicidial_live import connection_for, LiveCallError
+    agent = (body.get("agent_user") or "").strip()
+    if agent and not re.fullmatch(r"[A-Za-z0-9_.:-]{2,60}", agent):
+        raise HTTPException(status_code=400, detail="Enter a valid ViciDial agent id (2–60 letters, numbers or . _ - :).")
+    code = (user.emp_code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Your account has no employee code yet — ask an administrator to set it first.")
+    try:
+        conn = connection_for(db, user)
+    except LiveCallError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not conn:
+        raise HTTPException(status_code=404, detail="No ViciDial connection is set up for your branch yet.")
+    caps = dict(conn.capabilities or {})
+    amap = dict(caps.get("agent_map") or {})
+    # Reject if this agent id already belongs to a DIFFERENT employee code (keeps the map unique).
+    if agent:
+        for k, v in amap.items():
+            if str(v).strip() == agent and str(k).strip().upper() != code.upper():
+                raise HTTPException(status_code=409, detail=f"That ViciDial agent id is already mapped to {k}. Ask an administrator if this is wrong.")
+    # Remove any existing entry for this employee (case-insensitive), then set the new one.
+    for k in list(amap.keys()):
+        if str(k).strip().upper() == code.upper():
+            amap.pop(k)
+    if agent:
+        amap[code] = agent
+    caps["agent_map"] = amap
+    conn.capabilities = caps
+    flag_modified(conn, "capabilities")
+    audit.record(db, user, "integration", None, entity_type="integration",
+                 detail=f"Self-set ViciDial agent id = {agent or '(cleared)'} on '{conn.name}'")
+    db.commit()
+    return {"ok": True, "agent_user": agent, "explicit": bool(agent)}
 
 
 # ============================================================ recording fetch over SFTP
