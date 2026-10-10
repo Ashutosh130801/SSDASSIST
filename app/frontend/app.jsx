@@ -3047,7 +3047,7 @@ function TeamLeadView({ config, user }) {
         <ChartBox type="line" data={trend} height={200} />
       </div>}
 
-      <div className="section-h"><h3 style={{ fontSize: 15 }}>Members</h3></div>
+      <div className="section-h"><h3 style={{ fontSize: 15 }}>Members</h3><StaffReportButtons /></div>
       {ov.members.length === 0 ? <div className="glass card muted" style={{ padding: 20, textAlign: 'center' }}>No team members yet. Add FOS or callers to your team.</div> :
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 12 }}>{ov.members.map(memberCard)}</div>}
 
@@ -3184,6 +3184,24 @@ function TransferModal({ staff, onClose, onDone }) {
   );
 }
 
+/* Download the FOS / caller coverage Excel (all people in scope: admin/HO = everyone, TL = own team). */
+function StaffReportButtons() {
+  const [m, setM] = useState('current'); const [busy, setBusy] = useState('');
+  const go = async (kind) => {
+    setBusy(kind);
+    try { await download(`/api/team/staff-report?kind=${kind}&month_bucket=${m}&layout=compact`, `${kind === 'fos' ? 'FOS' : 'Callers'}_coverage_${m}.xlsx`); }
+    catch (e) { toast(e.message || 'Download failed', 'err'); } finally { setBusy(''); }
+  };
+  return <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+    <select className="input" style={{ height: 34, width: 'auto' }} value={m} onChange={e => setM(e.target.value)} title="Month for the report">
+      <option value="current">This month</option><option value="last">Last month</option><option value="all">All months</option></select>
+    <button className="btn" disabled={!!busy} onClick={() => go('fos')} title="All FOS: assigned, visited/unvisited, paid/unpaid, % and portfolio-wise">
+      {busy === 'fos' ? '…' : '⬇ FOS report'}</button>
+    <button className="btn" disabled={!!busy} onClick={() => go('caller')} title="All callers: assigned, contacted/not contacted, paid/unpaid, % and portfolio-wise">
+      {busy === 'caller' ? '…' : '⬇ Caller report'}</button>
+  </span>;
+}
+
 function StaffView({ config, user }) {
   const isAdmin = user.role === 'admin';
   const canTransfer = user.role === 'admin' || user.role === 'manager';
@@ -3270,6 +3288,7 @@ function StaffView({ config, user }) {
           <div style={{ flex: 1 }} />
           {listRole === 'fos' && <select className="input" style={{ maxWidth: 180, height: 34 }} value={fosLoc} onChange={e => setFosLoc(e.target.value)}>
             <option value="">All locations</option>{fosLocs.map(l => <option key={l} value={l}>{l}</option>)}</select>}
+          <StaffReportButtons />
           <button className="btn" onClick={() => setShowReport(true)}>📅 Attendance</button>
           <button className="btn gold" onClick={() => setAddBranch(true)}>+ Add branch</button></div>
         {listRole ? (
@@ -5411,6 +5430,85 @@ function ArchiveView({ user }) {
 
 /* ============================== Leave management ============================== */
 const LEAVE_TYPES = ['Casual', 'Sick', 'Earned', 'Unpaid'];
+/* Status cell for a leave: badge + "2 of 5 days" for partial grants + the approver's note/rejection reason. */
+function LeaveStatusCell({ l }) {
+  const stBadge = s => s === 'approved' ? 'paid' : s === 'rejected' ? 'unpaid' : 'partial';
+  return <div>
+    <span className={cx('badge', stBadge(l.status))}>{l.partial && l.status === 'approved' ? 'partly approved' : l.status}</span>
+    {l.partial && l.requested_start && <div className="muted" style={{ fontSize: 11 }}>
+      {l.parent_id ? `part of request #${l.parent_id}` : `asked ${l.requested_days} day(s): ${l.requested_start} → ${l.requested_end}`}</div>}
+    {l.decision_note && <div style={{ fontSize: 11.5, color: l.status === 'rejected' ? 'var(--bad)' : 'var(--ink-dim)' }}>
+      {l.status === 'rejected' ? 'Reason: ' : 'Note: '}{l.decision_note}</div>}
+  </div>;
+}
+
+/* HR / admin / manager decision: approve all, approve only chosen dates (fewer days), or reject with a reason. */
+function LeaveDecisionModal({ leave, mode, onClose, onDone }) {
+  // Working dates in the request (Sundays are week-off and never count as leave).
+  const allDays = React.useMemo(() => {
+    const out = []; const s = new Date(leave.start_date + 'T00:00:00'); const e = new Date(leave.end_date + 'T00:00:00');
+    for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
+      if (d.getDay() !== 0) out.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
+    }
+    return out;
+  }, [leave.id]);
+  const [picked, setPicked] = useState(() => new Set(allDays));
+  const [note, setNote] = useState(''); const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const reject = mode === 'reject';
+  const toggle = d => setPicked(p => { const n = new Set(p); n.has(d) ? n.delete(d) : n.add(d); return n; });
+  const firstN = n => setPicked(new Set(allDays.slice(0, Math.max(0, Math.min(n, allDays.length)))));
+  const fmt = d => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' });
+  const partial = !reject && !leave.half_day && picked.size < allDays.length;
+  const submit = async () => {
+    setErr('');
+    if (reject && !note.trim()) { setErr('Please write the reason for rejection — the employee will see it.'); return; }
+    if (!reject && !leave.half_day && picked.size === 0) { setErr('Select at least one date to approve, or reject the request.'); return; }
+    setBusy(true);
+    try {
+      const body = { note: note.trim() || undefined };
+      if (partial) body.dates = allDays.filter(d => picked.has(d));
+      await api(`/api/leaves/${leave.id}/${reject ? 'reject' : 'approve'}`, { method: 'POST', body });
+      toast(reject ? 'Rejected' : partial ? `Approved ${picked.size} of ${allDays.length} day(s)` : 'Approved');
+      onDone();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+        <div className="section-h"><h3>{reject ? '✖ Reject leave' : '✔ Approve leave'}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
+          <b>{leave.user_name}</b> · {leave.leave_type} · {leave.start_date} → {leave.end_date} · asked <b>{leave.half_day ? '0.5' : allDays.length}</b> day(s)
+          {leave.reason ? <><br />“{leave.reason}”</> : null}</p>
+        {!reject && !leave.half_day && allDays.length > 1 && <>
+          <div className="toolbar" style={{ gap: 6, flexWrap: 'wrap' }}>
+            <span className="muted" style={{ fontSize: 12.5 }}>Days to grant:</span>
+            <input className="input" type="number" min={1} max={allDays.length} style={{ width: 70, height: 32 }}
+              value={picked.size} onChange={e => firstN(parseInt(e.target.value || '0', 10))} title="Grant the first N days" />
+            <span className="muted" style={{ fontSize: 12 }}>of {allDays.length}</span>
+            <button className="btn sm ghost" onClick={() => setPicked(new Set(allDays))}>All</button>
+            <button className="btn sm ghost" onClick={() => setPicked(new Set())}>None</button>
+          </div>
+          <div className="muted" style={{ fontSize: 11.5, margin: '2px 0 6px' }}>Type a number to grant the first N days, or tick exactly which dates to give.</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(130px,1fr))', gap: 6, marginBottom: 10 }}>
+            {allDays.map(d => <label key={d} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderRadius: 8, cursor: 'pointer',
+              border: '1px solid var(--line)', background: picked.has(d) ? 'rgba(34,197,94,.12)' : 'transparent', fontSize: 13 }}>
+              <input type="checkbox" checked={picked.has(d)} onChange={() => toggle(d)} /> {fmt(d)}</label>)}
+          </div>
+          {partial && <div style={{ fontSize: 12.5, color: 'var(--warn)', marginBottom: 6 }}>
+            Partial approval: {picked.size} of {allDays.length} day(s) granted — the other {allDays.length - picked.size} won't be counted as leave.</div>}
+        </>}
+        <div className="field"><label>{reject ? 'Reason for rejection (required)' : 'Note to employee (optional)'}</label>
+          <textarea className="input" rows={3} value={note} onChange={e => setNote(e.target.value)}
+            placeholder={reject ? 'e.g. Month-end closing — team already short that week' : partial ? 'e.g. Only 2 days possible during audit week' : 'Optional'} /></div>
+        {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
+        <div className="toolbar"><button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
+          <button className={cx('btn', !reject && 'gold')} disabled={busy} onClick={submit}>
+            {busy ? 'Saving…' : reject ? 'Reject' : partial ? `Approve ${picked.size} day(s)` : 'Approve'}</button></div>
+      </div>
+    </div>
+  );
+}
+
 const leaveDays = l => l.days_effective ?? (l.half_day ? 0.5 : Number(l.days || 0));
 const leaveDuration = l => l.half_day ? '0.5 (Half day)' : leaveDays(l);
 function LeaveView({ user }) {
@@ -5468,7 +5566,7 @@ function LeaveView({ user }) {
       toast(half ? 'Half-day leave requested (0.5 day).' : 'Leave applied.'); setReason(''); setS1(''); setS2(''); setHalf(false); load();
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
-  const decide = async (id, d) => { try { await api(`/api/leaves/${id}/${d}`, { method: 'POST' }); toast(d === 'approve' ? 'Approved' : 'Rejected'); load(); } catch (e) { toast(e.message, 'err'); } };
+  const [decideFor, setDecideFor] = useState(null);   // { l, mode: 'approve' | 'reject' }
   const stBadge = s => s === 'approved' ? 'paid' : s === 'rejected' ? 'unpaid' : 'partial';
   const curBal = bal && bal.find(x => x.type === ltype);
   return (
@@ -5490,9 +5588,11 @@ function LeaveView({ user }) {
               <td className="muted">{l.reason || '—'}</td>
               <td style={{ whiteSpace: 'nowrap' }}>{l.user_id === user.id
                 ? <span className="muted" style={{ fontSize: 11.5 }}>Your request — sent to Admin</span>
-                : <><button className="btn sm gold" onClick={() => decide(l.id, 'approve')}>Approve</button>{' '}<button className="btn sm" onClick={() => decide(l.id, 'reject')}>Reject</button></>}</td>
+                : <><button className="btn sm gold" onClick={() => setDecideFor({ l, mode: 'approve' })}>Approve</button>{' '}<button className="btn sm" onClick={() => setDecideFor({ l, mode: 'reject' })}>Reject</button></>}</td>
             </tr>)}</tbody></table></div>}
       </div>}
+      {decideFor && <LeaveDecisionModal leave={decideFor.l} mode={decideFor.mode} onClose={() => setDecideFor(null)}
+        onDone={() => { setDecideFor(null); load(); }} />}
       <div className="grid2" style={{ gridTemplateColumns: '1.2fr 1fr' }}>
         <div className="glass card">
           <div className="section-h"><h3 style={{ fontSize: 15 }}>Apply for leave</h3></div>
@@ -5522,7 +5622,7 @@ function LeaveView({ user }) {
             <thead><tr><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Reason</th></tr></thead>
             <tbody>{mine.map(l => <tr key={l.id}>
               <td>{l.leave_type}</td><td className="muted">{l.start_date} → {l.end_date}</td><td className="mono">{leaveDuration(l)}</td>
-              <td><span className={cx('badge', stBadge(l.status))}>{l.status}</span></td><td className="muted">{l.reason || '—'}</td>
+              <td><LeaveStatusCell l={l} /></td><td className="muted">{l.reason || '—'}</td>
             </tr>)}</tbody></table></div>}
       </div>
       {canSeeHistory && <div className="glass card" style={{ marginTop: 16 }}>
@@ -5565,7 +5665,7 @@ function LeaveView({ user }) {
                   <td><b>{l.user_name}</b><div className="muted" style={{ fontSize: 11.5 }}>{l.user_branch || '—'}</div></td>
                   <td className="muted">{(ROLE_OPTS.find(r => r[0] === l.user_role) || [, l.user_role])[1] || '—'}</td>
                   <td>{l.leave_type}</td><td className="muted" style={{ whiteSpace: 'nowrap' }}>{l.start_date} → {l.end_date}</td><td className="mono">{leaveDuration(l)}</td>
-                  <td><span className={cx('badge', stBadge(l.status))}>{l.status}</span></td>
+                  <td><LeaveStatusCell l={l} /></td>
                   <td className="muted">{l.approver_name || '—'}</td><td className="muted">{l.reason || '—'}</td>
                 </tr>)}
               </React.Fragment>)}</tbody></table></div>;

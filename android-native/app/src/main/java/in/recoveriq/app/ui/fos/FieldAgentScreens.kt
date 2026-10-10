@@ -216,6 +216,8 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     var sel by remember { mutableStateOf("All") }
     var query by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf("Pending ↑") }
+    var pin by remember { mutableStateOf<String?>(null) }        // PIN chip inside a portfolio
+    var areaQuery by remember { mutableStateOf("") }             // PIN / area search across all portfolios
     // Drill-down: month  ->  portfolio (bank·product)  ->  cases.
     var month by rememberSaveable { mutableStateOf<String?>(null) }
     var portfolio by rememberSaveable { mutableStateOf<String?>(null) }   // "bank||product"
@@ -249,12 +251,23 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     }
     fun changePortfolio(value: String?) {
         portfolio = value
+        pin = null
         scope.launch { listState.scrollToItem(0) }
     }
     BackHandler(enabled = portfolio != null) { changePortfolio(null) }
 
     fun monthOf(c: Case): String = (c.month ?: "").trim().ifEmpty { "—" }
     fun portKey(c: Case): String = "${(c.bank ?: "—")}||${(c.product ?: "—")}"
+    // All PIN codes on a case (address 1/2/3), digits only.
+    fun pinsOf(c: Case): List<String> = listOf(c.pincode, c.pincode2, c.pincode3)
+        .mapNotNull { p -> p?.filter { it.isDigit() }?.takeIf { it.length >= 6 }?.take(6) }.distinct()
+    // PIN / area match: digits match any PIN code; words match any address (area, street, landmark).
+    fun areaMatch(c: Case, raw: String): Boolean {
+        val t = raw.trim().lowercase(); if (t.isEmpty()) return true
+        val d = t.filter { it.isDigit() }
+        if (d.length >= 3 && d.length == t.replace(" ", "").length) return pinsOf(c).any { it.startsWith(d) || it.contains(d) }
+        return listOfNotNull(c.address, c.address2, c.address3, c.newAddress).any { it.lowercase().contains(t) }
+    }
 
     // A single vertical scroll surface for headers, reminders, filters and accounts.
     // Fixed headers previously consumed almost all available height on small/large-font phones.
@@ -306,6 +319,37 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
         val monthCases = cases.filter { monthOf(it) == curMonth }
 
         if (portfolio == null) {
+            // ---- PIN / area search across ALL portfolios of this month ----
+            item(key = "area-search") {
+                OutlinedTextField(
+                    value = areaQuery, onValueChange = { areaQuery = it }, singleLine = true,
+                    leadingIcon = { Icon(Icons.Filled.Search, null) },
+                    trailingIcon = { if (areaQuery.isNotEmpty()) TextButton(onClick = { areaQuery = "" }) { Text("✕") } },
+                    placeholder = { Text("Search by PIN code or area (all portfolios)") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextDark, unfocusedTextColor = TextDark,
+                        cursorColor = BrandBlue, focusedBorderColor = BrandBlue, unfocusedBorderColor = Muted,
+                    ),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
+            if (areaQuery.isNotBlank()) {
+                val hits = monthCases.filter { areaMatch(it, areaQuery) }.sortedByDescending { it.pendingAmount }
+                item(key = "area-count") {
+                    Text("${hits.size} account${if (hits.size == 1) "" else "s"} in $curMonth matching \"${areaQuery.trim()}\"" +
+                        "  ·  pending ₹${"%,.0f".format(hits.sumOf { it.pendingAmount })}",
+                        color = Muted, modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 2.dp))
+                }
+                items(hits, key = { "area:${it.id}" }) { case ->
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        Text("${case.bank ?: "—"} · ${case.product ?: "—"}" +
+                            (pinsOf(case).takeIf { it.isNotEmpty() }?.let { "  ·  PIN ${it.joinToString(", ")}" } ?: ""),
+                            style = MaterialTheme.typography.labelSmall, color = Muted)
+                        CaseCard(case, onClick = { onOpenCase(case.id) })
+                    }
+                }
+                return@LazyColumn
+            }
             // ---- Portfolio picker: one card per Bank · Product in this month ----
             val ports = monthCases.groupBy { portKey(it) }.toList().sortedByDescending { it.second.size }
             item(key = "portfolio-heading") { Text("Portfolios in $curMonth", color = Muted,
@@ -336,13 +380,18 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
         fun matches(c: Case): Boolean {
             if (q.isEmpty()) return true
             val digits = q.filter { it.isDigit() }
-            return listOf(c.customerName, c.accountNo, c.cardNo, c.phone, c.altPhone)
+            return listOf(c.customerName, c.accountNo, c.cardNo, c.phone, c.altPhone,
+                    c.address, c.address2, c.address3, c.newAddress)
                 .any { it != null && it.lowercase().contains(q) } ||
-                (digits.isNotEmpty() && listOf(c.accountNo, c.cardNo, c.phone, c.altPhone)
-                    .any { it != null && it.filter { ch -> ch.isDigit() }.contains(digits) })
+                (digits.isNotEmpty() && (listOf(c.accountNo, c.cardNo, c.phone, c.altPhone)
+                    .any { it != null && it.filter { ch -> ch.isDigit() }.contains(digits) } ||
+                    pinsOf(c).any { it.contains(digits) }))
         }
         val comparator = (CASE_SORTS.firstOrNull { it.first == sort } ?: CASE_SORTS.first()).second
-        val ordered = portCases.filter { pred(it) && matches(it) }.sortedWith(comparator)
+        val ordered = portCases.filter { pred(it) && matches(it) && (pin == null || pinsOf(it).contains(pin ?: "")) }.sortedWith(comparator)
+        // PIN codes in this portfolio with their account counts (busiest first) for one-tap filtering.
+        val pinCounts = portCases.flatMap { pinsOf(it) }.groupingBy { it }.eachCount()
+            .toList().sortedByDescending { it.second }
         val exportTitle = "$bank · $prod · $curMonth"
         val exportBase = "Cases_${bank}_${prod}_$curMonth".replace(Regex("[^A-Za-z0-9_-]"), "")
 
@@ -375,13 +424,26 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
             OutlinedTextField(
                 value = query, onValueChange = { query = it }, singleLine = true,
                 leadingIcon = { Icon(Icons.Filled.Search, null) },
-                placeholder = { Text("Search name / account / phone") },
+                placeholder = { Text("Search name / account / phone / PIN / area") },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = TextDark, unfocusedTextColor = TextDark,
                     cursorColor = BrandBlue, focusedBorderColor = BrandBlue, unfocusedBorderColor = Muted,
                 ),
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
             )
+        }
+        // PIN code chips — tap one to see only that area's accounts.
+        if (pinCounts.size > 1) item(key = "pins") {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("PIN:", color = Muted, modifier = Modifier.padding(end = 2.dp))
+                FilterChip(selected = pin == null, onClick = { pin = null }, label = { Text("All") })
+                pinCounts.forEach { (p, n) ->
+                    FilterChip(selected = pin == p, onClick = { pin = if (pin == p) null else p }, label = { Text("$p ($n)") })
+                }
+            }
         }
         // Status + sort — one compact scrollable line each.
         item(key = "filters") {

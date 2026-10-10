@@ -169,6 +169,10 @@ def _ensure_columns():
         },
         "leaves": {
             "half_day": "BOOLEAN DEFAULT FALSE",
+            "decision_note": "TEXT",
+            "requested_start": "DATE",
+            "requested_end": "DATE",
+            "parent_id": "INTEGER",
         },
     }
     insp = inspect(engine)

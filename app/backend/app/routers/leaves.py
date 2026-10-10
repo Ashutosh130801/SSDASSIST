@@ -1,6 +1,6 @@
 from datetime import datetime, timezone, timedelta, date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -62,6 +62,10 @@ def _out(lv, names):
     d.user_name, d.user_branch, d.user_role = nm[0], nm[1], nm[2]
     if lv.approver_id:
         d.approver_name = names.get(lv.approver_id, (None, None, None))[0]
+    rs, re_ = getattr(lv, "requested_start", None), getattr(lv, "requested_end", None)
+    if rs and re_:
+        d.requested_days = float(working_days(rs, re_))
+        d.partial = (rs, re_) != (lv.start_date, lv.end_date) or bool(getattr(lv, "parent_id", None))
     return d
 
 
@@ -210,11 +214,32 @@ def balances(role: str | None = None, q: str | None = None, year: int | None = N
     return {"year": yr, "rows": out}
 
 
+def _runs(days_sorted):
+    """Group sorted dates into contiguous runs, treating a Sunday gap as contiguous (Sunday is a
+    weekly off, so Sat + Mon is one leave block)."""
+    runs = []
+    for d in days_sorted:
+        if runs:
+            prev = runs[-1][1]
+            gap = (d - prev).days
+            if gap == 1 or (gap == 2 and (prev + timedelta(days=1)).weekday() == 6):
+                runs[-1][1] = d
+                continue
+        runs.append([d, d])
+    return runs
+
+
 @router.post("/{leave_id}/{decision}", response_model=schemas.LeaveOut)
-def decide(leave_id: int, decision: str, db: Session = Depends(get_db),
+def decide(leave_id: int, decision: str, body: dict = Body(default={}), db: Session = Depends(get_db),
            actor: models.User = Depends(require_roles("admin", "manager", "hr", "headoffice"))):
+    """Approve or reject a request. Body (optional):
+      note  — reason for rejection, or a note on an approval (shown to the employee).
+      dates — approve ONLY these dates (subset of the requested range): the rest is not granted.
+              Non-contiguous picks become separate approved blocks linked to this request."""
     if decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="decision must be approve or reject")
+    body = body or {}
+    note = (str(body.get("note") or "").strip())[:1000] or None
     lv = db.query(models.Leave).filter(models.Leave.id == leave_id).first()
     if not lv:
         raise HTTPException(status_code=404, detail="Leave not found")
@@ -232,13 +257,50 @@ def decide(leave_id: int, decision: str, db: Session = Depends(get_db),
         raise HTTPException(409, "This request has already been decided.")
     if decision == "approve" and lv.half_day and lv.start_date != lv.end_date:
         raise HTTPException(400, "Half-day leave must cover a single date. Reject this request and ask the employee to reapply.")
-    if decision == "approve" and _overlap(db, lv.user_id, lv.start_date, lv.end_date, lv.id):
-        raise HTTPException(409, "Another pending or approved request overlaps these dates. Resolve it first.")
+
+    # ---- partial approval: grant only the chosen dates
+    runs = None
+    if decision == "approve" and body.get("dates") and not lv.half_day:
+        try:
+            picked = sorted({date.fromisoformat(str(x)[:10]) for x in body["dates"]})
+        except ValueError:
+            raise HTTPException(400, "Dates must be YYYY-MM-DD.")
+        picked = [d for d in picked if d.weekday() != 6]          # Sundays are week-off, never leave
+        if not picked:
+            raise HTTPException(400, "Pick at least one working day to approve.")
+        if picked[0] < lv.start_date or picked[-1] > lv.end_date:
+            raise HTTPException(400, f"Approved dates must be within the request ({lv.start_date} to {lv.end_date}).")
+        runs = _runs(picked)
+        if (runs[0][0], runs[-1][1]) == (lv.start_date, lv.end_date) and len(runs) == 1:
+            runs = None                                            # all days chosen → normal approval
+    if decision == "approve":
+        blocks = runs or [[lv.start_date, lv.end_date]]
+        for s, e in blocks:
+            if _overlap(db, lv.user_id, s, e, lv.id):
+                raise HTTPException(409, "Another pending or approved request overlaps these dates. Resolve it first.")
+
+    now = datetime.now(timezone.utc)
+    detail_extra = ""
+    if runs:
+        req_days = working_days(lv.start_date, lv.end_date)
+        lv.requested_start, lv.requested_end = lv.start_date, lv.end_date
+        lv.start_date, lv.end_date = runs[0]
+        lv.days = working_days(*runs[0])
+        for s, e in runs[1:]:
+            db.add(models.Leave(user_id=lv.user_id, leave_type=lv.leave_type, start_date=s, end_date=e,
+                                days=working_days(s, e), half_day=False, reason=lv.reason, status="approved",
+                                approver_id=actor.id, decided_at=now, decision_note=note, parent_id=lv.id,
+                                requested_start=lv.requested_start, requested_end=lv.requested_end))
+        granted = sum(working_days(s, e) for s, e in runs)
+        detail_extra = f" — partially approved {granted} of {req_days} day(s): " + \
+                       ", ".join(f"{s}" if s == e else f"{s}→{e}" for s, e in runs)
     lv.status = "approved" if decision == "approve" else "rejected"
     lv.approver_id = actor.id
-    lv.decided_at = datetime.now(timezone.utc)
+    lv.decided_at = now
+    lv.decision_note = note
     audit.record(db, actor, "leave_" + lv.status, entity_type="leave", target_user_id=lv.user_id,
-                 detail=f"Leave #{lv.id}: {_eff_days(lv)} day(s), {lv.start_date} to {lv.end_date}")
+                 detail=f"Leave #{lv.id}: {_eff_days(lv)} day(s), {lv.start_date} to {lv.end_date}"
+                        + detail_extra + (f" · note: {note}" if note else ""))
     db.commit()
     db.refresh(lv)
     _changed()

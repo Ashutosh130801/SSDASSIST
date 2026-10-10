@@ -193,6 +193,14 @@ private fun LeaveCard(lv: Leave, canApprove: Boolean, onDecide: (Boolean) -> Uni
                 Text("${DateUtil.humanDate(lv.startDate)} → ${DateUtil.humanDate(lv.endDate)}",
                     style = MaterialTheme.typography.bodySmall, color = Muted)
                 lv.reason?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Muted) }
+                if (lv.partial == true && lv.requestedStart != null) {
+                    Text("Partly approved — asked ${lv.requestedDays ?: ""} day(s): ${DateUtil.humanDate(lv.requestedStart)} → ${DateUtil.humanDate(lv.requestedEnd ?: lv.requestedStart)}",
+                        style = MaterialTheme.typography.bodySmall, color = Muted)
+                }
+                lv.decisionNote?.takeIf { it.isNotBlank() }?.let {
+                    Text((if (lv.status.equals("rejected", true)) "Reason: " else "Note: ") + it,
+                        style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                }
             }
             StatusChip(lv.status)
         }

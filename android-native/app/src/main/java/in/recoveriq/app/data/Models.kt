@@ -542,6 +542,7 @@ data class MeToday(
     val tracked: Boolean = false,
     @Json(name = "needs_checkin") val needsCheckin: Boolean = false,
     @Json(name = "after_hours") val afterHours: Boolean = false,   // logged in past shift end, not checked in
+    val field: Boolean = false,   // person works in the field (FOS / TC+FOS) → selfie check-in in any view
     @Json(name = "shift_start") val shiftStart: String = "09:00",
     @Json(name = "shift_end") val shiftEnd: String = "19:00",
     @Json(name = "late_after") val lateAfter: String = "10:00",
@@ -666,6 +667,11 @@ data class Leave(
     @Json(name = "user_name") val userName: String? = null,
     @Json(name = "user_branch") val userBranch: String? = null,
     @Json(name = "approver_name") val approverName: String? = null,
+    @Json(name = "decision_note") val decisionNote: String? = null,      // rejection reason / approval note
+    @Json(name = "requested_start") val requestedStart: String? = null,  // set on a partial approval
+    @Json(name = "requested_end") val requestedEnd: String? = null,
+    @Json(name = "requested_days") val requestedDays: Double? = null,
+    val partial: Boolean? = false,
 )
 
 @JsonClass(generateAdapter = true)

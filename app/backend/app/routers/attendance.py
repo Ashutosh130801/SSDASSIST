@@ -36,6 +36,18 @@ def _tracked(u: models.User) -> bool:
     return (u.role or "") != "admin"
 
 
+def _is_field(u: models.User) -> bool:
+    """Does this PERSON work in the field — FOS primary role, FOS view active, or a TC with the extra
+    FOS hat? Attendance is per person (one row a day, whichever view they're in), so check-in rules
+    (FOS shift, selfie, GPS tracking) follow the person, not the view they happen to be in."""
+    primary = getattr(u, "_primary_role", None) or u.role
+    return "fos" in (primary, u.role) or bool(getattr(u, "also_field_agent", False))
+
+
+def _shift_for(u: models.User) -> tuple[str, str, str]:
+    return _shift("fos" if _is_field(u) else (getattr(u, "_primary_role", None) or u.role))
+
+
 def _shift(role: str) -> tuple[str, str, str]:
     """(shift_start, shift_end, late_after) as HH:MM. EVERYONE must check in by 10:00 — a check-in
     after 10:00 is marked LATE (not present) for all roles. FOS start their shift earlier at 08:00;
@@ -171,7 +183,7 @@ def _today_row(db: Session, uid: int):
 
 def _row_out(db: Session, u: models.User, a: models.Attendance | None, d: date_cls,
              with_activity: bool = True) -> dict:
-    ss, se, _la = _shift(u.role)
+    ss, se, _la = _shift_for(u)
     # Calls / visits / collected only make sense for the frontline and, for a team lead, as their
     # team's combined total. Everyone else has no field/calling activity — omit it entirely.
     is_tl = u.role == "teamlead" or getattr(u, "also_team_lead", False)
@@ -309,7 +321,7 @@ def _work_end(db: Session, uid: int, u: models.User, start, end, a=None):
 @router.get("/me/today")
 def my_today(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     a = _today_row(db, user.id)
-    ss, se, la = _shift(user.role)
+    ss, se, la = _shift_for(user)
     not_checked_in = _tracked(user) and (a is None or a.check_in_at is None)
     # Past shift end, a fresh check-in won't be recorded → don't nag; flag it as after-hours so the
     # app lets the person work (activity only) without prompting check-in or overtime.
@@ -318,6 +330,7 @@ def my_today(db: Session = Depends(get_db), user: models.User = Depends(get_curr
         "tracked": _tracked(user),
         "needs_checkin": not_checked_in and not after_hours,
         "after_hours": after_hours,
+        "field": _is_field(user),          # check in with FOS rules (selfie + GPS) in ANY view
         "shift_start": ss, "shift_end": se, "late_after": la,
         "attendance": _row_out(db, user, a, _ist_today()),
         "server_time": _ist_now().isoformat(),
@@ -331,7 +344,7 @@ def _apply_checkin(db: Session, user: models.User, lat, lng, platform: str, phot
     a = _today_row(db, user.id)
     if a and a.check_in_at:
         return a, True, False
-    ss, se, la = _shift(user.role)
+    ss, se, la = _shift_for(user)
     now = presence.now_utc()
     # A FIRST check-in after the shift-end window is NOT marked present. The person is treated as
     # after-hours: their activity (calls/visits) still records normally, but nothing is written to
@@ -352,7 +365,9 @@ def _apply_checkin(db: Session, user: models.User, lat, lng, platform: str, phot
     a.last_platform = (platform or "web")[:10]
     # Pin location tracking to THIS device for the day: only pings carrying this same device_id are
     # stored/shown, so a session left open on another phone/browser is never tracked.
-    if device_id:
+    # Never pin to a browser: a field person (incl. TC+FOS dual users) who checks in from the web
+    # would otherwise have their phone's GPS ignored all day. Pin only phone/app check-ins.
+    if device_id and (platform or "web").lower() != "web":
         a.checkin_device_id = str(device_id)[:80]
     if photo_ref:
         a.check_in_photo = photo_ref

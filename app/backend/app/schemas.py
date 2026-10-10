@@ -154,6 +154,12 @@ class LeaveOut(BaseModel):
     user_branch: Optional[str] = None
     user_role: Optional[str] = None
     approver_name: Optional[str] = None
+    decision_note: Optional[str] = None          # rejection reason / partial-approval note
+    requested_start: Optional[date] = None       # set when fewer days were approved than asked
+    requested_end: Optional[date] = None
+    requested_days: Optional[float] = None
+    parent_id: Optional[int] = None              # extra approved block of request #parent_id
+    partial: Optional[bool] = False
 
 
 class TemplateCreate(BaseModel):

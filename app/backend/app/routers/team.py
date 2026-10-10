@@ -873,3 +873,337 @@ def portfolio_lead_cases(uid: int, bank: str | None = None, product: str | None 
             "enr": round(_d(c.enr), 2), "period": c.period,
         })
     return {"count": len(out), "cases": out}
+
+
+# ================================================================ staff coverage Excel (FOS / callers)
+
+@router.get("/staff-report")
+def staff_report(kind: str = "fos", month_bucket: str | None = "current", layout: str = "compact",
+                 db: Session = Depends(get_db),
+                 actor: models.User = Depends(require_roles("admin", "headoffice", "teamlead"))):
+    """One styled workbook for ALL FOS (kind=fos) or ALL callers (kind=caller): per person — emp ID,
+    name, assigned, visited/unvisited (FOS) or contacted/not contacted (callers), paid/unpaid with %,
+    and every portfolio they work — plus a portfolio-wise sheet with the same counts per person.
+    Admin/HO see everyone; a team lead sees only cases carrying their name."""
+    import io
+    from fastapi.responses import StreamingResponse
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.formatting.rule import DataBarRule
+    from openpyxl.utils import get_column_letter
+    from .mis import _period_for
+
+    is_fos = kind != "caller"
+    act_lbl, nact_lbl = ("Visited", "Unvisited") if is_fos else ("Contacted", "Not contacted")
+    period = _period_for(month_bucket)
+    owner_col = models.Case.assigned_fos_id if is_fos else models.Case.assigned_caller_id
+
+    q = db.query(models.Case).filter(models.Case.removed.isnot(True), owner_col.isnot(None))
+    if period:
+        q = q.filter(models.Case.period == period)
+    if actor.role == "teamlead":
+        from .cases import teamlead_case_filter
+        q = q.filter(teamlead_case_filter(actor))
+    cases = q.all()
+    ids = [c.id for c in cases]
+
+    # Activity per case: FOS → a visit logged (or the case's visited flag); caller → a real call logged
+    # (PAYMENT/PAID rows are collection events, not calls) or last_contacted_at set.
+    touched = set()
+    for chunk in [ids[i:i + 5000] for i in range(0, len(ids), 5000)]:
+        if is_fos:
+            touched |= {cid for (cid,) in db.query(models.Visit.case_id)
+                        .filter(models.Visit.case_id.in_(chunk)).distinct()}
+        else:
+            touched |= {cid for (cid,) in db.query(models.CallLog.case_id)
+                        .filter(models.CallLog.case_id.in_(chunk),
+                                models.CallLog.disposition.notin_(("PAYMENT", "PAID"))).distinct()}
+
+    def active(c):
+        return c.id in touched or (bool(c.visited) if is_fos else c.last_contacted_at is not None)
+
+    def is_paid(c):
+        return (c.paid_status or "").upper() == "PAID"
+
+    people = {u.id: u for u in db.query(models.User).filter(
+        models.User.id.in_({getattr(c, owner_col.key) for c in cases})).all()} if cases else {}
+
+    per = {}      # uid -> {"tot","act","paid","tos","ptos","ports": {(bank,prod): [tot,act,paid,tos,paid_tos]}}
+    for c in cases:
+        uid = getattr(c, owner_col.key)
+        p = per.setdefault(uid, {"tot": 0, "act": 0, "paid": 0, "tos": 0.0, "ptos": 0.0, "ports": {}})
+        a, pd = active(c), is_paid(c)
+        tos = _d(c.total_outstanding)
+        p["tot"] += 1; p["act"] += a; p["paid"] += pd; p["tos"] += tos; p["ptos"] += tos if pd else 0.0
+        k = ((c.bank or "—").strip(), (c.product or "—").strip())
+        r = p["ports"].setdefault(k, [0, 0, 0, 0.0, 0.0])
+        r[0] += 1; r[1] += a; r[2] += pd; r[3] += tos; r[4] += tos if pd else 0.0
+
+    def pct(a, b):
+        return (a / b) if b else 0.0
+
+    order = sorted(per, key=lambda u: ((people.get(u).name if people.get(u) else "") or "").lower())
+
+    # ---------------- styling
+    BLUE, LIGHT, ZEBRA = "1D4ED8", "EEF3FF", "F7F9FC"
+    HEAD_FILL = PatternFill("solid", fgColor=BLUE)
+    HEAD_FONT = Font(bold=True, color="FFFFFF", size=10.5)
+    TITLE_FONT = Font(bold=True, size=15, color="0F2747")
+    SUB_FONT = Font(size=10, color="5B6B82")
+    TOT_FILL = PatternFill("solid", fgColor="DCE6FA")
+    GOOD, MID, BAD = PatternFill("solid", fgColor="C6EFCE"), PatternFill("solid", fgColor="FFEB9C"), PatternFill("solid", fgColor="FFC7CE")
+    side = Side(style="thin", color="D6DEEA")
+    BORDER = Border(left=side, right=side, top=side, bottom=side)
+    CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+    label_month = period or "All months"
+    role_lbl = "FOS" if is_fos else "Callers"
+    when = datetime.now(IST).strftime("%d-%b-%Y %H:%M")
+
+    def title(ws, text, ncols):
+        ws.append([text]); ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
+        ws["A1"].font = TITLE_FONT
+        scope = "Your team" if actor.role == "teamlead" else "All branches"
+        ws.append([f"Month: {label_month}   ·   Attendance: {_per}   ·   {scope}   ·   Generated {when} by {actor.name or actor.emp_code or ''}"])
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncols)
+        ws["A2"].font = SUB_FONT
+        ws.append([])
+        ws.row_dimensions[1].height = 24
+
+    def header(ws, cols):
+        ws.append(cols)
+        r = ws.max_row
+        for c in ws[r]:
+            c.fill, c.font, c.alignment, c.border = HEAD_FILL, HEAD_FONT, CENTER, BORDER
+        ws.row_dimensions[r].height = 30
+        return r
+
+    def tint(cell, v):
+        cell.fill = GOOD if v >= 0.6 else MID if v >= 0.3 else BAD
+
+    def style_row(ws, r, pct_cols, zebra, total=False, left_cols=(1, 2), money_cols=()):
+        for c in ws[r]:
+            c.border = BORDER
+            c.alignment = LEFT if c.column in left_cols else CENTER
+            if total:
+                c.fill = TOT_FILL; c.font = Font(bold=True)
+            elif zebra:
+                c.fill = PatternFill("solid", fgColor=ZEBRA)
+        for col in money_cols:
+            ws.cell(row=r, column=col).number_format = '"₹"#,##0'
+        for col in pct_cols:
+            cell = ws.cell(row=r, column=col)
+            cell.number_format = "0.0%"
+            if not total:
+                tint(cell, cell.value or 0)
+
+    # ---- attendance for the report month (present / absent / leave days per person, up to today)
+    from datetime import date as _date
+    from ..leave_policy import day_credit
+    _today = datetime.now(IST).date()
+    _per = period or _today.strftime("%Y-%m")
+    _y, _m = int(_per[:4]), int(_per[5:7])
+    _first = _date(_y, _m, 1)
+    _nxt = _date(_y + (_m == 12), (_m % 12) + 1, 1)
+    _days = [_first + timedelta(days=i) for i in range((_nxt - _first).days)]
+    _uids = list(per.keys())
+    _arows, _lvs = {}, {}
+    if _uids:
+        for a in db.query(models.Attendance).filter(models.Attendance.user_id.in_(_uids),
+                                                    models.Attendance.date >= _first,
+                                                    models.Attendance.date < _nxt).all():
+            _arows[(a.user_id, a.date)] = a
+        for lv in db.query(models.Leave).filter(models.Leave.user_id.in_(_uids), models.Leave.status == "approved",
+                                                models.Leave.start_date < _nxt, models.Leave.end_date >= _first).all():
+            _lvs.setdefault(lv.user_id, []).append(lv)
+    att = {}
+    for uid in _uids:
+        pr = ab = lvd = 0.0
+        for d in _days:
+            if d > _today:
+                break
+            cands = [l for l in _lvs.get(uid, []) if l.start_date <= d <= l.end_date]
+            lv = next((l for l in cands if not l.half_day), cands[0] if cands else None)
+            cr = day_credit(_arows.get((uid, d)), lv, d, _today)
+            pr += cr["present"]; ab += cr["absent"]; lvd += cr["leave"]
+        att[uid] = (pr, ab, lvd)
+
+    def _n(v):
+        return int(v) if float(v).is_integer() else round(v, 1)
+
+    def att_row(uid):
+        pr, ab, lvd = att.get(uid, (0, 0, 0))
+        return [_n(pr), _n(ab), _n(lvd)]
+    att_tot = [_n(sum(v[i] for v in att.values())) for i in range(3)]
+
+    wb = Workbook()
+    ws = wb.active; ws.title = f"{role_lbl} report"
+    if layout == "compact":
+        # COMPACT: one row per person, but only THEIR portfolios, packed side by side
+        # (Portfolio 1, Portfolio 2, …) — no empty blocks for portfolios they don't work.
+        maxp = max((len(p["ports"]) for p in per.values()), default=0)
+        ID_COLS = ["Emp ID", "Name", "Branch", "No. of portfolios", "Present days", "Absent days", "Leave days"]
+        OV_COLS = ["Cases assigned", act_lbl, nact_lbl, f"{act_lbl} %", "Paid", "Unpaid",
+                   "Total TOS", "Paid TOS", "Paid % (TOS)"]
+        PF_COLS = ["Portfolio", "Assigned", act_lbl, nact_lbl, f"{act_lbl} %", "Paid", "Unpaid", "Paid % (TOS)"]
+        ncols = len(ID_COLS) + len(OV_COLS) + len(PF_COLS) * maxp
+        title(ws, f"{role_lbl} coverage report — {label_month}", min(ncols, 18))
+        BANDS = ["0F766E", "7C3AED", "B45309", "BE185D", "0369A1", "4D7C0F", "9F1239"]
+        g = ws.max_row + 1; h = g + 1
+        def band(col0, names, text, color):
+            ws.merge_cells(start_row=g, start_column=col0, end_row=g, end_column=col0 + len(names) - 1)
+            c = ws.cell(row=g, column=col0, value=text)
+            c.fill = PatternFill("solid", fgColor=color); c.font = HEAD_FONT; c.alignment = CENTER
+            for j, name in enumerate(names, start=col0):
+                hc = ws.cell(row=h, column=j, value=name)
+                hc.fill = PatternFill("solid", fgColor=color); hc.font = HEAD_FONT; hc.alignment = CENTER; hc.border = BORDER
+        band(1, ID_COLS, "Employee", "0F2747")
+        band(len(ID_COLS) + 1, OV_COLS, "Overall", BLUE)
+        base = len(ID_COLS) + len(OV_COLS) + 1
+        for i in range(maxp):
+            band(base + i * len(PF_COLS), PF_COLS, f"Portfolio {i + 1}", BANDS[i % len(BANDS)])
+        ws.row_dimensions[g].height = 20; ws.row_dimensions[h].height = 30
+        pct_cols = [len(ID_COLS) + 4, len(ID_COLS) + 9] + \
+                   [base + i * len(PF_COLS) + o for i in range(maxp) for o in (4, 7)]
+        money_cols = [len(ID_COLS) + 7, len(ID_COLS) + 8]
+        T = [0, 0, 0, 0.0, 0.0]
+        first = h + 1
+        for i, uid in enumerate(order):
+            u, p = people.get(uid), per[uid]
+            row = [(u.emp_code if u else "") or "", (u.name if u else f"#{uid}") or "", (u.branch if u else "") or "",
+                   len(p["ports"]), *att_row(uid),
+                   p["tot"], p["act"], p["tot"] - p["act"], pct(p["act"], p["tot"]),
+                   p["paid"], p["tot"] - p["paid"], round(p["tos"]), round(p["ptos"]), pct(p["ptos"], p["tos"])]
+            for (bk, pr), (n, a, pd, tt, pt) in sorted(p["ports"].items(), key=lambda kv: -kv[1][0]):
+                row += [f"{bk} · {pr}", n, a, n - a, pct(a, n), pd, n - pd, pct(pt, tt)]
+            ws.append(row)
+            r = ws.max_row
+            style_row(ws, r, (), i % 2 == 1, left_cols=(1, 2, 3), money_cols=money_cols)
+            for k2 in range(len(p["ports"])):                     # portfolio name cells: bold, left
+                c = ws.cell(row=r, column=base + k2 * len(PF_COLS))
+                c.font = Font(bold=True, color="0F2747"); c.alignment = LEFT
+            for c in pct_cols:
+                cell = ws.cell(row=r, column=c)
+                if isinstance(cell.value, (int, float)):
+                    cell.number_format = "0.0%"; tint(cell, cell.value)
+            T[0] += p["tot"]; T[1] += p["act"]; T[2] += p["paid"]; T[3] += p["tos"]; T[4] += p["ptos"]
+        last = ws.max_row
+        ws.append(["", f"TOTAL ({len(order)} {role_lbl})", "", "", *att_tot,
+                   T[0], T[1], T[0] - T[1], pct(T[1], T[0]), T[2], T[0] - T[2], round(T[3]), round(T[4]), pct(T[4], T[3])])
+        style_row(ws, ws.max_row, (), False, total=True, left_cols=(1, 2, 3), money_cols=money_cols)
+        for c in (len(ID_COLS) + 4, len(ID_COLS) + 9):
+            ws.cell(row=ws.max_row, column=c).number_format = "0.0%"
+        if last >= first:
+            ws.conditional_formatting.add(f"{get_column_letter(len(ID_COLS) + 1)}{first}:{get_column_letter(len(ID_COLS) + 1)}{last}", DataBarRule(start_type="min", end_type="max", color="7DA2F0"))
+        for i, w in enumerate([11, 24, 14, 10, 9, 9, 9] + [11, 10, 11, 10, 8, 8, 14, 14, 11], 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        for i in range(maxp):
+            for j, w in enumerate([18, 9, 9, 10, 9, 7, 8, 10]):
+                ws.column_dimensions[get_column_letter(base + i * len(PF_COLS) + j)].width = w
+        ws.freeze_panes = ws.cell(row=first, column=3)
+        ws.auto_filter.ref = f"A{h}:{get_column_letter(max(ncols, 13))}{max(last, h)}"
+    else:
+
+        # One sheet, ONE ROW PER PERSON. Columns: identity + overall block, then one column block per
+        # portfolio (bank · product) with the same metrics; a person's blank block = not working it.
+        ports_all = {}
+        for p in per.values():
+            for k, v in p["ports"].items():
+                ports_all[k] = ports_all.get(k, 0) + v[0]
+        port_keys = [k for k, _ in sorted(ports_all.items(), key=lambda kv: -kv[1])]
+
+        ID_COLS = ["Emp ID", "Name", "Branch", "No. of portfolios", "Present days", "Absent days", "Leave days"]
+        OV_COLS = ["Cases assigned", act_lbl, nact_lbl, f"{act_lbl} %", "Paid", "Unpaid",
+                   "Total TOS", "Paid TOS", "Paid % (TOS)"]
+        PF_COLS = ["Assigned", act_lbl, nact_lbl, f"{act_lbl} %", "Paid", "Unpaid", "Paid % (TOS)"]
+        ncols = len(ID_COLS) + len(OV_COLS) + len(PF_COLS) * len(port_keys)
+        title(ws, f"{role_lbl} coverage report — {label_month}", min(ncols, 18))
+
+        # Two header rows: group band (Overall / each portfolio) + metric names.
+        BANDS = ["1D4ED8", "0F766E", "7C3AED", "B45309", "BE185D", "0369A1", "4D7C0F", "9F1239"]
+        g = ws.max_row + 1; h = g + 1
+        def band(col0, width, text, color):
+            ws.merge_cells(start_row=g, start_column=col0, end_row=g, end_column=col0 + width - 1)
+            c = ws.cell(row=g, column=col0, value=text)
+            c.fill = PatternFill("solid", fgColor=color); c.font = HEAD_FONT; c.alignment = CENTER
+            for j in range(col0, col0 + width):
+                ws.cell(row=g, column=j).border = BORDER; ws.cell(row=g, column=j).fill = PatternFill("solid", fgColor=color)
+            for j, name in enumerate(cols_for[text], start=col0):
+                hc = ws.cell(row=h, column=j, value=name)
+                hc.fill = PatternFill("solid", fgColor=color); hc.font = HEAD_FONT; hc.alignment = CENTER; hc.border = BORDER
+        cols_for = {"Employee": ID_COLS, "Overall": OV_COLS}
+        band(1, len(ID_COLS), "Employee", "0F2747")
+        band(len(ID_COLS) + 1, len(OV_COLS), "Overall", BLUE)
+        starts = {}
+        col = len(ID_COLS) + len(OV_COLS) + 1
+        for i, k in enumerate(port_keys):
+            lbl = f"{k[0]} · {k[1]}"
+            cols_for[lbl] = PF_COLS
+            band(col, len(PF_COLS), lbl, BANDS[(i + 1) % len(BANDS)])
+            starts[k] = col; col += len(PF_COLS)
+        ws.row_dimensions[g].height = 20; ws.row_dimensions[h].height = 30
+
+        pct_cols = [len(ID_COLS) + 4, len(ID_COLS) + 9] + [starts[k] + 3 for k in port_keys] + [starts[k] + 6 for k in port_keys]
+        money_cols = [len(ID_COLS) + 7, len(ID_COLS) + 8]
+        T = [0, 0, 0, 0.0, 0.0]
+        PT = {k: [0, 0, 0, 0.0, 0.0] for k in port_keys}
+        first = h + 1
+        for i, uid in enumerate(order):
+            u, p = people.get(uid), per[uid]
+            row = [(u.emp_code if u else "") or "", (u.name if u else f"#{uid}") or "", (u.branch if u else "") or "",
+                   len(p["ports"]), *att_row(uid),
+                   p["tot"], p["act"], p["tot"] - p["act"], pct(p["act"], p["tot"]),
+                   p["paid"], p["tot"] - p["paid"], round(p["tos"]), round(p["ptos"]), pct(p["ptos"], p["tos"])]
+            for k in port_keys:
+                v = p["ports"].get(k)
+                if v:
+                    n, a, pd, tt, pt = v
+                    row += [n, a, n - a, pct(a, n), pd, n - pd, pct(pt, tt)]
+                    for j in range(5): PT[k][j] += v[j]
+                else:
+                    row += [None] * len(PF_COLS)
+            ws.append(row)
+            style_row(ws, ws.max_row, (), i % 2 == 1, left_cols=(1, 2, 3), money_cols=money_cols)
+            for c in pct_cols:
+                cell = ws.cell(row=ws.max_row, column=c)
+                if cell.value is not None:
+                    cell.number_format = "0.0%"; tint(cell, cell.value)
+            T[0] += p["tot"]; T[1] += p["act"]; T[2] += p["paid"]; T[3] += p["tos"]; T[4] += p["ptos"]
+        last = ws.max_row
+        tot = ["", f"TOTAL ({len(order)} {role_lbl})", "", len(port_keys), *att_tot,
+               T[0], T[1], T[0] - T[1], pct(T[1], T[0]), T[2], T[0] - T[2], round(T[3]), round(T[4]), pct(T[4], T[3])]
+        for k in port_keys:
+            n, a, pd, tt, pt = PT[k]
+            tot += [n, a, n - a, pct(a, n), pd, n - pd, pct(pt, tt)]
+        ws.append(tot)
+        style_row(ws, ws.max_row, (), False, total=True, left_cols=(1, 2, 3), money_cols=money_cols)
+        for c in pct_cols:
+            ws.cell(row=ws.max_row, column=c).number_format = "0.0%"
+
+        if last >= first:
+            ws.conditional_formatting.add(f"{get_column_letter(len(ID_COLS) + 1)}{first}:{get_column_letter(len(ID_COLS) + 1)}{last}", DataBarRule(start_type="min", end_type="max", color="7DA2F0"))
+        for i, w in enumerate([11, 24, 14, 10, 9, 9, 9] + [11, 10, 11, 10, 8, 8, 14, 14, 11], 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        for k in port_keys:
+            for j, w in enumerate([9, 9, 10, 9, 7, 8, 10]):
+                ws.column_dimensions[get_column_letter(starts[k] + j)].width = w
+        ws.freeze_panes = ws.cell(row=first, column=3)          # names + headers stay visible while scrolling
+        ws.auto_filter.ref = f"A{h}:{get_column_letter(ncols)}{max(last, h)}"
+
+    # Legend
+    ws.append([]); ws.append([])
+    note = (f"{act_lbl}: a {'visit was logged' if is_fos else 'call was logged'} on the case. "
+            "Paid = case marked PAID; Unpaid includes partial. Paid % (TOS) = TOS of paid cases ÷ total TOS. "
+            "Portfolio 1, 2, … = that person's own portfolios, largest first. Colours: green ≥ 60%, amber 30–59%, red < 30%.")
+    ws.append([note]); ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=min(ncols, 18))
+    ws.cell(row=ws.max_row, column=1).font = SUB_FONT
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    audit.record(db, actor, "download", None, entity_type="download",
+                 detail=f"Downloaded {role_lbl} coverage report ({label_month})")
+    db.commit()
+    fname = f"{role_lbl}_coverage_{(period or 'all').replace('-', '_')}.xlsx"
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})

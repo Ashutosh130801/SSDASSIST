@@ -188,7 +188,9 @@ fun AttendanceGate(vm: AuthViewModel, user: User) {
     // Once the user has checked in or dismissed this session, never auto-pop the dialog again —
     // the persistent "Check in" pill remains for a manual later check-in. Kills any reopen loop.
     var handled by remember { mutableStateOf(false) }
-    val isFos = user.role == "fos"
+    // Selfie + GPS check-in follows the PERSON: an FOS, or a TC who also has the FOS hat, checks in
+    // the field way even while in the TC view (attendance is one row per person per day).
+    val isFos = user.role == "fos" || user.alsoFieldAgent || "fos" in user.availableViews || me?.field == true
     var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
     var photoLoc by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     val camFile = remember { java.io.File(ctx.cacheDir, "checkin_cam.jpg") }

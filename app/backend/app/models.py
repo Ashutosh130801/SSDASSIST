@@ -383,6 +383,10 @@ class Leave(Base):
     approver_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     decided_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
+    decision_note = Column(Text, nullable=True)      # reason for rejection / note on a partial approval
+    requested_start = Column(Date, nullable=True)    # what the employee asked for (kept on partial approval)
+    requested_end = Column(Date, nullable=True)
+    parent_id = Column(Integer, nullable=True)       # extra approved block split out of request #parent_id
 
     user = relationship("User", foreign_keys=[user_id])
 
