@@ -1,5 +1,8 @@
 package `in`.recoveriq.app.ui.detail
 
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,7 +74,7 @@ import `in`.recoveriq.app.ui.theme.Muted
 import `in`.recoveriq.app.ui.theme.MutedDim
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> Unit) {
     var refresh by remember { mutableIntStateOf(0) }
@@ -107,7 +110,30 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                 Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                CaseHeader(case)
+                // Long-press any text in the header / details to select & copy it.
+                SelectionContainer { CaseHeader(case) }
+                // Tap: copy the key case info. Double-tap: copy EVERY field on the case.
+                fun copy(text: String, msg: String) {
+                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("Case info", text))
+                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                }
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(1.dp, BrandBlue.copy(alpha = 0.5f)),
+                    color = androidx.compose.ui.graphics.Color.Transparent,
+                    contentColor = BrandBlue,
+                    modifier = Modifier.combinedClickable(
+                        onClick = { copy(caseInfoText(case), "Case info copied · double-tap for ALL details") },
+                        onDoubleClick = { copy(caseFullText(case), "ALL case details copied") },
+                    ),
+                ) {
+                    Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                        Text("📋 Copy case info", fontWeight = FontWeight.SemiBold)
+                        Text("Tap: key info · Double-tap: all details",
+                            style = MaterialTheme.typography.labelSmall, color = Muted)
+                    }
+                }
                 // Escalated cases are locked for the front-line FOS/caller (handled by their lead).
                 val lockedForMe = case.escalated == true && (user.isFieldAgent || user.isTelecaller)
                 if (lockedForMe) {
@@ -150,7 +176,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     }
                 }
 
-                DetailFields(case)
+                SelectionContainer { DetailFields(case) }
 
                 SectionTitle("Activity log")
                 AsyncContent(key = refresh, block = { vm.repo.timeline(caseId) }) { events, _ ->
@@ -533,4 +559,98 @@ private fun TimelineRow(e: TimelineEvent) {
                 Text("by ${e.by}", style = MaterialTheme.typography.labelSmall, color = MutedDim)
         }
     }
+}
+
+/** Plain-text summary of a case for the clipboard: every number, the money breakdown and all addresses. */
+private fun caseInfoText(c: Case): String {
+    fun rs(v: Double) = "Rs " + String.format("%,.0f", v)
+    fun line(label: String, v: String?) = if (v.isNullOrBlank()) null else "$label: ${v.trim()}"
+    fun addr(a: String?, pin: String?) = listOfNotNull(a?.takeIf { it.isNotBlank() }?.trim(),
+        pin?.takeIf { it.isNotBlank() }?.let { "PIN $it" }).joinToString(" - ").ifBlank { null }
+    return listOfNotNull(
+        line("Customer", c.customerName),
+        line("Account", c.accountNo),
+        line("Card", c.cardNo),
+        line("Phone", c.phone),
+        line("Alt phone", c.altPhone),
+        line("New phone", c.newPhone),
+        line("Bank / Product", listOfNotNull(c.bank, c.product).joinToString(" / ").ifBlank { null }),
+        line("Bucket / Cycle / Month", listOfNotNull(c.bucket?.let { "Bkt $it" }, c.cycle?.let { "Cyc $it" }, c.month).joinToString(" | ").ifBlank { null }),
+        "Pending: ${rs(c.pendingAmount)}   Received: ${rs(c.receivedAmount)}",
+        "TOS: ${rs(c.totalOutstanding)}   NORM: ${rs(c.normAmount)}   STAB: ${rs(c.stabAmount)}" +
+            (c.normStab?.takeIf { it.isNotBlank() }?.let { "   N/S: $it" } ?: ""),
+        line("Status", c.paidStatus ?: c.status),
+        line("Disposition", c.disposition),
+        line("PTP / follow-up", c.followUpDate),
+        line("Address 1", addr(c.address, c.pincode)),
+        line("Address 2", addr(c.address2, c.pincode2)),
+        line("Address 3", addr(c.address3, c.pincode3)),
+        line("New address", c.newAddress),
+        line("FOS", c.assignedFosName ?: c.fosName),
+        line("Caller", c.assignedCallerName ?: c.callerName),
+        line("Remarks", c.remarks),
+    ).joinToString("\n")
+}
+
+/** Double-tap copy: every field the app has for the case, grouped, blanks skipped. */
+private fun caseFullText(c: Case): String {
+    fun rs(v: Double?) = if (v == null) null else "Rs " + String.format("%,.0f", v)
+    fun yn(b: Boolean?) = if (b == true) "Yes" else null
+    fun map(lat: Double?, lng: Double?) = if (lat == null || lng == null) null
+        else "https://maps.google.com/?q=$lat,$lng"
+    fun sec(title: String, vararg rows: Pair<String, String?>): String? {
+        val body = rows.filter { !it.second.isNullOrBlank() }.joinToString("\n") { "${it.first}: ${it.second!!.trim()}" }
+        return if (body.isBlank()) null else "— $title —\n$body"
+    }
+    fun money(v: Double) = if (v == 0.0) null else rs(v)
+    return listOfNotNull(
+        sec("CUSTOMER",
+            "Case ID" to c.id.toString(),
+            "Customer" to c.customerName,
+            "Account" to c.accountNo,
+            "Card" to c.cardNo,
+            "Phone" to c.phone,
+            "Alt phone" to c.altPhone,
+            "New phone" to c.newPhone,
+            "New contact by" to listOfNotNull(c.newContactBy, c.newContactAt).joinToString(" · ").ifBlank { null }),
+        sec("PORTFOLIO",
+            "Bank" to c.bank, "Product" to c.product, "Segment" to c.segment, "Branch" to c.branch,
+            "Bucket" to c.bucket, "Cycle" to c.cycle, "Month" to c.month, "Category" to c.cat),
+        sec("AMOUNTS",
+            "TOS" to rs(c.totalOutstanding),
+            "Principal (POS)" to money(c.principalOutstanding),
+            "Min amount due" to money(c.minAmountDue),
+            "Funding" to money(c.fundingAmount),
+            "ENR" to money(c.enr),
+            "NORM" to rs(c.normAmount),
+            "STAB" to rs(c.stabAmount),
+            "N/S" to c.normStab,
+            "Pending NORM" to rs(c.remainingToNorm),
+            "Pending STAB" to rs(c.remainingToStab),
+            "Received" to rs(c.receivedAmount),
+            "Pending" to rs(c.pendingAmount),
+            "Settlement case" to yn(c.isSettlementCase),
+            "Auto-debit" to yn(c.autoDebit)),
+        sec("STATUS",
+            "Status" to c.status, "Paid status" to c.paidStatus, "Disposition" to c.disposition,
+            "PTP / follow-up" to c.followUpDate, "Last contacted" to c.lastContactedAt,
+            "Visited" to yn(c.visited), "Escalated" to yn(c.escalated),
+            "Flag" to (c.flagReason ?: yn(c.flagged)),
+            "Propensity" to c.propensity?.toString(),
+            "My note" to c.reviewNote, "Remarks" to c.remarks),
+        sec("ADDRESSES",
+            "Address 1" to listOfNotNull(c.address, c.pincode?.let { "PIN $it" }).joinToString(" - ").ifBlank { null },
+            "Map 1" to map(c.latitude, c.longitude),
+            "Address 2" to listOfNotNull(c.address2, c.pincode2?.let { "PIN $it" }).joinToString(" - ").ifBlank { null },
+            "Map 2" to map(c.latitude2, c.longitude2),
+            "Address 3" to listOfNotNull(c.address3, c.pincode3?.let { "PIN $it" }).joinToString(" - ").ifBlank { null },
+            "Map 3" to map(c.latitude3, c.longitude3),
+            "New address" to c.newAddress,
+            "DIGIPIN" to c.digipin),
+        sec("TEAM",
+            "FOS" to listOfNotNull(c.assignedFosName ?: c.fosName, c.assignedFosCode, c.assignedFosPhone).joinToString(" · ").ifBlank { null },
+            "Caller" to listOfNotNull(c.assignedCallerName ?: c.callerName, c.assignedCallerCode, c.assignedCallerPhone).joinToString(" · ").ifBlank { null },
+            "Joint FOS" to listOfNotNull(c.jointFosName, c.jointNote).joinToString(" · ").ifBlank { null },
+            "Team" to c.team, "Team lead" to c.teamLead),
+    ).joinToString("\n\n")
 }

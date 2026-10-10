@@ -1,10 +1,25 @@
-"""Calendar-day leave units and a shared daily/monthly attendance classification."""
+"""Leave units (Sundays are weekly-off and never consume leave) and a shared
+daily/monthly attendance classification."""
+
+
+def working_days(first, last):
+    """Days in [first, last] excluding Sundays."""
+    if first > last:
+        return 0
+    total = (last - first).days + 1
+    weeks, extra = divmod(total, 7)
+    sundays = weeks + sum(1 for i in range(extra) if (first.weekday() + i) % 7 == 6)
+    return total - sundays
+
+
 def effective_days(leave, start=None, end=None):
     first = max(leave.start_date, start) if start else leave.start_date
     last = min(leave.end_date, end) if end else leave.end_date
     if first > last:
         return 0.0
-    return 0.5 if leave.half_day else float((last - first).days + 1)
+    if leave.half_day:
+        return 0.0 if first.weekday() == 6 else 0.5
+    return float(working_days(first, last))
 
 
 def day_credit(attendance, leave, day, today):
@@ -12,7 +27,10 @@ def day_credit(attendance, leave, day, today):
     half = bool(leave and leave.half_day)
     result = dict(present=0.0, leave=0.0, absent=0.0, weekoff=0, half_days=0,
                   late=int(bool(checked_in and attendance.late)))
-    if leave:
+    if day.weekday() == 6 and not checked_in:
+        # Sunday stays a week-off even inside an approved leave (and is never 'absent').
+        result.update(code="W", status="weekoff", weekoff=1)
+    elif leave:
         if half:
             result.update(code="HD", status="half_leave", leave=0.5, half_days=1,
                           present=0.5 if checked_in else 0.0,

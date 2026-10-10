@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user, require_roles
-from ..leave_policy import effective_days
+from ..leave_policy import effective_days, working_days
 from .. import audit
 
 router = APIRouter(prefix="/api/leaves", tags=["leaves"])
@@ -94,10 +94,12 @@ def apply_leave(body: schemas.LeaveCreate, db: Session = Depends(get_db),
     half = bool(getattr(body, "half_day", False))
     if half and body.start_date != body.end_date:
         raise HTTPException(status_code=400, detail="A half-day leave must be for a single date (From = To).")
+    days = working_days(body.start_date, body.end_date)   # Sundays are week-off, not leave
+    if days == 0:
+        raise HTTPException(status_code=400, detail="Sunday is a weekly off — no leave needed.")
     db.query(models.User).filter_by(id=user.id).with_for_update().first()
     if _overlap(db, user.id, body.start_date, body.end_date):
         raise HTTPException(409, "A pending or approved leave already covers this date range.")
-    days = (body.end_date - body.start_date).days + 1
     lv = models.Leave(user_id=user.id, leave_type=body.leave_type, start_date=body.start_date,
                       end_date=body.end_date, days=days, half_day=half, reason=body.reason, status="pending")
     db.add(lv)
