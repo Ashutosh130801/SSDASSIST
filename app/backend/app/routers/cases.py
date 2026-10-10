@@ -1832,6 +1832,77 @@ def _cases_xlsx(cases, title: str) -> bytes:
     buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
 
 
+def _add_fillable_fields(raw: bytes, fields, page_h_mm: float) -> bytes:
+    """Turn the printed tick box / write-in lines into real PDF form fields (AcroForm) so the FOS can
+    tick 'Visited' and type 'Collected' / 'Remarks' on the phone. Purely for the officer's own use —
+    nothing flows back to RecoverIQ."""
+    import io
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import (ArrayObject, BooleanObject, DecodedStreamObject, DictionaryObject,
+                               FloatObject, NameObject, NumberObject, TextStringObject)
+    k = 72.0 / 25.4
+    w = PdfWriter(clone_from=PdfReader(io.BytesIO(raw)))
+
+    def rect(x, y, wd, ht):
+        return ArrayObject([FloatObject(round(x * k, 2)), FloatObject(round((page_h_mm - y - ht) * k, 2)),
+                            FloatObject(round((x + wd) * k, 2)), FloatObject(round((page_h_mm - y) * k, 2))])
+
+    def stream(data: bytes, bw: float, bh: float):
+        s = DecodedStreamObject()
+        s.set_data(data)
+        s.update({NameObject("/Type"): NameObject("/XObject"), NameObject("/Subtype"): NameObject("/Form"),
+                  NameObject("/BBox"): ArrayObject([FloatObject(0), FloatObject(0), FloatObject(bw), FloatObject(bh)])})
+        return w._add_object(s)
+
+    helv = w._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"), NameObject("/Encoding"): NameObject("/WinAnsiEncoding")}))
+    refs = []
+    for kind, pg, idx, x, y, wd, ht in fields:
+        page = w.pages[pg - 1]
+        bw, bh = round(wd * k, 2), round(ht * k, 2)
+        f = DictionaryObject({
+            NameObject("/Type"): NameObject("/Annot"), NameObject("/Subtype"): NameObject("/Widget"),
+            NameObject("/Rect"): rect(x, y, wd, ht), NameObject("/F"): NumberObject(4),
+            NameObject("/P"): page.indirect_reference,
+        })
+        if kind == "chk":
+            tick = (f"0.05 0.45 0.2 RG 1.6 w 1 J 1 j {bw*0.18:.2f} {bh*0.5:.2f} m {bw*0.42:.2f} {bh*0.2:.2f} l "
+                    f"{bw*0.85:.2f} {bh*0.85:.2f} l S").encode()
+            f.update({
+                NameObject("/FT"): NameObject("/Btn"), NameObject("/T"): TextStringObject(f"visited_{idx}"),
+                NameObject("/TU"): TextStringObject(f"Case {idx}: visited"),
+                NameObject("/V"): NameObject("/Off"), NameObject("/AS"): NameObject("/Off"),
+                NameObject("/MK"): DictionaryObject({NameObject("/CA"): TextStringObject("4")}),
+                NameObject("/AP"): DictionaryObject({NameObject("/N"): DictionaryObject({
+                    NameObject("/Yes"): stream(tick, bw, bh), NameObject("/Off"): stream(b"", bw, bh)})}),
+            })
+        else:
+            f.update({
+                NameObject("/FT"): NameObject("/Tx"),
+                NameObject("/T"): TextStringObject(f"{'collected' if kind == 'amt' else 'remarks'}_{idx}"),
+                NameObject("/TU"): TextStringObject(f"Case {idx}: {'amount collected' if kind == 'amt' else 'remarks'}"),
+                NameObject("/V"): TextStringObject(""),
+                NameObject("/DA"): TextStringObject("/Helv 8 Tf 0 0 0.55 rg"),
+            })
+            if kind == "amt":
+                f[NameObject("/MaxLen")] = NumberObject(12)
+        ref = w._add_object(f)
+        if "/Annots" not in page:
+            page[NameObject("/Annots")] = ArrayObject()
+        page["/Annots"].append(ref)
+        refs.append(ref)
+    w._root_object[NameObject("/AcroForm")] = w._add_object(DictionaryObject({
+        NameObject("/Fields"): ArrayObject(refs),
+        NameObject("/NeedAppearances"): BooleanObject(True),
+        NameObject("/DA"): TextStringObject("/Helv 8 Tf 0 g"),
+        NameObject("/DR"): DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/Helv"): helv})}),
+    }))
+    out = io.BytesIO()
+    w.write(out)
+    return out.getvalue()
+
+
 def _cases_pdf(cases, title: str, user) -> bytes:
     """A readable account worksheet: one full-width CARD per case that GROWS to fit every detail —
     all phone numbers (phone / alt / new), all three addresses with their pincodes, the full money
@@ -1841,12 +1912,17 @@ def _cases_pdf(cases, title: str, user) -> bytes:
     from datetime import datetime as _dt
 
     PAGE_W, PAGE_H, M = 210.0, 297.0, 10.0
+    fields = []                         # (kind, page, case#, x, y, w, h) in mm → fillable form fields
     CARD_W = PAGE_W - 2 * M
     LHR, LHA = 4.4, 4.0                 # info-row and address-line heights
     GAP = 4.0
 
+    _subs = str.maketrans({"—": "-", "–": "-", "‘": "'", "’": "'", "“": '"', "”": '"',
+                           "…": "...", "₹": "Rs ", "•": "-", " ": " "})
+
     def s1(v):
-        return str(v if v is not None else "").strip().encode("latin-1", "replace").decode("latin-1")
+        s = str(v if v is not None else "").strip().translate(_subs)
+        return s.encode("latin-1", "replace").decode("latin-1")
 
     def g(c, a):
         v = getattr(c, a, None)
@@ -1963,8 +2039,17 @@ def _cases_pdf(cases, title: str, user) -> bytes:
         pdf.set_xy(pad + 6, ry - 0.3); pdf.set_font("Helvetica", "B", 8); pdf.set_text_color(25, 25, 25)
         pdf.cell(16, 5, "Visited")
         pdf.set_xy(pad + 26, ry - 0.3); pdf.set_font("Helvetica", "", 7.6); pdf.set_text_color(70, 70, 70)
-        pdf.cell(66, 5, "Collected Rs ________________")
-        pdf.set_xy(pad + 96, ry - 0.3); pdf.cell(inner - 96, 5, "Remarks ______________________")
+        pdf.cell(18, 5, "Collected Rs")
+        pdf.set_xy(pad + 78, ry - 0.3); pdf.cell(14, 5, "Remarks")
+        # write-in lines (pen on paper) — the same spots become typeable fields on screen
+        pdf.set_draw_color(150, 150, 150); pdf.set_line_width(0.2)
+        cx0, cx1 = pad + 44, pad + 74
+        rx0, rx1 = pad + 92, pad + inner
+        pdf.line(cx0, ry + 4.4, cx1, ry + 4.4); pdf.line(rx0, ry + 4.4, rx1, ry + 4.4)
+        pg = pdf.page_no()
+        fields.append(("chk", pg, idx, pad, ry, 4.6, 4.6))
+        fields.append(("amt", pg, idx, cx0, ry - 0.2, cx1 - cx0, 4.6))
+        fields.append(("rmk", pg, idx, rx0, ry - 0.2, rx1 - rx0, 4.6))
         return h
 
     y = banner(True)
@@ -1974,7 +2059,11 @@ def _cases_pdf(cases, title: str, user) -> bytes:
             y = banner(False)
         card(y, i, c)
         y += h + GAP
-    return bytes(pdf.output())
+    raw = bytes(pdf.output())
+    try:
+        return _add_fillable_fields(raw, fields, PAGE_H)
+    except Exception:
+        return raw          # pypdf missing / any issue → still a valid printable PDF
 
 
 @router.post("/export")
