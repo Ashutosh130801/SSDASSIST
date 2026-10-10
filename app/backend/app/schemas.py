@@ -123,6 +123,7 @@ class DeviceOut(BaseModel):
     user_name: Optional[str] = None
     user_branch: Optional[str] = None
     user_role: Optional[str] = None
+    user_code: Optional[str] = None        # employee ID (searchable in the Devices screen)
     approved_count: Optional[int] = None   # how many approved devices this user currently has
 
 

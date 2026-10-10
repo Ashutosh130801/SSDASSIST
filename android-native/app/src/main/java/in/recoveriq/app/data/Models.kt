@@ -722,6 +722,8 @@ data class Device(
     val approved: Boolean = false,
     @Json(name = "user_name") val userName: String? = null,
     @Json(name = "user_branch") val userBranch: String? = null,
+    @Json(name = "user_role") val userRole: String? = null,
+    @Json(name = "user_code") val userCode: String? = null,
 )
 
 // ---- 2FA ----

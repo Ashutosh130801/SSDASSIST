@@ -7,6 +7,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -35,12 +42,27 @@ import kotlinx.coroutines.launch
 @Composable
 fun DevicesScreen(vm: AuthViewModel) {
     var refresh by remember { mutableIntStateOf(0) }
+    var query by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         SectionTitle("Registered devices", Modifier.padding(top = 12.dp, start = 4.dp))
-        AsyncContent(key = refresh, block = { vm.repo.devices() }) { devices, _ ->
-            if (devices.isEmpty()) EmptyState("No devices registered.")
+        OutlinedTextField(
+            value = query, onValueChange = { query = it }, singleLine = true,
+            placeholder = { Text("Search name, employee ID, branch or device") },
+            leadingIcon = { Icon(Icons.Filled.Search, null) },
+            trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "Clear") } },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        )
+        AsyncContent(key = refresh, block = { vm.repo.devices() }) { all, _ ->
+            // All typed words must match (name, emp ID, role, branch, device id, label).
+            val words = query.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            val devices = if (words.isEmpty()) all else all.filter { d ->
+                val hay = listOfNotNull(d.userName, d.userCode, d.userRole, d.userBranch, d.deviceId, d.label)
+                    .joinToString(" ").lowercase()
+                words.all { hay.contains(it) }
+            }
+            if (devices.isEmpty()) EmptyState(if (words.isEmpty()) "No devices registered." else "No devices match \"$query\".")
             else LazyColumn(
                 Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -64,6 +86,7 @@ private fun DeviceCard(d: Device, onApprove: () -> Unit, onRevoke: () -> Unit) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column(Modifier.weight(1f)) {
                 Text(d.userName ?: "User #${d.userId}", fontWeight = FontWeight.SemiBold)
+                d.userCode?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = Muted) }
                 Text(d.label ?: d.deviceId, style = MaterialTheme.typography.bodySmall, color = Muted)
                 d.userBranch?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = Muted) }
             }

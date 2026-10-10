@@ -5611,15 +5611,21 @@ function DevicesView() {
       toast(kind === 'approve' ? 'Device approved' : kind === 'revoke' ? 'Device revoked' : 'Device removed'); load();
     } catch (e) { toast(e.message, 'err'); }
   };
+  const [q, setQ] = useState('');
   if (!items) return <Loader />;
-  const pending = items.filter(d => !d.approved); const approved = items.filter(d => d.approved);
+  // Search by name, employee ID, role, branch, device ID or label (all words must match).
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const hay = d => [d.user_name, d.user_code, d.user_role, roleName(d.user_role), d.user_branch, d.device_id, d.label]
+    .filter(Boolean).join(' ').toLowerCase();
+  const shown = words.length ? items.filter(d => { const h = hay(d); return words.every(w => h.includes(w)); }) : items;
+  const pending = shown.filter(d => !d.approved); const approved = shown.filter(d => d.approved);
   const CAP = 2; const EXEMPT = ['admin', 'techsupport'];
   const tbl = (list, isPending) => <div className="glass card" style={{ padding: 6, marginBottom: 14 }}>
     <div className="tablewrap"><table>
       <thead><tr><th>User</th><th>Branch</th><th>Active devices</th><th>Device</th><th>Last seen</th><th></th></tr></thead>
       <tbody>{list.map(d => { const n = d.approved_count || 0; const exempt = EXEMPT.includes(d.user_role);
         return <tr key={d.id}>
-        <td><b>{d.user_name || ('#' + d.user_id)}</b><div className="muted" style={{ fontSize: 11.5 }}>{roleName(d.user_role)}{d.label ? ' · ' + d.label : ''}</div></td>
+        <td><b>{d.user_name || ('#' + d.user_id)}</b><div className="muted" style={{ fontSize: 11.5 }}>{d.user_code ? d.user_code + ' · ' : ''}{roleName(d.user_role)}{d.label ? ' · ' + d.label : ''}</div></td>
         <td>{d.user_branch || '—'}</td>
         <td>
           <span className={cx('badge', n >= CAP && !exempt ? 'partial' : 'allocated')}>{n} approved</span>
@@ -5639,10 +5645,16 @@ function DevicesView() {
     <div>
       <div className="toolbar"><span className="muted">Approve the devices your staff sign in from. A new device is blocked until you approve it.</span>
         <div style={{ flex: 1 }} /><button className="btn sm" onClick={load}>↻ Refresh</button></div>
+      <div className="toolbar" style={{ marginTop: 6 }}>
+        <input className="input" style={{ maxWidth: 380 }} value={q} onChange={e => setQ(e.target.value)}
+          placeholder="🔍 Search name, employee ID, role, branch or device ID" />
+        {q && <button className="btn sm ghost" onClick={() => setQ('')}>✕ Clear</button>}
+        {q && <span className="muted" style={{ fontSize: 12 }}>{shown.length} of {items.length} devices</span>}
+      </div>
       <div className="section-h"><h3 style={{ fontSize: 15 }}><span className="badge unpaid">{pending.length}</span> Pending approval</h3></div>
-      {pending.length ? tbl(pending, true) : <p className="muted">No devices awaiting approval.</p>}
+      {pending.length ? tbl(pending, true) : <p className="muted">{q ? 'No pending devices match your search.' : 'No devices awaiting approval.'}</p>}
       <div className="section-h" style={{ marginTop: 10 }}><h3 style={{ fontSize: 15 }}><span className="badge paid">{approved.length}</span> Approved devices</h3></div>
-      {approved.length ? tbl(approved, false) : <p className="muted">No approved devices yet.</p>}
+      {approved.length ? tbl(approved, false) : <p className="muted">{q ? 'No approved devices match your search.' : 'No approved devices yet.'}</p>}
     </div>
   );
 }

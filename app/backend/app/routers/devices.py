@@ -54,7 +54,7 @@ def _get_device(db: Session, actor: models.User, dev_id: int) -> models.Device:
 @router.get("", response_model=list[schemas.DeviceOut])
 def list_devices(pending: bool | None = None, db: Session = Depends(get_db),
                  actor: models.User = Depends(require_roles("admin", "manager"))):
-    q = (db.query(models.Device, models.User.name, models.User.branch, models.User.role)
+    q = (db.query(models.Device, models.User.name, models.User.branch, models.User.role, models.User.emp_code)
          .join(models.User, models.User.id == models.Device.user_id))
     if actor.role == "manager":
         q = q.filter(models.User.branch == actor.branch)
@@ -67,9 +67,10 @@ def list_devices(pending: bool | None = None, db: Session = Depends(get_db),
                   .filter(models.Device.approved.is_(True))
                   .group_by(models.Device.user_id).all())
     out = []
-    for dev, name, branch, role in rows:
+    for dev, name, branch, role, code in rows:
         d = schemas.DeviceOut.model_validate(dev)
         d.user_name = name
+        d.user_code = code
         d.user_branch = branch
         d.user_role = role
         d.approved_count = int(counts.get(dev.user_id, 0))
