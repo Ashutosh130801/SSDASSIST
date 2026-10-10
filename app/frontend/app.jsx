@@ -1257,6 +1257,49 @@ function AddProductModal({ presetBank, onClose, onAdded }) {
   );
 }
 
+/* Send cases to ViciDial — pick the bank-specific campaign (its list ID comes from the connection). */
+function ViciPushModal({ cases, onClose }) {
+  const [opts, setOpts] = useState(null); const [cid, setCid] = useState('');
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const banks = [...new Set(cases.map(c => c.bank).filter(Boolean))];
+  useEffect(() => {
+    api('/api/integration/vicidial/campaigns' + (banks.length === 1 ? '?bank=' + encodeURIComponent(banks[0]) : ''))
+      .then(r => { setOpts(r.campaigns || []); setCid(r.suggested || ''); })
+      .catch(e => { setOpts([]); setErr(e.message); });
+  }, []);
+  const pick = (opts || []).find(o => o.campaign_id === cid);
+  const send = async () => {
+    if (!cid) return; setBusy(true); setErr('');
+    try {
+      const r = await api('/api/integration/vicidial/push', { method: 'POST', body: { case_ids: cases.map(c => c.id), campaign_id: cid } });
+      toast(`☎ ${r.pushed} sent to ${r.campaign_name || r.campaign_id} (list ${r.list_id})${r.skipped ? ` · ${r.skipped} skipped` : ''}${r.failed ? ` · ${r.failed} failed` : ''}`);
+      onClose();
+    } catch (e) { setErr(e.message || 'ViciDial push failed'); } finally { setBusy(false); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+        <div className="section-h"><h3>☎ Send to ViciDial</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+          <b>{cases.length}</b> case(s){banks.length ? <> · {banks.join(', ')}</> : null}. Paid, closed and no-phone cases are skipped.</p>
+        {opts === null ? <div className="muted">Loading campaigns…</div>
+          : opts.length === 0 ? <div style={{ color: 'var(--bad)', fontSize: 13 }}>No campaigns set up. Add them in Connections → ViciDial → Campaigns.</div>
+          : <div className="field"><label>Campaign</label>
+              <select className="input" value={cid} onChange={e => setCid(e.target.value)}>
+                <option value="">— choose campaign —</option>
+                {opts.map(o => <option key={o.campaign_id} value={o.campaign_id}>
+                  {o.name}{o.bank ? ` · ${o.bank}` : ''} — {o.campaign_id} / list {o.list_id}</option>)}
+              </select></div>}
+        {pick && pick.bank && banks.length && !banks.some(b => b.toLowerCase() === pick.bank.toLowerCase()) &&
+          <div style={{ color: 'var(--warn)', fontSize: 12.5, marginBottom: 8 }}>⚠ This campaign is for {pick.bank}, but the cases are {banks.join(', ')}.</div>}
+        {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
+        <div className="toolbar"><button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
+          <button className="btn gold" disabled={busy || !cid} onClick={send}>{busy ? 'Sending…' : `Send ${cases.length}`}</button></div>
+      </div>
+    </div>
+  );
+}
+
 /* DPR bulk update — upload a bank's Daily Payment Report for one portfolio, auto-detect
    columns, preview the paid/unpaid changes, then confirm to apply them. */
 function DprModal({ onClose, onDone }) {
@@ -1841,6 +1884,7 @@ function CasesView({ user }) {
   const canUpload = user.role === 'admin' || user.role === 'backend' || user.role === 'headoffice';
   const canDpr = ['admin', 'headoffice', 'backend', 'manager', 'teamlead'].includes(user.role);
   const [dprOpen, setDprOpen] = useState(false);
+  const [viciPush, setViciPush] = useState(false);
   const canReassign = ['admin', 'manager', 'teamlead', 'headoffice'].includes(user.role);
   const [reassignOpen, setReassignOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
@@ -1999,14 +2043,9 @@ function CasesView({ user }) {
             <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}</>}
         <div style={{ flex: 1 }} />
         {canDpr && <button className="btn" onClick={() => setDprOpen(true)} title="Bulk mark paid/unpaid from a bank DPR file">🏦 DPR update</button>}
-        {isHO && cases && cases.length > 0 && <button className="btn" title="Push the cases shown here into your ViciDial campaign list for auto-dialing"
-          onClick={async () => {
-            if (!window.confirm(`Send ${cases.length} case(s) to the ViciDial campaign list?`)) return;
-            try {
-              const r = await api('/api/integration/vicidial/push', { method: 'POST', body: { case_ids: cases.map(c => c.id) } });
-              toast(`☎ Pushed ${r.pushed} to ViciDial list ${r.list_id}${r.skipped ? ` · ${r.skipped} skipped` : ''}${r.failed ? ` · ${r.failed} failed` : ''}`);
-            } catch (e) { toast(e.message || 'ViciDial push failed', 'err'); }
-          }}>☎ Send to ViciDial</button>}
+        {isHO && cases && cases.length > 0 && <button className="btn" title="Push the cases shown here into a ViciDial campaign for auto-dialing"
+          onClick={() => setViciPush(true)}>☎ Send to ViciDial</button>}
+        {viciPush && cases && <ViciPushModal cases={cases} onClose={() => setViciPush(false)} />}
         {canUploads && <button className="btn" onClick={() => setUploadsOpen(true)} title="Undo a wrong portfolio upload">↩ Undo upload</button>}
         <BackfillAddressButton />
         <CorrectColumnsButton />
@@ -8162,6 +8201,18 @@ function ConnectionsView({ user }) {
   const [testCallConnection, setTestCallConnection] = useState(null);
   const load = () => api('/api/integration/connections').then(d => setRows(d.connections || [])).catch(() => setRows([]));
   useEffect(() => { load(); }, []);
+  // Bank-specific campaigns [{name, bank, campaign_id, list_id}] — prefilled from the saved connection.
+  const [camps, setCamps] = useState(null);
+  useEffect(() => {
+    if (camps !== null || !rows) return;
+    const v = rows.find(r => r.kind === 'vicidial');
+    const caps = (v && v.capabilities) || {};
+    const list = (caps.campaigns || []).map(c => ({ ...c }));
+    if (!list.length && caps.campaign_id && caps.list_id)
+      list.push({ name: caps.campaign_id, bank: '', campaign_id: caps.campaign_id, list_id: caps.list_id });
+    setCamps(list.length ? list : [{ name: '', bank: '', campaign_id: '', list_id: '' }]);
+  }, [rows]);
+  const setCamp = (i, k, val) => setCamps(cs => cs.map((c, j) => j === i ? { ...c, [k]: val } : c));
   const parseAgentMap = (txt) => {
     const m = {};
     (txt || '').split(/[\n,]/).forEach(line => {
@@ -8174,7 +8225,10 @@ function ConnectionsView({ user }) {
     if (!vf.base_url || !vf.vici_user) { toast('ViciDial URL and API user are required', 'err'); return; }
     setVbusy(true);
     try {
-      const body = { ...vf, agent_map: parseAgentMap(vf.agent_map), recoveriq_base: window.location.origin };
+      const campaigns = (camps || []).filter(c => (c.campaign_id || '').trim() && (c.list_id || '').trim());
+      const first = campaigns[0] || {};
+      const body = { ...vf, agent_map: parseAgentMap(vf.agent_map), recoveriq_base: window.location.origin,
+        campaigns, campaign_id: first.campaign_id || vf.campaign_id, list_id: first.list_id || vf.list_id };
       const r = await api('/api/integration/vicidial/connect', { method: 'POST', body });
       setDispoUrl(r.dispo_url || ''); setStartCallUrl(r.start_call_url || ''); await load();
       toast('ViciDial saved — now paste the Dispo URL into ViciDial (shown below).');
@@ -8226,13 +8280,26 @@ function ConnectionsView({ user }) {
           <div className="field"><label>ViciDial URL</label><input className="input" value={vf.base_url} onChange={e => setVf({ ...vf, base_url: e.target.value })} placeholder="http://192.168.1.50" /></div>
           <div className="field"><label>API user</label><input className="input" value={vf.vici_user} onChange={e => setVf({ ...vf, vici_user: e.target.value })} placeholder="apiuser (level 8-9, API + Agent API = 1)" /></div>
           <div className="field"><label>API password</label><input className="input" type="password" value={vf.vici_pass} onChange={e => setVf({ ...vf, vici_pass: e.target.value })} placeholder="leave blank to keep existing" /></div>
-          <div className="field"><label>Campaign ID</label><input className="input" value={vf.campaign_id} onChange={e => setVf({ ...vf, campaign_id: e.target.value })} placeholder="e.g. RIQ01" /></div>
-          <div className="field"><label>List ID (for campaign push)</label><input className="input" value={vf.list_id} onChange={e => setVf({ ...vf, list_id: e.target.value })} placeholder="e.g. 101" /></div>
           <div className="field"><label>Source tag</label><input className="input" value={vf.source} onChange={e => setVf({ ...vf, source: e.target.value })} placeholder="recoveriq" /></div>
           <div className="field"><label>Phone code</label><input className="input" value={vf.phone_code} onChange={e => setVf({ ...vf, phone_code: e.target.value })} placeholder="91" /></div>
           <div className="field"><label>Recording URL base (optional)</label><input className="input" value={vf.recording_base} onChange={e => setVf({ ...vf, recording_base: e.target.value })} placeholder="http://192.168.1.50/RECORDINGS/MP3 — leave blank if using SFTP below" /></div>
           <div className="field"><label>Branch (optional)</label><input className="input" value={vf.branch} onChange={e => setVf({ ...vf, branch: e.target.value })} placeholder="leave blank for all branches" /></div>
         </div>
+        <div style={{ fontSize: 12.5, fontWeight: 600, margin: '10px 0 4px' }}>📣 Campaigns <span className="muted" style={{ fontWeight: 400 }}>(one row per ViciDial campaign — e.g. one per bank. Each needs its own List ID in ViciDial. You pick the campaign when sending cases.)</span></div>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="tbl" style={{ fontSize: 13 }}>
+            <thead><tr><th>Display name</th><th>Bank (auto-suggest)</th><th>ViciDial Campaign ID</th><th>List ID</th><th></th></tr></thead>
+            <tbody>{(camps || []).map((c, i) => <tr key={i}>
+              <td><input className="input" value={c.name} onChange={e => setCamp(i, 'name', e.target.value)} placeholder="Axis predictive" /></td>
+              <td><input className="input" value={c.bank} onChange={e => setCamp(i, 'bank', e.target.value)} placeholder="AXIS" /></td>
+              <td><input className="input" value={c.campaign_id} onChange={e => setCamp(i, 'campaign_id', e.target.value)} placeholder="RIQAXIS" /></td>
+              <td><input className="input" value={c.list_id} onChange={e => setCamp(i, 'list_id', e.target.value.replace(/\D/g, ''))} placeholder="5001" /></td>
+              <td><button className="btn ghost sm" type="button" onClick={() => setCamps(cs => cs.filter((_, j) => j !== i))}>✕</button></td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+        <button className="btn sm" type="button" style={{ marginBottom: 8 }}
+          onClick={() => setCamps(cs => [...(cs || []), { name: '', bank: '', campaign_id: '', list_id: '' }])}>+ Add campaign</button>
         <div style={{ fontSize: 12.5, fontWeight: 600, margin: '10px 0 4px' }}>🔐 Recording access over SFTP <span className="muted" style={{ fontWeight: 400 }}>(use this when recordings aren't served over HTTP — RecoverIQ streams them over SFTP)</span></div>
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div className="field"><label>SFTP host</label><input className="input" value={vf.sftp_host} onChange={e => setVf({ ...vf, sftp_host: e.target.value })} placeholder="192.168.75.250 (same server)" /></div>

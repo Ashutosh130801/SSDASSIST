@@ -12,7 +12,7 @@ from decimal import Decimal
 from datetime import datetime, timezone, time, timedelta
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Header, Body, Response, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, Body, Response, Request, Query
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -213,6 +213,9 @@ def click_to_call(body: dict = Body(...), db: Session = Depends(get_db),
             "value": phone,
             "phone_code": str(caps.get("phone_code") or "91"),
             "search": "YES", "preview": "NO", "focus": "YES",
+            # agc/api.php names it vendor_id (= vendor_lead_code on the new manual-dial lead);
+            # vendor_lead_code kept for older/custom builds. Either way the call maps back to the case.
+            "vendor_id": str(case.id),
             "vendor_lead_code": str(case.id),
         }
         try:
@@ -431,6 +434,51 @@ def start_call_setup(cid: int, request: Request, response: Response, db: Session
     return {"start_call_url": _vici_start_call_url(str(request.base_url), conn)}
 
 
+def _clean_campaigns(raw) -> list | None:
+    """Bank-specific campaigns: [{name, campaign_id, list_id, bank}]. None = not supplied (keep)."""
+    if raw is None:
+        return None
+    out, seen = [], set()
+    for r in (raw if isinstance(raw, list) else []):
+        if not isinstance(r, dict):
+            continue
+        cid = str(r.get("campaign_id") or "").strip()
+        lid = str(r.get("list_id") or "").strip()
+        if not cid or not lid:
+            continue
+        if not lid.isdigit():
+            raise HTTPException(400, f"List ID for campaign {cid} must be a number (got '{lid}').")
+        if cid.upper() in seen:
+            raise HTTPException(400, f"Campaign {cid} is listed twice.")
+        seen.add(cid.upper())
+        out.append({"campaign_id": cid, "list_id": lid,
+                    "name": str(r.get("name") or "").strip() or cid,
+                    "bank": str(r.get("bank") or "").strip()})
+    return out
+
+
+def _vici_campaigns(caps: dict) -> list:
+    """All campaigns on a connection — the bank-specific list plus the legacy single default."""
+    rows = list(caps.get("campaigns") or [])
+    cid, lid = (caps.get("campaign_id") or "").strip(), str(caps.get("list_id") or "").strip()
+    if cid and lid and not any(r["campaign_id"].upper() == cid.upper() for r in rows):
+        rows.insert(0, {"campaign_id": cid, "list_id": lid, "name": f"{cid} (default)", "bank": ""})
+    return rows
+
+
+@router.get("/vicidial/campaigns")
+def vicidial_campaigns(branch: str | None = None, bank: str | None = None, db: Session = Depends(get_db),
+                       user: models.User = Depends(require_roles(*ADMIN_ROLES))):
+    """Campaigns the push dialog can choose from; the one matching `bank` is suggested first."""
+    c = _pick_vici(db, branch)
+    if not c:
+        return {"campaigns": [], "suggested": None}
+    rows = _vici_campaigns(c.capabilities or {})
+    b = (bank or "").strip().lower()
+    sug = next((r["campaign_id"] for r in rows if b and r.get("bank", "").strip().lower() == b), None)
+    return {"campaigns": rows, "suggested": sug or (rows[0]["campaign_id"] if rows else None)}
+
+
 @router.post("/vicidial/connect")
 def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
                      user: models.User = Depends(require_roles(*ADMIN_ROLES))):
@@ -465,6 +513,7 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
         "sftp_base": (body.get("sftp_base") or "").strip(),
         "agent_map": body.get("agent_map") or {},
     }
+    campaigns = _clean_campaigns(body.get("campaigns"))
     if existing:
         caps = dict(existing.capabilities or {})
         caps.update({k: v for k, v in caps_in.items() if v not in (None, "", {})})
@@ -475,6 +524,8 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
             caps["sftp_pass"] = body["sftp_pass"].strip()
         if isinstance(body.get("agent_map"), dict):
             caps["agent_map"] = body["agent_map"]
+        if campaigns is not None:
+            caps["campaigns"] = campaigns
         existing.name = name or existing.name
         existing.base_url = base_url
         existing.branch = branch
@@ -483,6 +534,7 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
         c = existing
     else:
         caps = dict(caps_in)
+        caps["campaigns"] = campaigns or []
         if (body.get("vici_pass") or "").strip():
             caps["vici_pass"] = body["vici_pass"].strip()
         if (body.get("sftp_pass") or "").strip():
@@ -563,9 +615,15 @@ def vicidial_push(body: dict = Body(...), db: Session = Depends(get_db),
     if not c:
         raise HTTPException(status_code=400, detail="No ViciDial connected. Add one in Connections.")
     caps = c.capabilities or {}
-    list_id = str(body.get("list_id") or caps.get("list_id") or "").strip()
+    campaign = None
+    want = str(body.get("campaign_id") or "").strip()
+    if want:
+        campaign = next((r for r in _vici_campaigns(caps) if r["campaign_id"].upper() == want.upper()), None)
+        if not campaign:
+            raise HTTPException(400, f"Campaign {want} is not set up on the ViciDial connection.")
+    list_id = str((campaign or {}).get("list_id") or body.get("list_id") or caps.get("list_id") or "").strip()
     if not list_id:
-        raise HTTPException(status_code=400, detail="A ViciDial list_id is required (set it on the connection or pass it here).")
+        raise HTTPException(status_code=400, detail="Choose a campaign (or set a List ID on the ViciDial connection).")
     q = db.query(models.Case).filter(models.Case.removed.isnot(True))
     ids = body.get("case_ids")
     if ids:
@@ -610,15 +668,45 @@ def vicidial_push(body: dict = Body(...), db: Session = Depends(get_db),
                 failed += 1
     c.last_seen = datetime.now(timezone.utc); db.commit()
     audit.record(db, user, "integration", None, entity_type="integration",
-                 detail=f"ViciDial push → list {list_id}: {pushed} leads ({skipped} skipped, {failed} failed)")
+                 detail=f"ViciDial push → campaign {(campaign or {}).get('campaign_id') or caps.get('campaign_id') or '-'}"
+                        f" / list {list_id}: {pushed} leads ({skipped} skipped, {failed} failed)")
     db.commit()
     return {"ok": True, "list_id": list_id, "pushed": pushed, "skipped": skipped, "failed": failed,
-            "campaign_id": caps.get("campaign_id")}
+            "campaign_id": (campaign or {}).get("campaign_id") or caps.get("campaign_id"),
+            "campaign_name": (campaign or {}).get("name")}
+
+
+def _case_by_phone(db: Session, phone: str, agent: str, caps: dict):
+    """Fallback for calls with no case id (agent dialled a number by hand inside ViciDial): match the
+    last 10 digits against case phone / alt / new phone. Prefer the calling agent's own case; give up
+    if still ambiguous, so a call is never filed on the wrong customer."""
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())[-10:]
+    if len(digits) < 10:
+        return None
+    like = f"%{digits}"
+    from sqlalchemy import or_
+    rows = (db.query(models.Case)
+            .filter(models.Case.removed.isnot(True),
+                    or_(models.Case.phone.like(like), models.Case.alt_phone.like(like),
+                        models.Case.new_phone.like(like)))
+            .order_by(models.Case.id.desc()).limit(20).all())
+    if len(rows) == 1:
+        return rows[0]
+    if not rows or not agent:
+        return None
+    amap = {str(v).strip(): str(k).strip().upper() for k, v in (caps.get("agent_map") or {}).items()}
+    emp = amap.get(str(agent).strip()) or str(agent).strip().upper()
+    u = db.query(models.User).filter(models.User.emp_code == emp).first()
+    if not u:
+        return None
+    mine = [c for c in rows if u.id in (c.assigned_caller_id, c.assigned_fos_id)]
+    return mine[0] if len(mine) == 1 else None
 
 
 @router.get("/vicidial/dispo")
 def vicidial_dispo(key: str = "", case: str = "", dispo: str = "", rec: str = "",
                    agent: str = "", phone: str = "", length: str = "",
+                   len_: str = Query("", alias="len"),
                    db: Session = Depends(get_db)):
     """ViciDial per-call 'Dispo Call URL' target — brings the DISPOSITION + RECORDING back onto the
     case. Authenticated by ?key= (the connection's api_key). Matches by vendor_lead_code = case id."""
@@ -627,13 +715,16 @@ def vicidial_dispo(key: str = "", case: str = "", dispo: str = "", rec: str = ""
                     models.DialerConnection.api_key == key).first())
     if not conn:
         raise HTTPException(status_code=401, detail="Invalid key")
+    length = length or len_          # the Dispo URL sends talk seconds as &len=
+    caps = conn.capabilities or {}
     try:
         cs = db.query(models.Case).filter(models.Case.id == int(case)).first()
     except Exception:
         cs = None
     if not cs:
+        cs = _case_by_phone(db, phone, agent, caps)   # manual dial typed straight into ViciDial
+    if not cs:
         return {"ok": False, "detail": "no case match"}
-    caps = conn.capabilities or {}
     # Recording URL. Priority: an absolute URL ViciDial already sent → SFTP fetch (when the
     # recordings live on the server's filesystem, reached over SFTP) → an HTTP recording base.
     rec_url = None
