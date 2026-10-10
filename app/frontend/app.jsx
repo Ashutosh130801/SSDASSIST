@@ -8805,9 +8805,10 @@ const isMobileDevice = () => { try { return /android|iphone|ipad|ipod|mobile|win
 const fmtDur = (s) => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h}h ${m}m` : `${m}m`; };
 // Attendance times render in IST via the shared helper (treats naive server times as UTC).
 const fmtTime = fmtTimeIST;
-const ATT_COLOR = { half_leave: '#7C3AED', HD: '#7C3AED', present: '#16A34A', P: '#16A34A', L: '#D97706', A: '#DC2626', W: '#94A3B8', LV: '#2563EB', leave: '#2563EB', absent: '#DC2626', weekoff: '#94A3B8' };
+const ATT_COLOR = { half_leave: '#7C3AED', HD: '#7C3AED', 'H•': '#7C3AED', H: '#EA580C', half_day: '#EA580C', present: '#16A34A', P: '#16A34A', L: '#D97706', A: '#DC2626', W: '#94A3B8', LV: '#2563EB', leave: '#2563EB', absent: '#DC2626', weekoff: '#94A3B8' };
 const attendanceLabel = r => r.half_day_leave || r.status === 'half_leave'
-  ? 'Half-day leave' + (r.check_in_at ? (r.late ? ' · checked in late' : ' · checked in') : ' · no check-in')
+  ? 'Half-day leave (approved)' + (r.check_in_at ? (r.late ? ' · checked in late' : ' · checked in') : ' · no check-in')
+  : r.status === 'half_day' ? 'Half day · checked in after 11:30'
   : r.status === 'leave' ? 'Leave' : r.late ? 'Late' : ({ present: 'Present', weekoff: 'Week-off', absent: 'Absent' }[r.status] || r.status || '');
 
 function PresenceBadge({ p }) {
@@ -8958,9 +8959,20 @@ function AttendanceView({ user }) {
   const [statF, setStatF] = useState('');   // click a KPI to filter the list to that status
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const loadDay = () => { const p = new URLSearchParams(); p.set('date', date); if (role) p.set('role', role); api('/api/attendance/day?' + p).then(setDay).catch(() => setDay(null)); };
-  const loadMon = () => { const p = new URLSearchParams(); p.set('month', month); if (role) p.set('role', role); api('/api/attendance/month?' + p).then(setMon).catch(() => setMon(null)); };
+  // Date range (e.g. salary cycle 21st of last month → 20th of this month) — spans two months.
+  const ymd = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const salaryCycle = (back) => {        // back=0 → cycle ending 20th of this month; 1 → the one before
+    const t = new Date(today + 'T00:00:00');
+    const end = new Date(t.getFullYear(), t.getMonth() - back, 20);
+    const start = new Date(end.getFullYear(), end.getMonth() - 1, 21);
+    return [ymd(start), ymd(end)];
+  };
+  const [rStart, setRStart] = useState(() => salaryCycle(0)[0]);
+  const [rEnd, setREnd] = useState(() => salaryCycle(0)[1]);
+  const rangeQS = () => { const p = new URLSearchParams(); if (tab === 'range') { p.set('start', rStart); p.set('end', rEnd); } else p.set('month', month); if (role) p.set('role', role); return p; };
+  const loadMon = () => { api('/api/attendance/month?' + rangeQS()).then(setMon).catch(e => { setMon(null); if (tab === 'range') toast(e.message, 'err'); }); };
   useEffect(() => { if (tab === 'today') loadDay(); }, [tab, date, role]);
-  useEffect(() => { if (tab === 'month') loadMon(); }, [tab, month, role]);
+  useEffect(() => { if (tab === 'month' || tab === 'range') { setMon(null); loadMon(); } }, [tab, month, role, rStart, rEnd]);
   useDataChanged(() => { if (tab === 'today') loadDay(); else loadMon(); });
   useEffect(() => { if (tab !== 'today') return; const t = setInterval(loadDay, 30000); return () => clearInterval(t); }, [tab, date, role]);
   const roles = day ? [...new Set(day.rows.map(r => r.role))].sort() : [];
@@ -8972,7 +8984,7 @@ function AttendanceView({ user }) {
   const online = r => r.presence && (r.presence.state === 'active' || r.presence.state === 'idle');
   const passStat = r => statF === '' || (statF === 'present' && r.status === 'present') || (statF === 'late' && r.late)
     || (statF === 'absent' && r.status === 'absent') || (statF === 'leave' && r.status === 'leave')
-    || (statF === 'half_leave' && (r.half_day_leave || r.status === 'half_leave'))
+    || (statF === 'half_leave' && (r.half_day_leave || r.status === 'half_leave' || r.status === 'half_day'))
     || (statF === 'online' && online(r));
   const passLoc = r => !loc || (r.branch || '').trim().toLowerCase() === loc.toLowerCase();
   // Base set = location + search filtered (but NOT the status KPI filter), so the KPI counts
@@ -8982,11 +8994,11 @@ function AttendanceView({ user }) {
   // applied filters together. Role is already applied server-side; location + search are applied above.
   const summary = { present: baseRows.filter(r => r.status === 'present').length, late: baseRows.filter(r => r.late).length,
     absent: baseRows.filter(r => r.status === 'absent').length, leave: baseRows.filter(r => r.status === 'leave').length,
-    half_leave: baseRows.filter(r => r.half_day_leave || r.status === 'half_leave').length,
+    half_leave: baseRows.filter(r => r.half_day_leave || r.status === 'half_leave' || r.status === 'half_day').length,
     online: baseRows.filter(r => online(r)).length, total: baseRows.length };
   const rows = baseRows.filter(r => passStat(r));
   const people = (mon ? mon.people : []).filter(p => passLoc(p) && (!q || (p.name || '').toLowerCase().includes(q.toLowerCase()) || (p.emp_code || '').toLowerCase().includes(q.toLowerCase())));
-  const dl = () => { const p = new URLSearchParams(); p.set('month', month); if (role) p.set('role', role); download('/api/attendance/download?' + p, `Attendance_${month}.xlsx`); };
+  const dl = () => download('/api/attendance/download?' + rangeQS(), tab === 'range' ? `Attendance_${rStart}_to_${rEnd}.xlsx` : `Attendance_${month}.xlsx`);
   // Human-readable summary of exactly which filters are applied — printed/exported as a caption
   // so the sheet says e.g. "Field Agent · Absent". Uses the same filtered `rows` shown on screen.
   const filterLabel = () => { const parts = []; if (loc) parts.push('📍 ' + loc); if (role) parts.push(roleName(role)); if (statF) parts.push(statF === 'online' ? 'Online now' : statF.charAt(0).toUpperCase() + statF.slice(1)); if (q) parts.push('“' + q + '”'); return parts.length ? parts.join(' · ') : 'All staff'; };
@@ -9023,16 +9035,24 @@ function AttendanceView({ user }) {
     const tag = (filterLabel() === 'All staff' ? 'all' : filterLabel().replace(/[^a-z0-9]+/gi, '-')).toLowerCase();
     saveBlob(`Attendance_${date}_${tag}.csv`, blob);   // routes through native Save-As in the desktop app
   };
-  const stTag = (r) => { const c = ATT_COLOR[r.half_day_leave ? 'HD' : r.late ? 'L' : r.status] || '#64748B'; return <span style={{ color: c, fontWeight: 700, fontSize: 12.5 }}>{attendanceLabel(r)}</span>; };
+  const stTag = (r) => { const c = ATT_COLOR[r.half_day_leave ? 'H•' : r.status === 'half_day' ? 'H' : r.late ? 'L' : r.status] || '#64748B'; return <span style={{ color: c, fontWeight: 700, fontSize: 12.5 }}>{attendanceLabel(r)}</span>; };
   return <div>
     <div className="toolbar" style={{ marginBottom: 10 }}>
       <div className={cx('chip', tab === 'today' && 'on')} onClick={() => setTab('today')}>📅 Day</div>
       <div className={cx('chip', tab === 'month' && 'on')} onClick={() => setTab('month')}>🗓 Month</div>
+      <div className={cx('chip', tab === 'range' && 'on')} onClick={() => setTab('range')} title="Any date range — e.g. 21st of last month to 20th of this month for salary">📆 Date range</div>
       <div style={{ flex: 1 }} />
       {tab === 'today'
         ? <input type="date" className="input" value={date} max={today} onChange={e => setDate(e.target.value)} style={{ maxWidth: 160 }} />
-        : <input type="month" className="input" value={month} max={today.slice(0, 7)} onChange={e => setMonth(e.target.value)} style={{ maxWidth: 160 }} />}
-      {(day && day.can_download || mon && mon.can_download) && tab === 'month' && <button className="btn gold sm" onClick={dl}>⬇ Download sheet</button>}
+        : tab === 'month' ? <input type="month" className="input" value={month} max={today.slice(0, 7)} onChange={e => setMonth(e.target.value)} style={{ maxWidth: 160 }} />
+        : <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn ghost sm" title="21st of last month → 20th of this month" onClick={() => { const [a, b] = salaryCycle(0); setRStart(a); setREnd(b); }}>💰 This salary cycle</button>
+            <button className="btn ghost sm" title="The cycle before" onClick={() => { const [a, b] = salaryCycle(1); setRStart(a); setREnd(b); }}>Previous cycle</button>
+            <input type="date" className="input" value={rStart} onChange={e => setRStart(e.target.value)} style={{ maxWidth: 150 }} />
+            <span className="muted">→</span>
+            <input type="date" className="input" value={rEnd} min={rStart} onChange={e => setREnd(e.target.value)} style={{ maxWidth: 150 }} />
+          </span>}
+      {(day && day.can_download || mon && mon.can_download) && (tab === 'month' || tab === 'range') && <button className="btn gold sm" onClick={dl}>⬇ Download sheet</button>}
       {tab === 'today' && day && <button className="btn ghost sm" title="Print exactly what's shown (respects role/status/search filters)" onClick={printDay}>🖨 Print</button>}
       {tab === 'today' && day && <button className="btn ghost sm" title="Export the filtered list to CSV" onClick={exportDayCsv}>⬇ CSV</button>}
     </div>
@@ -9052,7 +9072,7 @@ function AttendanceView({ user }) {
       <div className="kpi-row" style={{ marginBottom: 10 }}>
         {[['present', 'Present', summary.present, 'var(--good)'], ['late', 'Late', summary.late, 'var(--warn)'],
           ['absent', 'Absent', summary.absent, 'var(--bad)'], ['leave', 'On leave', summary.leave, 'var(--info)'],
-          ['half_leave', 'Half-day leave', summary.half_leave, '#7C3AED'],
+          ['half_leave', 'Half day (H / H•)', summary.half_leave, '#7C3AED'],
           ['online', 'Online now', summary.online, 'var(--ink)']].map(([key, label, val, color]) =>
           <div key={key} className="glass card" onClick={() => setStatF(statF === key ? '' : key)}
             style={{ cursor: 'pointer', border: statF === key ? '2px solid ' + color : undefined }}>
@@ -9083,23 +9103,26 @@ function AttendanceView({ user }) {
       </div>
     </>)}
 
-    {tab === 'month' && (!mon ? <Loader /> : <div className="glass card" style={{ overflowX: 'auto', padding: 0 }}>
+    {(tab === 'month' || tab === 'range') && (!mon ? <Loader /> : <div className="glass card" style={{ overflowX: 'auto', padding: 0 }}>
       <table className="tbl" style={{ minWidth: 900, fontSize: 12 }}>
         <thead><tr><th style={{ position: 'sticky', left: 0, background: 'var(--glass-2)' }}>Name</th>
-          {mon.days.map(d => <th key={d} style={{ padding: '6px 3px' }}>{d.slice(8)}</th>)}
-          <th>P</th><th>Late</th><th>Lv</th><th>Abs</th><th>HD</th><th>Hrs</th></tr></thead>
+          {mon.days.map(d => <th key={d} style={{ padding: '6px 3px' }}>{tab === 'range' ? <>{d.slice(8)}<div style={{ fontSize: 9, opacity: .7 }}>{d.slice(5, 7)}</div></> : d.slice(8)}</th>)}
+          <th>P</th><th>Late</th><th title="Half days — checked in after 11:30">H</th><th>Lv</th><th>Abs</th><th title="Approved half-day leaves">H•</th><th>Hrs</th></tr></thead>
         <tbody>
           {people.map(p => <tr key={p.user_id}>
             <td style={{ position: 'sticky', left: 0, background: 'var(--glass-2)', cursor: 'pointer' }} onClick={() => setDetail({ id: p.user_id, date: month + '-01' })}><b>{p.name}</b><div className="muted" style={{ fontSize: 10 }}>{p.emp_code || ''}</div></td>
-            {mon.days.map(d => { const v = p.days[d] || ''; return <td key={d} style={{ textAlign: 'center', color: ATT_COLOR[v] || '#94A3B8', fontWeight: 700 }}>{v}</td>; })}
+            {mon.days.map(d => { const v = p.days[d] || ''; const t = (p.times || {})[d];
+              return <td key={d} style={{ textAlign: 'center', color: ATT_COLOR[v] || '#94A3B8', fontWeight: 700, lineHeight: 1.15 }}>
+                {v}{t && (v === 'P' || v === 'L' || v === 'H' || v === 'H•') && <div style={{ fontSize: 9.5, fontWeight: 500, color: 'var(--ink-dim)' }}>{t}</div>}</td>; })}
             <td style={{ textAlign: 'center' }}>{p.present}</td><td style={{ textAlign: 'center', color: 'var(--warn)' }}>{p.late}</td>
+            <td style={{ textAlign: 'center', color: '#EA580C' }}>{p.late_half_days || 0}</td>
             <td style={{ textAlign: 'center', color: 'var(--info)' }}>{p.leave}</td><td style={{ textAlign: 'center', color: 'var(--bad)' }}>{p.absent}</td>
             <td style={{ textAlign: 'center', color: '#7C3AED' }}>{p.half_days || 0}</td><td style={{ textAlign: 'center' }}>{p.worked_hours}</td>
           </tr>)}
-          {people.length === 0 && <tr><td colSpan={mon.days.length + 7} className="muted" style={{ textAlign: 'center', padding: 20 }}>No data.</td></tr>}
+          {people.length === 0 && <tr><td colSpan={mon.days.length + 8} className="muted" style={{ textAlign: 'center', padding: 20 }}>No data.</td></tr>}
         </tbody>
       </table>
-      <div className="muted" style={{ fontSize: 11, padding: '6px 10px' }}>Legend: P Present · L Late · LV Leave · HD Half-day leave · A Absent · W Week-off. HD = 0.5 leave + 0.5 present if checked in; otherwise 0.5 absent for past dates only. HD total counts requests/dates, not extra credited days.</div>
+      <div className="muted" style={{ fontSize: 11, padding: '6px 10px' }}>Legend: P Present · L Late (after 10:00) · H Half day (checked in after 11:30 → 0.5 present + 0.5 absent) · H• Approved half-day leave (0.5 leave + 0.5 present if checked in; otherwise 0.5 absent for past dates) · LV Leave · A Absent · W Week-off. Time under P / L / H = check-in time.</div>
     </div>)}
 
     {detail && <AttendanceDetail id={detail.id} date={detail.date} onClose={() => setDetail(null)} />}
@@ -9149,7 +9172,7 @@ function AttendanceDetail({ id, date, onClose }) {
           {d.row.show_activity && <div className="glass card" onClick={(d.row.calls || 0) > 0 ? toggleCalls : undefined} style={(d.row.calls || 0) > 0 ? { cursor: 'pointer', outline: calls !== null ? '2px solid var(--brand)' : 'none' } : {}} title={(d.row.calls || 0) > 0 ? 'Click to see call logs' : ''}><div className="k">Calls{d.row.team_total ? ' (team)' : ''}{(d.row.calls || 0) > 0 ? ' 🔽' : ''}</div><b>{d.row.calls || 0}</b></div>}
           {d.row.show_activity && <div className="glass card" onClick={(d.row.visits || 0) > 0 ? toggleVisits : undefined} style={(d.row.visits || 0) > 0 ? { cursor: 'pointer', outline: visits !== null ? '2px solid var(--brand)' : 'none' } : {}} title={(d.row.visits || 0) > 0 ? 'Click to see logged visits with photos' : ''}><div className="k">Visits{d.row.team_total ? ' (team)' : ''}{(d.row.visits || 0) > 0 ? ' 🔽' : ''}</div><b>{d.row.visits || 0}</b></div>}
           {d.row.show_activity && <div className="glass card"><div className="k">Collected{d.row.team_total ? ' (team)' : ''}</div><b style={{ color: 'var(--good)' }}>{money(d.row.collected)}</b></div>}
-          <div className="glass card"><div className="k">Status</div><b style={{ color: ATT_COLOR[d.row.half_day_leave ? 'HD' : d.row.late ? 'L' : d.row.status] || '#64748B' }}>{attendanceLabel(d.row)}</b>{d.row.half_day_leave && <div className="muted">{d.row.leave_days} leave · {d.row.present_days} present · {d.row.absent_days} absent</div>}</div>
+          <div className="glass card"><div className="k">Status</div><b style={{ color: ATT_COLOR[d.row.half_day_leave ? 'H•' : d.row.status === 'half_day' ? 'H' : d.row.late ? 'L' : d.row.status] || '#64748B' }}>{attendanceLabel(d.row)}</b>{d.row.half_day_leave && <div className="muted">{d.row.leave_days} leave · {d.row.present_days} present · {d.row.absent_days} absent</div>}</div>
         </div>
         {d.row.check_in_lat != null && <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>📍 Check-in location: {d.row.check_in_lat.toFixed(5)}, {d.row.check_in_lng.toFixed(5)} · <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${d.row.check_in_lat},${d.row.check_in_lng}`}>view on map</a></div>}
         {d.row.role === 'fos' && d.row.live_lat != null && <div style={{ fontSize: 12, marginBottom: 8, color: 'var(--good)', fontWeight: 600 }}>🛰 Live location ({fmtTime(d.row.live_at)}): {d.row.live_lat.toFixed(5)}, {d.row.live_lng.toFixed(5)} · <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${d.row.live_lat},${d.row.live_lng}`}>track on map</a></div>}

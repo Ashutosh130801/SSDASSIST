@@ -111,7 +111,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 // Long-press any text in the header / details to select & copy it.
-                SelectionContainer { CaseHeader(case) }
+                SelectionContainer { Column(Modifier.fillMaxWidth()) { CaseHeader(case) } }
                 // Tap: copy the key case info. Double-tap: copy EVERY field on the case.
                 fun copy(text: String, msg: String) {
                     val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -176,7 +176,11 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     }
                 }
 
-                SelectionContainer { DetailFields(case) }
+                // SelectionContainer stacks its children like a Box — the details are several cards,
+                // so they MUST sit in a Column or they draw on top of each other.
+                SelectionContainer {
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) { DetailFields(case) }
+                }
 
                 SectionTitle("Activity log")
                 AsyncContent(key = refresh, block = { vm.repo.timeline(caseId) }) { events, _ ->

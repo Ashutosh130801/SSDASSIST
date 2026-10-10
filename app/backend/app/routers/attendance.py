@@ -140,7 +140,7 @@ def _scope_users(db: Session, viewer: models.User, period: str | None = None):
         from sqlalchemy import select
         ids = select(models.User.id).where(models.User.branch == viewer.branch)
         return q.filter(or_(models.User.branch == viewer.branch, models.User.id.in_(ids)))
-    if viewer.role == "teamlead" or getattr(viewer, "also_team_lead", False):
+    if viewer.role == "teamlead":     # ACTIVE view only — a TL+FOS in the FOS view sees just themselves
         ids = _tl_member_ids(db, viewer, period) + [viewer.id]
         return q.filter(models.User.id.in_(ids))
     # everyone else: only themselves
@@ -154,7 +154,7 @@ def _can_view(viewer: models.User, target: models.User, db: Session, period: str
         return True
     if viewer.role == "manager":
         return target.branch == viewer.branch
-    if viewer.role == "teamlead" or getattr(viewer, "also_team_lead", False):
+    if viewer.role == "teamlead":     # ACTIVE view only — a TL+FOS in the FOS view sees just themselves
         return target.id in set(_tl_member_ids(db, viewer, period))
     return False
 
@@ -624,6 +624,7 @@ def day_board(date: str | None = None, role: str | None = None, user_id: int | N
         "absent": sum(1 for r in rows if r["status"] == "absent"),
         "leave": sum(1 for r in rows if r["status"] == "leave"),
         "half_leave": sum(1 for r in rows if r["status"] == "half_leave" or r.get("half_day_leave")),
+        "half_day": sum(1 for r in rows if r["status"] == "half_day"),
         "online": sum(1 for r in rows if r["presence"]["state"] in ("active", "idle")),
         "total": len(rows),
     }
@@ -732,16 +733,33 @@ def user_calls(uid: int, date: str | None = None, db: Session = Depends(get_db),
 
 @router.get("/month")
 def month_sheet(month: str | None = None, role: str | None = None, user_id: int | None = None,
-                db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    """Per-user month matrix + totals (days present, late, leave, absent, total hours)."""
-    m = month or _ist_now().strftime("%Y-%m")
-    yy, mm = int(m[:4]), int(m[5:7])
-    first = date_cls(yy, mm, 1)
-    ndays = (date_cls(yy + (mm == 12), (mm % 12) + 1, 1) - first).days
-    days = [first + timedelta(days=i) for i in range(ndays)]
+                db: Session = Depends(get_db), user: models.User = Depends(get_current_user),
+                start: str | None = None, end: str | None = None):
+    """Per-user matrix + totals (days present, late, leave, absent, total hours) for a calendar
+    month — or, with start & end (YYYY-MM-DD), any date range, e.g. the salary cycle 21st → 20th
+    that spans two months."""
+    if start and end:
+        try:
+            first, last = date_cls.fromisoformat(start[:10]), date_cls.fromisoformat(end[:10])
+        except ValueError:
+            raise HTTPException(status_code=400, detail="start/end must be YYYY-MM-DD")
+        if last < first:
+            first, last = last, first
+        if (last - first).days > 92:
+            raise HTTPException(status_code=400, detail="Pick a range of at most 3 months.")
+        days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
+        m = f"{first.isoformat()}_to_{last.isoformat()}"
+        scope_period = last.strftime("%Y-%m")
+    else:
+        m = month or _ist_now().strftime("%Y-%m")
+        yy, mm = int(m[:4]), int(m[5:7])
+        first = date_cls(yy, mm, 1)
+        ndays = (date_cls(yy + (mm == 12), (mm % 12) + 1, 1) - first).days
+        days = [first + timedelta(days=i) for i in range(ndays)]
+        scope_period = m
     today = _ist_today()
 
-    users = _scope_users(db, user, m)
+    users = _scope_users(db, user, scope_period)
     if role:
         users = users.filter(models.User.role == role)
     if user_id:
@@ -760,9 +778,11 @@ def month_sheet(month: str | None = None, role: str | None = None, user_id: int 
     people = []
     for u in users:
         per_day = {}
+        times = {}          # date -> check-in time (IST HH:MM), shown under P / L
         present = late = leave = absent = weekoff = 0
         worked = 0
         half = 0
+        lhalf = 0
         for d in days:
             a = arows.get(u.id, {}).get(d.isoformat())
             lv = _leave_for(db, u.id, d)
@@ -776,12 +796,15 @@ def month_sheet(month: str | None = None, role: str | None = None, user_id: int 
                 worked += _live_worked(a, eo)
             present += credit["present"]; leave += credit["leave"]; absent += credit["absent"]
             late += credit["late"]; weekoff += credit["weekoff"]; half += credit["half_days"]
+            lhalf += credit.get("late_half", 0)
             per_day[d.isoformat()] = credit["code"]
+            if a and a.check_in_at:
+                times[d.isoformat()] = presence._aware(a.check_in_at).astimezone(IST).strftime("%H:%M")
         people.append({
             "user_id": u.id, "name": u.name, "emp_code": u.emp_code, "role": u.role,
-            "branch": u.branch, "days": per_day,
+            "branch": u.branch, "days": per_day, "times": times,
             "present": round(present, 1), "late": late, "leave": round(leave, 1),
-            "absent": round(absent, 1), "half_days": half,
+            "absent": round(absent, 1), "half_days": half, "late_half_days": lhalf,
             "weekoff": weekoff, "worked_hours": round(worked / 3600.0, 1),
         })
     return {"month": m, "days": [d.isoformat() for d in days], "people": people,
@@ -820,53 +843,161 @@ def presence_snapshot(ids: str | None = None, db: Session = Depends(get_db),
 
 @router.get("/download")
 def download_month(month: str | None = None, role: str | None = None, user_id: int | None = None,
+                   start: str | None = None, end: str | None = None,
                    db: Session = Depends(get_db),
                    user: models.User = Depends(require_roles(*DOWNLOAD_ROLES))):
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    data = month_sheet(month, role, user_id, db, user)
+    data = month_sheet(month, role, user_id, db, user, start=start, end=end)
     m = data["month"]
     days = data["days"]
     people = data["people"]
 
-    HEAD = PatternFill("solid", fgColor="1D4ED8")
-    HEADF = Font(bold=True, color="FFFFFF", size=11)
-    THIN = Border(*[Side(style="thin", color="D6DEEA")] * 4)
-    COLOR = {"P": "C6EFCE", "L": "FFEB9C", "LV": "BDD7EE", "HD": "DDD6FE", "W": "E2E8F0", "A": "FFC7CE"}
+    from openpyxl.utils import get_column_letter
+    from datetime import date as _d
+    NAVY, BLUE = "0F2747", "1D4ED8"
+    HEAD = PatternFill("solid", fgColor=BLUE)
+    HEADF = Font(bold=True, color="FFFFFF", size=10)
+    side = Side(style="thin", color="D6DEEA")
+    THIN = Border(left=side, right=side, top=side, bottom=side)
+    CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    COLOR = {"P": "C6EFCE", "L": "FFEB9C", "H": "FED7AA", "H•": "DDD6FE", "LV": "BDD7EE", "W": "E2E8F0", "A": "FFC7CE"}
+    TXT = {"P": "166534", "L": "92400E", "H": "9A3412", "H•": "5B21B6", "LV": "1E40AF", "W": "64748B", "A": "B91C1C"}
+    SUN_FILL = PatternFill("solid", fgColor="EEF2F7")
+    ZEBRA = PatternFill("solid", fgColor="F8FAFC")
+    TOTF = PatternFill("solid", fgColor="DCE6FA")
 
+    is_range = "_to_" in m
+    ws = None
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = f"Attendance {m}"
-    header = ["Emp", "Name", "Role", "Branch"] + [d[8:] for d in days] + \
-             ["Present", "Late", "Leave", "Absent", "Week-off", "Work hrs", "Half-day leaves"]
-    ws.append(header)
-    for c in ws[1]:
-        c.fill = HEAD; c.font = HEADF; c.alignment = Alignment(horizontal="center"); c.border = THIN
-    for p in people:
-        row = [p["emp_code"] or "", p["name"], p["role"], p["branch"] or ""] + \
-              [p["days"].get(d, "") for d in days] + \
-              [p["present"], p["late"], p["leave"], p["absent"], p["weekoff"], p["worked_hours"], p["half_days"]]
+    ws.title = ("Attendance range" if is_range else f"Attendance {m}")[:31]
+    dates = [_d.fromisoformat(d) for d in days]
+    n_fixed = 4
+    totals_hdr = ["Present", "Late", "Half days (H)", "Leave", "Absent", "Week-off", "Half-day leaves (H•)", "Work hrs"]
+    ncols = n_fixed + len(days) + len(totals_hdr)
+
+    # ---- title block
+    if is_range:
+        label = f"{dates[0]:%d %b %Y}  →  {dates[-1]:%d %b %Y}  ({len(days)} days)"
+    else:
+        label = f"{dates[0]:%B %Y}"
+    ws.append([f"Attendance report — {label}"])
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=min(ncols, 20))
+    ws["A1"].font = Font(bold=True, size=15, color=NAVY)
+    ws.row_dimensions[1].height = 24
+    flt = []
+    if role:
+        flt.append(f"Role: {role}")
+    ws.append([f"{len(people)} employees" + (f"  ·  {'  ·  '.join(flt)}" if flt else "")
+               + f"  ·  Generated {_ist_now():%d-%b-%Y %H:%M} by {user.name or user.emp_code or ''}"
+               + "  ·  Time under P / L = check-in time (IST)"])
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=min(ncols, 20))
+    ws["A2"].font = Font(size=10, color="5B6B82")
+
+    # ---- two header rows: weekday band + date
+    h1, h2 = 3, 4
+    fixed = ["Emp ID", "Name", "Role", "Branch"]
+    for j, name in enumerate(fixed, 1):
+        ws.merge_cells(start_row=h1, start_column=j, end_row=h2, end_column=j)
+        c = ws.cell(row=h1, column=j, value=name)
+        c.fill, c.font, c.alignment = PatternFill("solid", fgColor=NAVY), HEADF, CENTER
+        ws.cell(row=h2, column=j).fill = PatternFill("solid", fgColor=NAVY)
+    for i, dt in enumerate(dates):
+        col = n_fixed + 1 + i
+        sun = dt.weekday() == 6
+        fill = PatternFill("solid", fgColor="64748B" if sun else BLUE)
+        top = ws.cell(row=h1, column=col, value=dt.strftime("%a"))
+        bot = ws.cell(row=h2, column=col, value=dt.strftime("%d/%m") if is_range else dt.strftime("%d"))
+        for c in (top, bot):
+            c.fill, c.font, c.alignment, c.border = fill, HEADF, CENTER, THIN
+    for j, name in enumerate(totals_hdr):
+        col = n_fixed + len(days) + 1 + j
+        ws.merge_cells(start_row=h1, start_column=col, end_row=h2, end_column=col)
+        c = ws.cell(row=h1, column=col, value=name)
+        c.fill, c.font, c.alignment = PatternFill("solid", fgColor=NAVY), HEADF, CENTER
+        ws.cell(row=h2, column=col).fill = PatternFill("solid", fgColor=NAVY)
+    ws.row_dimensions[h1].height = 16; ws.row_dimensions[h2].height = 18
+
+    # ---- one row per person; each day cell = code, with check-in time on a second line
+    tot = [0.0] * len(totals_hdr)
+    for idx, p in enumerate(people):
+        times = p.get("times", {})
+        row = [p["emp_code"] or "", p["name"], p["role"], p["branch"] or ""]
+        for d in days:
+            code = p["days"].get(d, "")
+            t = times.get(d)
+            row.append(f"{code}\n{t}" if code in ("P", "L", "H", "H•") and t else code)
+        vals = [p["present"], p["late"], p.get("late_half_days", 0), p["leave"], p["absent"], p["weekoff"],
+                p["half_days"], p["worked_hours"]]
+        row += vals
         ws.append(row)
         r = ws.max_row
+        ws.row_dimensions[r].height = 30
+        for j in range(1, ncols + 1):
+            c = ws.cell(row=r, column=j)
+            c.border = THIN
+            c.alignment = LEFT if j <= n_fixed else CENTER
+            if idx % 2 == 1 and j <= n_fixed:
+                c.fill = ZEBRA
+        ws.cell(row=r, column=2).font = Font(bold=True)
         for i, d in enumerate(days):
-            cell = ws.cell(row=r, column=5 + i)
-            key = str(cell.value)
-            if key in COLOR:
-                cell.fill = PatternFill("solid", fgColor=COLOR[key])
-            cell.alignment = Alignment(horizontal="center")
-    ws.freeze_panes = "E2"
-    for col in ws.columns:
-        w = max((len(str(c.value)) for c in col if c.value is not None), default=6)
-        ws.column_dimensions[col[0].column_letter].width = min(max(w + 1, 4), 26)
+            c = ws.cell(row=r, column=n_fixed + 1 + i)
+            code = p["days"].get(d, "")
+            if code in COLOR:
+                c.fill = PatternFill("solid", fgColor=COLOR[code])
+                c.font = Font(bold=True, size=9, color=TXT[code])
+            elif dates[i].weekday() == 6:
+                c.fill = SUN_FILL
+        for j, v in enumerate(vals):
+            c = ws.cell(row=r, column=n_fixed + len(days) + 1 + j)
+            c.font = Font(bold=True, color=("166534" if j == 0 else "B91C1C" if j == 4 else "9A3412" if j == 2 else "1F2937"))
+            tot[j] += float(v or 0)
+    # totals row
+    if people:
+        ws.append(["", f"TOTAL ({len(people)})", "", ""] + [""] * len(days) + [round(v, 1) for v in tot])
+        r = ws.max_row
+        for j in range(1, ncols + 1):
+            c = ws.cell(row=r, column=j)
+            c.fill, c.font, c.border = TOTF, Font(bold=True), THIN
+            c.alignment = LEFT if j <= n_fixed else CENTER
 
+    # widths, freeze, filter, print setup
+    for j, w in enumerate([10, 24, 11, 14], 1):
+        ws.column_dimensions[get_column_letter(j)].width = w
+    for i in range(len(days)):
+        ws.column_dimensions[get_column_letter(n_fixed + 1 + i)].width = 6.2
+    for j in range(len(totals_hdr)):
+        ws.column_dimensions[get_column_letter(n_fixed + len(days) + 1 + j)].width = 9
+    ws.freeze_panes = ws.cell(row=h2 + 1, column=n_fixed + 1)
+    if people:
+        ws.auto_filter.ref = f"A{h2}:{get_column_letter(ncols)}{h2 + len(people)}"
+    ws.page_setup.orientation = "landscape"
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.print_title_rows = f"{h1}:{h2}"
+
+    # ---- legend
     legend = wb.create_sheet("Legend")
     legend.append(["Code", "Meaning"])
-    for code, meaning in [("P", "Present"), ("L", "Present, late"), ("LV", "Full-day approved leave"),
-                          ("HD", "0.5 approved leave + 0.5 present if checked in; otherwise 0.5 absent only for past dates"),
-                          ("W", "Weekly off"), ("A", "Absent")]:
+    for c in legend[1]:
+        c.fill, c.font, c.border = PatternFill("solid", fgColor=NAVY), HEADF, THIN
+    for code, meaning in [("P", "Present — check-in time shown below"), ("L", "Present, checked in late (after 10:00) — time shown below"),
+                          ("LV", "Full-day approved leave"),
+                          ("H", "Half day — checked in after 11:30 (no leave): 0.5 present + 0.5 absent — time shown below"),
+                          ("H•", "Approved half-day leave: 0.5 leave + 0.5 present if checked in; otherwise 0.5 absent only for past dates"),
+                          ("W", "Weekly off (Sunday)"), ("A", "Absent")]:
         legend.append([code, meaning])
-    legend.column_dimensions["A"].width = 12
-    legend.column_dimensions["B"].width = 110
+        r = legend.max_row
+        legend.cell(row=r, column=1).fill = PatternFill("solid", fgColor=COLOR[code])
+        legend.cell(row=r, column=1).font = Font(bold=True, color=TXT[code])
+        for j in (1, 2):
+            legend.cell(row=r, column=j).border = THIN
+            legend.cell(row=r, column=j).alignment = CENTER if j == 1 else LEFT
+    legend.column_dimensions["A"].width = 10
+    legend.column_dimensions["B"].width = 100
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     audit.record(db, user, "download", None, entity_type="download",
                  detail=f"Downloaded attendance sheet {m}")

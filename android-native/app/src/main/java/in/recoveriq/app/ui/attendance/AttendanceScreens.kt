@@ -309,7 +309,8 @@ private fun Any?.dayUnits(): String {
     return if (n == n.toInt().toDouble()) n.toInt().toString() else n.toString()
 }
 private fun letterColor(v: String): Color = when (v) {
-    "HD" -> Color(0xFF7C3AED)
+    "HD", "H•" -> Color(0xFF7C3AED)
+    "H" -> Color(0xFFEA580C)
     "P" -> Good; "L" -> Warn; "LV" -> BrandBlue; "A" -> Color(0xFFDC2626); "W" -> MutedDim; else -> MutedDim
 }
 
@@ -352,7 +353,7 @@ fun AttendanceScreen(vm: AuthViewModel, user: User) {
                                 color = BrandBlue, style = MaterialTheme.typography.labelSmall)
                             days.forEach { d -> Text(d.takeLast(2), Modifier.width(22.dp),
                                 fontWeight = FontWeight.Bold, color = Muted, style = MaterialTheme.typography.labelSmall) }
-                            listOf("P", "L", "LV", "A", "HD", "Hrs").forEach { h -> Text(h, Modifier.width(34.dp),
+                            listOf("P", "L", "H", "LV", "A", "H•", "Hrs").forEach { h -> Text(h, Modifier.width(34.dp),
                                 fontWeight = FontWeight.Bold, color = BrandBlue, style = MaterialTheme.typography.labelSmall) }
                         }
                         people.forEach { p ->
@@ -367,6 +368,7 @@ fun AttendanceScreen(vm: AuthViewModel, user: User) {
                                 }
                                 Text(p["present"].dayUnits(), Modifier.width(34.dp), style = MaterialTheme.typography.labelSmall)
                                 Text("${p["late"].i()}", Modifier.width(34.dp), color = Warn, style = MaterialTheme.typography.labelSmall)
+                                Text("${p["late_half_days"].i()}", Modifier.width(34.dp), color = Color(0xFFEA580C), style = MaterialTheme.typography.labelSmall)
                                 Text(p["leave"].dayUnits(), Modifier.width(34.dp), color = BrandBlue, style = MaterialTheme.typography.labelSmall)
                                 Text(p["absent"].dayUnits(), Modifier.width(34.dp), color = Color(0xFFDC2626), style = MaterialTheme.typography.labelSmall)
                                 Text("${p["half_days"].i()}", Modifier.width(34.dp), color = Color(0xFF7C3AED), style = MaterialTheme.typography.labelSmall)
@@ -432,8 +434,9 @@ private fun openMap(ctx: Context, lat: Double, lng: Double) {
 private fun AttCard(r: AttRow) {
     val ctx = LocalContext.current
     val half = r.halfDayLeave || r.status == "half_leave"
-    val statusColor = when { half -> Color(0xFF7C3AED); r.status == "leave" -> BrandBlue; r.late -> Warn; r.status == "present" -> Good; r.status == "absent" -> Color(0xFFDC2626); else -> MutedDim }
-    val statusText = if (half) "Half-day leave" else if (r.status == "leave") "Leave" else if (r.late) "Present (late)" else (r.status.replaceFirstChar { it.uppercase() })
+    val lateHalf = r.status == "half_day"
+    val statusColor = when { half -> Color(0xFF7C3AED); lateHalf -> Color(0xFFEA580C); r.status == "leave" -> BrandBlue; r.late -> Warn; r.status == "present" -> Good; r.status == "absent" -> Color(0xFFDC2626); else -> MutedDim }
+    val statusText = if (half) "Half-day leave (approved)" else if (lateHalf) "Half day (checked in after 11:30)" else if (r.status == "leave") "Leave" else if (r.late) "Present (late)" else (r.status.replaceFirstChar { it.uppercase() })
     InfoCard {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column(Modifier.weight(1f)) {
