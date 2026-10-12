@@ -725,7 +725,7 @@ def user_calls(uid: int, date: str | None = None, db: Session = Depends(get_db),
             "disposition": cl.disposition, "note": cl.note,
             "ptp_amount": float(cl.ptp_amount or 0),
             "ptp_date": cl.ptp_date.isoformat() if cl.ptp_date else None,
-            "recording_url": getattr(cl, "recording_url", None),
+            "recording_url": _play_rec(getattr(cl, "recording_url", None)),
         })
     return {"date": d.isoformat(), "user_id": uid, "name": target.name,
             "count": len(out), "calls": out}
@@ -1006,3 +1006,9 @@ def download_month(month: str | None = None, role: str | None = None, user_id: i
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+def _play_rec(v):
+    """Fresh, playable link for a stored call-recording reference (see integrations)."""
+    from .integrations import playable_recording_url
+    return playable_recording_url(v)

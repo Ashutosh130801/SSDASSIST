@@ -731,10 +731,13 @@ def vicidial_dispo(key: str = "", case: str = "", dispo: str = "", rec: str = ""
     if rec:
         if str(rec).lower().startswith("http"):
             rec_url = rec
-        elif caps.get("sftp_host"):
-            rec_url = _rec_signed_url(conn.id, rec)          # /api/integration/recording?... streams over SFTP
-        elif caps.get("recording_base"):
+        elif caps.get("recording_base") and not caps.get("sftp_host"):
             rec_url = f"{caps['recording_base']}/{rec}.mp3"
+        else:
+            # Store a PERMANENT reference (not an expiring link). A fresh signed link is made each
+            # time the history is viewed, and the file is fetched over SFTP at play time — so this
+            # works even if SFTP details are added/changed later, and old recordings never expire.
+            rec_url = f"vicirec:{conn.id}:{rec}"
     ag = db.query(models.User).filter(models.User.emp_code == agent).first() if agent else None
     # Map the ViciDial agent user back to a RecoverIQ user via agent_map if emp_code didn't match.
     if not ag and agent:
@@ -994,6 +997,27 @@ def _rec_secret() -> bytes:
 def _rec_sig(conn_id: int, filename: str, exp: int) -> str:
     msg = f"{conn_id}|{filename}|{exp}".encode()
     return _b64.urlsafe_b64encode(_hmac.new(_rec_secret(), msg, _hashlib.sha256).digest()[:18]).decode()
+
+
+def playable_recording_url(v: str | None) -> str | None:
+    """Turn a stored recording reference into a link the browser can play right now.
+    'vicirec:<conn>:<file>' and older expiring /recording links both get a fresh signed URL."""
+    if not v:
+        return v
+    if v.startswith("vicirec:"):
+        try:
+            _, cid, fname = v.split(":", 2)
+            return _rec_signed_url(int(cid), fname, ttl_days=1)
+        except Exception:
+            return None
+    if v.startswith("/api/integration/recording?"):
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(v).query)
+        try:
+            return _rec_signed_url(int(q["conn"][0]), q["f"][0], ttl_days=1)
+        except Exception:
+            return v
+    return v
 
 
 def _rec_signed_url(conn_id: int, filename: str, ttl_days: int = 7) -> str:

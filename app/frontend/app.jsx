@@ -4869,8 +4869,10 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
                 <div className="muted" style={{ fontSize: 11.5 }}>{h.by ? `by ${h.by} · ` : ''}{h.at ? fmtDT(h.at) : ''}
                   {h.photo && <a href={h.photo} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📷 photo</a>}
                   {h.lat && <a href={`https://maps.google.com/?q=${h.lat},${h.lng}`} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📍 map</a>}
-                  {h.recording_url && <a href={h.recording_url} target="_blank" rel="noreferrer" style={{ marginLeft: 6, color: 'var(--info)' }}>🎙 recording</a>}
+                  {h.recording_url && <a href={h.recording_url} target="_blank" rel="noreferrer" style={{ marginLeft: 6, color: 'var(--info)' }} title="Open / download the recording">🎙 recording ⬇</a>}
                   {h.ptp_date && <span style={{ marginLeft: 6, color: 'var(--gold-2)' }}>PTP {String(h.ptp_date).slice(0, 10)}</span>}</div>
+                {/* Play the call recording right here (streamed from ViciDial over SFTP on demand). */}
+                {h.recording_url && <audio controls preload="none" src={h.recording_url} style={{ width: '100%', maxWidth: 360, height: 32, marginTop: 4 }} />}
                 {h.note && h.note !== h.detail && <div style={{ fontSize: 12, marginTop: 2 }}>{h.note}</div>}
               </div>
             </div>; })}
@@ -8343,7 +8345,14 @@ function ConnectionsView({ user }) {
         campaigns, campaign_id: first.campaign_id || vf.campaign_id, list_id: first.list_id || vf.list_id };
       const r = await api('/api/integration/vicidial/connect', { method: 'POST', body });
       setDispoUrl(r.dispo_url || ''); setStartCallUrl(r.start_call_url || ''); await load();
-      toast('ViciDial saved — now paste the Dispo URL into ViciDial (shown below).');
+      toast('ViciDial saved — testing the connection…');
+      // Test straight away so the status shows OK / Down instead of "unknown".
+      try {
+        const t = await api('/api/integration/vicidial/test', { method: 'POST', body: { cid: r.id } });
+        toast(t.ok ? '✓ ViciDial reachable — now paste the URLs into ViciDial (shown below).'
+                   : 'Saved, but ViciDial is NOT reachable: ' + (t.detail || 'no response'), t.ok ? 'ok' : 'err');
+      } catch (e) { toast('Saved, but the test failed: ' + e.message, 'err'); }
+      await load();
     } catch (e) { toast(e.message, 'err'); } finally { setVbusy(false); }
   };
   const add = async () => {

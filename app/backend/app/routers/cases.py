@@ -1753,7 +1753,7 @@ def timeline(case_id: int, db: Session = Depends(get_db),
         ev.append({"type": "payment" if is_pay else "call", "at": cl.created_at, "by": users.get(cl.caller_id),
                    "title": "Payment" if is_pay else f"Call — {cl.disposition or ''}",
                    "detail": cl.note or cl.disposition or "", "amount": float(cl.ptp_amount or 0),
-                   "recording_url": getattr(cl, "recording_url", None),
+                   "recording_url": _play_rec(getattr(cl, "recording_url", None)),
                    "ptp_date": cl.ptp_date.isoformat() if cl.ptp_date else None})
 
     # Every other mutation on this case — live-sheet cell edits, reassigns, DPR updates,
@@ -2097,3 +2097,9 @@ def export_cases(body: CaseExportBody, db: Session = Depends(get_db),
     db.commit()
     return StreamingResponse(io.BytesIO(data), media_type=media,
                              headers={"Content-Disposition": f'attachment; filename="{safe}.{ext}"'})
+
+
+def _play_rec(v):
+    """Fresh, playable link for a stored call-recording reference (see integrations)."""
+    from .integrations import playable_recording_url
+    return playable_recording_url(v)
