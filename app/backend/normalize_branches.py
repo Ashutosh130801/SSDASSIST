@@ -89,6 +89,19 @@ def main() -> int:
             else:
                 print(f"{label}: nothing to change")
 
+        # The separate Location field on staff profiles: fold synonyms (VIZAG -> VISAKHAPATNAM) too.
+        from app.models import canonical_place
+        loc_changed = 0
+        for u in db.query(models.User).filter(models.User.location.isnot(None)).all():
+            cur = str(u.location).strip()
+            tgt = canonical_place(cur)
+            if tgt and tgt != cur:
+                print(f"    User.location {cur!r} -> {tgt!r} ({u.name})")
+                u.location = tgt
+                loc_changed += 1
+        print(f"User.location: {loc_changed} row(s) to repoint" if loc_changed else "User.location: nothing to change")
+        grand_total += loc_changed
+
         print()
         if grand_total == 0:
             print("All branches already canonical -- no changes needed.")

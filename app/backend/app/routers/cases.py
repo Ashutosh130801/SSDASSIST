@@ -352,12 +352,20 @@ def branch_canon_map(db) -> dict:
     for (b,) in db.query(models.User.branch).distinct().all():
         if b and str(b).strip():
             names.add(str(b).strip())
+    from ..models import BRANCH_SYNONYMS
     groups: dict = {}
     for n in names:
-        groups.setdefault(n.upper(), []).append(n)
+        key = BRANCH_SYNONYMS.get(n.upper().replace(" ", ""), n.upper())   # VIZAG -> VISAKHAPATNAM group
+        groups.setdefault(key, []).append(n)
     out = {}
-    for up, variants in groups.items():
-        out[up] = next((v for v in variants if v.isupper()), None) or sorted(variants)[0]
+    for key, variants in groups.items():
+        target = key if key in BRANCH_SYNONYMS.values() else (
+            next((v for v in variants if v.isupper()), None) or sorted(variants)[0])
+        for v in variants:
+            out[v.upper()] = target
+        out[key] = target
+    for syn, tgt in BRANCH_SYNONYMS.items():          # new uploads typed with a synonym join too
+        out.setdefault(syn, tgt)
     return out
 
 

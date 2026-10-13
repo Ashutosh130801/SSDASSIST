@@ -51,7 +51,10 @@ def parse_agent_status(text):
             return {"status": "LOGGED_OUT"}
         if "AGENT NOT FOUND" in text:
             raise LiveCallError("ViciDial agent not found. Check your employee-code mapping in Connections.")
-        raise LiveCallError("ViciDial rejected the status request. Check API credentials, agent_status access, View Reports and user-group access.")
+        # Show ViciDial's own reason (it never contains the password) so the exact missing setting is clear.
+        reason = text.splitlines()[0][:160]
+        raise LiveCallError("ViciDial rejected the status request — " + reason +
+                            ". Check API credentials, agent_status access, View Reports and user-group access.")
     try:
         rows = list(csv.reader(io.StringIO(text)))
         rows = [row for row in rows if any(cell.strip() for cell in row)]

@@ -9011,12 +9011,12 @@ function AttendanceView({ user }) {
   // Human-readable summary of exactly which filters are applied — printed/exported as a caption
   // so the sheet says e.g. "Field Agent · Absent". Uses the same filtered `rows` shown on screen.
   const filterLabel = () => { const parts = []; if (loc) parts.push('📍 ' + loc); if (role) parts.push(roleName(role)); if (statF) parts.push(statF === 'online' ? 'Online now' : statF.charAt(0).toUpperCase() + statF.slice(1)); if (q) parts.push('“' + q + '”'); return parts.length ? parts.join(' · ') : 'All staff'; };
-  const DAY_COLS = ['Name', 'Emp ID', 'Role', 'Status', 'Present days', 'Leave days', 'Absent days', 'Presence', 'Check-in', 'Check-out', 'Worked', 'Idle', 'Calls', 'Visits', 'Collected'];
+  const DAY_COLS = ['Name', 'Emp ID', 'Role', 'Location', 'Status', 'Present days', 'Leave days', 'Absent days', 'Presence', 'Check-in', 'Check-out', 'Worked', 'Idle', 'Calls', 'Visits', 'Collected'];
   const dayCell = (r) => {
     const st = attendanceLabel(r);
     const pres = r.presence ? (r.presence.state === 'active' ? 'Active' : r.presence.state === 'idle' ? 'Idle' : 'Offline') : 'Offline';
     const act = r.show_activity;
-    return [r.name || '', r.emp_code || '', roleName(r.role), st, r.present_days ?? '', r.leave_days ?? '', r.absent_days ?? '', pres, fmtTime(r.check_in_at) || '', fmtTime(r.check_out_at) || '', fmtDur(r.worked_seconds) || '', fmtDur(r.idle_seconds) || '', act ? (r.calls || 0) : '—', act ? (r.visits || 0) : '—', act ? money(r.collected) : '—'];
+    return [r.name || '', r.emp_code || '', roleName(r.role), r.branch || '', st, r.present_days ?? '', r.leave_days ?? '', r.absent_days ?? '', pres, fmtTime(r.check_in_at) || '', fmtTime(r.check_out_at) || '', fmtDur(r.worked_seconds) || '', fmtDur(r.idle_seconds) || '', act ? (r.calls || 0) : '—', act ? (r.visits || 0) : '—', act ? money(r.collected) : '—'];
   };
   const printDay = () => {
     const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -9093,7 +9093,7 @@ function AttendanceView({ user }) {
           <thead><tr><th>Name</th><th>Status</th><th>Presence</th><th>Check-in</th><th>Check-out</th><th>Worked</th><th>Idle</th><th>Calls</th><th>Visits</th><th>Collected</th></tr></thead>
           <tbody>
             {rows.map(r => <tr key={r.user_id} style={{ cursor: 'pointer' }} onClick={() => setDetail({ id: r.user_id, date })}>
-              <td><b>{r.name}</b><div className="muted" style={{ fontSize: 11 }}>{r.emp_code || ''} · {roleName(r.role)}</div></td>
+              <td><b>{r.name}</b><div className="muted" style={{ fontSize: 11 }}>{r.emp_code || ''} · {roleName(r.role)}{r.branch ? <> · 📍 {r.branch}</> : ''}</div></td>
               <td>{stTag(r)}</td>
               <td><PresenceBadge p={r.presence} /></td>
               <td>{fmtTime(r.check_in_at)}
@@ -9119,7 +9119,7 @@ function AttendanceView({ user }) {
           <th>P</th><th>Late</th><th title="Half days — checked in after 11:30">H</th><th>Lv</th><th>Abs</th><th title="Approved half-day leaves">H•</th><th>Hrs</th></tr></thead>
         <tbody>
           {people.map(p => <tr key={p.user_id}>
-            <td style={{ position: 'sticky', left: 0, background: 'var(--glass-2)', cursor: 'pointer' }} onClick={() => setDetail({ id: p.user_id, date: month + '-01' })}><b>{p.name}</b><div className="muted" style={{ fontSize: 10 }}>{p.emp_code || ''}</div></td>
+            <td style={{ position: 'sticky', left: 0, background: 'var(--glass-2)', cursor: 'pointer' }} onClick={() => setDetail({ id: p.user_id, date: month + '-01' })}><b>{p.name}</b><div className="muted" style={{ fontSize: 10 }}>{p.emp_code || ''}{p.branch ? ' · 📍 ' + p.branch : ''}</div></td>
             {mon.days.map(d => { const v = p.days[d] || ''; const t = (p.times || {})[d];
               return <td key={d} style={{ textAlign: 'center', color: ATT_COLOR[v] || '#94A3B8', fontWeight: 700, lineHeight: 1.15 }}>
                 {v}{t && (v === 'P' || v === 'L' || v === 'H' || v === 'H•') && <div style={{ fontSize: 9.5, fontWeight: 500, color: 'var(--ink-dim)' }}>{t}</div>}</td>; })}

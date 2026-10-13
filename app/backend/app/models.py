@@ -754,3 +754,31 @@ class PredictiveCallEvent(Base):
     case_id = Column(Integer, nullable=False)
     call_id = Column(String(120), nullable=False)
     created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+# ---------------------------------------------------------------- branch synonyms
+# Different spellings of the SAME place. Any branch/location written with a synonym is stored
+# under the one canonical name, so filters, portfolios and reports never split it in two.
+BRANCH_SYNONYMS = {
+    "VIZAG": "VISAKHAPATNAM", "VSKP": "VISAKHAPATNAM", "VISAKAPATNAM": "VISAKHAPATNAM",
+    "VISHAKAPATNAM": "VISAKHAPATNAM", "VISHAKHAPATNAM": "VISAKHAPATNAM", "VISAKHAPATANAM": "VISAKHAPATNAM",
+    "VISAKHAPATNAM": "VISAKHAPATNAM",
+}
+
+
+def canonical_place(v):
+    if v is None:
+        return v
+    s = str(v).strip()
+    return BRANCH_SYNONYMS.get(s.upper().replace(" ", ""), s) if s else s
+
+
+def _install_branch_synonyms():
+    from sqlalchemy import event
+    for col in (User.branch, User.location, Case.branch):
+        @event.listens_for(col, "set", retval=True)
+        def _norm(target, value, oldvalue, initiator):   # noqa: ARG001
+            return canonical_place(value)
+
+
+_install_branch_synonyms()
