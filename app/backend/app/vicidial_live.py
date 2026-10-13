@@ -125,3 +125,59 @@ def live_call_for(db, user):
     # Use call identity, not phone/lead alone: repeat calls to one customer must pop again.
     return {**result, "state": "connected", "event_id": event_key(conn.id, agent, call_id, case.id),
             "case_id": case.id, "agent_user": agent, "call_id": call_id}
+
+
+# ---------------------------------------------------------------- team view: who is live in ViciDial
+def _vici_post(conn, params, timeout=6.0):
+    caps = conn.capabilities or {}
+    base = {"source": str(caps.get("source") or "recoveriq")[:20],
+            "user": caps.get("vici_user") or "", "pass": caps.get("vici_pass") or ""}
+    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+        r = client.post(conn.base_url.rstrip("/") + "/vicidial/non_agent_api.php", data={**base, **params})
+        r.raise_for_status()
+        return (r.text or "").strip().lstrip("﻿")
+
+
+def agents_live(conn, agents):
+    """{agent_user: {status, sub_status, campaign, calls_today, pause_code}} for the given ViciDial
+    agents. One `logged_in_agents` call when the server supports it; otherwise one `agent_status`
+    call per agent (capped). Agents not logged in come back as LOGGED_OUT."""
+    want = {a for a in agents if a}
+    out = {}
+    try:
+        txt = _vici_post(conn, {"function": "logged_in_agents", "stage": "csv", "header": "YES",
+                                "show_sub_status": "YES"})
+        if txt.startswith("ERROR"):
+            if "NO LOGGED IN AGENTS" in txt.upper():
+                return {a: {"status": "LOGGED_OUT"} for a in want}
+            raise LiveCallError("ViciDial: " + txt.splitlines()[0][:160])
+        rows = [r for r in csv.reader(io.StringIO(txt)) if any(c.strip() for c in r)]
+        hdr = [h.strip().lower() for h in rows[0]] if rows else []
+        if "user" in hdr and "status" in hdr:
+            for r in rows[1:]:
+                d = dict(zip(hdr, (c.strip() for c in r)))
+                u = d.get("user")
+                if u:
+                    out[u] = {"status": (d.get("status") or "").upper(),
+                              "sub_status": (d.get("real_time_sub_status") or d.get("sub_status") or "").upper(),
+                              "campaign": d.get("campaign_id") or d.get("campaign") or "",
+                              "calls_today": d.get("calls_today") or "",
+                              "pause_code": d.get("pause_code") or ""}
+            return {a: out.get(a, {"status": "LOGGED_OUT"}) for a in want}
+    except LiveCallError:
+        raise
+    except Exception:
+        pass   # older ViciDial without logged_in_agents → per-agent fallback below
+    for a in list(want)[:150]:
+        try:
+            row = read_agent_status(conn, a)
+            out[a] = {"status": (row.get("status") or "").upper(),
+                      "sub_status": (row.get("real_time_sub_status") or "").upper(),
+                      "campaign": row.get("campaign_id") or "", "calls_today": row.get("calls_today") or "",
+                      "pause_code": row.get("pause_code") or ""}
+        except LiveCallError as e:
+            if "AGENT NOT FOUND" in str(e).upper():
+                out[a] = {"status": "NOT_FOUND"}
+            else:
+                raise
+    return out

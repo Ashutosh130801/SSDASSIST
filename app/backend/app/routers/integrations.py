@@ -914,6 +914,40 @@ def vicidial_my_live_call(response: Response, db: Session = Depends(get_db),
         return {"state": "error", "detail": str(exc), "poll_after_ms": 15000}
 
 
+@router.get("/vicidial/agents-live")
+def vicidial_agents_live(response: Response, db: Session = Depends(get_db),
+                         user: models.User = Depends(require_roles("admin", "headoffice", "hr", "manager", "teamlead"))):
+    """Live ViciDial state for every staff member the viewer may see (same scope as Attendance):
+    {user_id: {agent, status, sub_status, campaign, calls_today, pause_code}}."""
+    from ..vicidial_live import connection_for, agent_for, agents_live, LiveCallError
+    from .attendance import _scope_users
+    response.headers["Cache-Control"] = "no-store, private"
+    users = [u for u in _scope_users(db, user).all() if u.role in ("telecaller", "teamlead")
+             or getattr(u, "also_caller", False)]
+    groups = {}
+    for u in users:
+        try:
+            c = connection_for(db, u)
+        except LiveCallError:
+            c = None
+        if not c:
+            continue
+        a = agent_for(c, u)
+        if a:
+            groups.setdefault(c.id, (c, {}))[1][u.id] = a
+    out, errors = {}, []
+    for cid, (c, umap) in groups.items():
+        try:
+            live = agents_live(c, set(umap.values()))
+        except LiveCallError as e:
+            errors.append(str(e)); continue
+        except Exception:
+            errors.append("Cannot reach ViciDial"); continue
+        for uid, a in umap.items():
+            out[str(uid)] = {"agent": a, **live.get(a, {"status": "LOGGED_OUT"})}
+    return {"agents": out, "error": errors[0] if errors else None}
+
+
 # ---- Self-service: each user views / sets their OWN ViciDial agent id in the connection's map ----
 @router.get("/vicidial/my-agent")
 def vici_my_agent(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):

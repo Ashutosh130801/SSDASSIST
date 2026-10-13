@@ -165,8 +165,22 @@ const placeCall = (phone, scheme) => { const n = cleanTel(phone); if (!n) return
 // Fired whenever a call is initiated, so attendance presence counts the call time as ACTIVE
 // (a caller on a call, not typing, must not be marked idle).
 const onCallStart = () => { try { window.dispatchEvent(new CustomEvent('ssd-oncall')); } catch (e) {} };
-function CallMenu({ phone, label = 'Call', size = 'sm', gold }) {
+// Is a ViciDial (or Autodialer) connected? Cached once per page so every Call button can offer it.
+let _dialerStatus = null;
+const dialerStatus = () => (_dialerStatus ||= api('/api/integration/status')
+  .then(s => !!(s.dialer && s.dialer.connected)).catch(() => false));
+// Click-to-call through ViciDial: ViciDial dials the customer in the caller's logged-in agent session
+// (Zoiper rings as the agent line), with the case id attached → recording + disposition come back.
+const dialCaseViaVici = async (caseId) => {
+  onCallStart();
+  try { const r = await api('/api/integration/click-to-call', { method: 'POST', body: { case_id: caseId } });
+    toast('📞 Dialing via ' + (r.dialer || 'ViciDial') + ' — answer on your ViciDial line');
+  } catch (e) { toast(e.message || 'ViciDial call failed', 'err'); }
+};
+function CallMenu({ phone, label = 'Call', size = 'sm', gold, caseId }) {
   const [open, setOpen] = useState(false);
+  const [vici, setVici] = useState(false);
+  useEffect(() => { if (caseId) dialerStatus().then(setVici); }, [caseId]);
   if (!phone) return null;
   const n = cleanTel(phone);
   return (
@@ -174,9 +188,10 @@ function CallMenu({ phone, label = 'Call', size = 'sm', gold }) {
       <button className={cx('btn', size, gold && 'gold')} onClick={() => setOpen(o => !o)} title={'Call ' + phone}>📞 {label}</button>
       {open && <>
         <div style={{ position: 'fixed', inset: 0, zIndex: 59 }} onClick={() => setOpen(false)} />
-        <div className="glass" style={{ position: 'absolute', zIndex: 60, top: '100%', left: 0, marginTop: 4, padding: 6, borderRadius: 10, minWidth: 180, boxShadow: 'var(--shadow)' }}>
-          <button className="btn sm gold" style={{ width: '100%', marginBottom: 5 }}
-            onClick={() => { setOpen(false); onCallStart(); placeCall(n, callScheme()); }}>☎️ Call via Zoiper</button>
+        <div className="glass" style={{ position: 'absolute', zIndex: 60, top: '100%', left: 0, marginTop: 4, padding: 6, borderRadius: 10, minWidth: 210, boxShadow: 'var(--shadow)' }}>
+          {vici && caseId && <button className="btn sm gold" style={{ width: '100%', marginBottom: 5 }}
+            title="Recommended — dials through your ViciDial session; recording + disposition come back to this case"
+            onClick={() => { setOpen(false); dialCaseViaVici(caseId); }}>☎️ Call via ViciDial</button>}
           <a className="btn ghost sm" style={{ width: '100%', display: 'block', textAlign: 'center' }}
             href={'tel:' + n} onClick={() => { setOpen(false); onCallStart(); }}>📱 Phone dialer</a>
         </div>
@@ -186,10 +201,10 @@ function CallMenu({ phone, label = 'Call', size = 'sm', gold }) {
 }
 
 // Reusable Call + WhatsApp buttons for a phone number
-function ContactBtns({ phone, text, size = 'sm' }) {
+function ContactBtns({ phone, text, size = 'sm', caseId }) {
   if (!phone) return null;
   return <>
-    <CallMenu phone={phone} size={size} />
+    <CallMenu phone={phone} size={size} caseId={caseId} />
     <a className={cx('btn', size)} style={{ background: '#25D366', color: '#04310f', border: 'none' }}
        href={waHref(phone, text)} target="_blank" rel="noreferrer" title="WhatsApp">💬 WhatsApp</a>
   </>;
@@ -3872,7 +3887,7 @@ function CaseCard({ c, onVisit, onNav, onDetails }) {
         <button className="btn sm gold" style={{ flex: 1 }} onClick={onVisit} title={c.closed ? 'Closed for the month — you can still log a visit (payment stays locked)' : ''}>Log visit</button>
         {onDetails && <button className="btn sm" onClick={onDetails}>Details</button>}
         <button className="btn sm" onClick={onNav}>🧭 Navigate</button>
-        <ContactBtns phone={c.phone} />
+        <ContactBtns phone={c.phone} caseId={c.id} />
       </div>
     </div>
   );
@@ -4600,7 +4615,7 @@ function CallModal({ c, onClose, onDone }) {
         <div className="glass card" style={{ marginBottom: 12, background: 'rgba(0,0,0,.2)' }}>
           <div className="stat-row"><span className="k">Phone</span><b>{c.phone || '—'}</b></div>
           <div className="stat-row"><span className="k">Pending</span><b className="mono" style={{ color: 'var(--warn)' }}>{INR2(c.pending_amount)}</b></div>
-          {c.phone && <div className="toolbar" style={{ marginTop: 8 }}><ContactBtns phone={c.phone} /></div>}
+          {c.phone && <div className="toolbar" style={{ marginTop: 8 }}><ContactBtns phone={c.phone} caseId={c.id} /></div>}
         </div>
         <div className="field"><label>Disposition</label>
           <select className="input" value={dispo} onChange={e => setDispo(e.target.value)}>{DISPOS_CALL.map(d => <option key={d}>{d}</option>)}</select></div>
@@ -4748,8 +4763,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
           <button className="btn ghost sm" onClick={onClose}>✕</button>
         </div>
         <div className="toolbar" style={{ margin: '12px 0' }}>
-          {cur.phone && <CallMenu phone={cur.phone} label="Call customer" gold />}
-          {cur.phone && dialerOn && <button className="btn sm" onClick={dialViaDialer} disabled={dialing} title="Place the call through the connected Autodialer" style={{ background: 'rgba(16,185,129,.12)', borderColor: 'rgba(16,185,129,.4)' }}>{dialing ? '📞 Dialing…' : '📞 Call via dialer'}</button>}
+          {cur.phone && <CallMenu phone={cur.phone} label="Call customer" gold caseId={cur.id} />}
           {cur.phone && <a className="btn sm" href={'https://wa.me/' + String(cur.phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a>}
           {showCallFos && <a className="btn sm" href={'tel:' + cur.assigned_fos_phone} title={'Call the assigned field agent: ' + (cur.assigned_fos_name || '')}>🧑‍🔧 Call FOS</a>}
           {showCallCaller && <a className="btn sm" href={'tel:' + cur.assigned_caller_phone} title={'Call the assigned caller: ' + (cur.assigned_caller_name || '')}>☎️ Call caller</a>}
@@ -5008,7 +5022,7 @@ function CallQueue() {
             {c.follow_up_date && <div style={{ fontSize: 12, marginTop: 2, color: 'var(--gold-2)' }}>📅 {seg === 'upcoming' ? 'Scheduled' : 'Next'}: {c.follow_up_date}</div>}
             <div className="toolbar" style={{ margin: '10px 0 0' }}>
               <button className="btn sm gold" style={{ flex: 1 }} onClick={() => setActive(c)}>Open case ›</button>
-              <ContactBtns phone={c.phone} />
+              <ContactBtns phone={c.phone} caseId={c.id} />
             </div>
           </div>)}
         </div>}
@@ -6918,6 +6932,8 @@ function sheetWaNumber(p) {
 
 function SheetView({ user, config }) {
   const [rows, setRows] = React.useState([]);
+  const [sheetVici, setSheetVici] = React.useState(false);     // ViciDial connected → 📞 dials through it
+  React.useEffect(() => { dialerStatus().then(setSheetVici); }, []);
   const [prefs, setPrefs] = React.useState(null);
   const [err, setErr] = React.useState('');
   const [drawer, setDrawer] = React.useState(null);
@@ -7308,7 +7324,9 @@ function SheetView({ user, config }) {
               <tr key={row.id} style={{ ...(row.escalated ? { background: 'rgba(220,38,38,.07)' } : {}),
                 ...(row.review_color ? { boxShadow: `inset 4px 0 0 ${REVIEW_HEX[row.review_color] || '#888'}` } : {}) }}>
                 <td>
-                  {row.phone && <a className="sv-ico" href={callScheme() + ':' + cleanTel(row.phone)} title="Call via Zoiper">📞</a>}
+                  {row.phone && (sheetVici
+                    ? <button className="sv-ico" title="Call via ViciDial (recorded, result comes back to this case)" onClick={() => dialCaseViaVici(row.id)}>📞</button>
+                    : <a className="sv-ico" href={'tel:' + cleanTel(row.phone)} onClick={onCallStart} title="Call">📞</a>)}
                   {row.phone && <button className="sv-ico" title="WhatsApp" onClick={() => window.open('https://wa.me/' + sheetWaNumber(row.phone), '_blank')}>💬</button>}
                   <button className="sv-ico" title="Open on my phone" onClick={() => openCase(row)}>📲</button>
                   {row.escalated && <span className="badge" title="Escalated — locked; handled by your team lead / manager" style={{ background: 'rgba(220,38,38,.12)', color: 'var(--bad)', marginLeft: 4, fontSize: 10, fontWeight: 700 }}>🚩 ESCALATED</span>}
@@ -8881,6 +8899,20 @@ const attendanceLabel = r => r.half_day_leave || r.status === 'half_leave'
   : r.status === 'half_day' ? 'Half day · checked in after 11:30'
   : r.status === 'leave' ? 'Leave' : r.late ? 'Late' : ({ present: 'Present', weekoff: 'Week-off', absent: 'Absent' }[r.status] || r.status || '');
 
+// ViciDial live agent state → a small coloured pill (READY / PAUSED / INCALL / logged out …).
+const VICI_STATE = {
+  READY: ['Ready', '#16A34A'], CLOSER: ['Ready (inbound)', '#16A34A'], QUEUE: ['Call ringing', '#2563EB'],
+  INCALL: ['In call', '#2563EB'], PAUSED: ['Paused', '#D97706'], DISPO: ['Wrap-up', '#7C3AED'],
+  LOGGED_OUT: ['Not logged in', '#94A3B8'], NOT_FOUND: ['ID not in ViciDial', '#DC2626'],
+};
+function ViciPill({ v, campaign = true }) {
+  if (!v || !v.status) return <span className="muted" style={{ fontSize: 11 }}>—</span>;
+  const [label, color] = VICI_STATE[v.status] || [v.status, '#64748B'];
+  return <span title={'ViciDial agent ' + (v.agent || '') + (v.sub_status ? ' · ' + v.sub_status : '') + (v.pause_code ? ' · pause ' + v.pause_code : '')}
+    style={{ display: 'inline-block', padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 700, color, background: color + '1A', border: '1px solid ' + color + '55' }}>
+    ● {label}{campaign && v.campaign && v.status !== 'LOGGED_OUT' ? ' · ' + v.campaign : ''}{v.calls_today ? ' · ' + v.calls_today + ' calls' : ''}</span>;
+}
+
 function PresenceBadge({ p }) {
   if (!p) return null;
   const c = { active: '#16A34A', idle: '#D97706', offline: '#94A3B8' }[p.state] || '#94A3B8';
@@ -9029,6 +9061,17 @@ function AttendanceView({ user }) {
   const [statF, setStatF] = useState('');   // click a KPI to filter the list to that status
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const loadDay = () => { const p = new URLSearchParams(); p.set('date', date); if (role) p.set('role', role); api('/api/attendance/day?' + p).then(setDay).catch(() => setDay(null)); };
+  // Live ViciDial state per employee (managers/HO/admin/TL only; today only). Refreshes every 20s.
+  const canVici = ['admin', 'headoffice', 'hr', 'manager', 'teamlead'].includes(user.role);
+  const [vici, setVici] = useState(null);
+  useEffect(() => {
+    if (!canVici || tab !== 'today' || date !== today) { setVici(null); return; }
+    let stop = false;
+    const pull = () => api('/api/integration/vicidial/agents-live').then(r => { if (!stop) setVici(r); }).catch(() => { if (!stop) setVici(null); });
+    pull(); const t = setInterval(pull, 20000);
+    return () => { stop = true; clearInterval(t); };
+  }, [tab, date, canVici]);
+  const showVici = !!(vici && (Object.keys(vici.agents || {}).length || vici.error));
   // Date range (e.g. salary cycle 21st of last month → 20th of this month) — spans two months.
   const ymd = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   const salaryCycle = (back) => {        // back=0 → cycle ending 20th of this month; 1 → the one before
@@ -9149,14 +9192,16 @@ function AttendanceView({ user }) {
             <div className="k">{label}</div><b style={{ color }}>{val}</b></div>)}
       </div>
       {statF && <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Showing <b>{rows.length}</b> {statF === 'online' ? 'online' : statF} · <a style={{ cursor: 'pointer', color: 'var(--info)' }} onClick={() => setStatF('')}>clear filter</a></div>}
+      {vici && vici.error && <div className="muted" style={{ fontSize: 12, marginBottom: 6, color: 'var(--warn)' }}>⚠ ViciDial live status unavailable — {vici.error}</div>}
       <div className="glass card" style={{ overflowX: 'auto', padding: 0 }}>
         <table className="tbl" style={{ minWidth: 900 }}>
-          <thead><tr><th>Name</th><th>Status</th><th>Presence</th><th>Check-in</th><th>Check-out</th><th>Worked</th><th>Idle</th><th>Calls</th><th>Visits</th><th>Collected</th></tr></thead>
+          <thead><tr><th>Name</th><th>Status</th><th>Presence</th>{showVici && <th title="Live ViciDial agent state">ViciDial</th>}<th>Check-in</th><th>Check-out</th><th>Worked</th><th>Idle</th><th>Calls</th><th>Visits</th><th>Collected</th></tr></thead>
           <tbody>
             {rows.map(r => <tr key={r.user_id} style={{ cursor: 'pointer' }} onClick={() => setDetail({ id: r.user_id, date })}>
               <td><b>{r.name}</b><div className="muted" style={{ fontSize: 11 }}>{r.emp_code || ''} · {roleName(r.role)}{r.branch ? <> · 📍 {r.branch}</> : ''}</div></td>
               <td>{stTag(r)}</td>
               <td><PresenceBadge p={r.presence} /></td>
+              {showVici && <td><ViciPill v={(vici.agents || {})[String(r.user_id)]} /></td>}
               <td>{fmtTime(r.check_in_at)}
                 {r.check_in_lat != null && <div style={{ fontSize: 10 }} onClick={e => e.stopPropagation()}><a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${r.check_in_lat},${r.check_in_lng}`}>📍 {r.check_in_lat.toFixed(4)}, {r.check_in_lng.toFixed(4)}</a></div>}
                 {r.role === 'fos' && r.live_lat != null && <div style={{ fontSize: 10 }} onClick={e => e.stopPropagation()}><a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${r.live_lat},${r.live_lng}`} style={{ color: 'var(--good)', fontWeight: 700 }}>🛰 Live · {fmtTime(r.live_at)}</a></div>}</td>
@@ -9865,7 +9910,10 @@ function PredictiveScreenPop({ user }) {
   const labels = { checking: 'Connecting live screen-pop…', waiting: 'Predictive screen-pop ready • push delivery', connected: 'Latest call received', logged_out: 'Dialer session signed out — waiting for call events', unmapped: 'Dialer agent not mapped', unavailable: 'Connected case access needs attention', unmatched: 'Connected lead not linked', error: 'Screen-pop needs attention' };
   return <>
     {live.state !== 'disabled' && <div role="status" aria-live="polite" className="glass" style={{ padding: '8px 12px', marginBottom: 10, borderRadius: 10, fontSize: 12, overflowWrap: 'anywhere' }}>
-      <b>☎ {labels[live.state] || 'Predictive screen-pop'}</b>{live.detail && <span> — {live.detail}</span>}
+      <b>☎ {labels[live.state] || 'Predictive screen-pop'}</b>
+      {(live.agent_status || live.state === 'logged_out') && <span style={{ marginLeft: 8 }}>ViciDial: <ViciPill campaign={false}
+        v={{ status: live.state === 'logged_out' ? 'LOGGED_OUT' : live.agent_status, sub_status: live.substatus }} /></span>}
+      {live.detail && <span> — {live.detail}</span>}
       {live.state === 'connected' && <button className="btn ghost sm" style={{ marginLeft: 8 }} onClick={async () => {
         try { const c = await api('/api/cases/' + live.case_id); setPops(previous => {
           const existing = previous.find(p => p.c.id === c.id);
