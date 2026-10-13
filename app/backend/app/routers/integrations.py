@@ -13,6 +13,7 @@ from datetime import datetime, timezone, time, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Header, Body, Response, Request, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -912,6 +913,47 @@ def vicidial_my_live_call(response: Response, db: Session = Depends(get_db),
         return live_call_for(db, user)
     except LiveCallError as exc:
         return {"state": "error", "detail": str(exc), "poll_after_ms": 15000}
+
+
+class MyTestCall(BaseModel):
+    phone_number: str
+    phone_code: str = "91"
+    confirmed: bool = False
+
+
+@router.post("/vicidial/my-test-call")
+def vicidial_my_test_call(body: MyTestCall, response: Response, db: Session = Depends(get_db),
+                          user: models.User = Depends(get_current_user)):
+    """A caller tests their OWN ViciDial setup with a number they choose. The agent is always the
+    caller's own mapped ViciDial ID (never chosen by the browser), and the call is never linked to a
+    case. Rate-limited to keep it a test tool, not a free dialer."""
+    from ..vicidial_live import connection_for, agent_for, LiveCallError
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        conn = connection_for(db, user)
+    except LiveCallError as e:
+        raise HTTPException(409, str(e))
+    if not conn:
+        raise HTTPException(400, "ViciDial isn't connected for your branch. Ask an administrator.")
+    agent = agent_for(conn, user)
+    if not agent:
+        raise HTTPException(400, "Set your ViciDial agent ID first (Security → My ViciDial agent ID).")
+    since = datetime.now(timezone.utc) - timedelta(hours=1)
+    recent = db.query(models.AuditLog).filter(models.AuditLog.action == "vicidial_test_call",
+                                              models.AuditLog.actor_id == user.id,
+                                              models.AuditLog.at >= since).count()
+    if recent >= 10:
+        raise HTTPException(429, "Too many test calls in the last hour. Please try again later.")
+    agent_v, code, phone = validate_test_call(TestCallRequest(agent_user=agent, phone_number=body.phone_number,
+                                                              phone_code=body.phone_code, confirmed=body.confirmed))
+    entry = audit.record(db, user, "vicidial_test_call", entity_type="integration",
+                         detail=f"Self test call by agent {agent_v}, number ending {phone[-4:]}",
+                         meta={"connection_id": conn.id, "agent_user": agent_v, "state": "requested", "self": True})
+    db.commit()
+    result = send_test_call(conn, agent_v, code, phone)
+    entry.meta = {**(entry.meta or {}), "state": result["state"]}
+    db.commit()
+    return {**result, "agent_user": agent_v}
 
 
 @router.get("/vicidial/agents-live")

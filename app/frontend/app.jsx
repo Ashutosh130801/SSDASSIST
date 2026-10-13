@@ -6036,6 +6036,39 @@ function MyViciAgent() {
           onClick={() => { setVal(''); }}>Clear</button>}
       </div>
       <p className="muted" style={{ fontSize: 11, marginTop: 8 }}>Tip: this is your ViciDial <b>agent login ID</b> (the one you sign into the dialer with), not your RecoverIQ login or the API user.</p>
+      {data.explicit || data.effective ? <MyTestCall agent={data.agent_user || data.effective} /> : null}
+    </div>
+  );
+}
+
+/* Caller self-test: ring any number through MY OWN ViciDial agent session (not linked to a case). */
+function MyTestCall({ agent }) {
+  const [code, setCode] = React.useState('91');
+  const [num, setNum] = React.useState('');
+  const [ok, setOk] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [res, setRes] = React.useState(null);
+  const place = async () => {
+    setBusy(true); setRes(null); onCallStart();
+    try { setRes(await api('/api/integration/vicidial/my-test-call', { method: 'POST', body: { phone_number: num.trim(), phone_code: code.trim(), confirmed: ok } })); }
+    catch (e) { setRes({ ok: false, detail: e.message }); } finally { setBusy(false); }
+  };
+  return (
+    <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+      <b style={{ fontSize: 13.5 }}>📞 Test my calling</b>
+      <p className="muted" style={{ fontSize: 12, margin: '4px 0 8px' }}>
+        Rings a number of your choice through <b>your</b> ViciDial session (agent <b>{agent}</b>) — to check your setup works.
+        Before testing: log into the ViciDial agent screen, answer the Zoiper login call, and stay <b>Paused</b>. Not linked to any case.</p>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input className="input" style={{ width: 70 }} value={code} maxLength={3} onChange={e => setCode(e.target.value.replace(/\D/g, ''))} title="Country code" />
+        <input className="input" style={{ maxWidth: 200 }} value={num} maxLength={20} placeholder="Mobile number (10 digits)"
+          onChange={e => setNum(e.target.value)} />
+        <button className="btn gold" disabled={busy || !ok || !num.trim()} onClick={place}>{busy ? 'Calling…' : '📞 Place test call'}</button>
+      </div>
+      <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, marginTop: 6 }}>
+        <input type="checkbox" checked={ok} onChange={e => setOk(e.target.checked)} /> I have permission to call this number and I'm logged in to ViciDial (Paused).</label>
+      {res && <div style={{ marginTop: 8, fontSize: 12.5, color: res.ok ? 'var(--good)' : 'var(--bad)' }}>
+        {res.ok ? '✓ ' : '✗ '}{res.detail}</div>}
     </div>
   );
 }
