@@ -22,8 +22,59 @@ def list_custom(db: Session = Depends(get_db),
     rows = db.query(models.CatalogProduct).filter(
         models.CatalogProduct.is_active.isnot(False)).order_by(
         models.CatalogProduct.bank, models.CatalogProduct.product).all()
-    return [{"id": r.id, "bank": r.bank, "product": r.product,
-             "segment": r.segment, "closing_type": r.closing_type} for r in rows]
+    def n_cases(r):
+        q = db.query(models.Case).filter(models.Case.bank == r.bank, models.Case.removed.isnot(True))
+        if r.product:
+            q = q.filter(models.Case.product == r.product)
+        return q.count()
+    return [{"id": r.id, "bank": r.bank, "product": r.product, "segment": r.segment,
+             "closing_type": r.closing_type, "cases": n_cases(r)} for r in rows]
+
+
+@router.patch("/product/{cid}")
+def edit_product(cid: int, body: dict = Body(...), db: Session = Depends(get_db),
+                 admin: models.User = Depends(require_roles("admin"))):
+    """Edit a custom bank/product: name, segment and/or closing rule. With rename_cases=true the
+    existing cases under the old bank/product are renamed too, so they stay in the same portfolio."""
+    row = db.query(models.CatalogProduct).filter(models.CatalogProduct.id == cid).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    old_bank, old_prod = row.bank, row.product
+    bank = (body.get("bank") if "bank" in body else old_bank) or ""
+    bank = bank.strip()
+    product = ((body.get("product") if "product" in body else old_prod) or "").strip() or None
+    if not bank:
+        raise HTTPException(status_code=400, detail="Bank name is required")
+    closing = body.get("closing_type", row.closing_type)
+    closing = (closing or "").strip().lower() or None
+    if closing and closing not in VALID_CLOSING:
+        raise HTTPException(status_code=400, detail="closing_type must be cyc, month_end or due_date")
+    if (bank, product) != (old_bank, old_prod):
+        dupe = db.query(models.CatalogProduct).filter(
+            models.CatalogProduct.bank == bank, models.CatalogProduct.product == product,
+            models.CatalogProduct.id != cid, models.CatalogProduct.is_active.isnot(False)).first()
+        if dupe:
+            raise HTTPException(status_code=409, detail="Another entry already has that bank/product")
+    moved = 0
+    if body.get("rename_cases") and (bank, product) != (old_bank, old_prod):
+        q = db.query(models.Case).filter(models.Case.bank == old_bank)
+        if old_prod:
+            q = q.filter(models.Case.product == old_prod)
+            moved = q.update({models.Case.bank: bank, models.Case.product: product}, synchronize_session=False)
+        else:
+            moved = q.update({models.Case.bank: bank}, synchronize_session=False)
+    row.bank, row.product = bank, product
+    if "segment" in body:
+        row.segment = (body.get("segment") or "").strip() or None
+    row.closing_type = closing
+    old_label = f"{old_bank}{(' · ' + old_prod) if old_prod else ''}"
+    new_label = f"{bank}{(' · ' + product) if product else ''}"
+    audit.record(db, admin, "catalog_edit", None, entity_type="catalog", old=old_label, new=new_label,
+                 detail=f"Edited {old_label} → {new_label}" + (f" [{closing}]" if closing else "")
+                        + (f" · {moved} case(s) renamed" if moved else ""))
+    db.commit()
+    return {"ok": True, "id": row.id, "bank": row.bank, "product": row.product,
+            "segment": row.segment, "closing_type": row.closing_type, "cases_renamed": moved}
 
 
 @router.post("/product")

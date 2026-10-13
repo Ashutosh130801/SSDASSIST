@@ -1213,6 +1213,63 @@ function Dashboard({ user, branch }) {
 /* ============================== Cases (admin) ============================== */
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
+/* Admin: review / edit / remove the banks & products added via "New bank/product". */
+function ManageCatalogModal({ onClose, onChanged }) {
+  const [rows, setRows] = useState(null); const [edit, setEdit] = useState(null);
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const load = () => api('/api/catalog/custom').then(setRows).catch(e => { setRows([]); setErr(e.message); });
+  useEffect(() => { load(); }, []);
+  const CL = { month_end: 'Month-end', cyc: 'Cycle-wise (CYC)', due_date: 'Due-date' };
+  const save = async () => {
+    setBusy(true); setErr('');
+    try {
+      const r = await api('/api/catalog/product/' + edit.id, { method: 'PATCH', body: {
+        bank: edit.bank, product: edit.product, segment: edit.segment, closing_type: edit.closing_type,
+        rename_cases: !!edit.rename_cases } });
+      toast('Saved' + (r.cases_renamed ? ` · ${r.cases_renamed} case(s) moved to the new name` : ''));
+      setEdit(null); load(); onChanged && onChanged();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const remove = async (r) => {
+    const label = r.bank + (r.product ? ' · ' + r.product : '');
+    if (!window.confirm(`Remove "${label}" from the bank/product list?` + (r.cases ? `\n\nIts ${r.cases} existing case(s) are NOT deleted — they stay as they are; it just won't be offered for new uploads.` : ''))) return;
+    try { await api('/api/catalog/product/' + r.id, { method: 'DELETE' }); toast('Removed'); load(); onChanged && onChanged(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 680 }}>
+        <div className="section-h"><h3>Manage banks / products</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        <p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>Only entries added with “New bank/product” are listed — the built-in banks can't be changed here.</p>
+        {!rows ? <Loader /> : rows.length === 0 ? <p className="muted">No custom banks/products yet.</p> :
+          <div className="tablewrap"><table>
+            <thead><tr><th>Bank</th><th>Product</th><th>Segment</th><th>Closing</th><th>Cases</th><th></th></tr></thead>
+            <tbody>{rows.map(r => edit && edit.id === r.id ? <tr key={r.id}>
+              <td><input className="input" value={edit.bank} onChange={e => setEdit({ ...edit, bank: e.target.value })} /></td>
+              <td><input className="input" value={edit.product || ''} placeholder="(bank only)" onChange={e => setEdit({ ...edit, product: e.target.value })} /></td>
+              <td><select className="input" value={edit.segment || ''} onChange={e => setEdit({ ...edit, segment: e.target.value })}>
+                <option value="">—</option><option>Credit Card</option><option>PL/BL</option><option>AUTO LOANS</option></select></td>
+              <td><select className="input" value={edit.closing_type || ''} onChange={e => setEdit({ ...edit, closing_type: e.target.value })}>
+                <option value="">—</option><option value="month_end">Month-end</option><option value="cyc">Cycle-wise (CYC)</option><option value="due_date">Due-date</option></select></td>
+              <td colSpan={2} style={{ whiteSpace: 'nowrap' }}>
+                {r.cases > 0 && (edit.bank !== r.bank || (edit.product || '') !== (r.product || '')) &&
+                  <label style={{ display: 'block', fontSize: 11.5, marginBottom: 4 }}><input type="checkbox" checked={!!edit.rename_cases}
+                    onChange={e => setEdit({ ...edit, rename_cases: e.target.checked })} /> Also rename its {r.cases} existing case(s)</label>}
+                <button className="btn sm gold" disabled={busy} onClick={save}>Save</button>{' '}
+                <button className="btn sm" onClick={() => setEdit(null)}>Cancel</button></td>
+            </tr> : <tr key={r.id}>
+              <td><b>{r.bank}</b></td><td>{r.product || <span className="muted">(bank only)</span>}</td>
+              <td className="muted">{r.segment || '—'}</td><td className="muted">{CL[r.closing_type] || '—'}</td>
+              <td className="mono">{r.cases}</td>
+              <td style={{ whiteSpace: 'nowrap' }}><button className="btn sm" onClick={() => setEdit({ ...r, rename_cases: true })}>✏ Edit</button>{' '}
+                <button className="btn sm" onClick={() => remove(r)}>🗑 Remove</button></td>
+            </tr>)}</tbody></table></div>}
+        {err && <div style={{ color: 'var(--bad)', fontSize: 13 }}>{err}</div>}
+      </div>
+    </div>
+  );
+}
+
 /* Admin: onboard a NEW bank and/or product with its closing rule. */
 function AddProductModal({ presetBank, onClose, onAdded }) {
   const [bank, setBank] = useState(presetBank || '');
@@ -1508,6 +1565,7 @@ function UploadModal({ onClose, onDone, initial }) {
   const [fosAssign, setFosAssign] = useState({});   // account_no -> FOS emp_code, chosen at upload
   const [year, setYear] = useState(now.getFullYear()); const [month, setMonth] = useState(now.getMonth() + 1);
   const [addOpen, setAddOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
   const loadCat = () => api('/api/config').then(c => setCat(c.bank_products)).catch(() => {});
   useEffect(() => { loadCat(); }, []);
@@ -1559,6 +1617,7 @@ function UploadModal({ onClose, onDone, initial }) {
         <div className="section-h"><h3>Upload accounts — one product per file</h3>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn sm" onClick={() => setAddOpen(true)} title="Onboard a new bank or product">➕ New bank/product</button>
+            <button className="btn sm ghost" onClick={() => setManageOpen(true)} title="Edit or remove banks/products you added">⚙ Manage</button>
             <button className="btn ghost sm" onClick={onClose}>✕</button></div></div>
         <p className="muted" style={{ fontSize: 13 }}>Choose the bank, product, segment and the <b>month/year</b> this file belongs to; every row is tagged to that period, then auto-allocated by pincode &amp; nearest FO. Cases close automatically per the product's rule (cycle date / month-end / due date) and then move to the admin Monthly Archive.</p>
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
@@ -1682,6 +1741,8 @@ function UploadModal({ onClose, onDone, initial }) {
           </div>;
         })()}
         {addOpen && <AddProductModal presetBank={bank} onClose={() => setAddOpen(false)} onAdded={onCatalogAdded} />}
+        {manageOpen && <ManageCatalogModal onClose={() => setManageOpen(false)}
+          onChanged={() => api('/api/config').then(c => setCat && setCat(c.bank_products)).catch(() => {})} />}
       </div>
     </div>
   );
