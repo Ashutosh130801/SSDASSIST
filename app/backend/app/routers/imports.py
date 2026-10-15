@@ -1167,8 +1167,8 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
                 existing.branch_explicit = True   # explicit upload branch → this portfolio splits
             _apply_period(existing, rec)      # re-stamp period + recompute close date
             _dnew = _num(existing.received_amount) - _old_recv
-            if _dnew > 0.5:                   # sheet shows more collected than before → dated event
-                _imp_events.append((existing, round(_dnew, 2)))
+            if abs(_dnew) > 0.5:              # sheet changed the collected total → dated event (+/−)
+                _imp_events.append((existing, round(_dnew, 2)))   # keeps reports == case total
             skipped += 1
             continue
         # This upload is for one bank + product + segment — stamp every new row.
@@ -1246,7 +1246,8 @@ async def commit(file: UploadFile = File(...), default_bank: str | None = Form(N
             _cid = _c.assigned_caller_id or _c.assigned_fos_id
             db.add(models.CallLog(case_id=_c.id, caller_id=_cid,
                                   disposition="PAYMENT", ptp_amount=_amt,
-                                  note="Imported collection (from upload)"))
+                                  note=("Imported collection (from upload)" if _amt > 0
+                                        else "Upload lowered the collected total (correction)")))
 
     batch.rows_imported = imported
     batch.rows_skipped = skipped

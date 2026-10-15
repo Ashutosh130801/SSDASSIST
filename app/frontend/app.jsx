@@ -1422,7 +1422,7 @@ function DprModal({ onClose, onDone }) {
         {err && <div style={{ color: 'var(--bad)', fontSize: 13, marginBottom: 8 }}>{err}</div>}
         {!res && <div className="toolbar">
           <button className="btn" onClick={doPreview} disabled={!file || !bank || !product || busy}>{busy && !prev ? 'Reading…' : (prev ? 'Re-preview' : 'Preview')}</button>
-          {prev && <button className="btn gold" onClick={doCommit} disabled={busy || changes === 0}>{busy ? 'Applying…' : `Confirm & apply (${changes} change${changes === 1 ? '' : 's'})`}</button>}
+          {prev && !res && <button className="btn gold" onClick={doCommit} disabled={busy || changes === 0}>{busy ? 'Applying…' : `Confirm & apply (${changes} change${changes === 1 ? '' : 's'})`}</button>}
         </div>}
         {prev && !res && <div className="glass card" style={{ marginTop: 8 }}>
           {prev.plbl_format && <div style={{ background: 'rgba(37,99,235,.08)', border: '1px solid rgba(37,99,235,.3)', borderRadius: 10, padding: '9px 12px', marginBottom: 10, fontSize: 12.5, lineHeight: 1.5 }}>

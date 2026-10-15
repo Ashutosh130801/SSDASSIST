@@ -273,8 +273,19 @@ def _keyset(s):
     if s in (None, ""):
         return set()
     up = str(s).strip().upper()
+    if up.endswith(".0") and up[:-2].isdigit():      # Excel number → "123.0"
+        up = up[:-2]
+    keys = {up}
+    masked = any(ch in up for ch in "X*#")           # masked card: 4386XXXXXXXX1234 / 4386********1234
     digits = "".join(ch for ch in up if ch.isdigit())
-    return {k for k in (up, digits) if k}
+    if masked:
+        import re as _re
+        m = _re.match(r"^\D*(\d+)\D+(\d+)\D*$", up)
+        if m:                                        # same card, any mask style → one key
+            keys.add(f"MASK:{m.group(1)}*{m.group(2)}")
+    elif digits and len(digits) >= 6:                # don't let short ids collide
+        keys.add(digits)
+    return keys
 
 
 def _is_paid(status_val, amount):
@@ -332,15 +343,48 @@ def _prepare(content, default_bank, product, user, db, month_bucket=None):
     lut = {}
     for c in cases:
         for kv in (_keyset(c.account_no) | _keyset(c.card_no)):
-            lut.setdefault(kv, c)
+            lut.setdefault(kv, [])
+            if c not in lut[kv]:
+                lut[kv].append(c)
+    from .cases import _current_period
+    _cur = _current_period()
+
+    def _pick(cands, amount):
+        """The same account can sit in several months' portfolios. Pick ONE, deterministically:
+        a copy already at the DPR amount (so nothing double-books) → else the newest month that
+        isn't in the future → else the newest. Never an arbitrary/old copy."""
+        if len(cands) == 1:
+            return cands[0]
+        if amount is not None:
+            same = [c for c in cands if Decimal(c.received_amount or 0) == amount]
+            if same:
+                return max(same, key=lambda c: c.period or "")
+        past = [c for c in cands if (c.period or "") <= _cur]
+        return max(past or cands, key=lambda c: c.period or "")
 
     items = []
     for r in rows:
         keyvals = set()
         for kcol in cols["keys"]:
             keyvals |= _keyset(r.get(kcol))
-        match = next((lut[kv] for kv in keyvals if kv in lut), None)
         amount = _dec(r.get(cols["amount"])) if cols["amount"] else None
+        cands = []
+        for kv in keyvals:
+            for c in lut.get(kv, []):
+                if c not in cands:
+                    cands.append(c)
+        match = _pick(cands, amount) if cands else None
+        if match is not None:
+            # Two DIFFERENT customers in the same month share this key (typical with masked cards:
+            # same BIN + last 4) → don't guess, report it so the right number column can be added.
+            same_month = [c for c in cands if c.period == match.period and c.id != match.id
+                          and (c.account_no or c.card_no) != (match.account_no or match.card_no)]
+            if same_month:
+                items.append({"action": "unmatched", "key": next(iter(keyvals), ""), "name": r.get(cols["name"]) if cols["name"] else None,
+                              "amount": float(amount or 0),
+                              "reason": f"ambiguous — matches {len(same_month) + 1} different customers "
+                                        "(masked card?). Include the full account / loan number in the DPR."})
+                continue
         paid = _is_paid(r.get(cols["status"]) if cols["status"] else None, amount)
         ns = _ns_val(r.get(cols["ns"])) if cols["ns"] else None
         name = r.get(cols["name"]) if cols["name"] else None
@@ -403,7 +447,23 @@ def _prepare(content, default_bank, product, user, db, month_bucket=None):
                       "updates": {k: str(v) for k, v in field_ups.items()},
                       "_case": match, "_amount": amount, "_ns": ns, "_fields": field_ups,
                       "_mode": mode, "_target": target, "_delta": delta, "_paid": paid})
-    return cols, items
+    # A DPR may list the same account more than once. The amount is a CUMULATIVE snapshot, so keep
+    # one row per case (the highest amount) — otherwise its delta would be booked twice.
+    best = {}
+    for i, it in enumerate(items):
+        cid = it.get("case_id")
+        if cid is None:
+            continue
+        j = best.get(cid)
+        if j is None or float(it.get("amount") or 0) >= float(items[j].get("amount") or 0):
+            best[cid] = i
+    keep = set(best.values())
+    deduped = []
+    for i, it in enumerate(items):
+        if it.get("case_id") is not None and i not in keep:
+            continue                      # duplicate row for a case already handled
+        deduped.append(it)
+    return cols, deduped
 
 
 @router.post("/preview")
@@ -477,11 +537,19 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
                              "reason": "unmatched — no case with this number in this portfolio"})
             continue
         case = it["_case"]
+        # Lock + re-read this case so two DPR commits at the same moment (double-click / two users)
+        # can't both book the same delta. On Postgres this is SELECT … FOR UPDATE.
+        try:
+            db.refresh(case, with_for_update=True)
+        except Exception:
+            db.refresh(case)
         old_status = case.paid_status or "UNPAID"
         prev_recv = Decimal(case.received_amount or 0)
         ns = it["_ns"]
-        delta = Decimal(str(it.get("_delta") or 0))
         target = Decimal(str(it.get("_target") or 0))
+        # Delta from the case's LIVE total right now (not the preview snapshot), so a repeat row or a
+        # payment logged in between can never be counted twice.
+        delta = (target - prev_recv) if mode == "reconcile" else Decimal(str(it.get("_delta") or 0))
         change = {"case_id": case.id, "key": it["key"], "customer": case.customer_name,
                   "action": act, "old_status": old_status, "amount": float(it["_amount"] or 0),
                   "norm_stab": ns}
