@@ -11,6 +11,7 @@ from sqlalchemy import inspect, text, func
 from .database import Base, engine, get_db
 from .config import get_settings
 from . import models  # noqa: F401  (register models)
+from . import allocation_notify  # noqa: F401  (alerts FOS/callers on new allocations)
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
                       team, mis, feedback, reminders, audit_log, archive, catalog, manpower,
