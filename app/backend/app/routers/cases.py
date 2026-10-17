@@ -636,14 +636,23 @@ def list_cases(
     if paid_status:
         q = q.filter(models.Case.paid_status == paid_status)
     if search:
-        like = f"%{search}%"
-        q = q.filter(or_(
+        term = search.strip()
+        like = f"%{term}%"
+        conds = [
             models.Case.customer_name.ilike(like),
             models.Case.account_no.ilike(like),
+            models.Case.card_no.ilike(like),        # credit-card cases — full or masked (…5276)
             models.Case.phone.ilike(like),
+            models.Case.alt_phone.ilike(like),
+            models.Case.new_phone.ilike(like),
             models.Case.pincode.ilike(like),
             models.Case.vehicle_num.ilike(like),   # AUTO LOANS — search by vehicle registration number
-        ))
+        ]
+        # "#1234" or a bare number → also match the RecoverIQ case number.
+        cid = term.lstrip("#").strip()
+        if cid.isdigit() and len(cid) <= 9:
+            conds.append(models.Case.id == int(cid))
+        q = q.filter(or_(*conds))
     # Personal review-highlight filters (the user's own colour flags).
     if review_color or flagged_review:
         fq = db.query(models.CaseReviewFlag.case_id).filter(models.CaseReviewFlag.user_id == user.id)

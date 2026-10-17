@@ -2043,6 +2043,11 @@ function CasesView({ user }) {
   };
   // Click a product card: split (explicit-branch) products open their location cards first; others go straight to cases.
   const openProductCard = (c) => { if (c.branch_split && (c.branches || []).length) setBranchProduct({ ...c }); else openProduct(c); };
+  // "All cases" = every bank / product / branch (clears an opened portfolio's scope).
+  const allCases = () => {
+    setBank(''); setProduct(''); setSegment(''); setBranchF(''); setCardPeriod(''); setArea(''); setBranchProduct(null);
+    clearFilters(); setOpenState(''); setCyc(''); setMode('list');
+  };
   const backToProducts = () => {
     setProduct(''); setSegment(''); setBranchF(''); setCardPeriod(''); setArea(''); setAreas([]); clearFilters();
     setBranchProduct(null); setMode('products');
@@ -2111,7 +2116,7 @@ function CasesView({ user }) {
     <div>
       <div className="toolbar">
         <div className={cx('chip', mode === 'products' && 'on')} onClick={() => setMode('products')}>🧩 Products</div>
-        <div className={cx('chip', mode === 'list' && 'on')} onClick={() => setMode('list')}>📋 All cases (Excel)</div>
+        <div className={cx('chip', mode === 'list' && !product && !bank && 'on')} onClick={allCases}>📋 All cases (Excel)</div>
         {isHO && <div className={cx('chip', mode === 'removed' && 'on')} onClick={() => setMode('removed')}>🗑 Removed cases</div>}
         {mode !== 'removed' && <><span style={{ width: 1, height: 20, background: 'var(--line)' }} />
           <span className="muted" style={{ fontSize: 12 }}>Month:</span>
@@ -2238,7 +2243,7 @@ function CasesView({ user }) {
           {product && ['admin', 'headoffice'].includes(user.role) && <button className="btn ghost sm"
             title="Fix a wrong segment for this whole portfolio (e.g. a BL file uploaded as Credit Card) — no delete / re-upload needed"
             onClick={() => { setSegNew(segment || 'Credit Card'); setSegEdit(true); }}>✎ Segment</button>}
-          <input className="input" style={{ maxWidth: 240 }} placeholder="Search name / account / phone / pincode"
+          <input className="input" style={{ maxWidth: 240 }} placeholder="Search name / account / card / phone / pincode / case #"
             value={q} onChange={e => setQ(e.target.value)} />
           {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>
             <div key={s} className={cx('chip', paid === s && 'on')} onClick={() => setPaid(paid === s ? '' : s)}>{s || 'All'}</div>)}
