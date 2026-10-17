@@ -290,14 +290,15 @@ def activity(kind: str = "all", limit: int = 150,
             q = q.filter(models.Visit.officer_id == emp)
         gm = get_settings().geofence_metres
         for v, name, bk, br, pr, tm in q.order_by(models.Visit.created_at.desc()).limit(limit).all():
-            off = v.distance_from_case_m is not None and v.distance_from_case_m > gm
+            from ..visit_trust import is_flagged as _flag
+            off = _flag(v, gm)
             items.append({
                 "type": "visit", "at": v.created_at, "case_id": v.case_id, "customer": name,
                 "bank": bk, "branch": br, "product": pr, "area": tm,
                 "by": users.get(v.officer_id, ""), "amount": _d(v.amount_collected),
                 "detail": (v.disposition or "") + (f" · paid ₹{_d(v.amount_collected):.0f}" if v.paid else "")
                           + (" · moved" if v.person_moved else "")
-                          + (f" · ⚠ {int(v.distance_from_case_m)}m off-location" if off else ""),
+                          + ((f" · ⚠ {int(v.distance_from_case_m)}m off-location" if v.distance_from_case_m else " · ⚠ flagged") if off else ""),
                 "lat": v.latitude, "lng": v.longitude, "photo": resolve_photo(v.photo_path), "note": v.note,
                 "distance_m": v.distance_from_case_m, "off_location": off,
             })

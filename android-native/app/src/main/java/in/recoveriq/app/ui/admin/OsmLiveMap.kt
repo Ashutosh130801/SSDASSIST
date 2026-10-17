@@ -41,6 +41,11 @@ fun OsmLiveMap(
     modifier: Modifier = Modifier,
     routePoints: List<GeoPoint> = emptyList(),
 ) {
+    // Google Maps when the build has a MAPS_API_KEY (free on Android); OpenStreetMap otherwise.
+    if (`in`.recoveriq.app.ui.common.useGoogleMaps) {
+        `in`.recoveriq.app.ui.common.GoogleLiveMap(officers, scope, modifier, routePoints)
+        return
+    }
     val holder = remember { LiveOverlayHolder() }
     val liveColor = Color.rgb(0x16, 0xA3, 0x4A)   // green = live
     AndroidView(

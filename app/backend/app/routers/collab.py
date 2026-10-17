@@ -486,6 +486,8 @@ def chat_callback(body: dict = Body(...), db: Session = Depends(get_db),
     case = db.query(models.Case).get(case_id) if case_id else None
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    from .cases import _ensure_open
+    _ensure_open(case, user)          # no callback requests on closed / escalated cases
     target = case.assigned_caller_id
     if not target:
         raise HTTPException(status_code=400, detail="No telecaller is assigned to this case yet.")

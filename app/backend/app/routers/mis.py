@@ -416,7 +416,8 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
         e["visits"] += 1
         dm = _f(v.distance_from_case_m)
         e["distance"] += dm
-        if dm > gfence:
+        from ..visit_trust import is_flagged as _flag
+        if _flag(v, gfence):
             e["off"] += 1
         e["collected"] += _f(v.amount_collected)
     field_efficiency = sorted(

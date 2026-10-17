@@ -59,6 +59,8 @@ def log_comm(body: CommLog, db: Session = Depends(get_db), user: models.User = D
     case = db.query(models.Case).filter(models.Case.id == body.case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    from .cases import _ensure_open
+    _ensure_open(case, user)          # closed / escalated cases are locked for FOS & callers
     db.add(models.CallLog(case_id=case.id, caller_id=user.id, disposition="MESSAGE",
                           note=f"{body.channel}: {(body.text or '')[:200]}"))
     db.commit()

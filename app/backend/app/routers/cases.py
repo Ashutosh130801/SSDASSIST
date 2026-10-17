@@ -75,6 +75,8 @@ def apply_geocode_slot(case: models.Case, res: dict, slot: int) -> bool:
     Returns True when usable coordinates were stored."""
     if res.get("pincode") and not getattr(case, f"pincode{slot}", None):
         setattr(case, f"pincode{slot}", res["pincode"])
+    if getattr(case, f"geo_precision{slot}", None) == "field":
+        return True                      # doorstep-confirmed by a verified visit — keep it
     lat, lng = res.get("lat"), res.get("lng")
     if lat is None or lng is None:
         return False
@@ -97,7 +99,7 @@ def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | Non
     from ..database import SessionLocal
     if not _geo.has_key():
         raise HTTPException(status_code=400,
-                            detail="Geocoding is not configured — set LOCATIONIQ_KEY in the server .env and restart.")
+                            detail="Geocoding is not configured — set GOOGLE_GEOCODING_KEY (or LOCATIONIQ_KEY) in the server .env and restart.")
     import time
     # 'current' → this month only; anything else → all months (default behaviour).
     period = _current_period() if month_bucket == "current" else None
@@ -147,7 +149,7 @@ def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | Non
             for slot, addr, pin in _slots_for(c):
                 _total_slots += 1
                 if not first:
-                    time.sleep(0.5)              # pace between queries (LocationIQ free tier ~2 req/s)
+                    time.sleep(_geo.pace_seconds())   # Google ~50/s · LocationIQ free tier ~2/s
                 first = False
                 res = _geo.geocode_one(client, addr, None, pin,
                                        pre_clean=clean_map.get(f"{c['id']}-{slot}"))
@@ -181,7 +183,8 @@ def geocode(limit: int = 40, retry_failed: bool = False, month_bucket: str | Non
         failed_total = _ft.count()
     return {"geocoded": geocoded, "failed": failed, "remaining": remaining,
             "failed_total": failed_total, "processed": len(batch),
-            "ai_cleaned": ai_cleaned, "local_cleaned": local_cleaned}
+            "ai_cleaned": ai_cleaned, "local_cleaned": local_cleaned,
+            "provider": _geo.provider(), "places_today": _geo.places_used_today()}
 
 
 @router.post("/geocode/rebuild")
@@ -206,8 +209,10 @@ def geocode_rebuild(month_bucket: str | None = None, db: Session = Depends(get_d
             cs.latitude = cs.longitude = cs.geo_precision = None
             cs.geo_lat = cs.geo_lng = None
             cs.location_source = None
-        cs.latitude2 = cs.longitude2 = cs.geo_precision2 = None
-        cs.latitude3 = cs.longitude3 = cs.geo_precision3 = None
+        if cs.geo_precision2 != "field":           # keep doorstep-confirmed pins of address 2/3
+            cs.latitude2 = cs.longitude2 = cs.geo_precision2 = None
+        if cs.geo_precision3 != "field":
+            cs.latitude3 = cs.longitude3 = cs.geo_precision3 = None
         n += 1
     db.commit()
     return {"rearmed": n, "scope": "current_month" if period else "all"}
@@ -396,7 +401,7 @@ def _ensure_open(case: models.Case, user: models.User):
                                 detail="This case has been escalated and is locked for you. Your team lead / manager is handling it.")
         if _case_closed(case):
             raise HTTPException(status_code=403,
-                                detail="This case has closed for the month and is locked. Ask an admin if a change is needed.")
+                                detail="This case is closed (cycle / month-end) and locked — no visits, calls, payments or changes. Ask an admin if a correction is needed.")
 
 
 def _scope(q, user: models.User, include_removed: bool = False, bucket: str | None = None,
@@ -1485,6 +1490,7 @@ def mark_unpaid(case_id: int, db: Session = Depends(get_db),
     case = _scope(db.query(models.Case), actor).filter(models.Case.id == case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    _ensure_open(case, actor)   # locked for FOS/callers once escalated/closed
     prev = Decimal(case.received_amount or 0)
     case.received_amount = Decimal(0)
     case.pending_amount = _pay_base_total(case)

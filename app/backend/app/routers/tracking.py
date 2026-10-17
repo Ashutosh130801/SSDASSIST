@@ -685,7 +685,8 @@ def export_routes(officer_ids: str = "all", dates: str = "all", branch: str | No
             if vs:
                 for idx, v in enumerate(vs, start=1):
                     c = cases.get(v.case_id)
-                    off_loc = (v.distance_from_case_m is not None and v.distance_from_case_m > 300)
+                    from ..visit_trust import is_flagged as _flag
+                    off_loc = _flag(v, 300)
                     vals = [idx, as_ist_hm(v.created_at),
                             c.customer_name if c else "", c.account_no if c else "",
                             c.bank if c else "", c.product if c else "", c.phone if c else "",

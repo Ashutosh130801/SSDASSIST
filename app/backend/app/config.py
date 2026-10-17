@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     # LocationIQ geocoding (address -> lat/long). Free tier key from locationiq.com.
     # Swappable: set google_maps_api_key later to move geocoding to Google (see memory note).
     locationiq_key: str = ""
+    # Google Geocoding API key (much better for Indian addresses). When set, address lookup uses
+    # Google; LocationIQ stays as the fallback when this is blank.  .env: GOOGLE_GEOCODING_KEY=...
+    google_geocoding_key: str = ""
+    # Backup lookup for hard (landmark-style / informal) addresses: Google Places text search, the
+    # same search as the Google Maps app. Used ONLY when Geocoding finds just the area/pincode.
+    # Max Places lookups per day (0 = off). Needs "Places API (New)" enabled on the same key.
+    google_places_daily_cap: int = 300
 
     # OpenRouter (OpenAI-compatible) for the AI address-cleaning step. If set, it's used in
     # preference to Gemini. Pick any model on openrouter.ai; a small cheap one is plenty here.

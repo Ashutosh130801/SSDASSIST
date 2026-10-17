@@ -196,6 +196,8 @@ def click_to_call(body: dict = Body(...), db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="Case not found")
     if not case.phone:
         raise HTTPException(status_code=400, detail="This case has no phone number")
+    from .cases import _ensure_open
+    _ensure_open(case, user)          # no dialing on closed / escalated cases for FOS & callers
     # ── ViciDial path (existing office dialer) ────────────────────────────────────
     vici = _pick_vici(db, case.branch)
     if vici:

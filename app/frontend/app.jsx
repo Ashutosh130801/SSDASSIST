@@ -2384,6 +2384,7 @@ function LiveMap({ config }) {
   const [showReport, setShowReport] = useState(false); const [drawerCase, setDrawerCase] = useState(null);
   const [rosterOpen, setRosterOpen] = useState(false); const [roster, setRoster] = useState(null); const [rosterDate, setRosterDate] = useState('');
   const [rosterQ, setRosterQ] = useState('');
+  const [flaggedOpen, setFlaggedOpen] = useState(false);
   // ---- Bulk multi-FOS / multi-date route + visits export ----
   const [expOpen, setExpOpen] = useState(false); const [expFosList, setExpFosList] = useState(null);
   const [expFos, setExpFos] = useState(() => new Set()); const [expDatesList, setExpDatesList] = useState(null);
@@ -2594,6 +2595,7 @@ function LiveMap({ config }) {
         <GeocodeButton />
         <button className="btn sm" onClick={openRoster}>🧑‍🤝‍🧑 FOS roster</button>
         <button className="btn sm gold" onClick={openExport}>⬇ Export routes</button>
+        <button className="btn sm" onClick={() => setFlaggedOpen(true)} title="Possibly fake visits — trust score">🚩 Flagged visits</button>
         <button className="btn sm" onClick={refresh}>↻ Refresh</button>
       </div>
       {status === 'nokey' && <div className="glass card" style={{ marginBottom: 12, color: 'var(--warn)' }}>
@@ -2774,13 +2776,17 @@ function LiveMap({ config }) {
         <div className="stat-row"><span className="k">Disposition</span><b>{selVisit.disposition || '—'}</b></div>
         {selVisit.paid && <div className="stat-row"><span className="k">Payment</span><b style={{ color: 'var(--good)' }}>{INR2(selVisit.amount)}{selVisit.norm_stab ? ' · ' + selVisit.norm_stab : ''}</b></div>}
         {selVisit.person_moved && <div className="stat-row"><span className="k">Flag</span><b style={{ color: 'var(--warn)' }}>Person moved</b></div>}
-        {selVisit.off_location && <div className="stat-row"><span className="k">⚠ Location</span><b style={{ color: 'var(--bad)' }}>{Math.round(selVisit.distance_m)}m off case</b></div>}
+        {selVisit.address_slot && <div className="stat-row"><span className="k">Visited</span><b>{{ '1': 'Address 1', '2': 'Address 2', '3': 'Address 3', new: 'New address' }[selVisit.address_slot] || selVisit.address_slot}</b></div>}
+        {selVisit.trust ? <div style={{ margin: '6px 0' }}><TrustBadge level={selVisit.trust} review={selVisit.review_status} />
+          {(selVisit.trust_reasons || []).filter(r => r.sev !== 'info').map((r, i) => <div key={i} style={{ fontSize: 12 }}>• {r.text}</div>)}</div>
+          : selVisit.off_location && <div className="stat-row"><span className="k">⚠ Location</span><b style={{ color: 'var(--bad)' }}>{Math.round(selVisit.distance_m)}m off case</b></div>}
         {selVisit.note && <div style={{ marginTop: 8 }}><div className="muted" style={{ fontSize: 12 }}>Log submitted</div><div style={{ fontSize: 13, lineHeight: 1.5 }}>{selVisit.note}</div></div>}
         {selVisit.photo && <img src={selVisit.photo} alt="visit" style={{ width: '100%', borderRadius: 10, marginTop: 10 }} />}
         {selVisit.payment_photo && <div style={{ marginTop: 10 }}><div className="muted" style={{ fontSize: 12 }}>🧾 Payment screenshot</div><a href={selVisit.payment_photo} target="_blank" rel="noreferrer"><img src={selVisit.payment_photo} alt="payment screenshot" style={{ width: '100%', borderRadius: 10, marginTop: 4 }} /></a></div>}
         <button className="btn gold block" style={{ marginTop: 10 }} onClick={async () => { try { const c = await api('/api/cases/' + selVisit.case_id); setDrawerCase(c); setSelVisit(null); } catch (e) { toast(e.message, 'err'); } }}>Open full case</button>
       </div></div>}
 
+      {flaggedOpen && <FlaggedVisitsModal onClose={() => setFlaggedOpen(false)} />}
       {showReport && dayVisits && <div className="modal-bg" onClick={() => setShowReport(false)}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 860, width: '96%' }}>
         <div className="section-h"><h3>{histOfficer.name} — {selDate} field report</h3>
           <div style={{ display: 'flex', gap: 6 }}><button className="btn sm gold" onClick={dlDayExcel}>⬇ Excel</button><button className="btn ghost sm" onClick={() => setShowReport(false)}>✕</button></div></div>
@@ -3672,6 +3678,105 @@ function EmployeeDashboard({ u, config, onClose }) {
       </div></div>);
 }
 
+/* ---- Customer addresses (1/2/3/new) as choices for visits & messages ---- */
+function caseAddrChoices(c) {
+  const out = [];
+  if (c.address) out.push({ key: '1', label: 'Address 1', text: c.address, pin: c.pincode });
+  if (c.address2) out.push({ key: '2', label: 'Address 2', text: c.address2, pin: c.pincode2 });
+  if (c.address3) out.push({ key: '3', label: 'Address 3', text: c.address3, pin: c.pincode3 });
+  if (c.new_address) out.push({ key: 'new', label: 'New address', text: c.new_address, pin: null });
+  return out;
+}
+const addrWithPin = (a) => a ? (a.pin && !String(a.text).includes(a.pin) ? `${a.text}, ${a.pin}` : a.text) : '';
+
+/* ---- Visit trust badge (✅ Verified / ⚠️ Check / 🚩 Suspicious) ---- */
+const TRUST = { ok: ['✅ Verified', 'var(--good)'], check: ['⚠️ Check', 'var(--warn)'], suspicious: ['🚩 Suspicious', 'var(--bad)'] };
+function TrustBadge({ level, reasons, review }) {
+  if (!level || !TRUST[level]) return null;
+  const [lbl, col] = TRUST[level];
+  const why = (reasons || []).filter(r => r.sev !== 'info').map(r => r.text).join(' · ');
+  return <span title={why || lbl} style={{ fontSize: 11, fontWeight: 700, color: col, whiteSpace: 'nowrap' }}>{lbl}
+    {review && <span style={{ color: review === 'fake' ? 'var(--bad)' : 'var(--good)', marginLeft: 4 }}>· {review === 'fake' ? 'marked fake' : 'reviewed ✓'}</span>}</span>;
+}
+
+/* ---- Flagged (possibly fake) visits report for TL / manager / HO / admin ---- */
+function FlaggedVisitsModal({ onClose }) {
+  useBackClose(true, onClose);
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: IST_TZ });
+  const [start, setStart] = useState(today.slice(0, 8) + '01'); const [end, setEnd] = useState(today);
+  const [level, setLevel] = useState('flagged'); const [fos, setFos] = useState('');
+  const [d, setD] = useState(null); const [busy, setBusy] = useState(false); const [geo, setGeo] = useState(null);
+  const [open, setOpen] = useState(null);
+  const role = (store.u || {}).role;
+  const canRescore = role === 'admin' || role === 'headoffice';
+  const qs = () => `start=${start}&end=${end}&level=${level}` + (fos ? `&officer_id=${fos}` : '');
+  const load = () => { setD(null); api('/api/visits/flagged?' + qs()).then(setD).catch(e => { toast(e.message, 'err'); setD({ summary: [], visits: [] }); }); };
+  useEffect(load, [start, end, level, fos]);
+  useEffect(() => { if (canRescore || role === 'it_support_view') api('/api/visits/geo-quality').then(setGeo).catch(() => {}); }, []);
+  const review = async (v, status) => {
+    const note = status === 'fake' ? (prompt('Why is this visit fake? (optional)') || '') : '';
+    try { await api(`/api/visits/${v.id}/review`, { method: 'POST', body: { status, note } }); toast('Saved'); load(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  const rescore = async () => {
+    setBusy(true);
+    try { const r = await api('/api/visits/rescore', { method: 'POST', body: { start, end } });
+      toast(`Scored ${r.scored}: ✅ ${r.ok} · ⚠️ ${r.check} · 🚩 ${r.suspicious}`); load(); }
+    catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  const GEO_LBL = { field: 'Doorstep-confirmed', rooftop: 'Building', street: 'Street', locality: 'Area / locality', pincode: 'Pincode only', city: 'City only', none: 'Not found', not_tried: 'Not geotagged yet' };
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 1100, width: '97%' }}>
+    <div className="section-h"><h3>🚩 Flagged visits — fake-visit check</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
+      <input className="input" type="date" value={start} onChange={e => setStart(e.target.value)} style={{ maxWidth: 160 }} />
+      <span className="muted">to</span>
+      <input className="input" type="date" value={end} onChange={e => setEnd(e.target.value)} style={{ maxWidth: 160 }} />
+      <select className="input" value={level} onChange={e => setLevel(e.target.value)} style={{ maxWidth: 190 }}>
+        <option value="flagged">⚠️ + 🚩 Flagged</option><option value="suspicious">🚩 Suspicious only</option>
+        <option value="check">⚠️ Check only</option><option value="all">All visits</option></select>
+      <select className="input" value={fos} onChange={e => setFos(e.target.value)} style={{ maxWidth: 200 }}>
+        <option value="">All FOS</option>{(d && d.summary || []).map(x => <option key={x.officer_id} value={x.officer_id}>{x.name}</option>)}</select>
+      <div style={{ flex: 1 }} />
+      {canRescore && <button className="btn sm" onClick={rescore} disabled={busy} title="Score past visits in this date range">{busy ? 'Scoring…' : '↻ Score past visits'}</button>}
+      <button className="btn sm gold" onClick={() => download('/api/visits/flagged?' + qs() + '&format=xlsx', `flagged_visits_${start}_${end}.xlsx`)}>⬇ Excel</button>
+    </div>
+    {geo && <div className="glass card" style={{ padding: 10, margin: '8px 0', fontSize: 12.5 }}>
+      <b>How precisely customer addresses are on the map</b>
+      {['address1', 'address2', 'address3'].map(k => { const t = geo[k] || {}; const n = Object.values(t).reduce((a, b) => a + b, 0); if (!n) return null;
+        return <div key={k} style={{ marginTop: 4 }}><span className="muted">{k.replace('address', 'Address ')} ({n}): </span>
+          {Object.entries(t).sort((a, b) => b[1] - a[1]).map(([p, c]) => <span key={p} style={{ marginRight: 10 }}>{GEO_LBL[p] || p} <b>{Math.round(100 * c / n)}%</b></span>)}</div>; })}
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>Distance checks are strict for Doorstep/Building pins and loose for Pincode/City pins. Each verified paid visit turns that address into a Doorstep-confirmed pin.</div>
+    </div>}
+    {!d ? <Loader /> : <>
+      <div className="tablewrap" style={{ maxHeight: 220, overflow: 'auto', marginTop: 6 }}><table><thead><tr><th>FOS</th><th>Visits</th><th>✅</th><th>⚠️</th><th>🚩</th><th>Not scored</th><th>Flagged %</th></tr></thead>
+        <tbody>{d.summary.map(x => <tr key={x.officer_id} style={{ cursor: 'pointer' }} onClick={() => setFos(String(x.officer_id))}>
+          <td><b>{x.name}</b> <span className="muted">{x.emp_code}</span></td><td>{x.visits}</td>
+          <td style={{ color: 'var(--good)' }}>{x.ok}</td><td style={{ color: 'var(--warn)' }}>{x.check}</td>
+          <td style={{ color: 'var(--bad)', fontWeight: 700 }}>{x.suspicious}</td><td className="muted">{x.unscored}</td>
+          <td style={{ fontWeight: 700, color: x.flagged_pct >= 30 ? 'var(--bad)' : x.flagged_pct >= 10 ? 'var(--warn)' : 'var(--good)' }}>{x.flagged_pct}%</td></tr>)}</tbody></table></div>
+      {d.visits.length === 0 ? <div className="muted" style={{ padding: 16, textAlign: 'center' }}>No visits match.</div> :
+        <div className="tablewrap" style={{ maxHeight: 420, overflow: 'auto', marginTop: 10 }}><table><thead><tr><th>When</th><th>FOS</th><th>Customer</th><th>Visited</th><th>Result</th><th>Why flagged</th><th>Review</th></tr></thead>
+          <tbody>{d.visits.map(v => <tr key={v.id}>
+            <td style={{ whiteSpace: 'nowrap' }}>{v.at}</td><td>{v.officer}<div className="muted" style={{ fontSize: 11 }}>{v.emp_code}</div></td>
+            <td><b>{v.customer || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{v.account} · {v.bank} {v.product}</div></td>
+            <td style={{ fontSize: 12 }}><b>{v.address_label}</b><div className="muted" style={{ fontSize: 11, maxWidth: 220 }}>{v.address}</div>
+              {(v.gps_address || v.gps_pincode) && <div style={{ fontSize: 11, maxWidth: 220, marginTop: 3 }}>📍 <b>At photo:</b> {v.gps_address || '—'}{v.gps_pincode ? ` · PIN ${v.gps_pincode}` : ''}</div>}</td>
+            <td style={{ fontSize: 12 }}>{v.disposition}{v.paid ? <div style={{ color: 'var(--good)' }}>{money(v.amount)}</div> : null}</td>
+            <td style={{ fontSize: 12, maxWidth: 320 }}><TrustBadge level={v.level} />
+              <div>{(v.reasons || []).filter(r => r.sev !== 'info').map((r, i) => <div key={i}>• {r.text}</div>)}</div>
+              <div className="muted" style={{ fontSize: 11 }}>{v.gps_accuracy != null && `GPS ±${Math.round(v.gps_accuracy)} m · `}
+                {v.lat != null && <a href={`https://maps.google.com/?q=${v.lat},${v.lng}`} target="_blank" rel="noreferrer">map</a>}
+                {v.photo && <> · <a href="#" onClick={e => { e.preventDefault(); setOpen(v); }}>photo</a></>}</div></td>
+            <td style={{ whiteSpace: 'nowrap' }}>{v.review_status ? <span style={{ fontSize: 12, color: v.review_status === 'fake' ? 'var(--bad)' : 'var(--good)' }}>{v.review_status === 'fake' ? 'Fake' : 'Genuine'}<div className="muted" style={{ fontSize: 10.5 }}>{v.reviewed_by}</div></span> :
+              role !== 'it_support_view' && <><button className="btn sm" onClick={() => review(v, 'genuine')}>Genuine</button> <button className="btn sm" style={{ color: 'var(--bad)' }} onClick={() => review(v, 'fake')}>Fake</button></>}</td>
+          </tr>)}</tbody></table></div>}
+    </>}
+    {open && <div className="modal-bg" onClick={() => setOpen(null)}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 640 }}>
+      <div className="section-h"><h3>{open.customer} — {open.at}</h3><button className="btn ghost sm" onClick={() => setOpen(null)}>✕</button></div>
+      <img src={open.photo} alt="visit" style={{ width: '100%', borderRadius: 10 }} /></div></div>}
+  </div></div>;
+}
+
 /* ============================== Field Officer ============================== */
 const DISPOS_FIELD = ['PAID', 'PTP', 'NOT AVAILABLE', 'MOVED', 'WRONG ADDRESS', 'DISPUTE', 'REFUSED', 'RNR'];
 
@@ -3683,6 +3788,8 @@ function VisitModal({ c, onClose, onDone }) {
   const [paid, setPaid] = useState(false); const [amount, setAmount] = useState('');
   const [dispo, setDispo] = useState('PTP'); const [note, setNote] = useState(''); const [ptpDate, setPtpDate] = useState('');
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(''); const [gps, setGps] = useState('idle');
+  const addrs = caseAddrChoices(c); const [slot, setSlot] = useState(addrs.length ? addrs[0].key : '1');
+  const chosen = addrs.find(a => a.key === slot);
   const grab = async () => { setGps('getting'); try { const c = await getGPS(); setCoords(c); setGps('ok'); }
     catch (e) { setGps('fail'); setErr('GPS: ' + e.message); } };
   useEffect(() => { grab(); }, []);
@@ -3691,7 +3798,7 @@ function VisitModal({ c, onClose, onDone }) {
     setStamping(true);
     let cc = coords;
     if (!cc) { try { cc = await getGPS({ timeout: 9000 }); setCoords(cc); setGps('ok'); } catch (x) {} }
-    const stamped = await stampPhoto(file, cc, c.address);
+    const stamped = await stampPhoto(file, cc, chosen ? `${chosen.label}: ${chosen.text}` : c.address);
     setPhoto(stamped); setPhotoUrl(URL.createObjectURL(stamped)); setStamping(false);
   };
   const submit = async () => {
@@ -3701,6 +3808,7 @@ function VisitModal({ c, onClose, onDone }) {
       if (coords) { f.append('latitude', coords.latitude); f.append('longitude', coords.longitude);
         if (coords.accuracy) f.append('gps_accuracy', coords.accuracy); }
       f.append('location_correct', locOk); f.append('person_moved', moved);
+      if (addrs.length) f.append('address_slot', slot);
       f.append('paid', paid); f.append('amount_collected', paid ? (amount || '0') : '0');
       f.append('disposition', moved ? 'MOVED' : dispo); f.append('note', note);
       if (ptpDate && dispo === 'PTP' && !paid) f.append('ptp_date', ptpDate);
@@ -3720,6 +3828,10 @@ function VisitModal({ c, onClose, onDone }) {
             <span style={{ color: 'var(--good)' }}>±{Math.round(coords.accuracy)}m ✓</span> :
             gps === 'getting' ? 'locating…' : <button className="btn sm" onClick={grab}>Get GPS</button>}</span></div>
         </div>
+        {addrs.length > 0 && <div className="field"><label>Which address are you visiting?</label>
+          <div className="toolbar" style={{ margin: 0, flexWrap: 'wrap' }}>
+            {addrs.map(a => <div key={a.key} className={cx('chip', slot === a.key && 'on')} onClick={() => setSlot(a.key)}>{a.label}</div>)}</div>
+          {chosen && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>📍 {addrWithPin(chosen)}</div>}</div>}
         <div className="field"><label>GPS camera photo</label>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPhoto} style={{ display: 'none' }} />
           <button type="button" className="btn block" onClick={() => fileRef.current && fileRef.current.click()} disabled={stamping}>
@@ -3839,9 +3951,9 @@ function addrNavUrl(lat, lng, addr, pin) {
    three separate address columns (address / address2 / address3). */
 function caseAddresses(c) {
   const rows = [
-    { addr: c.address, pin: c.pincode, lat: c.latitude, lng: c.longitude },
-    { addr: c.address2, pin: c.pincode2, lat: c.latitude2, lng: c.longitude2 },
-    { addr: c.address3, pin: c.pincode3, lat: c.latitude3, lng: c.longitude3 },
+    { addr: c.address, pin: c.pincode, lat: c.latitude, lng: c.longitude, prec: c.location_source === 'field' ? 'field' : c.geo_precision },
+    { addr: c.address2, pin: c.pincode2, lat: c.latitude2, lng: c.longitude2, prec: c.geo_precision2 },
+    { addr: c.address3, pin: c.pincode3, lat: c.latitude3, lng: c.longitude3, prec: c.geo_precision3 },
   ];
   return rows.filter(r => r.addr || r.pin);
 }
@@ -3857,8 +3969,12 @@ function AddressList({ c }) {
             {rows.length > 1 && <b style={{ color: 'var(--ink)' }}>{i + 1}. </b>}
             {r.addr || '—'} {r.pin ? `(${r.pin})` : ''}
           </div>
-          <a className="btn sm" style={{ whiteSpace: 'nowrap' }} href={addrNavUrl(r.lat, r.lng, r.addr, r.pin)}
-             target="_blank" rel="noreferrer" title={r.lat != null ? 'Directions to geotagged pin' : 'Search this address'}>🧭</a>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {r.lat != null && !['pincode', 'city'].includes(r.prec) && <a className="btn sm" style={{ whiteSpace: 'nowrap' }} href={addrNavUrl(r.lat, r.lng, r.addr, r.pin)}
+               target="_blank" rel="noreferrer" title={`Directions to the saved pin${r.prec ? ' (' + r.prec + ')' : ''}`}>🧭</a>}
+            <a className="btn sm" style={{ whiteSpace: 'nowrap' }} href={'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent([r.addr, r.pin, 'India'].filter(Boolean).join(', '))}
+               target="_blank" rel="noreferrer" title="Search this address in Google Maps (like typing it in)">🔍</a>
+          </div>
         </div>
       ))}
     </div>
@@ -3884,7 +4000,7 @@ function CaseCard({ c, onVisit, onNav, onDetails }) {
         <span className="k">Pending NORM / STAB</span>
         <b className="mono" style={{ color: 'var(--info)' }}>{c.remaining_to_norm != null ? INR(c.remaining_to_norm) : '—'} / {c.remaining_to_stab != null ? INR(c.remaining_to_stab) : '—'}</b></div>}
       <div className="toolbar" style={{ margin: '10px 0 0' }}>
-        <button className="btn sm gold" style={{ flex: 1 }} onClick={onVisit} title={c.closed ? 'Closed for the month — you can still log a visit (payment stays locked)' : ''}>Log visit</button>
+        <button className="btn sm gold" style={{ flex: 1 }} onClick={onVisit} disabled={!!c.closed} title={c.closed ? 'Case closed — locked. No visits or logs.' : ''}>{c.closed ? '🔒 Closed' : 'Log visit'}</button>
         {onDetails && <button className="btn sm" onClick={onDetails}>Details</button>}
         <button className="btn sm" onClick={onNav}>🧭 Navigate</button>
         <ContactBtns phone={c.phone} caseId={c.id} />
@@ -4700,7 +4816,8 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
     api(`/api/cases/${c.id}/timeline`).then(setHist).catch(() => setHist([])),
   ]);
   useEffect(() => { refresh(); api('/api/templates').then(setTpls).catch(() => {}); }, []);
-  const pickTpl = (id) => { setTplId(id); const t = tpls.find(x => String(x.id) === String(id)); setMsg(t ? renderTemplate(t.body, cur) : ''); };
+  const [msgAddr, setMsgAddr] = useState('1');
+  const pickTpl = (id, ak = msgAddr) => { setTplId(id); const t = tpls.find(x => String(x.id) === String(id)); setMsg(t ? renderTemplate(t.body, cur, ak) : ''); };
   const waSend = () => {
     if (!cur.phone || !msg) return;
     window.open(`https://wa.me/${String(cur.phone).replace(/[^0-9]/g, '')}?text=${encodeURIComponent(msg)}`, '_blank');
@@ -4853,7 +4970,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
             <a className="btn sm" href={'https://wa.me/' + String(cur.new_phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a></div>}
           {cur.new_address && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span>📍 {cur.new_address}</span>
-            <a className="btn sm" href={'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(cur.new_address)} target="_blank" rel="noreferrer">Navigate</a></div>}
+            <a className="btn sm" href={'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(cur.new_address + ', India')} target="_blank" rel="noreferrer">🔍 Search in Maps</a></div>}
         </div>}
         {canEditContact && (ncEdit ? <div className="glass card" style={{ margin: '10px 0' }}>
           <div className="section-h"><h3 style={{ fontSize: 14 }}>Update customer contact</h3></div>
@@ -4864,7 +4981,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
         </div> : <button className="btn sm" style={{ margin: '4px 0 10px' }} onClick={() => { setNcPhone(cur.new_phone || ''); setNcAddr(cur.new_address || ''); setNcEdit(true); }}>✏ {(cur.new_phone || cur.new_address) ? 'Update' : 'Add'} new address / phone</button>)}
         <div className="divider"></div>
         {cur.closed && <div className="glass card" style={{ background: '#f3f4f6', color: '#374151', fontSize: 13, padding: '8px 12px', marginBottom: 8 }}>
-          🔒 This case has <b>closed for the month</b>{cur.close_date ? ` (on ${cur.close_date})` : ''} and is locked. It stays visible for reference; an admin can still make changes.</div>}
+          🔒 This case is <b>closed (cycle / month-end)</b>{cur.close_date ? ` on ${cur.close_date}` : ''} and locked — no visits, calls, payments, messages or changes for FOS &amp; callers. It stays visible for reference; an admin can still correct it.</div>}
         <div className="toolbar">
           <div className={cx('chip', tab === 'call' && 'on')} onClick={() => setTab('call')}>{ptpOnly ? '📞 Log phone outcome' : '📞 Log call'}</div>
           {!ptpOnly && <div className={cx('chip', tab === 'pay' && 'on')} onClick={() => setTab('pay')}>💰 Record payment</div>}
@@ -4927,9 +5044,12 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
               {tpls.map(t => <option key={t.id} value={t.id}>{t.name} ({t.channel})</option>)}
             </select></div>
           {tpls.length === 0 && <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>No templates yet — an admin/manager can create them under Templates.</div>}
+          {caseAddrChoices(cur).length > 1 && <div className="field"><label>Address used for {'{address}'}</label>
+            <select className="input" value={msgAddr} onChange={e => { setMsgAddr(e.target.value); if (tplId) pickTpl(tplId, e.target.value); }}>
+              {caseAddrChoices(cur).map(a => <option key={a.key} value={a.key}>{a.label} — {String(a.text).slice(0, 60)}</option>)}</select></div>}
           <div className="field"><label>Message</label><textarea className="input" style={{ minHeight: 90 }} value={msg} onChange={e => setMsg(e.target.value)} placeholder="Type or pick a template…" /></div>
           <div className="toolbar" style={{ margin: 0 }}>
-            {cur.phone && <button className="btn gold" onClick={waSend} disabled={!msg}>Send on WhatsApp</button>}
+            {cur.phone && <button className="btn gold" onClick={waSend} disabled={!msg || (cur.closed && ['fos', 'telecaller'].includes((store.u || {}).role))}>Send on WhatsApp</button>}
             <button className="btn" onClick={() => { try { navigator.clipboard.writeText(msg); toast('Copied'); } catch {} }} disabled={!msg}>Copy</button>
           </div>
         </div>}
@@ -5837,8 +5957,11 @@ function DevicesView() {
 }
 
 /* ============================== Message templates ============================== */
-function renderTemplate(body, c) {
+function renderTemplate(body, c, addrKey) {
+  const addrs = caseAddrChoices(c); const a = addrs.find(x => x.key === addrKey) || addrs[0];
   const map = {
+    address: addrWithPin(a), address1: c.address || '', address2: c.address2 || '', address3: c.address3 || '',
+    new_address: c.new_address || '', pincode: (a && a.pin) || c.pincode || '',
     name: c.customer_name || '', customer: c.customer_name || '', bank: c.bank || '',
     account: c.account_no || '', pending: '₹' + Math.round(c.pending_amount || 0),
     amount: '₹' + Math.round(c.pending_amount || 0), ptp_date: c.follow_up_date || '',
@@ -5863,7 +5986,7 @@ function TemplateModal({ editing, onClose, onDone }) {
           <div className="field"><label>Channel</label><select className="input" value={f.channel} onChange={e => setF({ ...f, channel: e.target.value })}><option>whatsapp</option><option>sms</option><option>email</option></select></div>
         </div>
         <div className="field"><label>Message</label><textarea className="input" style={{ minHeight: 120 }} value={f.body} onChange={e => setF({ ...f, body: e.target.value })} placeholder="Hi {name}, your {bank} account has {pending} pending. Please pay." /></div>
-        <div className="muted" style={{ fontSize: 11.5 }}>Merge fields: {'{name} {bank} {pending} {account} {ptp_date} {bucket}'}</div>
+        <div className="muted" style={{ fontSize: 11.5 }}>Merge fields: {'{name} {bank} {pending} {account} {ptp_date} {bucket} {address} {pincode} {address1} {address2} {address3}'}</div>
         {err && <div style={{ color: 'var(--bad)', fontSize: 13, marginTop: 6 }}>{err}</div>}
         <button className="btn gold block" onClick={save} disabled={busy || !f.name || !f.body} style={{ marginTop: 10 }}>Save template</button>
       </div>

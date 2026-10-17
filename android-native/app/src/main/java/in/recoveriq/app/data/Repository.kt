@@ -239,6 +239,8 @@ class Repository(context: Context) {
         personMoved: Boolean, paid: Boolean, amount: Double,
         disposition: String?, note: String?, photoJpeg: ByteArray?, normStab: String? = null,
         ptpDate: String? = null, paymentPhotoJpeg: ByteArray? = null,
+        addressSlot: String? = null, gpsMock: Boolean = false, gpsFixAgeS: Double? = null,
+        gpsPincode: String? = null, gpsAddress: String? = null, gpsCity: String? = null,
     ): VisitOut {
         fun t(v: String) = v.toRequestBody("text/plain".toMediaType())
         val photoPart = photoJpeg?.let {
@@ -265,6 +267,12 @@ class Repository(context: Context) {
             note = note?.let { t(it) },
             photo = photoPart,
             paymentPhoto = paymentPart,
+            addressSlot = addressSlot?.let { t(it) },
+            gpsMock = t(gpsMock.toString()),
+            gpsFixAgeS = gpsFixAgeS?.let { t(it.toString()) },
+            gpsPincode = gpsPincode?.let { t(it) },
+            gpsAddress = gpsAddress?.let { t(it) },
+            gpsCity = gpsCity?.let { t(it) },
         )
     }
 

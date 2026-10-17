@@ -12,6 +12,7 @@ from .database import Base, engine, get_db
 from .config import get_settings
 from . import models  # noqa: F401  (register models)
 from . import allocation_notify  # noqa: F401  (alerts FOS/callers on new allocations)
+from . import close_sync  # noqa: F401  (close date follows the case's current cycle)
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
                       team, mis, feedback, reminders, audit_log, archive, catalog, manpower,
@@ -155,6 +156,18 @@ def _ensure_columns():
         "visits": {
             "distance_from_case_m": "FLOAT",
             "payment_photo_path": "VARCHAR(255)",
+            "address_slot": "VARCHAR(8)",
+            "gps_mock": "BOOLEAN",
+            "gps_fix_age_s": "FLOAT",
+            "gps_pincode": "VARCHAR(10)",
+            "gps_address": "TEXT",
+            "gps_city": "VARCHAR(80)",
+            "trust_level": "VARCHAR(12)",
+            "trust_reasons": "TEXT",
+            "reviewed_by": "VARCHAR(120)",
+            "reviewed_at": "TIMESTAMP",
+            "review_status": "VARCHAR(12)",
+            "review_note": "TEXT",
         },
         "call_logs": {
             "recording_url": "TEXT",      # dialer call-recording link

@@ -273,10 +273,13 @@ def edit_feedback(entry_id: int, field: str = Body(...), value: str | None = Bod
     e = db.query(models.FeedbackEntry).filter(models.FeedbackEntry.id == entry_id).first()
     if not e:
         raise HTTPException(status_code=404, detail="Row not found")
+    case = db.query(models.Case).filter(models.Case.id == e.case_id).first()
     if user.role == "manager":
-        case = db.query(models.Case).filter(models.Case.id == e.case_id).first()
         if case and case.branch != user.branch:
             raise HTTPException(status_code=403, detail="Not in your branch")
+    if case is not None:
+        from .cases import _ensure_open
+        _ensure_open(case, user)      # closed / escalated rows are read-only for callers
     setattr(e, field, (value or None))
     ed = dict(e.edited or {})
     ed[field] = True                                   # remember the human override

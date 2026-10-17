@@ -428,6 +428,11 @@ class VisitOut(BaseModel):
     disposition: Optional[str]
     note: Optional[str]
     distance_from_case_m: Optional[float] = None
+    gps_accuracy: Optional[float] = None
+    address_slot: Optional[str] = None
+    trust_level: Optional[str] = None
+    trust_reasons: Optional[str] = None
+    review_status: Optional[str] = None
     created_at: datetime
 
 

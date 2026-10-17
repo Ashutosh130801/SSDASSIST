@@ -162,10 +162,16 @@ object Actions {
     }
 
     /** Open a maps search for a free-text address (used for the customer's new address). */
+    /** Search the address TEXT in the Google Maps app (same as typing it in) — the FOS can then
+     *  pick the right result and start navigation from Google's own pin. */
     fun mapsSearch(context: Context, query: String?) {
         if (query.isNullOrBlank()) { toast(context, "No address"); return }
-        val uri = Uri.parse("geo:0,0?q=${Uri.encode(query)}")
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+        val q = query.replace(Regex("\\s+"), " ").trim()
+        val maps = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode("$q, India")}"))
+            .setPackage("com.google.android.apps.maps")
+        if (maps.resolveActivity(context.packageManager) != null) { context.startActivity(maps); return }
+        val web = Uri.parse("https://www.google.com/maps/search/?api=1&query=${Uri.encode("$q, India")}")
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, web)) }
             .onFailure { toast(context, "No maps app available") }
     }
 

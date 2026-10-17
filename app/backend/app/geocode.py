@@ -7,10 +7,12 @@ We (1) pull the 6-digit pincode out, (2) split on separators, (3) drop duplicate
 geocode in tiers: full cleaned address -> pincode-only centroid. Precision is recorded so the map
 can show exact vs approximate pins.
 
-Geocoder is intentionally isolated here so it can be swapped to Google later (memory note) by
-changing only this file. Reads LOCATIONIQ_KEY from settings.
+Provider: Google Geocoding when GOOGLE_GEOCODING_KEY is set (best for Indian addresses), else
+LocationIQ (LOCATIONIQ_KEY). Precision scale: rooftop (building) · street · locality (area) ·
+pincode (pincode centre) · city.
 """
 import json
+import os
 import re
 import time
 
@@ -34,7 +36,68 @@ _PRECISION = {
 
 
 def has_key() -> bool:
-    return bool(settings.locationiq_key)
+    return bool(settings.google_geocoding_key or settings.locationiq_key)
+
+
+def provider() -> str:
+    """'google' when GOOGLE_GEOCODING_KEY is set, else 'locationiq'."""
+    return "google" if settings.google_geocoding_key else "locationiq"
+
+
+def pace_seconds() -> float:
+    """Gap between lookups: Google allows ~50/s, LocationIQ free tier ~2/s."""
+    return 0.05 if provider() == "google" else 0.5
+
+
+# ---------------------------------------------------------------- Google Geocoding
+_G_ENDPOINT = "https://maps.googleapis.com/maps/api/geocode/json"
+_G_BUILDING = {"premise", "subpremise", "establishment", "point_of_interest"}
+_G_STREET = {"street_address", "route", "intersection", "plus_code"}
+_G_AREA = {"sublocality", "sublocality_level_1", "sublocality_level_2", "sublocality_level_3",
+           "neighborhood", "colloquial_area"}
+_G_PIN = {"postal_code"}
+
+
+def _google_precision(r) -> str:
+    """Map Google's location_type + result types to our precision scale."""
+    lt = (r.get("geometry") or {}).get("location_type", "")
+    types = set(r.get("types") or [])
+    if lt == "ROOFTOP":
+        prec = "rooftop"
+    elif lt == "RANGE_INTERPOLATED":
+        prec = "street"
+    elif types & _G_BUILDING:
+        prec = "rooftop"
+    elif types & _G_STREET:
+        prec = "street"
+    elif types & _G_AREA:
+        prec = "locality"
+    elif types & _G_PIN:
+        prec = "pincode"
+    else:
+        prec = "city"
+    if r.get("partial_match") and prec == "rooftop":
+        prec = "street"                       # Google only partly matched the text — don't over-trust
+    return prec
+
+
+def _google_query(client: httpx.Client, address: str | None, pin: str | None):
+    params = {"key": settings.google_geocoding_key, "region": "in", "language": "en"}
+    comps = ["country:IN"] + ([f"postal_code:{pin}"] if pin else [])
+    params["components"] = "|".join(comps)
+    if address:
+        params["address"] = address
+    try:
+        r = client.get(_G_ENDPOINT, params=params)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status") == "OK" and data.get("results"):
+                top = data["results"][0]
+                loc = top["geometry"]["location"]
+                return float(loc["lat"]), float(loc["lng"]), _google_precision(top), top.get("formatted_address", "")
+    except Exception:
+        pass
+    return None
 
 
 def extract_pincode(text, existing=None):
@@ -169,6 +232,110 @@ def _query(client: httpx.Client, q: str):
     return None
 
 
+# ---------------------------------------------------------------- Google: geocode + Places backup
+_RANK = {"none": 0, "city": 1, "pincode": 2, "locality": 3, "street": 4, "rooftop": 5}
+_WEAK = {"none", "city", "pincode", "locality"}           # not good enough to find the door
+_PLACES_ENDPOINT = "https://places.googleapis.com/v1/places:searchText"
+_PLACES_COUNT_FILE = os.path.join(os.path.dirname(__file__), "..", ".places_daily_count.json")
+
+
+def _places_budget_ok() -> bool:
+    """Daily cap on Places lookups (persists across restarts in a tiny JSON file)."""
+    cap = int(getattr(settings, "google_places_daily_cap", 0) or 0)
+    if cap <= 0:
+        return False
+    today = time.strftime("%Y-%m-%d")
+    try:
+        with open(_PLACES_COUNT_FILE) as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    if d.get("date") != today:
+        d = {"date": today, "count": 0}
+    if d["count"] >= cap:
+        return False
+    d["count"] += 1
+    try:
+        with open(_PLACES_COUNT_FILE, "w") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+    return True
+
+
+def places_used_today() -> dict:
+    try:
+        with open(_PLACES_COUNT_FILE) as f:
+            d = json.load(f)
+        if d.get("date") == time.strftime("%Y-%m-%d"):
+            return {"used": d.get("count", 0), "cap": settings.google_places_daily_cap}
+    except Exception:
+        pass
+    return {"used": 0, "cap": settings.google_places_daily_cap}
+
+
+def _places_query(client: httpx.Client, text: str, pin: str | None):
+    """Google Places text search (like typing into Google Maps). Accepted only when the result is
+    in the same pincode as the case (so 'Durga temple' can't jump to another town)."""
+    if not text or not _places_budget_ok():
+        return None
+    try:
+        r = client.post(_PLACES_ENDPOINT, json={
+            "textQuery": f"{text}{', ' + pin if pin else ''}, India",
+            "regionCode": "IN", "languageCode": "en", "pageSize": 1,
+        }, headers={"X-Goog-Api-Key": settings.google_geocoding_key,
+                    "X-Goog-FieldMask": "places.location,places.formattedAddress,places.types"})
+        if r.status_code != 200:
+            return None
+        places = (r.json() or {}).get("places") or []
+        if not places:
+            return None
+        top = places[0]
+        addr = top.get("formattedAddress") or ""
+        if pin and pin not in addr:
+            return None                                  # different area — don't trust it
+        loc = top.get("location") or {}
+        types = set(top.get("types") or [])
+        prec = "rooftop" if types & {"premise", "subpremise", "street_address"} else "street"
+        return float(loc["latitude"]), float(loc["longitude"]), prec
+    except Exception:
+        return None
+
+
+def _google_geocode(client, address, address2, pincode, pre_clean, result):
+    """1) lightly-tidied ORIGINAL address (landmarks kept) within its pincode → 2) if that only finds
+    the area/pincode: Places text search (capped/day) → 3) the AI-cleaned text (with, then without,
+    the pincode) → 4) pincode centre. Keeps the most precise hit."""
+    tidy = clean_address(address, address2, pincode)
+    light, pin = tidy["clean"], tidy["pincode"] or result.get("pincode")
+    best = None                                          # (lat, lng, precision, source)
+
+    def consider(res, source):
+        nonlocal best
+        if res and (best is None or _RANK.get(res[2], 0) > _RANK.get(best[2], 0)):
+            best = (res[0], res[1], res[2], source)
+
+    if light:
+        consider(_google_query(client, light, pin), "geocode")
+    if (best is None or best[2] in _WEAK) and light:
+        consider(_places_query(client, light, pin), "places")
+    if best is None or best[2] in _WEAK:
+        alt = result.get("clean")
+        if alt and alt != light:
+            consider(_google_query(client, alt, pin), "geocode-clean")
+        if (best is None or best[2] in _WEAK) and (alt or light) and pin:
+            res = _google_query(client, alt or light, None)
+            if res and pin in (res[3] or ""):              # searched India-wide: must still be the same pincode
+                consider(res, "geocode-nopin")
+    if best is None and pin:
+        res = _google_query(client, None, pin)
+        if res:
+            best = (res[0], res[1], "pincode", "pincode")
+    if best:
+        result.update({"lat": best[0], "lng": best[1], "precision": best[2], "source": best[3]})
+    return result
+
+
 def geocode_one(client: httpx.Client, address, address2=None, pincode=None,
                 pace_seconds: float = 1.0, pre_clean: str | None = None) -> dict:
     """Geocode a single case. Returns dict with lat/lng/precision + the cleaned address & pincode.
@@ -183,6 +350,9 @@ def geocode_one(client: httpx.Client, address, address2=None, pincode=None,
         info = clean_address(address, address2, pincode)
         clean, pin = info["clean"], info["pincode"]
     result = {"lat": None, "lng": None, "precision": "none", "clean": clean, "pincode": pin}
+
+    if provider() == "google":
+        return _google_geocode(client, address, address2, pincode, pre_clean, result)
 
     tiers = []
     if clean and pin:

@@ -26,6 +26,15 @@ android {
         // Fill this in before shipping:  -PCERT_PIN=sha256/AAAA....=
         val certPin = (project.findProperty("CERT_PIN") as String?) ?: ""
         buildConfigField("String", "CERT_PIN", "\"$certPin\"")
+
+        // Google Maps SDK key (visit-photo map thumbnail). From -PMAPS_API_KEY=… or local.properties
+        // MAPS_API_KEY=…  Blank = the app falls back to an OpenStreetMap thumbnail.
+        val mapsKey = (project.findProperty("MAPS_API_KEY") as String?)
+            ?: rootProject.file("local.properties").takeIf { it.exists() }?.readLines()
+                ?.firstOrNull { it.trim().startsWith("MAPS_API_KEY=") }?.substringAfter("=")?.trim()
+            ?: ""
+        manifestPlaceholders["MAPS_API_KEY"] = mapsKey
+        buildConfigField("boolean", "HAS_MAPS_KEY", if (mapsKey.isNotBlank()) "true" else "false")
     }
 
     signingConfigs {
@@ -98,6 +107,7 @@ dependencies {
 
     // Location
     implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("com.google.android.gms:play-services-maps:19.0.0")
 
     // Map (OpenStreetMap — matches the web app, no API key needed)
     implementation("org.osmdroid:osmdroid-android:6.1.18")

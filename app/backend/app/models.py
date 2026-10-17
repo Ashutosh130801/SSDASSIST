@@ -298,6 +298,20 @@ class Visit(Base):
     amount_collected = Column(Numeric(14, 2), default=0)
     disposition = Column(String(60))         # PAID/PTP/NOT AVAILABLE/MOVED/DISPUTE...
     note = Column(Text)
+    # Which of the customer's addresses the FOS says he visited: '1' / '2' / '3' / 'new'.
+    address_slot = Column(String(8))
+    # Anti-fake-visit evidence from the phone + the computed trust score (see visit_trust.py).
+    gps_mock = Column(Boolean)                # Android reported a mock (fake-GPS app) location
+    gps_fix_age_s = Column(Float)             # how old the GPS fix was when the photo was taken
+    gps_pincode = Column(String(10))          # pincode where the photo was taken (phone reverse-geocode)
+    gps_address = Column(Text)                # address the phone detected at the photo spot
+    gps_city = Column(String(80))             # city of that detected address (excluded from street matching)
+    trust_level = Column(String(12))          # ok / check / suspicious
+    trust_reasons = Column(Text)              # JSON list [{sev, text}]
+    reviewed_by = Column(String(120))         # TL/HO who reviewed a flagged visit
+    reviewed_at = Column(DateTime(timezone=True))
+    review_status = Column(String(12))        # genuine / fake
+    review_note = Column(Text)
 
     created_at = Column(DateTime(timezone=True), default=utcnow)
 

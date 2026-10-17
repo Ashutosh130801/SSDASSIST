@@ -231,6 +231,8 @@ data class Case(
     @Json(name = "visited_today") val visitedToday: Boolean? = false,
     @Json(name = "contacted_today") val contactedToday: Boolean? = false,
     val escalated: Boolean? = false,
+    val closed: Boolean? = false,                                   // closed for the cycle / month — locked
+    @Json(name = "close_date") val closeDate: String? = null,
     @Json(name = "esc_prev_fos_id") val escPrevFosId: Int? = null,
     @Json(name = "esc_prev_caller_id") val escPrevCallerId: Int? = null,
     @Json(name = "joint_fos_id") val jointFosId: Int? = null,

@@ -102,6 +102,12 @@ private class RouteMapHolder {
 @Composable
 private fun LiveRouteMap(points: List<RoutePoint>, cases: List<Case>, scope: CoroutineScope, modifier: Modifier) {
     val lineColor = BrandBlue.toArgb()
+    // Google Maps when the build has a MAPS_API_KEY (free on Android); OpenStreetMap otherwise.
+    if (`in`.recoveriq.app.ui.common.useGoogleMaps) {
+        `in`.recoveriq.app.ui.common.GoogleRouteMap(
+            points.map { com.google.android.gms.maps.model.LatLng(it.lat, it.lng) }, cases, scope, lineColor, modifier)
+        return
+    }
     val holder = remember { RouteMapHolder() }
     val context = LocalContext.current
     AndroidView(

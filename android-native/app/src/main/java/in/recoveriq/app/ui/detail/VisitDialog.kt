@@ -11,6 +11,25 @@ import android.graphics.Typeface
 import android.location.Geocoder
 import android.media.ExifInterface
 import android.net.Uri
+import android.os.Build
+import android.os.Looper
+import android.os.SystemClock
+import android.location.Location
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.viewinterop.AndroidView
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.GoogleMapOptions
+import com.google.android.gms.maps.MapView
+import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.MarkerOptions
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -49,6 +68,7 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import `in`.recoveriq.app.ui.common.DatePickerField
 import `in`.recoveriq.app.ui.theme.Muted
+import `in`.recoveriq.app.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -70,7 +90,28 @@ data class VisitDraft(
     val normStab: String? = null,
     val ptpDate: String? = null,
     val paymentPhotoJpeg: ByteArray? = null,   // payment screenshot the customer shared (optional)
+    val addressSlot: String? = null,           // '1' / '2' / '3' / 'new' — which address was visited
+    val addressText: String? = null,           // that address (for the WhatsApp visit slip)
+    val gpsMock: Boolean = false,              // phone reported a fake-GPS (mock) location
+    val gpsFixAgeS: Double? = null,            // age of the GPS fix when the photo was taken
+    val gpsPincode: String? = null,            // pincode where the photo was taken
+    val gpsAddress: String? = null,            // address the phone detected at the photo spot
+    val gpsCity: String? = null,               // city of that detected address
 )
+
+/** One of the customer's addresses the FOS can say he visited. */
+data class VisitAddress(val key: String, val label: String, val text: String)
+
+/** A frozen GPS reading (taken the moment the photo is shot). */
+private data class Fix(val lat: Double, val lng: Double, val acc: Double?, val mock: Boolean, val ageS: Double)
+
+private const val GOOD_ACC_M = 30.0        // wait for at least this accuracy before the photo
+
+private fun Location.mockFlag(): Boolean =
+    if (Build.VERSION.SDK_INT >= 31) isMock else @Suppress("DEPRECATION") isFromMockProvider
+
+private fun Location.ageSeconds(): Double =
+    (SystemClock.elapsedRealtimeNanos() - elapsedRealtimeNanos) / 1e9
 
 // ---------------------------------------------------------------------------
 // GPS-stamp helpers — replicate a "GPS Map Camera": the captured photo is
@@ -167,10 +208,31 @@ private fun wrap(paint: Paint, text: String, maxWidth: Float, maxLines: Int): Li
     return lines
 }
 
+/** Reverse-geocode one point → (readable address without ", India", pincode). Network/IO call. */
+private fun detectAddress(ctx: android.content.Context, lat: Double, lng: Double): Triple<String?, String?, String?> = runCatching {
+    @Suppress("DEPRECATION")
+    val a = Geocoder(ctx, Locale.ENGLISH).getFromLocation(lat, lng, 1)?.firstOrNull() ?: return@runCatching Triple<String?, String?, String?>(null, null, null)
+    val pin = a.postalCode?.takeIf { it.isNotBlank() }
+    val full = a.getAddressLine(0) ?: listOfNotNull(a.featureName, a.subLocality, a.locality, a.adminArea).joinToString(", ")
+    // Drop ", India" and the pincode from the text — the pincode is printed on its own line.
+    var line = full.replace(Regex(",?\\s*India\\s*$"), "")
+    if (pin != null) line = line.replace(Regex("\\s*$pin"), "")
+    Triple(line.trim().trimEnd(',').trim().ifBlank { null }, pin, a.locality?.takeIf { it.isNotBlank() })
+}.getOrDefault(Triple(null, null, null))
+
+private fun accuracyLabel(acc: Double?): String = when {
+    acc == null -> "unknown"
+    acc <= 10 -> "±${acc.toInt()} m (Excellent)"
+    acc <= 30 -> "±${acc.toInt()} m (Good)"
+    acc <= 100 -> "±${acc.toInt()} m (Fair)"
+    else -> "±${acc.toInt()} m (Weak)"
+}
+
 /** Draw the translucent geo-stamp banner across the bottom of the photo. */
 private fun stampPhoto(
     src: Bitmap, lat: Double?, lng: Double?, acc: Double?, address: String?,
-    agentName: String?, caseLabel: String?, mapThumb: Bitmap?,
+    agentName: String?, caseLabel: String?, mapThumb: Bitmap?, visitedLabel: String? = null,
+    pincode: String? = null,
 ): Bitmap {
     val bmp = if (src.isMutable) src else src.copy(Bitmap.Config.ARGB_8888, true)
     val c = Canvas(bmp)
@@ -178,8 +240,8 @@ private fun stampPhoto(
     val h = bmp.height.toFloat()
     val scale = (w / 1080f).coerceAtLeast(0.5f)
     val pad = 20f * scale
-    val big = 40f * scale
-    val small = 32f * scale
+    val big = 42f * scale
+    val small = 34f * scale
     val edge = 10f * scale
 
     val timeFmt = SimpleDateFormat("dd MMM yyyy, hh:mm:ss a", Locale.ENGLISH)
@@ -196,23 +258,29 @@ private fun stampPhoto(
         setShadowLayer(4f * scale, 0f, 0f, Color.BLACK)
     }
     val title = "RecoverIQ • Field visit"
+    val labelPaint = Paint(paintBody).apply {
+        color = Color.parseColor("#FDE68A")                       // soft yellow labels
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
 
     // Reserve a square on the right for the map thumbnail (if we fetched one).
     val mapSize = if (mapThumb != null) 300f * scale else 0f
     val mapGap = if (mapThumb != null) pad else 0f
     val textW = w - pad * 2 - edge - mapSize - mapGap
 
-    // Build the lines from whatever data is available.
+    // Build the lines. A leading "§" marks a highlighted (label-coloured, bold) line.
     val body = ArrayList<String>()
     agentName?.takeIf { it.isNotBlank() }?.let { body.addAll(wrap(paintBody, "Agent: $it", textW, 1)) }
     caseLabel?.takeIf { it.isNotBlank() }?.let { body.addAll(wrap(paintBody, it, textW, 1)) }
-    address?.trim()?.takeIf { it.isNotEmpty() }?.let { body.addAll(wrap(paintBody, it, textW, 2)) }
-    if (lat != null && lng != null) {
-        body.add("Lat ${"%.6f".format(lat)}   Lng ${"%.6f".format(lng)}")
-        body.add("GPS location" + (acc?.let { "  ±${it.toInt()} m" } ?: ""))
-    } else {
-        body.add("Location unavailable")
-    }
+    visitedLabel?.takeIf { it.isNotBlank() }?.let { body.addAll(wrap(paintBody, "Visiting: $it", textW, 1)) }
+    // ---- What the phone detected at the photo spot (the important part) ----
+    body.add("§📍 Detected address")
+    val addr = address?.trim()?.takeIf { it.isNotEmpty() }
+    if (addr != null) body.addAll(wrap(paintBody, addr, textW, 3))
+    else body.add("Address not available (no internet at photo time)")
+    body.add("§PIN: ${pincode?.takeIf { it.isNotBlank() } ?: "—"}     GPS accuracy: ${accuracyLabel(acc)}")
+    if (lat != null && lng != null) body.add("Lat ${"%.6f".format(lat)}   Lng ${"%.6f".format(lng)}")
+    else body.add("Location unavailable")
     body.add(stamp)
 
     val lineGap = 1.28f
@@ -222,7 +290,7 @@ private fun stampPhoto(
     val top = h - panelH
 
     // Dark scrim + blue accent edge.
-    c.drawRect(0f, top, w, h, Paint().apply { color = Color.argb(160, 0, 0, 0) })
+    c.drawRect(0f, top, w, h, Paint().apply { color = Color.argb(185, 0, 0, 0) })
     c.drawRect(0f, top, edge, h, Paint().apply { color = Color.parseColor("#3B82F6") })
 
     // Map thumbnail on the right, vertically centred, with a white frame.
@@ -241,7 +309,8 @@ private fun stampPhoto(
     y += big * (lineGap - 1f)
     for (ln in body) {
         y += small * lineGap
-        c.drawText(ln, pad + edge, y, paintBody)
+        if (ln.startsWith("§")) c.drawText(ln.substring(1), pad + edge, y, labelPaint)
+        else c.drawText(ln, pad + edge, y, paintBody)
     }
     return bmp
 }
@@ -253,6 +322,7 @@ fun LogVisitDialog(
     isCreditCard: Boolean,
     agentName: String? = null,
     caseLabel: String? = null,
+    addresses: List<VisitAddress> = emptyList(),
     onDismiss: () -> Unit,
     onSubmit: suspend (VisitDraft) -> String?,   // null = saved; non-null = error message to show
 ) {
@@ -275,7 +345,17 @@ fun LogVisitDialog(
     var lng by remember { mutableStateOf<Double?>(null) }
     var acc by remember { mutableStateOf<Double?>(null) }
     var address by remember { mutableStateOf<String?>(null) }
-    var mapThumb by remember { mutableStateOf<Bitmap?>(null) }
+    var mapThumb by remember { mutableStateOf<Bitmap?>(null) }       // OSM fallback thumbnail
+    var mock by remember { mutableStateOf(false) }
+    var lastFix by remember { mutableStateOf<Location?>(null) }
+    var gpsPincode by remember { mutableStateOf<String?>(null) }
+    var gpsCity by remember { mutableStateOf<String?>(null) }
+    var shot by remember { mutableStateOf<Fix?>(null) }               // GPS frozen at photo time
+    var override by remember { mutableStateOf(false) }                // take photo despite weak GPS
+    var gMap by remember { mutableStateOf<GoogleMap?>(null) }
+    var slot by remember { mutableStateOf(addresses.firstOrNull()?.key ?: "1") }
+    val chosen = addresses.firstOrNull { it.key == slot }
+    var geocodedAt by remember { mutableStateOf<Location?>(null) }
 
     // A private cache file the camera writes the full-res photo into, shared via FileProvider.
     val photoFile = remember { File(context.cacheDir, "visit_${System.currentTimeMillis()}.jpg") }
@@ -283,37 +363,56 @@ fun LogVisitDialog(
         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
     }
 
-    // Grab a fresh, high-accuracy fix when the dialog opens, then reverse-geocode to an address.
-    androidx.compose.runtime.LaunchedEffect(Unit) {
+    // Live high-accuracy GPS while the form is open (NOT the phone's stale "last known" location).
+    // Each update keeps the newest fix; the address/pincode is looked up again when he moves > 50 m.
+    DisposableEffect(Unit) {
         val fused = LocationServices.getFusedLocationProviderClient(context)
-        runCatching {
-            fused.lastLocation.addOnSuccessListener { loc ->
-                if (loc != null && lat == null) { lat = loc.latitude; lng = loc.longitude; acc = loc.accuracy.toDouble() }
+        val cb = object : LocationCallback() {
+            override fun onLocationResult(r: LocationResult) {
+                val loc = r.lastLocation ?: return
+                lastFix = loc
+                lat = loc.latitude; lng = loc.longitude; acc = loc.accuracy.toDouble()
+                mock = mock || loc.mockFlag()
+                val g = geocodedAt
+                if (g == null || g.distanceTo(loc) > 50f) {
+                    geocodedAt = loc
+                    scope.launch(Dispatchers.IO) {
+                        val a = runCatching {
+                            @Suppress("DEPRECATION")
+                            Geocoder(context, Locale.ENGLISH).getFromLocation(loc.latitude, loc.longitude, 1)?.firstOrNull()
+                        }.getOrNull()
+                        val line = a?.let { it.getAddressLine(0) ?: listOfNotNull(it.subLocality, it.locality, it.adminArea).joinToString(", ") }
+                        withContext(Dispatchers.Main) {
+                            if (!line.isNullOrBlank()) address = line
+                            a?.postalCode?.takeIf { it.isNotBlank() }?.let { gpsPincode = it }
+                            a?.locality?.takeIf { it.isNotBlank() }?.let { gpsCity = it }
+                        }
+                    }
+                    if (!BuildConfig.HAS_MAPS_KEY) scope.launch(Dispatchers.IO) {
+                        val m = fetchMapThumb(loc.latitude, loc.longitude)
+                        if (m != null) withContext(Dispatchers.Main) { mapThumb = m }
+                    }
+                }
             }
         }
         runCatching {
-            fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                .addOnSuccessListener { loc ->
-                    if (loc != null) {
-                        lat = loc.latitude; lng = loc.longitude; acc = loc.accuracy.toDouble()
-                        scope.launch(Dispatchers.IO) {
-                            val a = runCatching {
-                                @Suppress("DEPRECATION")
-                                Geocoder(context, Locale.ENGLISH)
-                                    .getFromLocation(loc.latitude, loc.longitude, 1)
-                                    ?.firstOrNull()
-                                    ?.let { it.getAddressLine(0) ?: listOfNotNull(it.subLocality, it.locality, it.adminArea).joinToString(", ") }
-                            }.getOrNull()
-                            if (!a.isNullOrBlank()) withContext(Dispatchers.Main) { address = a }
-                        }
-                        scope.launch(Dispatchers.IO) {
-                            val m = fetchMapThumb(loc.latitude, loc.longitude)
-                            if (m != null) withContext(Dispatchers.Main) { mapThumb = m }
-                        }
-                    }
-                }
+            fused.requestLocationUpdates(
+                LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L).setMinUpdateIntervalMillis(1000L).build(),
+                cb, Looper.getMainLooper(),
+            )
+        }
+        onDispose { runCatching { fused.removeLocationUpdates(cb) } }
+    }
+    // Keep the Google map preview centred on the current fix.
+    LaunchedEffect(lat, lng, gMap) {
+        val gm = gMap; val la = lat; val ln = lng
+        if (gm != null && la != null && ln != null) {
+            val p = LatLng(la, ln)
+            gm.clear(); gm.addMarker(MarkerOptions().position(p))
+            gm.moveCamera(CameraUpdateFactory.newLatLngZoom(p, 17f))
         }
     }
+    val goodFix = lat != null && (acc ?: 999.0) <= GOOD_ACC_M
 
     // Pick the customer's payment screenshot from the gallery (downsampled to keep upload small).
     val paymentPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -350,16 +449,39 @@ fun LogVisitDialog(
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         if (ok) {
             stamping = true
-            scope.launch(Dispatchers.Default) {
-                val stamped = runCatching {
-                    val raw = decodeSampled(photoFile, 1600) ?: return@runCatching null
-                    val rotated = applyExifRotation(photoFile, raw)
-                    stampPhoto(rotated.copy(Bitmap.Config.ARGB_8888, true),
-                        lat, lng, acc, address, agentName, caseLabel, mapThumb)
-                }.getOrNull()
-                withContext(Dispatchers.Main) { if (stamped != null) photo = stamped; stamping = false }
+            scope.launch(Dispatchers.Main) {
+                // Google map snapshot of the spot (falls back to the OSM thumbnail when no key/map).
+                val gThumb: Bitmap? = gMap?.let { gm ->
+                    withTimeoutOrNull(3000) {
+                        suspendCancellableCoroutine<Bitmap?> { cont -> gm.snapshot { bmp -> if (cont.isActive) cont.resume(bmp) } }
+                    }
+                }
+                val f = shot
+                // Address + pincode of the EXACT spot the photo was taken (matches the stamped Lat/Lng).
+                val (spotAddr, spotPin, spotCity) = if (f != null) withContext(Dispatchers.IO) { detectAddress(context, f.lat, f.lng) }
+                                                    else Triple(address, gpsPincode, gpsCity)
+                if (spotPin != null) gpsPincode = spotPin
+                if (spotAddr != null) address = spotAddr
+                if (spotCity != null) gpsCity = spotCity
+                val stamped = withContext(Dispatchers.Default) {
+                    runCatching {
+                        val raw = decodeSampled(photoFile, 1600) ?: return@runCatching null
+                        val rotated = applyExifRotation(photoFile, raw)
+                        stampPhoto(rotated.copy(Bitmap.Config.ARGB_8888, true),
+                            f?.lat ?: lat, f?.lng ?: lng, f?.acc ?: acc, spotAddr ?: address, agentName, caseLabel,
+                            gThumb ?: mapThumb,
+                            chosen?.label, spotPin ?: gpsPincode)
+                    }.getOrNull()
+                }
+                if (stamped != null) photo = stamped
+                stamping = false
             }
         }
+    }
+    val takePhoto = {
+        val l = lastFix
+        shot = if (l != null) Fix(l.latitude, l.longitude, l.accuracy.toDouble(), l.mockFlag() || mock, l.ageSeconds()) else null
+        camera.launch(photoUri)
     }
 
     AlertDialog(
@@ -374,14 +496,38 @@ fun LogVisitDialog(
                     Text(it, color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.labelMedium)
                 }
+                if (addresses.isNotEmpty()) {
+                    Text("Which address are you visiting?", style = MaterialTheme.typography.labelSmall, color = Muted)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        addresses.forEach { a ->
+                            FilterChip(selected = slot == a.key, onClick = { slot = a.key }, label = { Text(a.label) })
+                        }
+                    }
+                    chosen?.let { Text("📍 ${it.text}", style = MaterialTheme.typography.bodySmall) }
+                }
+                if (mock) Text("⚠ Fake-GPS / mock location app detected — this visit will be flagged to your team lead.",
+                    color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
                 Text(
                     when {
-                        lat == null -> "Getting current location…"
-                        address != null -> "Location ✓  $address"
-                        else -> "Location captured ✓"
+                        lat == null -> "Getting GPS location…"
+                        !goodFix -> "Getting accurate GPS… now ±${acc?.toInt() ?: "?"} m (need ±${GOOD_ACC_M.toInt()} m). Step outside / near a window."
+                        address != null -> "GPS ±${acc?.toInt()} m ✓  $address"
+                        else -> "GPS ±${acc?.toInt()} m ✓"
                     },
-                    style = MaterialTheme.typography.labelSmall, color = Muted,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (lat != null && !goodFix) MaterialTheme.colorScheme.error else Muted,
                 )
+                if (BuildConfig.HAS_MAPS_KEY && lat != null) {
+                    AndroidView(
+                        factory = { ctx ->
+                            MapView(ctx, GoogleMapOptions().liteMode(true).mapToolbarEnabled(false)).apply {
+                                onCreate(null); onResume()
+                                getMapAsync { gm -> gm.uiSettings.isMapToolbarEnabled = false; gMap = gm }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(130.dp),
+                    )
+                }
                 Text("Outcome", style = MaterialTheme.typography.labelSmall, color = Muted)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     dispositions.forEach { d ->
@@ -423,14 +569,19 @@ fun LogVisitDialog(
                     Image(it.asImageBitmap(), "Visit photo (geo-tagged)",
                         modifier = Modifier.fillMaxWidth().height(180.dp).padding(top = 4.dp))
                 }
-                OutlinedButton(onClick = { camera.launch(photoUri) }, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { takePhoto() }, enabled = (goodFix || override) && !stamping,
+                    modifier = Modifier.fillMaxWidth()) {
                     Text(
                         when {
                             stamping -> "Stamping location…"
+                            !goodFix && !override -> "📷 Waiting for accurate GPS…"
                             photo == null -> "📷 Take geo-tagged photo"
                             else -> "Retake photo"
                         }
                     )
+                }
+                if (!goodFix && !override && photo == null) TextButton(onClick = { override = true }) {
+                    Text("Take photo anyway (weak GPS — may be flagged)")
                 }
 
                 // Payment screenshot from the customer (optional) — saved with the visit and shared to WhatsApp.
@@ -466,7 +617,17 @@ fun LogVisitDialog(
                     normStab = if (paid && isCreditCard) normStab else null,
                     ptpDate = if (!paid && disp == "PTP" && ptpDate.isNotBlank()) ptpDate else null,
                     paymentPhotoJpeg = payJpeg,
-                )
+                    addressSlot = if (addresses.isNotEmpty()) slot else null,
+                    addressText = chosen?.text,
+                    gpsMock = (shot?.mock ?: false) || mock,
+                    gpsFixAgeS = shot?.ageS ?: lastFix?.ageSeconds(),
+                    gpsPincode = gpsPincode,
+                    gpsAddress = address,
+                    gpsCity = gpsCity,
+                ).let { d ->
+                    // The visit's GPS = the reading frozen when the photo was taken (matches the stamp).
+                    shot?.let { f -> if (photo != null) d.copy(lat = f.lat, lng = f.lng, accuracy = f.acc) else d } ?: d
+                }
                 scope.launch {
                     submitting = true; submitError = null
                     val err = onSubmit(draft)          // suspend upload; null only on a confirmed save

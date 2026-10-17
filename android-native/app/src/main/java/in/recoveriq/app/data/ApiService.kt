@@ -219,6 +219,12 @@ interface ApiService {
         @Part("note") note: RequestBody?,
         @Part photo: MultipartBody.Part?,
         @Part paymentPhoto: MultipartBody.Part?,
+        @Part("address_slot") addressSlot: RequestBody? = null,
+        @Part("gps_mock") gpsMock: RequestBody? = null,
+        @Part("gps_fix_age_s") gpsFixAgeS: RequestBody? = null,
+        @Part("gps_pincode") gpsPincode: RequestBody? = null,
+        @Part("gps_address") gpsAddress: RequestBody? = null,
+        @Part("gps_city") gpsCity: RequestBody? = null,
     ): VisitOut
 
     // --- Templates / messaging ---

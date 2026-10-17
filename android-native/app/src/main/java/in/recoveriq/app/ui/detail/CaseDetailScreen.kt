@@ -135,8 +135,17 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     }
                 }
                 // Escalated cases are locked for the front-line FOS/caller (handled by their lead).
-                val lockedForMe = case.escalated == true && (user.isFieldAgent || user.isTelecaller)
-                if (lockedForMe) {
+                val frontLine = user.isFieldAgent || user.isTelecaller
+                val closedForMe = case.closed == true && frontLine
+                val lockedForMe = (case.escalated == true && frontLine) || closedForMe
+                if (closedForMe) {
+                    Surface(shape = RoundedCornerShape(12.dp), color = Muted.copy(alpha = 0.15f)) {
+                        Text("🔒 Case closed" + (case.closeDate?.let { " on $it" } ?: "") +
+                            " — locked. No visits, calls, payments or changes. You can still view it.",
+                            modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold)
+                    }
+                } else if (lockedForMe) {
                     Surface(shape = RoundedCornerShape(12.dp), color = Bad.copy(alpha = 0.12f), contentColor = Bad) {
                         Text("🚩 Escalated — locked. Your team lead / manager is handling this case.",
                             modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall,
@@ -152,7 +161,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     onPay = { showPay = true },
                     onLogCall = { showLogCall = true },
                     onLogVisit = { showVisit = true },
-                    onRequestCallback = if (user.isFieldAgent) {
+                    onRequestCallback = if (user.isFieldAgent && !lockedForMe) {
                         { scope.launch { runCatching { vm.repo.chatCallback(case.id, null) } } }
                     } else null,
                 )
@@ -227,6 +236,7 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                     isCreditCard = isCC,
                     agentName = user.name,
                     caseLabel = "Case #${case.id}" + (case.customerName?.let { " • $it" } ?: ""),
+                    addresses = visitAddresses(case),
                     onDismiss = { showVisit = false },
                     onSubmit = { v ->
                         // Returns null only on a confirmed save; on failure returns the REAL reason
@@ -239,6 +249,9 @@ fun CaseDetailScreen(vm: AuthViewModel, user: User, caseId: Int, onBack: () -> U
                                 disposition = v.disposition, note = v.note, photoJpeg = v.photoJpeg,
                                 normStab = v.normStab, ptpDate = v.ptpDate,
                                 paymentPhotoJpeg = v.paymentPhotoJpeg,
+                                addressSlot = v.addressSlot, gpsMock = v.gpsMock,
+                                gpsFixAgeS = v.gpsFixAgeS, gpsPincode = v.gpsPincode,
+                                gpsAddress = v.gpsAddress, gpsCity = v.gpsCity,
                             )
                         }
                         if (res.isSuccess) {
@@ -333,7 +346,11 @@ private fun ActionBar(
         ActionBtn("Call", Icons.Filled.Call, Modifier.weight(1f)) { showCallChoice = true }
         ActionBtn("WhatsApp", Icons.Filled.Chat, Modifier.weight(1f)) { Actions.whatsapp(context, case.phone) }
         ActionBtn("Navigate", Icons.Filled.Navigation, Modifier.weight(1f)) {
-            Actions.navigate(context, case.latitude, case.longitude, case.customerName)
+            // A pincode/city-level pin can be kilometres off — search the address text instead.
+            val roughPin = case.locationSource != "field" && case.geoPrecision in setOf("pincode", "city")
+            if (case.latitude == null || roughPin)
+                Actions.mapsSearch(context, listOfNotNull(case.address, case.pincode).joinToString(", "))
+            else Actions.navigate(context, case.latitude, case.longitude, case.customerName)
         }
     }
     // Contact the case's assigned field agent / caller (team lead & callers use this).
@@ -395,7 +412,7 @@ private fun DetailFields(case: Case) {
             if (!case.newAddress.isNullOrBlank()) {
                 Spacer(Modifier.height(8.dp))
                 Text("📍 ${case.newAddress}")
-                OutlinedButton(onClick = { Actions.mapsSearch(ctx, case.newAddress) }, modifier = Modifier.padding(top = 4.dp)) { Text("Navigate") }
+                OutlinedButton(onClick = { Actions.mapsSearch(ctx, case.newAddress) }, modifier = Modifier.padding(top = 4.dp)) { Text("🔍 Search in Maps") }
             }
         }
     }
@@ -455,6 +472,14 @@ private fun DetailFields(case: Case) {
 
 private fun money(v: Double): String? = if (v > 0.0) "₹${"%,.0f".format(v)}" else null
 
+/** The customer's addresses the FOS can choose from in the visit form (only non-blank ones). */
+internal fun visitAddresses(case: Case): List<VisitAddress> = buildList {
+    case.address?.takeIf { it.isNotBlank() }?.let { add(VisitAddress("1", "Address 1", it)) }
+    case.address2?.takeIf { it.isNotBlank() }?.let { add(VisitAddress("2", "Address 2", it)) }
+    case.address3?.takeIf { it.isNotBlank() }?.let { add(VisitAddress("3", "Address 3", it)) }
+    case.newAddress?.takeIf { it.isNotBlank() }?.let { add(VisitAddress("new", "New address", it)) }
+}
+
 /** WhatsApp caption for a just-logged visit — shared (with the geotagged photo) to anyone the agent picks. */
 private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = buildString {
     appendLine("🧾 SSD Enterprises — Field visit logged")
@@ -476,12 +501,21 @@ private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = b
         case.enr > 0 -> appendLine("ENR: ₹${"%,.0f".format(case.enr)}")
         case.totalOutstanding > 0 -> appendLine("TOS: ₹${"%,.0f".format(case.totalOutstanding)}")
     }
-    val addrFull = listOfNotNull(
-        case.address?.takeIf { it.isNotBlank() },
-        case.address2?.takeIf { it.isNotBlank() },
-        case.address3?.takeIf { it.isNotBlank() }
-    ).joinToString(", ")
-    if (addrFull.isNotBlank()) appendLine("Address: $addrFull" + (case.pincode?.let { p -> ", $p" } ?: ""))
+    // Only the address he actually visited (chosen in the visit form), with its own pincode.
+    val picked = visitAddresses(case).firstOrNull { it.key == v.addressSlot } ?: visitAddresses(case).firstOrNull()
+    picked?.let { a ->
+        val pin = when (a.key) { "1" -> case.pincode; "2" -> case.pincode2; "3" -> case.pincode3; else -> null }
+        val withPin = if (!pin.isNullOrBlank() && !a.text.contains(pin)) "${a.text}, $pin" else a.text
+        appendLine("Visited (${a.label}): $withPin")
+    }
+    // What the phone detected at the photo spot — the office can compare it with the line above.
+    if (v.gpsAddress != null || v.gpsPincode != null) {
+        val acc = v.accuracy?.let { m ->
+            val q = when { m <= 10 -> "Excellent"; m <= 30 -> "Good"; m <= 100 -> "Fair"; else -> "Weak" }
+            " · GPS ±${m.toInt()} m ($q)"
+        } ?: ""
+        appendLine("Detected at photo: ${v.gpsAddress ?: "—"} · PIN ${v.gpsPincode ?: "—"}$acc")
+    }
     appendLine("Outcome: ${v.disposition ?: "—"}")
     if (v.paid && v.amount > 0) appendLine("Collected: ₹${"%,.0f".format(v.amount)}")
     if (v.personMoved) appendLine("⚠ Person has moved")
@@ -497,30 +531,45 @@ private fun buildVisitMessage(case: Case, user: User, v: VisitDraft): String = b
    Navigate button. Uses the geotagged coordinate when available, else a maps search of the text. */
 @Composable
 private fun AddressBlock(case: Case, ctx: android.content.Context) {
-    data class Addr(val addr: String?, val pin: String?, val lat: Double?, val lng: Double?)
+    data class Addr(val label: String, val addr: String?, val pin: String?, val lat: Double?, val lng: Double?, val prec: String?)
     val rows = listOf(
-        Addr(case.address, case.pincode, case.latitude, case.longitude),
-        Addr(case.address2, case.pincode2, case.latitude2, case.longitude2),
-        Addr(case.address3, case.pincode3, case.latitude3, case.longitude3),
+        Addr("Address 1", case.address, case.pincode, case.latitude, case.longitude,
+            if (case.locationSource == "field") "field" else case.geoPrecision),
+        Addr("Address 2", case.address2, case.pincode2, case.latitude2, case.longitude2, case.geoPrecision2),
+        Addr("Address 3", case.address3, case.pincode3, case.latitude3, case.longitude3, case.geoPrecision3),
     ).filter { !it.addr.isNullOrBlank() || !it.pin.isNullOrBlank() }
     if (rows.isEmpty()) { Field("Address", null); return }
     val multi = rows.size > 1
-    rows.forEachIndexed { i, r ->
-        val label = if (multi) "Address ${i + 1}" else "Address"
+    rows.forEach { r ->
+        val label = if (multi) r.label else "Address"
         val text = listOfNotNull(r.addr?.takeIf { it.isNotBlank() },
             r.pin?.takeIf { it.isNotBlank() }?.let { "($it)" }).joinToString(" ")
-        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Column(Modifier.weight(0.7f)) {
-                Text(label, color = MutedDim, style = MaterialTheme.typography.bodySmall)
-                Text(text.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+        // How trustworthy the saved map pin is — so the FOS knows when to search instead.
+        val pinNote = when (r.prec) {
+            null -> if (r.lat == null) "Not on map yet — use Search" else null
+            "field" -> "📍 Pin confirmed at doorstep"
+            "rooftop" -> "📍 Pin: building"
+            "street" -> "📍 Pin: street"
+            "locality" -> "📍 Pin: area only — Search may be closer"
+            "pincode" -> "⚠ Pin: pincode centre only — use Search"
+            "city" -> "⚠ Pin: city only — use Search"
+            else -> null
+        }
+        val query = listOfNotNull(r.addr?.takeIf { it.isNotBlank() }, r.pin?.takeIf { it.isNotBlank() }).joinToString(", ")
+        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            Text(label, color = MutedDim, style = MaterialTheme.typography.bodySmall)
+            Text(text.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            pinNote?.let { Text(it, color = MutedDim, style = MaterialTheme.typography.labelSmall) }
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (r.lat != null && r.lng != null) OutlinedButton(
+                    onClick = { Actions.navigate(ctx, r.lat, r.lng, case.customerName) },
+                    modifier = Modifier.weight(1f),
+                ) { Text("🧭 Navigate to pin") }
+                OutlinedButton(
+                    onClick = { Actions.mapsSearch(ctx, query) },
+                    modifier = Modifier.weight(1f),
+                ) { Text("🔍 Search in Maps") }
             }
-            OutlinedButton(
-                onClick = {
-                    if (r.lat != null && r.lng != null) Actions.navigate(ctx, r.lat, r.lng, case.customerName)
-                    else Actions.mapsSearch(ctx, listOfNotNull(r.addr, r.pin).joinToString(", "))
-                },
-                modifier = Modifier.padding(start = 8.dp)
-            ) { Text("Navigate") }
         }
     }
 }

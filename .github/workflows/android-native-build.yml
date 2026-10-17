@@ -79,6 +79,8 @@ jobs:
           if [ -n "${{ steps.cfg.outputs.url }}" ]; then ARGS="$ARGS -PBASE_URL=${{ steps.cfg.outputs.url }}"; fi
           if [ -n "${{ steps.cfg.outputs.pin }}" ]; then ARGS="$ARGS -PCERT_PIN=${{ steps.cfg.outputs.pin }}"; fi
           echo "Building with: $ARGS"
+          # Google Maps key for the visit-photo map (secret MAPS_API_KEY). Blank → OpenStreetMap fallback.
+          if [ -n "${{ secrets.MAPS_API_KEY }}" ]; then ARGS="$ARGS -PMAPS_API_KEY=${{ secrets.MAPS_API_KEY }}"; fi
           ./gradlew :app:assembleDebug --no-daemon $ARGS
 
       - name: Rename APK

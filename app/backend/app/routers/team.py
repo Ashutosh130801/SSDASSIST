@@ -17,6 +17,8 @@ from ..deps import get_current_user, require_roles
 from ..security import hash_password
 from .. import audit
 
+from ..visit_trust import is_flagged as _vt_flag
+
 router = APIRouter(prefix="/api/team", tags=["team"])
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -440,7 +442,7 @@ def employee_dashboard(uid: int, month_bucket: str | None = "current", db: Sessi
     else:
         field = {"visits": len(visits), "visits_today": sum(1 for v in visits if d_ist(v.created_at) == today_d),
                  "distance_km": round(sum(_d(v.distance_from_case_m) for v in visits) / 1000.0, 1),
-                 "off_location": sum(1 for v in visits if _d(v.distance_from_case_m) > gfence)}
+                 "off_location": sum(1 for v in visits if _vt_flag(v, gfence))}
 
     recent = [{"id": c.id, "customer": c.customer_name, "account": c.account_no,
                "pending": _d(c.pending_amount), "status": c.status, "paid_status": c.paid_status,
