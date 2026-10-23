@@ -18,6 +18,10 @@ AuditLog is intentionally NOT touched -- it is an immutable history log
 Usage (run from app/backend):
     python normalize_branches.py            # DRY RUN - shows what would change
     python normalize_branches.py --apply    # actually writes the changes
+    python normalize_branches.py --only HYDARABAD            # only that spelling (dry run)
+    python normalize_branches.py --only HYDARABAD --apply    # only that spelling
+      --only touches cases / upload history / legal / tickets / dialer — NOT staff (User) rows
+      or User.location (do those later with a normal run).
 
 Safe to run more than once; a second run is a no-op once everything is canonical.
 """
@@ -44,7 +48,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Merge duplicate branch spellings onto one canonical spelling.")
     ap.add_argument("--apply", action="store_true",
                     help="Commit the changes. Without this flag the script only reports (dry run).")
+    ap.add_argument("--only", action="append", default=[],
+                    help="Only repoint this spelling (repeatable), e.g. --only HYDARABAD. Skips staff rows.")
     args = ap.parse_args()
+    only = {o.strip().upper().replace(" ", "") for o in args.only if o.strip()}
 
     # Bring the target DB's schema up to date first. An older ssd_local.db / Postgres file may be
     # missing columns this build expects (e.g. cases.geo_lat, digipin) that the ORM will SELECT,
@@ -68,6 +75,9 @@ def main() -> int:
 
         grand_total = 0
         for model, label in TARGETS:
+            if only and model is models.User:
+                print("User: skipped (--only)")
+                continue
             rows = (
                 db.query(model)
                 .filter(model.branch.isnot(None))
@@ -78,6 +88,8 @@ def main() -> int:
             per_pair = {}  # (old -> new) : count
             for r in rows:
                 cur = str(r.branch).strip()
+                if only and cur.upper().replace(" ", "") not in only:
+                    continue
                 target = canon.get(cur.upper())
                 if target and target != cur:
                     per_pair[(cur, target)] = per_pair.get((cur, target), 0) + 1
@@ -94,14 +106,17 @@ def main() -> int:
         # The separate Location field on staff profiles: fold synonyms (VIZAG -> VISAKHAPATNAM) too.
         from app.models import canonical_place
         loc_changed = 0
-        for u in db.query(models.User).filter(models.User.location.isnot(None)).all():
+        for u in ([] if only else db.query(models.User).filter(models.User.location.isnot(None)).all()):
             cur = str(u.location).strip()
             tgt = canonical_place(cur)
             if tgt and tgt != cur:
                 print(f"    User.location {cur!r} -> {tgt!r} ({u.name})")
                 u.location = tgt
                 loc_changed += 1
-        print(f"User.location: {loc_changed} row(s) to repoint" if loc_changed else "User.location: nothing to change")
+        if only:
+            print("User.location: skipped (--only)")
+        else:
+            print(f"User.location: {loc_changed} row(s) to repoint" if loc_changed else "User.location: nothing to change")
         grand_total += loc_changed
 
         print()
