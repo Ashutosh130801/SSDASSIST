@@ -35,6 +35,8 @@ TARGETS = [
     (models.Case, "Case"),
     (models.LegalCase, "LegalCase"),
     (models.SupportTicket, "SupportTicket"),
+    (models.ImportBatch, "ImportBatch"),
+    (models.DialerConnection, "DialerConnection"),
 ]
 
 

@@ -777,6 +777,8 @@ BRANCH_SYNONYMS = {
     "VIZAG": "VISAKHAPATNAM", "VSKP": "VISAKHAPATNAM", "VISAKAPATNAM": "VISAKHAPATNAM",
     "VISHAKAPATNAM": "VISAKHAPATNAM", "VISHAKHAPATNAM": "VISAKHAPATNAM", "VISAKHAPATANAM": "VISAKHAPATNAM",
     "VISAKHAPATNAM": "VISAKHAPATNAM",
+    "HYDARABAD": "HYDERABAD", "HYDRABAD": "HYDERABAD", "HYDERBAD": "HYDERABAD", "HYDERBAAD": "HYDERABAD",
+    "HYDARBAD": "HYDERABAD", "HYDERABADH": "HYDERABAD", "HYD": "HYDERABAD", "HYDERABAD": "HYDERABAD",
 }
 
 
@@ -789,7 +791,8 @@ def canonical_place(v):
 
 def _install_branch_synonyms():
     from sqlalchemy import event
-    for col in (User.branch, User.location, Case.branch):
+    for col in (User.branch, User.location, Case.branch, ImportBatch.branch, LegalCase.branch,
+                SupportTicket.branch, DialerConnection.branch):
         @event.listens_for(col, "set", retval=True)
         def _norm(target, value, oldvalue, initiator):   # noqa: ARG001
             return canonical_place(value)
