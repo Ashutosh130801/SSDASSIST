@@ -77,12 +77,13 @@ private fun hhmm(iso: String?): String {
 private fun money(v: Double) = "₹" + "%,.0f".format(v)
 
 /** Save the monthly attendance .xlsx to the cache and open/share it via the app's FileProvider. */
-private suspend fun downloadAttendanceSheet(ctx: Context, vm: AuthViewModel, month: String, role: String) {
+private suspend fun downloadAttendanceSheet(ctx: Context, vm: AuthViewModel, month: String, role: String,
+                                            start: String? = null, end: String? = null) {
     try {
         // Network read + file write off the main thread (streamed response body).
         val file = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val body = vm.repo.attDownload(month, role)
-            val f = java.io.File(ctx.cacheDir, "Attendance_$month.xlsx")
+            val body = if (start != null && end != null) vm.repo.attDownload(null, role, start, end) else vm.repo.attDownload(month, role)
+            val f = java.io.File(ctx.cacheDir, if (start != null && end != null) "Attendance_${start}_to_$end.xlsx" else "Attendance_$month.xlsx")
             f.outputStream().use { out -> body.byteStream().use { it.copyTo(out) } }
             f
         }
@@ -329,9 +330,36 @@ fun AttendanceScreen(vm: AuthViewModel, user: User) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             FilterChip(selected = tab == "day", onClick = { tab = "day" }, label = { Text("Today") })
             FilterChip(selected = tab == "month", onClick = { tab = "month" }, label = { Text("This month") })
+            FilterChip(selected = tab == "cycle", onClick = { tab = "cycle" }, label = { Text("💰 Salary cycle") })
         }
-        if (tab == "month") {
-            AsyncContent(key = "attm|$role|$live", block = { vm.repo.attMonth(null, role) }) { m, _ ->
+        // Salary cycle = 21st → 20th. back=0 is the running cycle that contains today; 1 = the one before.
+        var cycleBack by remember { mutableStateOf(0) }
+        val cycle = remember(cycleBack) {
+            // java.util.Calendar (works on every Android version this app supports, unlike java.time).
+            val tz = java.util.TimeZone.getTimeZone("Asia/Kolkata")
+            val c = java.util.Calendar.getInstance(tz)
+            val addEnd = (if (c.get(java.util.Calendar.DAY_OF_MONTH) >= 21) 1 else 0) - cycleBack
+            c.set(java.util.Calendar.DAY_OF_MONTH, 1)
+            c.add(java.util.Calendar.MONTH, addEnd)
+            c.set(java.util.Calendar.DAY_OF_MONTH, 20)
+            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply { timeZone = tz }
+            val end = fmt.format(c.time)
+            c.set(java.util.Calendar.DAY_OF_MONTH, 1)
+            c.add(java.util.Calendar.MONTH, -1)
+            c.set(java.util.Calendar.DAY_OF_MONTH, 21)
+            fmt.format(c.time) to end
+        }
+        if (tab == "cycle") {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = cycleBack == 0, onClick = { cycleBack = 0 }, label = { Text("This cycle") })
+                FilterChip(selected = cycleBack == 1, onClick = { cycleBack = 1 }, label = { Text("Previous cycle") })
+            }
+            Text("${cycle.first}  →  ${cycle.second}", color = Muted, style = MaterialTheme.typography.labelMedium)
+        }
+        if (tab == "month" || tab == "cycle") {
+            val isCycle = tab == "cycle"
+            AsyncContent(key = "attm|$tab|${cycle.first}|$role|$live",
+                block = { if (isCycle) vm.repo.attMonth(null, role, cycle.first, cycle.second) else vm.repo.attMonth(null, role) }) { m, _ ->
                 val days = (m["days"] as? List<*>)?.map { it.toString() } ?: emptyList()
                 val people = m["people"].rowsOf().filter {
                     q.isBlank() || (it["name"]?.toString() ?: "").contains(q, true) ||
@@ -341,7 +369,10 @@ fun AttendanceScreen(vm: AuthViewModel, user: User) {
                     label = { Text("Search name / ID") }, modifier = Modifier.fillMaxWidth())
                 if (m["can_download"] == true) {
                     val mm = m["month"]?.toString() ?: ""
-                    Button(onClick = { dlScope.launch { downloadAttendanceSheet(ctx, vm, mm, role) } }) {
+                    Button(onClick = { dlScope.launch {
+                        if (isCycle) downloadAttendanceSheet(ctx, vm, mm, role, cycle.first, cycle.second)
+                        else downloadAttendanceSheet(ctx, vm, mm, role)
+                    } }) {
                         Text("⬇ Download sheet (.xlsx)")
                     }
                 }

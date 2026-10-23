@@ -134,11 +134,13 @@ interface ApiService {
     suspend fun attDay(@Query("date") date: String? = null, @Query("role") role: String? = null): AttDay
 
     @GET("api/attendance/month")
-    suspend fun attMonth(@Query("month") month: String? = null, @Query("role") role: String? = null): Map<String, Any?>
+    suspend fun attMonth(@Query("month") month: String? = null, @Query("role") role: String? = null,
+                         @Query("start") start: String? = null, @Query("end") end: String? = null): Map<String, Any?>
 
     @retrofit2.http.Streaming
     @GET("api/attendance/download")
-    suspend fun attDownload(@Query("month") month: String? = null, @Query("role") role: String? = null): okhttp3.ResponseBody
+    suspend fun attDownload(@Query("month") month: String? = null, @Query("role") role: String? = null,
+                            @Query("start") start: String? = null, @Query("end") end: String? = null): okhttp3.ResponseBody
 
     // Any FOS/caller's performance (clickable name → performance screen).
     @GET("api/mis/performance")

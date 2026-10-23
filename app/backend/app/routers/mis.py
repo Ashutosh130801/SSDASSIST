@@ -112,6 +112,8 @@ def _agg(rows: list) -> dict:
         "rollback_count": len(rb_paid),
         "amount": round(cash_coll, 2),   # CASH COLL (settlement partials excluded)
         "partial_payments": round(partial_pay, 2),   # below-settlement money on NORM/STAB cases
+        # ACTUAL collection = cash collection + below-settlement partials (all money received).
+        "actual_collection": round(cash_coll + partial_pay, 2),
         # PENDING computed live from the real base (never a stale 0): base − received, floored at 0.
         "pending": round(sum(max(0.0, _base(c) - _f(c.received_amount)) for c in rows), 2),
         "pos": round(sum(_f(c.principal_outstanding) for c in rows), 2),   # Total POS (principal outstanding)
@@ -866,7 +868,8 @@ _GROUP = [("label", "NAME"), ("count", "COUNT"), ("paid", "PAID"), ("unpaid", "U
           ("enr", "ENR"), ("paid_enr", "PAID ENR"), ("pct", "PAID %"),
           ("norm_pct", "NORM %"), ("stab_pct", "STAB %"), ("rollback_pct", "ROLLBACK %"),
           ("rollback_collected", "ROLLBACK COLL"),
-          ("amount", "CASH COLL"), ("visited", "VISITED"), ("not_visited", "NOT VISITED")]
+          ("amount", "CASH COLL"), ("partial_payments", "PARTIAL"), ("actual_collection", "ACTUAL COLL (CASH+PARTIAL)"),
+          ("visited", "VISITED"), ("not_visited", "NOT VISITED")]
 _AREA = [("label", "AREA"), ("count", "COUNT"), ("paid", "PAID"), ("unpaid", "UNPAID"),
          ("enr", "ENR"), ("pending", "PENDING"), ("amount", "COLLECTED"), ("recovery_pct", "RECOVERY %"),
          ("pct", "PAID %"), ("norm_pct", "NORM %"), ("stab_pct", "STAB %")]

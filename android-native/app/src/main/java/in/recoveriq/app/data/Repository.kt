@@ -105,10 +105,10 @@ class Repository(context: Context) {
         Api.service.attHeartbeat(mapOf("platform" to "android", "active" to active))
     suspend fun attDay(date: String? = null, role: String? = null): AttDay =
         Api.service.attDay(date, role?.ifBlank { null })
-    suspend fun attMonth(month: String? = null, role: String? = null): Map<String, Any?> =
-        Api.service.attMonth(month, role?.ifBlank { null })
-    suspend fun attDownload(month: String? = null, role: String? = null): okhttp3.ResponseBody =
-        Api.service.attDownload(month, role?.ifBlank { null })
+    suspend fun attMonth(month: String? = null, role: String? = null, start: String? = null, end: String? = null): Map<String, Any?> =
+        Api.service.attMonth(month, role?.ifBlank { null }, start, end)
+    suspend fun attDownload(month: String? = null, role: String? = null, start: String? = null, end: String? = null): okhttp3.ResponseBody =
+        Api.service.attDownload(month, role?.ifBlank { null }, start, end)
     suspend fun performance(empId: Int, role: String?, monthBucket: String = "current"): Performance =
         Api.service.performance(empId = empId, role = role?.ifBlank { null }, monthBucket = monthBucket)
 

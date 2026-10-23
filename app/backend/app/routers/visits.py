@@ -110,6 +110,9 @@ async def create_visit(
     db.add(visit)
 
     # roll the visit up into the case
+    if case.flagged:                       # FOS acted on it → clear the red review caution
+        case.flagged = False
+        case.flag_reason = None
     case.status = "in_progress"
     case.visited = True                       # FOS logged a visit → MIS "VISITED"
     if disposition:

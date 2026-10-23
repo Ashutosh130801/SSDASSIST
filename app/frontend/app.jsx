@@ -6454,7 +6454,7 @@ function MISView({ user }) {
   };
   const goto = tk => { const el = document.getElementById('mis-' + tk); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
 
-  const GROUP = [['label', 'Name'], ['count', 'Count'], ['paid', 'Paid'], ['unpaid', 'Unpaid'], ['enr', 'ENR'], ['paid_enr', 'Paid ENR'], ['pct', 'Paid %'], ['norm_pct', 'NORM %'], ['stab_pct', 'STAB %'], ['rollback_pct', 'RB %'], ['rollback_collected', 'RB ₹'], ['amount', 'Cash'], ['visited', 'Vis'], ['not_visited', 'Not vis']];
+  const GROUP = [['label', 'Name'], ['count', 'Count'], ['paid', 'Paid'], ['unpaid', 'Unpaid'], ['enr', 'ENR'], ['paid_enr', 'Paid ENR'], ['pct', 'Paid %'], ['norm_pct', 'NORM %'], ['stab_pct', 'STAB %'], ['rollback_pct', 'RB %'], ['rollback_collected', 'RB ₹'], ['amount', 'Cash'], ['partial_payments', 'Partial'], ['actual_collection', 'Actual coll'], ['visited', 'Vis'], ['not_visited', 'Not vis']];
   // Area-wise gets its own columns highlighting outstanding + recovery rate per area.
   const AREA = [['label', 'Area'], ['count', 'Count'], ['paid', 'Paid'], ['unpaid', 'Unpaid'], ['enr', 'ENR'], ['pending', 'Pending'], ['amount', 'Collected'], ['recovery_pct', 'Recovery %'], ['pct', 'Paid %'], ['norm_pct', 'NORM %'], ['stab_pct', 'STAB %']];
   const CASES = [['customer', 'Customer'], ['account', 'Account'], ['pending', 'Pending'], ['enr', 'ENR'], ['propensity', 'Score'], ['fos', 'FOS'], ['caller', 'Caller']];
@@ -6572,6 +6572,8 @@ function MISView({ user }) {
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total POS</div><b style={{ fontSize: 20 }}>{money(d.overall.pos)}</b><div className="muted" style={{ fontSize: 11 }}>principal outstanding</div></div>
           {/* "Pending" KPI tile removed — it confused users; the other tiles already convey progress. */}
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Achieved %</div><b style={{ fontSize: 20, color: 'var(--gold)' }}>{d.overall.pct}%</b></div>
+          <div className="glass card" style={{ padding: 14 }} title="Settled cash (PAID cases, and all money on plain cases) — below-settlement partials excluded"><div className="muted" style={{ fontSize: 12 }}>Cash collection</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(d.overall.amount)}</b><div className="muted" style={{ fontSize: 11 }}>settled cash only</div></div>
+          <div className="glass card" style={{ padding: 14, border: '1px solid rgba(22,163,74,.35)' }} title="Every rupee received: cash collection + below-settlement partial payments"><div className="muted" style={{ fontSize: 12 }}>💰 Actual collection</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(d.overall.actual_collection != null ? d.overall.actual_collection : (Number(d.overall.amount || 0) + Number(d.overall.partial_payments || 0)))}</b><div className="muted" style={{ fontSize: 11 }}>{money(d.overall.amount)} cash + {money(d.overall.partial_payments)} partial</div></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Collected (MTD)</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(proj.collected_mtd)}</b></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Projected month-end</div><b style={{ fontSize: 20 }}>{money(proj.projected_month_end)}</b><div className="muted" style={{ fontSize: 11 }}>{proj.projected_pct}% of target</div></div>
           <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>PTP kept</div><b style={{ fontSize: 20 }}>{fn.ptp_kept}/{fn.ptp_total}</b><div className="muted" style={{ fontSize: 11 }}>{fn.ptp_kept_pct}% · {fn.ptp_broken} broken</div></div>
@@ -9235,9 +9237,10 @@ function AttendanceView({ user }) {
   const showVici = !!(vici && (Object.keys(vici.agents || {}).length || vici.error));
   // Date range (e.g. salary cycle 21st of last month → 20th of this month) — spans two months.
   const ymd = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  const salaryCycle = (back) => {        // back=0 → cycle ending 20th of this month; 1 → the one before
+  const salaryCycle = (back) => {        // back=0 → the RUNNING cycle (21st → 20th) that contains today; 1 → the one before
     const t = new Date(today + 'T00:00:00');
-    const end = new Date(t.getFullYear(), t.getMonth() - back, 20);
+    const endMonth = t.getMonth() + (t.getDate() >= 21 ? 1 : 0) - back;
+    const end = new Date(t.getFullYear(), endMonth, 20);
     const start = new Date(end.getFullYear(), end.getMonth() - 1, 21);
     return [ymd(start), ymd(end)];
   };
@@ -9314,19 +9317,19 @@ function AttendanceView({ user }) {
     <div className="toolbar" style={{ marginBottom: 10 }}>
       <div className={cx('chip', tab === 'today' && 'on')} onClick={() => setTab('today')}>📅 Day</div>
       <div className={cx('chip', tab === 'month' && 'on')} onClick={() => setTab('month')}>🗓 Month</div>
-      <div className={cx('chip', tab === 'range' && 'on')} onClick={() => setTab('range')} title="Any date range — e.g. 21st of last month to 20th of this month for salary">📆 Date range</div>
+      <div className={cx('chip', tab === 'range' && 'on')} onClick={() => setTab('range')} title="Salary cycle (21st → 20th) or any date range">💰 Salary cycle / range</div>
       <div style={{ flex: 1 }} />
       {tab === 'today'
         ? <input type="date" className="input" value={date} max={today} onChange={e => setDate(e.target.value)} style={{ maxWidth: 160 }} />
         : tab === 'month' ? <input type="month" className="input" value={month} max={today.slice(0, 7)} onChange={e => setMonth(e.target.value)} style={{ maxWidth: 160 }} />
         : <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn ghost sm" title="21st of last month → 20th of this month" onClick={() => { const [a, b] = salaryCycle(0); setRStart(a); setREnd(b); }}>💰 This salary cycle</button>
+            <button className="btn ghost sm" title={'Running salary cycle: ' + salaryCycle(0).join(' → ')} onClick={() => { const [a, b] = salaryCycle(0); setRStart(a); setREnd(b); }}>💰 This salary cycle</button>
             <button className="btn ghost sm" title="The cycle before" onClick={() => { const [a, b] = salaryCycle(1); setRStart(a); setREnd(b); }}>Previous cycle</button>
             <input type="date" className="input" value={rStart} onChange={e => setRStart(e.target.value)} style={{ maxWidth: 150 }} />
             <span className="muted">→</span>
             <input type="date" className="input" value={rEnd} min={rStart} onChange={e => setREnd(e.target.value)} style={{ maxWidth: 150 }} />
           </span>}
-      {(day && day.can_download || mon && mon.can_download) && (tab === 'month' || tab === 'range') && <button className="btn gold sm" onClick={dl}>⬇ Download sheet</button>}
+      {mon && (tab === 'month' || tab === 'range') && <button className="btn gold sm" onClick={dl}>⬇ Download sheet</button>}
       {tab === 'today' && day && <button className="btn ghost sm" title="Print exactly what's shown (respects role/status/search filters)" onClick={printDay}>🖨 Print</button>}
       {tab === 'today' && day && <button className="btn ghost sm" title="Export the filtered list to CSV" onClick={exportDayCsv}>⬇ CSV</button>}
     </div>

@@ -629,7 +629,7 @@ def day_board(date: str | None = None, role: str | None = None, user_id: int | N
         "total": len(rows),
     }
     return {"date": d.isoformat(), "rows": rows, "summary": summary,
-            "can_download": user.role in DOWNLOAD_ROLES}
+            "can_download": True}   # everyone can export what they're allowed to see (scope enforced above)
 
 
 @router.get("/user/{uid}")
@@ -808,7 +808,7 @@ def month_sheet(month: str | None = None, role: str | None = None, user_id: int 
             "weekoff": weekoff, "worked_hours": round(worked / 3600.0, 1),
         })
     return {"month": m, "days": [d.isoformat() for d in days], "people": people,
-            "can_download": user.role in DOWNLOAD_ROLES}
+            "can_download": True}   # everyone can export what they're allowed to see (scope enforced above)
 
 
 @router.get("/presence")
@@ -845,7 +845,9 @@ def presence_snapshot(ids: str | None = None, db: Session = Depends(get_db),
 def download_month(month: str | None = None, role: str | None = None, user_id: int | None = None,
                    start: str | None = None, end: str | None = None,
                    db: Session = Depends(get_db),
-                   user: models.User = Depends(require_roles(*DOWNLOAD_ROLES))):
+                   user: models.User = Depends(get_current_user)):
+    # Anyone may download — the sheet contains only the people month_sheet lets them see
+    # (FOS/caller: themselves · team lead: own team · manager: branch · admin/HR/HO: everyone).
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     data = month_sheet(month, role, user_id, db, user, start=start, end=end)
