@@ -4344,7 +4344,7 @@ function CorrectColumnsButton() {
   const [msg, setMsg] = React.useState('');
   const [pickOpen, setPickOpen] = React.useState(false);
   const [scope, setScope] = React.useState(null);   // chosen portfolio
-  if (role !== 'admin' && role !== 'headoffice') return null;
+  if (role !== 'admin' && role !== 'headoffice' && role !== 'teamlead') return null;
 
   const addScope = (fd) => {
     if (scope) {
@@ -4413,6 +4413,8 @@ function CorrectColumnsButton() {
           Matched rows: {prev.matched_by_account || 0} by account number · {prev.matched_by_card || 0} by card number.
           {!!prev.rows_missing_identifier && <div>{prev.rows_missing_identifier} row(s) have neither an account nor a card number.</div>}
           {!!prev.rows_ambiguous && <div>{prev.rows_ambiguous} row(s) match multiple cases in this portfolio and were skipped.</div>}
+          {!!prev.blocked_other_team && <div>{prev.blocked_other_team} team-lead change(s) skipped — a team lead can only keep cases in their own team.</div>}
+          {role === 'teamlead' && <div>Only your team's cases are matched and corrected.</div>}
           {!!prev.unresolved_assignments && <div>{prev.unresolved_assignments} staff assignment cell(s) could not be resolved. Use active TC/FOS employee IDs as in Upload; existing assignments are kept.</div>}
         </div>}
         {prev && (prev.detected_columns || []).length > 0 && <details style={{ marginBottom: 12 }}>

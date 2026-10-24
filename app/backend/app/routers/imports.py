@@ -66,6 +66,12 @@ def _actor_tl_ids(actor: models.User) -> set:
     return ids
 
 
+def _tl_case_filter(actor: models.User):
+    """SQL filter for the cases that belong to this team lead's team (same rule as the case lists)."""
+    from .cases import teamlead_case_filter
+    return teamlead_case_filter(actor)
+
+
 def _is_restricted_uploader(actor: models.User) -> bool:
     """True when the uploader is acting as a team lead (pure, or a dual-role user whose
     current login view is 'teamlead') — so the per-row TL restriction applies."""
@@ -107,14 +113,15 @@ def _classify_row_tl(rec, by_code, by_name, actor_ids, actor_id):
 
 
 @router.get("/portfolios")
-def list_portfolios(actor: models.User = Depends(require_roles("admin", "headoffice")),
+def list_portfolios(actor: models.User = Depends(require_roles("admin", "headoffice", "teamlead")),
                     db: Session = Depends(get_db)):
     """Month-wise list of portfolios (period → bank/product/branch with a case count) so the
     admin/HO can pick exactly which portfolio an update/correction file applies to before uploading."""
     from sqlalchemy import func as _f
     rows = (db.query(models.Case.period, models.Case.bank, models.Case.product, models.Case.branch,
                      _f.count(models.Case.id))
-            .filter(models.Case.removed.isnot(True))
+            .filter(models.Case.removed.isnot(True),
+                    *([_tl_case_filter(actor)] if actor.role == "teamlead" else []))
             .group_by(models.Case.period, models.Case.bank, models.Case.product, models.Case.branch)
             .all())
     # Merge branches that differ only by CASE/whitespace (e.g. "Visakhapatnam" vs "VISAKHAPATNAM")
@@ -527,7 +534,7 @@ def _money_eq(a, b):
         return str(a) == str(b)
 
 
-def _correct_scan(records, default_bank, product, db, want_fields=None, scope=None, diagnostics=None):
+def _correct_scan(records, default_bank, product, db, want_fields=None, scope=None, diagnostics=None, actor=None):
     """Match each file row to existing case(s) and compute, per correctable field, which cases would
     change. Returns (per_field, matched_accounts, unmatched, apply_plan). apply_plan is a list of
     (case, {field: newvalue}, {reassign dicts}) ready to write when want_fields is given."""
@@ -541,6 +548,10 @@ def _correct_scan(records, default_bank, product, db, want_fields=None, scope=No
     stats = diagnostics if diagnostics is not None else {}
     stats.update(rows_missing_identifier=0, rows_ambiguous=0, matched_by_account=0, matched_by_card=0)
     stats["unresolved_assignments"] = 0
+    is_tl = actor is not None and actor.role == "teamlead"
+    if is_tl:
+        stats["blocked_other_team"] = 0
+        _my_tl_ids = _actor_tl_ids(actor)
 
     def resolve_person(field, raw):
         code = _correct_norm(raw)
@@ -565,6 +576,8 @@ def _correct_scan(records, default_bank, product, db, want_fields=None, scope=No
             unmatched += 1
             continue
         q = db.query(models.Case).filter(models.Case.removed.isnot(True))
+        if is_tl:                                    # a team lead can only correct their own team's cases
+            q = q.filter(_tl_case_filter(actor))
         sc = scope or {}
         if sc.get("selected"):
             # Empty values in a chosen portfolio mean an empty dimension, not 'all portfolios'.
@@ -612,6 +625,12 @@ def _correct_scan(records, default_bank, product, db, want_fields=None, scope=No
                         continue
                     cur_id = (cs.assigned_caller_id if field == "caller_name"
                               else cs.assigned_fos_id if field == "fos_name" else None)
+                    if field == "team_lead" and is_tl:
+                        _codes = {x for x in ((u.name or "").strip().upper(), (u.emp_code or "").strip().upper(),
+                                              (getattr(u, "tl_emp_code", None) or "").strip().upper()) if x}
+                        if u.id != actor.id and not (_codes & _my_tl_ids):
+                            stats["blocked_other_team"] += 1      # a TL can't move cases to another team
+                            continue
                     if field == "team_lead":
                         changed = _correct_norm(cs.team_lead) != _correct_norm(u.name)
                     else:
@@ -654,7 +673,7 @@ async def correct_preview(file: UploadFile = File(...), default_bank: str | None
                           scope_selected: bool = Form(False),
                           scope_bank: str | None = Form(None), scope_product: str | None = Form(None),
                           scope_branch: str | None = Form(None), scope_period: str | None = Form(None),
-                          actor: models.User = Depends(require_roles("admin", "headoffice")),
+                          actor: models.User = Depends(require_roles("admin", "headoffice", "teamlead")),
                           db: Session = Depends(get_db)):
     """Re-read a corrected ORIGINAL portfolio file and show which case COLUMNS would change (with
     before→after samples + a count per column), so the admin/HO can tick exactly which to apply.
@@ -669,7 +688,7 @@ async def correct_preview(file: UploadFile = File(...), default_bank: str | None
              "selected": scope_selected}
     diagnostics = {}
     per_field, matched, unmatched, _ = _correct_scan(records, default_bank, product, db, scope=scope,
-                                                   diagnostics=diagnostics)
+                                                   diagnostics=diagnostics, actor=actor)
     cols = [v for v in per_field.values() if v["changes"] > 0]
     detected = _correct_headers(metadata)
     for column in cols:
@@ -688,7 +707,7 @@ async def correct_apply(file: UploadFile = File(...), default_bank: str | None =
                         scope_selected: bool = Form(False),
                         scope_bank: str | None = Form(None), scope_product: str | None = Form(None),
                         scope_branch: str | None = Form(None), scope_period: str | None = Form(None),
-                        actor: models.User = Depends(require_roles("admin", "headoffice")),
+                        actor: models.User = Depends(require_roles("admin", "headoffice", "teamlead")),
                         db: Session = Depends(get_db)):
     """Apply ONLY the selected columns from the corrected file onto the matched cases, confined to the
     chosen portfolio (period/bank/product/branch). Reassigns the case when a TC / FOS / TL column is
@@ -706,7 +725,7 @@ async def correct_apply(file: UploadFile = File(...), default_bank: str | None =
              "selected": scope_selected}
     diagnostics = {}
     _pf, matched, unmatched, plan = _correct_scan(records, default_bank, product, db, want_fields=want,
-                                                scope=scope, diagnostics=diagnostics)
+                                                scope=scope, diagnostics=diagnostics, actor=actor)
 
     cases_changed = 0
     field_changes = {f: 0 for f in want}
