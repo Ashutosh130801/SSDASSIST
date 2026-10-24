@@ -88,6 +88,10 @@ def read_agent_status(conn, agent):
 def live_call_for(db, user):
     from .routers.cases import _scope
 
+    # Screen-pop is for CALLERS only (incl. a dual-role user while in the caller view). Admin / HO /
+    # HR / managers etc. have no ViciDial agent, so watching for them only produced "agent not found".
+    if (user.role or "") != "telecaller":
+        return {"state": "disabled", "poll_after_ms": 300000}
     conn = connection_for(db, user)
     if not conn:
         return {"state": "disabled", "poll_after_ms": 30000}
@@ -105,7 +109,14 @@ def live_call_for(db, user):
             other_conn = connection_for(db, other)
             if other_conn and other_conn.id == conn.id:
                 raise LiveCallError("This ViciDial agent is mapped to multiple employees. Ask an administrator to make the mapping unique.")
-    row = read_agent_status(conn, agent)
+    try:
+        row = read_agent_status(conn, agent)
+    except LiveCallError as exc:
+        if "not found" in str(exc).lower():
+            return {"state": "unmapped", "poll_after_ms": 60000,
+                    "detail": f"ViciDial has no agent '{agent}'. Open Security → ViciDial agent ID and enter your exact "
+                              "ViciDial user ID (the one you log into the ViciDial agent screen with)."}
+        raise
     status = row.get("status", "").upper()
     substatus = row.get("real_time_sub_status", "").upper()
     result = {"state": "waiting", "agent_status": status, "substatus": substatus, "poll_after_ms": 2000}

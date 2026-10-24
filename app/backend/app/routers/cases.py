@@ -958,6 +958,62 @@ def portfolio_banks(month_bucket: str | None = None, db: Session = Depends(get_d
     return out
 
 
+@router.get("/portfolio-export")
+def portfolio_export(bank: str, product: str, branch: str | None = None, period: str | None = None,
+                     month_bucket: str | None = None, db: Session = Depends(get_db),
+                     user: models.User = Depends(get_current_user)):
+    """Download a WHOLE portfolio (bank + product), optionally one location, as a styled Excel
+    workbook — every case with its current status, plus a summary sheet. Scoped to the viewer."""
+    from .. import portfolio_export as _pe
+    q = _scope(db.query(models.Case), user, bucket=month_bucket).filter(
+        models.Case.removed.isnot(True), models.Case.bank == bank, models.Case.product == product)
+    if branch:
+        q = q.filter(func.lower(func.trim(models.Case.branch)) == branch.strip().lower())
+    if period:
+        q = q.filter(models.Case.period == period)
+    elif month_bucket == "current":
+        q = q.filter(models.Case.period == _current_period())
+    elif month_bucket == "next":
+        q = q.filter(models.Case.period == _next_period())
+    elif month_bucket == "last":
+        q = q.filter(models.Case.period == _last_period())
+    cases = q.order_by(models.Case.branch, models.Case.customer_name, models.Case.id).all()
+    if not cases:
+        raise HTTPException(status_code=404, detail="No cases in this portfolio for your view")
+    title = f"{bank} · {product}" + (f" · {branch}" if branch else " · All locations")
+    month = period or {"current": _current_period(), "next": _next_period(), "last": _last_period()}.get(month_bucket or "", "")
+    now = datetime.now(_IST_TZ).strftime("%d-%b-%Y %H:%M")
+    subtitle = (f"Month {month}   ·   " if month else "All months   ·   ") + f"{len(cases)} cases   ·   generated {now} by {user.name}"
+    data = _pe.build(db, cases, title, subtitle)
+    safe = "".join(ch for ch in f"{bank}_{product}_{branch or 'ALL'}_{month or 'all'}" if ch.isalnum() or ch in "-_ ").replace(" ", "_")
+    audit.record(db, user, "download", None, entity_type="download",
+                 detail=f"Portfolio Excel — {title} ({len(cases)} cases)")
+    db.commit()
+    return StreamingResponse(io.BytesIO(data),
+                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{safe}.xlsx"'})
+
+
+@router.get("/sheet-options")
+def sheet_options(month_bucket: str | None = None, db: Session = Depends(get_db),
+                  user: models.User = Depends(get_current_user)):
+    """Bank / product / location choices (with case counts) for the Live Sheet, within the
+    viewer's scope and the chosen month — so the dropdowns list EVERY portfolio, not only the ones
+    that happen to be in the rows already loaded."""
+    from sqlalchemy import func as _f
+    q = _scope(db.query(models.Case.bank, models.Case.product, models.Case.branch, _f.count(models.Case.id)),
+               user, bucket=month_bucket)
+    if month_bucket == "current":
+        q = q.filter(models.Case.period == _current_period())
+    elif month_bucket == "next":
+        q = q.filter(models.Case.period == _next_period())
+    elif month_bucket == "last":
+        q = q.filter(models.Case.period == _last_period())
+    rows = q.group_by(models.Case.bank, models.Case.product, models.Case.branch).all()
+    combos = [{"bank": b or "", "product": p or "", "branch": br or "", "count": n} for b, p, br, n in rows]
+    return {"combos": combos, "total": sum(c["count"] for c in combos)}
+
+
 @router.get("/filter-options")
 def filter_options(bank: str | None = None, product: str | None = None, branch: str | None = None,
                    db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):

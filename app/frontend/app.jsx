@@ -2043,6 +2043,15 @@ function CasesView({ user }) {
   };
   // Click a product card: split (explicit-branch) products open their location cards first; others go straight to cases.
   const openProductCard = (c) => { if (c.branch_split && (c.branches || []).length) setBranchProduct({ ...c }); else openProduct(c); };
+  // Download a whole portfolio (optionally one location) as a styled Excel — every case + current status.
+  const dlPortfolio = (e, b, p, br, period) => {
+    if (e) e.stopPropagation();
+    const qs = new URLSearchParams({ bank: b || '', product: p || '' });
+    if (br) qs.set('branch', br);
+    if (period) qs.set('period', period); else if (monthB) qs.set('month_bucket', monthB);
+    toast('Preparing Excel…');
+    download('/api/cases/portfolio-export?' + qs, `${b}_${p}_${br || 'All_locations'}${period ? '_' + period : ''}.xlsx`.replace(/[^\w.-]+/g, '_'));
+  };
   // "All cases" = every bank / product / branch (clears an opened portfolio's scope).
   const allCases = () => {
     setBank(''); setProduct(''); setSegment(''); setBranchF(''); setCardPeriod(''); setArea(''); setBranchProduct(null);
@@ -2182,6 +2191,9 @@ function CasesView({ user }) {
             <div className="toolbar">
               <button className="btn ghost" onClick={() => setBranchProduct(null)}>← {branchProduct.bank} products</button>
               <span className="badge allocated">{branchProduct.bank} · {branchProduct.product}{branchProduct.segment ? ' · ' + branchProduct.segment : ''}{branchProduct.period ? ' · 🗓️ ' + monthLbl(branchProduct.period) : ''} · locations</span>
+              <div style={{ flex: 1 }} />
+              <button className="btn sm" title="Download every location of this portfolio as one Excel"
+                onClick={e => dlPortfolio(e, branchProduct.bank, branchProduct.product, '', branchProduct.period)}>⬇ Excel (all locations)</button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: 14 }}>
               {(branchProduct.branches || []).map((br, i) => (
@@ -2192,7 +2204,10 @@ function CasesView({ user }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 14 }}>
                     <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(br.received)}</b></div>
                     <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(br.pending)}</b></div></div>
-                  <div style={{ fontSize: 11.5, marginTop: 8 }}><span style={{ color: 'var(--good)' }}>✓ {br.paid || 0} paid</span> · <span style={{ color: 'var(--warn)' }}>{br.unpaid || 0} unpaid</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+                    <div style={{ fontSize: 11.5 }}><span style={{ color: 'var(--good)' }}>✓ {br.paid || 0} paid</span> · <span style={{ color: 'var(--warn)' }}>{br.unpaid || 0} unpaid</span></div>
+                    <button className="btn ghost sm" title={'Download ' + br.branch + ' as Excel'}
+                      onClick={e => dlPortfolio(e, branchProduct.bank, branchProduct.product, br.branch, branchProduct.period)}>⬇ Excel</button></div>
                 </div>))}
             </div>
           </div>
@@ -2214,7 +2229,10 @@ function CasesView({ user }) {
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
                       <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{INRc(c.received)}</b></div>
                       <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--warn)' }}>{INRc(c.pending)}</b></div></div>
-                    <div style={{ fontSize: 11.5, marginTop: 8 }}><span style={{ color: 'var(--good)' }}>✓ {c.paid || 0} paid</span> · <span style={{ color: 'var(--warn)' }}>{c.unpaid || 0} unpaid</span></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+                      <div style={{ fontSize: 11.5 }}><span style={{ color: 'var(--good)' }}>✓ {c.paid || 0} paid</span> · <span style={{ color: 'var(--warn)' }}>{c.unpaid || 0} unpaid</span></div>
+                      <button className="btn ghost sm" title={'Download all ' + c.count + ' cases' + (c.branch_split ? ' (all locations)' : '') + ' as Excel'}
+                        onClick={e => dlPortfolio(e, c.bank, c.product, '', c.period)}>⬇ Excel</button></div>
                     {c.branch_split && <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>Tap to choose a location →</div>}
                   </div>))}
               </div>}
@@ -2243,6 +2261,8 @@ function CasesView({ user }) {
           {product && ['admin', 'headoffice'].includes(user.role) && <button className="btn ghost sm"
             title="Fix a wrong segment for this whole portfolio (e.g. a BL file uploaded as Credit Card) — no delete / re-upload needed"
             onClick={() => { setSegNew(segment || 'Credit Card'); setSegEdit(true); }}>✎ Segment</button>}
+          {product && <button className="btn sm" title="Download this whole portfolio (every case, current status) as a styled Excel"
+            onClick={e => dlPortfolio(e, bank, product, branchF, cardPeriod)}>⬇ Portfolio Excel</button>}
           <input className="input" style={{ maxWidth: 240 }} placeholder="Search name / account / card / phone / pincode / case #"
             value={q} onChange={e => setQ(e.target.value)} />
           {['', 'PAID', 'UNPAID', 'PARTIAL'].map(s =>
@@ -7111,6 +7131,9 @@ function SheetView({ user, config }) {
   const [escOnly, setEscOnly] = React.useState(false);   // show only escalated (locked) cases
   const [reviewF, setReviewF] = React.useState('');      // '' | 'any' | a colour → my review-flag filter
   const [bankF, setBankF] = React.useState(''); const [prodF, setProdF] = React.useState('');
+  const [branchF, setBranchF] = React.useState('');      // location filter
+  const [opts, setOpts] = React.useState({ combos: [], total: 0 });   // every portfolio in scope (+ counts)
+  const SHEET_LIMIT = 5000;
   const [cyclesSel, setCyclesSel] = React.useState([]);   // cycle multi-select filter
   const [monthB, setMonthB] = React.useState('current');   // default THIS month so months aren't merged
   const [payModal, setPayModal] = React.useState(null);   // {row, mode:'paid'|'unpaid'}
@@ -7143,16 +7166,28 @@ function SheetView({ user, config }) {
   // accounting popups (callers only on their own cases — enforced by the backend scope).
   const canPayEdit = ['admin', 'headoffice', 'manager', 'backend', 'telecaller', 'teamlead'].includes(user.role);
 
-  const monthBRef = React.useRef(monthB);
-  React.useEffect(() => { monthBRef.current = monthB; }, [monthB]);
+  // Bank / product / location are filtered ON THE SERVER, so a chosen portfolio always loads ALL of
+  // its cases (previously only the latest 2000 cases were loaded and then filtered in the browser).
+  const qRef = React.useRef({});
+  React.useEffect(() => { qRef.current = { monthB, bankF, prodF, branchF }; }, [monthB, bankF, prodF, branchF]);
+  const [loading, setLoading] = React.useState(false);
   const load = () => {
-    const mb = monthBRef.current;
-    return api('/api/cases?limit=2000&with_notes=true' + (mb ? '&month_bucket=' + encodeURIComponent(mb) : ''))
-      .then(d => setRows(Array.isArray(d) ? d : [])).catch(e => setErr(e.message || 'Could not load'));
+    const { monthB: mb, bankF: b, prodF: pr, branchF: br } = qRef.current;
+    const p = new URLSearchParams({ limit: String(SHEET_LIMIT), with_notes: 'true' });
+    if (mb) p.set('month_bucket', mb); if (b) p.set('bank', b); if (pr) p.set('product', pr); if (br) p.set('branch', br);
+    setLoading(true);
+    return api('/api/cases?' + p).then(d => setRows(Array.isArray(d) ? d : [])).catch(e => setErr(e.message || 'Could not load'))
+      .finally(() => setLoading(false));
   };
+  const loadOpts = () => api('/api/cases/sheet-options' + (qRef.current.monthB ? '?month_bucket=' + encodeURIComponent(qRef.current.monthB) : ''))
+    .then(o => setOpts(o && o.combos ? o : { combos: [], total: 0 })).catch(() => {});
 
-  // Reload the sheet whenever the month filter changes so each month's book is separate.
-  React.useEffect(() => { load(); }, [monthB]);
+  // Reload when the month / portfolio / location changes (each month's book stays separate).
+  React.useEffect(() => { qRef.current = { monthB, bankF, prodF, branchF }; load(); }, [monthB, bankF, prodF, branchF]);
+  React.useEffect(() => { qRef.current = { ...qRef.current, monthB }; loadOpts(); }, [monthB]);
+  // How many cases the current bank/product/location selection really has (for the "showing N of M" note).
+  const scopeTotal = (opts.combos || []).filter(c => (!bankF || c.bank === bankF) && (!prodF || c.product === prodF)
+    && (!branchF || (c.branch || '').toLowerCase() === branchF.toLowerCase())).reduce((a, c) => a + c.count, 0);
 
   React.useEffect(() => {
     api('/api/sheet/prefs').then(p => setPrefs({
@@ -7173,7 +7208,7 @@ function SheetView({ user, config }) {
         if (m.type === 'case_update' && m.case) {
           setRows(rs => { const i = rs.findIndex(r => r.id === m.case.id); if (i < 0) return rs; const cp = rs.slice(); cp[i] = { ...cp[i], ...m.case }; return cp; });
         } else if (m.type === 'data_changed' || m.type === 'payment' || m.type === 'case_changed') {
-          load();
+          load(); loadOpts();
         } else if (m.type === 'presence') {
           setPresence(p => { const cp = { ...p }; if (m.editors && m.editors.length) cp[m.case_id] = m.editors; else delete cp[m.case_id]; return cp; });
         }
@@ -7376,21 +7411,30 @@ function SheetView({ user, config }) {
         <div className="sv-kpi"><b>₹{sheetFmt(collected)}</b><span>Collected</span></div>
         <div className="sv-kpi"><b>₹{sheetFmt(pending)}</b><span>Pending</span></div>
         <div style={{ alignSelf: 'center', marginLeft: 'auto', fontSize: 11.5, color: 'var(--ink-dim)' }}>
-          {(bankF || prodF) ? `Totals for ${[bankF, prodF].filter(Boolean).join(' · ')}` : 'Totals across all portfolios'}</div>
+          {(bankF || prodF || branchF) ? `Totals for ${[bankF, prodF, branchF && '📍 ' + branchF].filter(Boolean).join(' · ')}` : 'Totals across all portfolios'}</div>
       </div>
 
       <div className="sv-bar" style={{ position: 'relative' }}>
         <span><i className="sv-dot" style={{ background: live ? 'var(--good)' : '#c9ced8' }} />{live ? 'Live' : 'Reconnecting…'}</span>
-        <span style={{ color: 'var(--ink-dim)', fontSize: 12 }}>{viewRows().length} rows</span>
+        <span style={{ color: 'var(--ink-dim)', fontSize: 12 }}>{loading ? 'loading…' : viewRows().length + ' rows'}</span>
+        {!loading && scopeTotal > rows.length && rows.length >= SHEET_LIMIT && <span style={{ color: 'var(--warn)', fontSize: 12, fontWeight: 600 }}
+          title="The sheet loads up to 5,000 cases at once. Pick a bank / product / location to see all of a portfolio.">
+          ⚠ showing latest {rows.length.toLocaleString('en-IN')} of {scopeTotal.toLocaleString('en-IN')} — pick a bank / product / location</span>}
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search card no / name / account…"
           style={{ width: 250, border: '1px solid var(--stroke-soft)', borderRadius: 10, padding: '7px 10px', fontSize: 13 }} />
         <select className="sv-btn" value={bankF} onChange={e => { setBankF(e.target.value); setProdF(''); }}>
           <option value="">All banks</option>
-          {[...new Set(rows.map(r => r.bank).filter(Boolean))].sort().map(b => <option key={b} value={b}>{b}</option>)}
+          {[...new Set((opts.combos || []).map(c => c.bank).filter(Boolean))].sort().map(b => <option key={b} value={b}>{b}</option>)}
         </select>
-        <select className="sv-btn" value={prodF} onChange={e => setProdF(e.target.value)}>
+        <select className="sv-btn" value={prodF} onChange={e => { setProdF(e.target.value); setBranchF(''); }}>
           <option value="">All products</option>
-          {[...new Set(rows.filter(r => !bankF || r.bank === bankF).map(r => r.product).filter(Boolean))].sort().map(p => <option key={p} value={p}>{p}</option>)}
+          {[...new Set((opts.combos || []).filter(c => !bankF || c.bank === bankF).map(c => c.product).filter(Boolean))].sort().map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select className="sv-btn" value={branchF} onChange={e => setBranchF(e.target.value)} title="Location (branch)">
+          <option value="">All locations</option>
+          {(() => { const m = new Map(); (opts.combos || []).filter(c => (!bankF || c.bank === bankF) && (!prodF || c.product === prodF) && c.branch)
+              .forEach(c => { const k = c.branch.toLowerCase(); const e = m.get(k); m.set(k, { label: e ? e.label : c.branch, n: (e ? e.n : 0) + c.count }); });
+            return [...m.values()].sort((a, b) => a.label.localeCompare(b.label)).map(x => <option key={x.label} value={x.label}>📍 {x.label} ({x.n})</option>); })()}
         </select>
         <MultiSelect label="Cycle" icon="🔄" width={150} selected={cyclesSel} onChange={setCyclesSel}
           options={[...new Set(rows.map(r => r.cycle).filter(Boolean))].sort().map(c => ({ value: c, label: 'Cycle ' + c }))} />
@@ -10227,7 +10271,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
         {user.role === 'it_support_view' && <div className="glass card" style={{ margin: '0 0 12px', padding: '8px 12px', borderLeft: '3px solid var(--info)', fontSize: 13 }}>
           👁️ <b>IT Support View</b> — read-only. You can view and download everything, but changes are disabled (any edit will be blocked).
         </div>}
-        <PredictiveScreenPop key={user.id + ':' + user.role} user={user} />
+        {user.role === 'telecaller' && <PredictiveScreenPop key={user.id + ':' + user.role} user={user} />}
         {render()}
         {notifCase && <CaseDrawer c={{ id: notifCase }} onClose={() => setNotifCase(null)} onChanged={() => {}} />}
         {trackOnboard && <NativeTrackingOnboard onDone={() => { try { localStorage.setItem('ssd_trackonboard', '1'); } catch (e) {} setTrackOnboard(false); }} />}
