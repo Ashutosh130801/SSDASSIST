@@ -4050,7 +4050,7 @@ function GeocodeButton() {
   // already attempted). retryMode=true → re-attempt addresses that were tried but couldn't be pinned.
   // monthOnly=true → restrict to THIS month's cases (period = current month).
   const run = async (retryMode, monthOnly) => {
-    if (!st || !st.configured) { toast('Set LOCATIONIQ_KEY in the server .env, then restart the backend.'); return; }
+    if (!st || !st.configured) { toast('Set GOOGLE_GEOCODING_KEY (or LOCATIONIQ_KEY) in the server .env, then restart the backend.'); return; }
     setRunning(true); stop.current = false; let done = 0, failed = 0, aiTot = 0, localTot = 0;
     // Smaller batches = each HTTP request finishes in ~10s instead of ~30-40s, so it stays well under
     // any proxy/gateway/browser request timeout — the usual cause of a "Stopped — error" mid-run.
@@ -4094,6 +4094,11 @@ function GeocodeButton() {
   // Always-visible count: pinned / left to locate / unresolved — overall, then this month.
   const counts = (
     <span className="muted" style={{ fontSize: 11.5, marginLeft: 6 }}>
+      {st.provider && <span className="badge" title={st.provider === 'google'
+        ? `Addresses are located with Google Geocoding (GOOGLE_GEOCODING_KEY). Places look-ups today: ${(st.places_today && st.places_today.used) || 0} of ${(st.places_today && st.places_today.cap) || 0}`
+        : 'Addresses are located with LocationIQ. Add GOOGLE_GEOCODING_KEY to .env and restart to use Google.'}
+        style={{ marginRight: 6, background: st.provider === 'google' ? '#DCFCE7' : '#FEF3C7', color: st.provider === 'google' ? '#166534' : '#92400E' }}>
+        {st.provider === 'google' ? '🟢 Google geocoding' : '🟡 LocationIQ'}</span>}
       📍 <b style={{ color: 'var(--good)' }}>{st.with_pin}</b> pinned · <b>{st.remaining}</b> left
       {st.failed_total ? <> · <b style={{ color: 'var(--warn)' }}>{st.failed_total}</b> unresolved</> : null}
       <span style={{ opacity: .7 }}> (of {st.total})</span>
@@ -6416,6 +6421,7 @@ function MISView({ user }) {
   const [d, setD] = useState(null); const [err, setErr] = useState(''); const [emp, setEmp] = useState('');
   const [full, setFull] = useState(false);
   const [monthB, setMonthB] = useState('current');   // month-wise MIS: 'current' | 'next' | '' (all)
+  const misAutoMonth = React.useRef(false);          // auto-pick a month that has data, once
   const [cycleView, setCycleView] = useState(false); // 'Cycle-wise MIS' — every portfolio by cycle
   const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // area-wise MIS
   const [cyclesSel, setCyclesSel] = useState([]); const [fosSel, setFosSel] = useState([]); const [callerSel, setCallerSel] = useState([]);
@@ -6432,6 +6438,13 @@ function MISView({ user }) {
     api('/api/cases/product-summary' + (monthB ? '?month_bucket=' + monthB : '')).then(rows => {
       const seen = {}, list = [];
       (rows || []).forEach(r => { const k = r.bank + '||' + r.product; if (!seen[k] && r.product !== '—') { seen[k] = 1; list.push({ bank: r.bank, product: r.product, branch: '', branch_split: !!r.branch_split, branches: (r.branches || []).map(b => b.branch) }); } });
+      // First open only: if THIS month has nothing in scope (e.g. a team lead whose cases are all
+      // uploaded for next month), jump to next month, then last month, instead of a dead end.
+      if (!list.length && !misAutoMonth.current) {
+        const nxt = monthB === 'current' ? 'next' : monthB === 'next' ? 'last' : null;
+        if (nxt) { setMonthB(nxt); return; }
+        misAutoMonth.current = true;
+      } else misAutoMonth.current = true;
       setProds(list);
       setSel(cur => (cur && list.find(p => p.bank === cur.bank && p.product === cur.product)) ? cur : (list[0] || null));
     }).catch(() => setProds([]));
@@ -6458,7 +6471,13 @@ function MISView({ user }) {
   const dl = (tables) => download(`/api/mis/download?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}&tables=${tables}${mbq}`, `MIS_${sel.bank}_${sel.product}${branchSel.length ? '_' + branchSel.join('-') : ''}_${monthB || 'all'}.xlsx`);
 
   if (!prods) return <Loader />;
-  if (!prods.length) return <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>No products with cases yet. Upload a product file first.</div>;
+  if (!prods.length) return <div className="glass card" style={{ padding: 24, textAlign: 'center' }}>
+    <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+      {[['current', '📅 This month'], ['next', '🔜 Next month'], ['last', '🗄️ Last month'], ['', 'All months']].map(([v, lbl]) =>
+        <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => { misAutoMonth.current = true; setProds(null); setMonthB(v); }}>{lbl}</div>)}
+    </div>
+    <div className="muted">No portfolios with cases in {({ current: 'this month', next: 'next month', last: 'last month' })[monthB] || 'any month'} for your view. Try another month above.</div>
+  </div>;
 
   const fmtCell = (k, v) => {
     if (v === null || v === undefined || v === '') return '—';

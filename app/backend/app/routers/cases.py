@@ -248,6 +248,8 @@ def geocode_status(db: Session = Depends(get_db),
                           .count())
     return {"total": total, "with_pin": with_pin, "remaining": remaining,
             "failed_total": failed_total, "configured": _geo.has_key(),
+            "provider": _geo.provider() if _geo.has_key() else None,
+            "places_today": _geo.places_used_today() if _geo.provider() == "google" else 0,
             "month": cp, "month_total": month_total, "month_with_pin": month_with_pin,
             "month_remaining": month_remaining, "month_failed_total": month_failed_total}
 

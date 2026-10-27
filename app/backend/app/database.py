@@ -45,6 +45,17 @@ try:
 except Exception:
     pass
 
+# Same for the address geocoder, so it's obvious at startup whether Google is being used.
+try:
+    if settings.google_geocoding_key:
+        print("[SSD] Geocoding: Google (GOOGLE_GEOCODING_KEY set)", flush=True)
+    elif getattr(settings, "locationiq_key", ""):
+        print("[SSD] Geocoding: LocationIQ (no GOOGLE_GEOCODING_KEY)", flush=True)
+    else:
+        print("[SSD] Geocoding: OFF (no GOOGLE_GEOCODING_KEY / LOCATIONIQ_KEY)", flush=True)
+except Exception:
+    pass
+
 if _is_sqlite:
     # Keep read endpoints (ORDER BY / large SELECTs) working even when the host
     # disk is nearly full: sort/temp data goes to memory instead of a disk temp
