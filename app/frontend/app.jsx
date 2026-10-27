@@ -1549,7 +1549,10 @@ function UploadsModal({ onClose, onDone }) {
               <td className="muted" style={{ fontSize: 12 }}>{b.branch ? '📍 ' + b.branch : '—'}</td>
               <td className="muted" style={{ fontSize: 12, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={b.filename}>{b.filename || '—'}</td>
               <td className="muted" style={{ fontSize: 12 }}>{b.uploaded_by}</td>
-              <td className="mono">{b.live}{b.removed ? <span className="muted" style={{ fontSize: 11 }}> (+{b.removed} removed)</span> : ''}</td>
+              <td className="mono">{b.live}{b.removed ? <span className="muted" style={{ fontSize: 11 }}> (+{b.removed} removed)</span> : ''}
+                {b.rows_updated ? <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}
+                  title="These rows matched cases that were already loaded for this month (an earlier upload), so they were updated in place — they stay owned by that earlier upload.">
+                  ↻ {b.rows_updated} updated existing</div> : null}</td>
               <td style={{ textAlign: 'right' }}>
                 {confirmId === b.id
                   ? <span style={{ whiteSpace: 'nowrap' }}>
@@ -7200,8 +7203,20 @@ function SheetView({ user, config }) {
     return api('/api/cases?' + p).then(d => setRows(Array.isArray(d) ? d : [])).catch(e => setErr(e.message || 'Could not load'))
       .finally(() => setLoading(false));
   };
+  const sheetAutoMonth = React.useRef(false);   // first open only: jump to a month that has data
   const loadOpts = () => api('/api/cases/sheet-options' + (qRef.current.monthB ? '?month_bucket=' + encodeURIComponent(qRef.current.monthB) : ''))
-    .then(o => setOpts(o && o.combos ? o : { combos: [], total: 0 })).catch(() => {});
+    .then(o => {
+      const oo = o && o.combos ? o : { combos: [], total: 0 };
+      // If THIS month has no cases in scope (e.g. a team lead whose book is next month's upload),
+      // open next month instead — then last month — rather than an empty sheet.
+      if (!sheetAutoMonth.current) {
+        const mb = qRef.current.monthB;
+        const nxt = !oo.total ? (mb === 'current' ? 'next' : mb === 'next' ? 'last' : null) : null;
+        if (nxt) { setMonthB(nxt); return; }
+        sheetAutoMonth.current = true;
+      }
+      setOpts(oo);
+    }).catch(() => {});
 
   // Reload when the month / portfolio / location changes (each month's book stays separate).
   React.useEffect(() => { qRef.current = { monthB, bankF, prodF, branchF }; load(); }, [monthB, bankF, prodF, branchF]);

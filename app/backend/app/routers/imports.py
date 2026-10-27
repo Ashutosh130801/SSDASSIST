@@ -1351,6 +1351,7 @@ def recent_batches(limit: int = 25, offset: int = 0, q: str | None = None,
         "segment": getattr(b, "segment", None), "period": getattr(b, "period", None),
         "branch": getattr(b, "branch", None),
         "rows_total": b.rows_total, "rows_imported": b.rows_imported,
+        "rows_updated": b.rows_skipped or 0,      # rows that matched an EXISTING case (updated, not new)
         "uploaded_by": names.get(b.uploaded_by) or "—",
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "live": int(live.get(b.id, 0)), "removed": int(gone.get(b.id, 0)),
