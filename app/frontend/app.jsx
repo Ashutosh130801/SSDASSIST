@@ -8808,12 +8808,22 @@ function TLPortfoliosView({ user }) {
     setSel(p); setLead(null); setTeam(null); setTeamCases(null); setLeads(null); setLeadErr('');
     api('/api/team/portfolio/leads?' + qOf(p)).then(setLeads).catch(e => setLeadErr(e.message || 'Could not load'));
   };
-  const openLead = (l) => { setLead(l); setTab('team'); };
+  const autoMonth = React.useRef(false);   // per opened team: jump to a month that actually has cases
+  const openLead = (l) => { autoMonth.current = false; setMonthB('current'); setLead(l); setTab('team'); };
   useEffect(() => {
     if (!sel || !lead) return;
     setTeam(null); setTeamCases(null);
     const q = qOf(sel) + '&month_bucket=' + monthB;
-    api('/api/team/portfolio/lead/' + lead.id + '/overview?' + q).then(setTeam).catch(e => toast(e.message || 'Could not load', 'err'));
+    api('/api/team/portfolio/lead/' + lead.id + '/overview?' + q).then(t => {
+      // Opened on This month but the portfolio's cases are next month's upload (or last month's)?
+      // Move to the month that has them instead of showing an all-zero team.
+      if (!autoMonth.current && t && t.kpis && !t.kpis.cases) {
+        const nxt = monthB === 'current' ? 'next' : monthB === 'next' ? 'last' : null;
+        if (nxt) { setMonthB(nxt); return; }
+      }
+      autoMonth.current = true;
+      setTeam(t);
+    }).catch(e => toast(e.message || 'Could not load', 'err'));
     api('/api/team/portfolio/lead/' + lead.id + '/cases?' + q).then(r => setTeamCases(r.cases || [])).catch(() => setTeamCases([]));
   }, [lead, monthB]);
   const pfLabel = (p) => p.bank + ' · ' + p.product + (p.branch ? ' · ' + p.branch : '');
@@ -8826,7 +8836,7 @@ function TLPortfoliosView({ user }) {
         <b>{lead.name}{lead.is_me ? ' (you)' : ''}</b>
         <span className="muted" style={{ fontSize: 12 }}>· {pfLabel(sel)} · read-only</span>
         <div style={{ flex: 1 }} />
-        {['current', 'last', 'all'].map(m => <div key={m} className={cx('chip', monthB === m && 'on')} onClick={() => setMonthB(m)}>{m === 'current' ? 'This month' : m === 'last' ? 'Last month' : 'All'}</div>)}
+        {['current', 'next', 'last', 'all'].map(m => <div key={m} className={cx('chip', monthB === m && 'on')} onClick={() => { autoMonth.current = true; setMonthB(m); }}>{m === 'current' ? 'This month' : m === 'next' ? 'Next month' : m === 'last' ? 'Last month' : 'All'}</div>)}
       </div>
       {!team ? <div className="muted" style={{ padding: 16 }}>Loading…</div> : <>
         <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginTop: 8 }}>
