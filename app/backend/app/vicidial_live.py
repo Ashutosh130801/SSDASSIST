@@ -192,3 +192,73 @@ def agents_live(conn, agents):
             else:
                 raise
     return out
+
+
+# ---------------------------------------------------------------- agent control from RecoverIQ
+# Hang up / disposition / back-to-Ready, sent straight to ViciDial's Agent API (agc/api.php) for
+# the signed-in caller's OWN agent session — so the caller never waits for the ViciDial agent screen.
+
+# RecoverIQ disposition → ViciDial status code (max 6 chars). Admin can override per connection
+# in Connections ("Disposition map"); every code used must exist in the campaign's statuses.
+DEFAULT_DISPO_MAP = {
+    "PTP": "PTP", "RTP": "RTP", "PAID": "PAID", "DISPUTE": "DISPUT",
+    "RNR": "NA", "BUSY": "B", "NOT REACHABLE": "NA", "SWITCHED OFF": "SWOFF",
+    "WRONG NUMBER": "WN",
+}
+
+VICI_MARKER = "[via ViciDial]"      # stamped on a call log saved from the live-call bar (dedupe key)
+
+
+def vici_status_for(conn, disposition: str) -> str:
+    caps = conn.capabilities or {}
+    custom = {str(k).strip().upper(): str(v).strip().upper()
+              for k, v in (caps.get("dispo_map") or {}).items() if str(v).strip()}
+    d = (disposition or "").strip().upper()
+    return (custom.get(d) or DEFAULT_DISPO_MAP.get(d) or re.sub(r"[^A-Z0-9]", "", d)[:6] or "NI")[:6]
+
+
+def agent_api(conn, agent: str, function: str, value: str, timeout: float = 6.0) -> tuple[bool, str]:
+    """One Agent-API command for this agent. Returns (ok, ViciDial's reply text)."""
+    caps = conn.capabilities or {}
+    if not caps.get("vici_user") or not caps.get("vici_pass"):
+        raise LiveCallError("ViciDial API credentials are missing. Ask an administrator to update Connections.")
+    params = {"source": str(caps.get("source") or "recoveriq")[:20], "user": caps["vici_user"],
+              "pass": caps["vici_pass"], "agent_user": agent, "function": function, "value": value}
+    try:
+        with httpx.Client(timeout=timeout, verify=False, follow_redirects=False) as client:
+            r = client.get(conn.base_url.rstrip("/") + "/agc/api.php", params=params)
+        txt = (r.text or "").strip()
+    except httpx.HTTPError:
+        raise LiveCallError("Cannot reach ViciDial. Check the server URL / network and try again.") from None
+    return txt.upper().startswith("SUCCESS"), txt.splitlines()[0][:200] if txt else "no response"
+
+
+def my_agent(db, user):
+    """(connection, agent_user) for the signed-in CALLER, or a LiveCallError explaining why not."""
+    if (user.role or "") != "telecaller":
+        raise LiveCallError("Only callers control a ViciDial call from RecoverIQ.")
+    conn = connection_for(db, user)
+    if not conn:
+        raise LiveCallError("No ViciDial connection for your branch.")
+    agent = agent_for(conn, user)
+    if not agent:
+        raise LiveCallError("Your ViciDial agent ID isn't mapped. Set it in Security → ViciDial agent ID.")
+    return conn, agent
+
+
+def resume_ready_later(conn, agent, attempts=(1.5, 2.5, 4.0)):
+    """Put the agent back to READY once ViciDial has taken the disposition. ViciDial applies agent
+    commands on its next screen refresh, so retry a few times in the background (never blocks)."""
+    import threading
+    import time as _t
+
+    def run():
+        for wait in attempts:
+            _t.sleep(wait)
+            try:
+                ok, txt = agent_api(conn, agent, "external_pause", "RESUME", timeout=5.0)
+            except Exception:
+                continue
+            if ok or "NOT PAUSED" in txt.upper() or "READY" in txt.upper():
+                return
+    threading.Thread(target=run, daemon=True).start()

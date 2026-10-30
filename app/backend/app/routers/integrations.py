@@ -515,6 +515,7 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
         "sftp_user": (body.get("sftp_user") or "").strip(),
         "sftp_base": (body.get("sftp_base") or "").strip(),
         "agent_map": body.get("agent_map") or {},
+        "dispo_map": body.get("dispo_map") or {},
     }
     campaigns = _clean_campaigns(body.get("campaigns"))
     if existing:
@@ -527,6 +528,8 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
             caps["sftp_pass"] = body["sftp_pass"].strip()
         if isinstance(body.get("agent_map"), dict):
             caps["agent_map"] = body["agent_map"]
+        if isinstance(body.get("dispo_map"), dict) and body["dispo_map"]:
+            caps["dispo_map"] = body["dispo_map"]      # blank box keeps the saved map
         if campaigns is not None:
             caps["campaigns"] = campaigns
         existing.name = name or existing.name
@@ -749,6 +752,25 @@ def vicidial_dispo(key: str = "", case: str = "", dispo: str = "", rec: str = ""
         if emp:
             ag = db.query(models.User).filter(models.User.emp_code == emp).first()
     d = (dispo or "").upper().strip()
+    # Already dispositioned from RecoverIQ's live-call bar? Then that call log IS this call —
+    # attach the recording + talk time to it instead of logging the call a second time, and keep
+    # the RecoverIQ disposition (PTP amount/date etc.) as the source of truth.
+    from ..vicidial_live import VICI_MARKER
+    _since = datetime.now(timezone.utc) - timedelta(minutes=30)
+    _q = db.query(models.CallLog).filter(models.CallLog.case_id == cs.id,
+                                         models.CallLog.created_at >= _since,
+                                         models.CallLog.note.contains(VICI_MARKER),
+                                         models.CallLog.recording_url.is_(None))
+    if ag:
+        _q = _q.filter(models.CallLog.caller_id == ag.id)
+    mine = _q.order_by(models.CallLog.id.desc()).first()
+    if mine:
+        mine.recording_url = rec_url or mine.recording_url
+        if length:
+            mine.note = ((mine.note or "") + f" · {length}s")[:2000]
+        conn.last_seen = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": True, "case_id": cs.id, "recording": bool(rec_url), "merged_into": mine.id}
     note = f"ViciDial call ({dispo or 'dispo'})" + (f" · {length}s" if length else "")
     db.add(models.CallLog(case_id=cs.id, caller_id=(ag.id if ag else None),
                           disposition=d or "CALL", note=note[:2000], recording_url=rec_url))
@@ -915,6 +937,60 @@ def vicidial_my_live_call(response: Response, db: Session = Depends(get_db),
         return live_call_for(db, user)
     except LiveCallError as exc:
         return {"state": "error", "detail": str(exc), "poll_after_ms": 15000}
+
+
+@router.post("/vicidial/my-hangup")
+def vicidial_my_hangup(body: dict = Body(default={}), db: Session = Depends(get_db),
+                       user: models.User = Depends(get_current_user)):
+    """Live-call bar → ⏹ Hang up. Ends the caller's OWN current ViciDial call at once (Agent API
+    external_hangup) — no waiting for the ViciDial agent screen to notice."""
+    from ..vicidial_live import my_agent, agent_api, LiveCallError
+    try:
+        conn, agent = my_agent(db, user)
+        ok, txt = agent_api(conn, agent, "external_hangup", "1")
+    except LiveCallError as exc:
+        raise HTTPException(409, str(exc)) from None
+    if not ok:
+        raise HTTPException(502, f"ViciDial didn't hang up: {txt}")
+    cid = body.get("case_id")
+    audit.record(db, user, "call", None, entity_type="dialer",
+                 detail=f"Hung up ViciDial call from RecoverIQ" + (f" (case #{cid})" if cid else ""))
+    db.commit()
+    return {"ok": True, "detail": txt}
+
+
+@router.post("/vicidial/my-dispo")
+def vicidial_my_dispo(body: dict = Body(...), db: Session = Depends(get_db),
+                      user: models.User = Depends(get_current_user)):
+    """Live-call bar → ✓ Save & Ready. The call log itself is saved by POST /api/calls (same as the
+    normal Log-call form); this then (1) marks that log as the ViciDial call, so ViciDial's own
+    dispo callback attaches the recording to it instead of logging the call twice, (2) sends the
+    matching status to ViciDial (Agent API external_status) and (3) puts the caller back to READY."""
+    from ..vicidial_live import my_agent, agent_api, vici_status_for, resume_ready_later, LiveCallError, VICI_MARKER
+    try:
+        conn, agent = my_agent(db, user)
+    except LiveCallError as exc:
+        raise HTTPException(409, str(exc)) from None
+    log_id = body.get("call_log_id")
+    if log_id:
+        cl = db.query(models.CallLog).filter(models.CallLog.id == int(log_id),
+                                             models.CallLog.caller_id == user.id).first()
+        if cl and VICI_MARKER not in (cl.note or ""):
+            cl.note = ((cl.note or "").rstrip() + ("  " if cl.note else "") + VICI_MARKER)[:2000]
+            db.commit()
+    status = vici_status_for(conn, body.get("disposition") or "")
+    try:
+        ok, txt = agent_api(conn, agent, "external_status", status)
+    except LiveCallError as exc:
+        return {"ok": False, "status": status, "warning": str(exc)}
+    if not ok:
+        return {"ok": False, "status": status,
+                "warning": f"Saved in RecoverIQ, but ViciDial refused status '{status}' ({txt}). "
+                           "Disposition it on the ViciDial screen, and ask admin to add this status to the "
+                           "campaign or map it in Connections → Disposition map."}
+    if body.get("ready", True):
+        resume_ready_later(conn, agent)
+    return {"ok": True, "status": status, "ready": bool(body.get("ready", True))}
 
 
 class MyTestCall(BaseModel):

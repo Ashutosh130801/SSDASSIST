@@ -4820,11 +4820,58 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
   const [ncAddr, setNcAddr] = useState(''); const [ncPhone, setNcPhone] = useState(''); const [ncEdit, setNcEdit] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dialerOn, setDialerOn] = useState(false); const [dialing, setDialing] = useState(false);
+  // ── Live ViciDial call on THIS case (callers only): {phase:'live'|'ended', callId, t0, t1} ──
+  const [liveCall, setLiveCall] = useState(null); const [, setTick] = useState(0); const [hanging, setHanging] = useState(false);
+  const isCaller = ((store.u || {}).role) === 'telecaller';
+  const onLiveRef = React.useRef(() => {});
+  const [watchUntil, setWatchUntil] = useState(0);   // after "Dial via dialer": look for the connect for a while
+  useEffect(() => {
+    if (!isCaller) return;
+    const onLive = (st) => {
+      if (!st) return;
+      setLiveCall(prev => {
+        if (st.state === 'connected' && Number(st.case_id) === Number(c.id)) {
+          return (prev && prev.callId === st.call_id) ? prev : { phase: 'live', callId: st.call_id, t0: Date.now() };
+        }
+        // The call we were showing is no longer connected → it ended (customer or agent hung up).
+        if (prev && prev.phase === 'live' && !(st.state === 'connected' && st.call_id === prev.callId)
+            && ['waiting', 'connected', 'logged_out'].includes(st.state)) return { ...prev, phase: 'ended', t1: Date.now() };
+        return prev;
+      });
+    };
+    onLiveRef.current = onLive;
+    onLive(window.__riqLive);
+    const h = (e) => onLive(e.detail);
+    window.addEventListener('riq-vici-live', h);
+    return () => window.removeEventListener('riq-vici-live', h);
+  }, [c.id]);
+  useEffect(() => { if (!liveCall || liveCall.phase !== 'live') return; const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, [liveCall && liveCall.phase]);
+  // While a call is live on this case (or right after dialing it), check ViciDial every 2 s so the
+  // bar flips to the disposition step the moment the customer hangs up. Idle otherwise.
+  const polling = isCaller && ((liveCall && liveCall.phase === 'live') || watchUntil > Date.now());
+  useEffect(() => {
+    if (!polling) return;
+    let alive = true;
+    const t = setInterval(() => {
+      if (watchUntil && Date.now() > watchUntil && !(liveCall && liveCall.phase === 'live')) { setWatchUntil(0); return; }
+      api('/api/integration/vicidial/my-live-call').then(st => { if (!alive) return;
+        try { window.__riqLive = st; } catch (e) {} onLiveRef.current(st); }).catch(() => {});
+    }, 2000);
+    return () => { alive = false; clearInterval(t); };
+  }, [polling, watchUntil]);
+  const hangUp = async () => {
+    setHanging(true);
+    try { await api('/api/integration/vicidial/my-hangup', { method: 'POST', body: { case_id: c.id } });
+      setLiveCall(lc => lc ? { ...lc, phase: 'ended', t1: Date.now() } : lc); setTab('call');
+    } catch (e) { toast(e.message || 'Could not hang up', 'err'); } finally { setHanging(false); }
+  };
+  const mmss = (ms) => { const sec = Math.max(0, Math.floor(ms / 1000)); return String(Math.floor(sec / 60)).padStart(2, '0') + ':' + String(sec % 60).padStart(2, '0'); };
   useEffect(() => { api('/api/integration/status').then(s => setDialerOn(!!(s.dialer && s.dialer.connected))).catch(() => {}); }, []);
   const dialViaDialer = async () => {
     setDialing(true);
     try { const r = await api('/api/integration/click-to-call', { method: 'POST', body: { case_id: c.id } });
       toast('Dialing via ' + (r.dialer || 'dialer') + '…');
+      if (r.via === 'vicidial') setWatchUntil(Date.now() + 90000);   // show the live-call bar once it connects
     } catch (e) { toast(e.message || 'Dialer call failed', 'err'); } finally { setDialing(false); }
   };
   const saveContact = async () => {
@@ -4858,7 +4905,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
     window.open(`https://wa.me/${String(cur.phone).replace(/[^0-9]/g, '')}?text=${encodeURIComponent(msg)}`, '_blank');
     api('/api/templates/log', { method: 'POST', body: { case_id: c.id, channel: 'whatsapp', text: msg } }).then(() => { toast('Message logged'); refresh(); }).catch(() => {});
   };
-  const logCall = async () => {
+  const logCall = async (viaVici = false) => {
     // Caller does NOT choose NORM/STAB — the amount decides PAID vs PARTIAL. A ₹0 auto-debit
     // settlement is done from the Payment tab, not here, to avoid an accidental ₹0 settle.
     if (isPaid && !(parseFloat(amt || '0') > 0)) { toast('Enter the amount collected (use the Payment tab for a ₹0 auto-debit).', 'err'); return; }
@@ -4867,8 +4914,22 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
     if (isPTP) { body.ptp_amount = amt || '0'; body.ptp_date = ptpDate || null; }
     else if (isPaid) { body.paid_amount = amt || '0'; }   // caller does NOT choose NORM/STAB
     else { body.follow_up_date = followDate || null; }
-    try { await api('/api/calls', { method: 'POST', body }); toast('Call logged.');
-      setCallNote(''); await refresh(); onChanged && onChanged();
+    try {
+      // ONE save: this call log is the disposition. From the live-call bar it is then also sent to
+      // ViciDial (status + back to Ready) — no second disposition anywhere.
+      const log = await api('/api/calls', { method: 'POST', body });
+      if (viaVici === true) {
+        try {
+          const r = await api('/api/integration/vicidial/my-dispo', { method: 'POST',
+            body: { case_id: c.id, disposition: dispo, call_log_id: log && log.id, ready: true } });
+          if (r.ok) toast(`Saved · ViciDial ${r.status} · back to Ready`);
+          else toast(r.warning || 'Saved in RecoverIQ — finish the disposition on the ViciDial screen.', 'err');
+        } catch (e) { toast('Saved in RecoverIQ — ViciDial: ' + (e.message || 'not reachable') + '. Disposition it on the ViciDial screen.', 'err'); }
+        setLiveCall(null);
+      } else toast('Call logged.');
+      setCallNote(''); setAmt(''); setPtpDate(''); setFollowDate('');
+      await refresh(); onChanged && onChanged();
+      if (viaVici === true && notice) onClose && onClose();   // screen-pop drawer: clear for the next call
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
   const recordPay = async () => {
@@ -4909,6 +4970,29 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
     <div className="drawer-bg" onClick={onClose} style={notice ? { zIndex: 2600 } : undefined}>
       <div className="drawer glass" ref={drawerRef} tabIndex={-1} role="dialog" aria-label={'Case ' + c.id} onClick={e => e.stopPropagation()}>
         {notice && <div role="status" style={{ padding: '8px 12px', marginBottom: 10, background: 'rgba(37,99,235,.10)', color: 'var(--info)', borderRadius: 8 }}>{notice}</div>}
+        {liveCall && liveCall.phase === 'live' && <div role="status" style={{ position: 'sticky', top: 0, zIndex: 3, display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, borderRadius: 10, background: '#DCFCE7', border: '1px solid #86EFAC' }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#16A34A', boxShadow: '0 0 0 4px rgba(22,163,74,.2)' }} />
+          <b style={{ color: '#166534' }}>📞 On call · {cur.customer_name || 'customer'} · {mmss(Date.now() - liveCall.t0)}</b>
+          <div style={{ flex: 1 }} />
+          <button className="btn sm" style={{ background: '#DC2626', color: '#fff', borderColor: '#DC2626' }} disabled={hanging} onClick={hangUp}>{hanging ? 'Hanging up…' : '⏹ Hang up'}</button>
+        </div>}
+        {liveCall && liveCall.phase === 'ended' && <div style={{ position: 'sticky', top: 0, zIndex: 3, padding: '10px 12px', marginBottom: 10, borderRadius: 10, background: '#FEF3C7', border: '1px solid #FCD34D' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <b style={{ color: '#92400E' }}>Call ended{liveCall.t1 ? ' · ' + mmss(liveCall.t1 - liveCall.t0) : ''} — disposition</b>
+            <div style={{ flex: 1 }} />
+            <button className="btn ghost sm" title="Dismiss — disposition it on the ViciDial screen instead" onClick={() => setLiveCall(null)}>✕</button>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
+            <select className="input" style={{ maxWidth: 170 }} value={dispo} onChange={e => setDispo(e.target.value)}>{callDispos.map(d => <option key={d}>{d}</option>)}</select>
+            {isPTP && <><input className="input" style={{ maxWidth: 120 }} type="number" placeholder="PTP ₹" value={amt} onChange={e => setAmt(e.target.value)} />
+              <input className="input" style={{ maxWidth: 150 }} type="date" value={ptpDate} onChange={e => setPtpDate(e.target.value)} /></>}
+            {isPaid && <input className="input" style={{ maxWidth: 140 }} type="number" placeholder="Collected ₹" value={amt} onChange={e => setAmt(e.target.value)} />}
+            {!isPTP && !isPaid && <input className="input" style={{ maxWidth: 150 }} type="date" title="Schedule next call (optional)" value={followDate} onChange={e => setFollowDate(e.target.value)} />}
+            <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Remark" value={callNote} onChange={e => setCallNote(e.target.value)} />
+            <button className="btn gold" disabled={busy || cur.closed} onClick={() => logCall(true)}>✓ Save &amp; Ready</button>
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>Saves the call log here and dispositions the call in ViciDial — no need to log it again.</div>
+        </div>}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
           <div><div className="brandfont" style={{ fontSize: 19, fontWeight: 600 }}>{cur.customer_name || '—'}</div>
             <div className="muted" style={{ fontSize: 13 }}>{cur.account_no || 'no account'} · {cur.bank || ''}</div></div>
@@ -5036,7 +5120,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
               <div style={{ fontSize: 12, color: 'var(--warn)', marginTop: -2 }}>Below the settlement ({INR2(Number(cur.settle_target))}) — this will be recorded as a <b>partial payment</b>. For a ₹0 auto-debit settlement, use the Payment tab.</div>}</div>}
           {!isPTP && !isPaid && <div className="field"><label>Schedule next call (optional)</label><input className="input" type="date" value={followDate} onChange={e => setFollowDate(e.target.value)} /></div>}
           <div className="field"><label>Note</label><textarea className="input" value={callNote} onChange={e => setCallNote(e.target.value)} /></div>
-          <button className="btn gold block" onClick={logCall} disabled={busy || cur.closed}>Save call</button>
+          <button className="btn gold block" onClick={() => logCall(false)} disabled={busy || cur.closed}>Save call</button>
         </div>}
         {tab === 'pay' && !ptpOnly && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
           <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
@@ -8629,7 +8713,7 @@ function ConnectionsView({ user }) {
   const [busy, setBusy] = useState(false);
   // ViciDial connection form (connect RecoverIQ to the EXISTING office ViciDial — no self-hosted dialer)
   const [vf, setVf] = useState({ name: 'ViciDial', base_url: '', vici_user: '', vici_pass: '',
-    campaign_id: '', list_id: '', source: 'recoveriq', phone_code: '91', recording_base: '', branch: '', agent_map: '',
+    campaign_id: '', list_id: '', source: 'recoveriq', phone_code: '91', recording_base: '', branch: '', agent_map: '', dispo_map: '',
     sftp_host: '', sftp_port: '22', sftp_user: '', sftp_pass: '', sftp_base: '' });
   const [vbusy, setVbusy] = useState(false);
   const [dispoUrl, setDispoUrl] = useState('');
@@ -8647,6 +8731,8 @@ function ConnectionsView({ user }) {
     if (!list.length && caps.campaign_id && caps.list_id)
       list.push({ name: caps.campaign_id, bank: '', campaign_id: caps.campaign_id, list_id: caps.list_id });
     setCamps(list.length ? list : [{ name: '', bank: '', campaign_id: '', list_id: '' }]);
+    const dm = caps.dispo_map || {};
+    if (Object.keys(dm).length) setVf(f => f.dispo_map ? f : { ...f, dispo_map: Object.entries(dm).map(([k, v]) => k + '=' + v).join('\n') });
   }, [rows]);
   const setCamp = (i, k, val) => setCamps(cs => cs.map((c, j) => j === i ? { ...c, [k]: val } : c));
   const parseAgentMap = (txt) => {
@@ -8663,7 +8749,7 @@ function ConnectionsView({ user }) {
     try {
       const campaigns = (camps || []).filter(c => (c.campaign_id || '').trim() && (c.list_id || '').trim());
       const first = campaigns[0] || {};
-      const body = { ...vf, agent_map: parseAgentMap(vf.agent_map), recoveriq_base: window.location.origin,
+      const body = { ...vf, agent_map: parseAgentMap(vf.agent_map), dispo_map: parseAgentMap(vf.dispo_map), recoveriq_base: window.location.origin,
         campaigns, campaign_id: first.campaign_id || vf.campaign_id, list_id: first.list_id || vf.list_id };
       const r = await api('/api/integration/vicidial/connect', { method: 'POST', body });
       setDispoUrl(r.dispo_url || ''); setStartCallUrl(r.start_call_url || ''); await load();
@@ -8754,6 +8840,10 @@ function ConnectionsView({ user }) {
         <div className="field"><label>Agent map — RecoverIQ emp code = ViciDial agent user (one per line)</label>
           <textarea className="input" rows={3} value={vf.agent_map} onChange={e => setVf({ ...vf, agent_map: e.target.value })}
             placeholder={'TC001=8001\nTC002=8002'} /></div>
+        <div className="field"><label>Disposition map — RecoverIQ disposition = ViciDial status code (used by the live-call bar's "Save &amp; Ready")</label>
+          <textarea className="input" rows={4} value={vf.dispo_map} onChange={e => setVf({ ...vf, dispo_map: e.target.value })}
+            placeholder={'Leave blank for defaults:\nPTP=PTP\nRTP=RTP\nPAID=PAID\nRNR=NA\nBUSY=B\nNOT REACHABLE=NA\nSWITCHED OFF=SWOFF\nWRONG NUMBER=WN\nDISPUTE=DISPUT'} />
+          <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>Every status code here must exist in your ViciDial campaign (Campaigns → Statuses), max 6 characters.</div></div>
         <button className="btn gold" onClick={viciConnect} disabled={vbusy}>{vbusy ? 'Saving…' : '💾 Save ViciDial connection'}</button>
         {startCallUrl && <div className="glass" style={{ marginTop: 12, padding: 10, borderRadius: 10 }}>
           <b>Paste into ViciDial → Campaign → Start Call URL</b>
@@ -10144,7 +10234,9 @@ function PredictiveScreenPop({ user }) {
     let saved = [];
     try { const value = JSON.parse(sessionStorage.getItem(storageKey) || '[]'); if (Array.isArray(value)) saved = value.filter(x => typeof x === 'string').slice(-100); } catch (e) {}
     const watcher = window.RecoverIQPredictive.createWatcher({
-      request: api, subscribe: ssdWS, seen: new Set(saved), onStatus: setLive,
+      request: api, subscribe: ssdWS, seen: new Set(saved),
+      // Share the live ViciDial state so an open case drawer can show the live-call bar.
+      onStatus: st => { setLive(st); try { window.__riqLive = st; window.dispatchEvent(new CustomEvent('riq-vici-live', { detail: st })); } catch (e) {} },
       remember: ids => { try { sessionStorage.setItem(storageKey, JSON.stringify(ids)); } catch (e) {} },
       onCall: (c, call) => {
         setPops(previous => {
