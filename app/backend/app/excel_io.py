@@ -87,7 +87,7 @@ HEADER_MAP = {
     "ccno": "card_no", "cardno": "card_no",
     "cardnumber": "card_no", "creditcardno": "card_no", "creditcardnumber": "card_no",
     "branch": "branch", "branchname": "branch",
-    "cardtype": "product", "product": "product",
+    "cardtype": "x:card_type", "product": "product",   # CARD TYPE kept as-is (not the portfolio)
     # Address — accept the common header variants seen across bank allocation files.
     "address": "address", "add": "address", "addr": "address",
     "custaddress": "address", "customeraddress": "address", "custadd": "address",
@@ -144,7 +144,8 @@ HEADER_MAP = {
     "paidunpaid": "paid_status",
     "status": "final_status",
     "dispo": "disposition", "disposition": "disposition", "tcdispo": "disposition",
-    "remarks": "remarks", "tcremark": "remarks",
+    "remarks": "remarks", "tcremark": "x:tc_remark",   # own field; fills remarks only when no REMARKS column
+    "ucicdode": "x:ucic", "ucic": "x:ucic", "ucicid": "x:ucic", "ucicno": "x:ucic", "uciccode": "x:ucic",
     "finalstatus": "final_status", "miscode": "final_status",   # MIS CODE = the status code
     # ---- PL/BL (personal / business loan) layout ----
     # BL carries TWO daily-updated targets: OD STAB and OD NORM (paid one is marked in STATUS).
@@ -365,7 +366,14 @@ def record_to_case_kwargs(rec: dict) -> dict:
             kwargs["status"] = "paid"
 
     # free-form loan / caller columns (PL/BL: tenure, OD, PTP/paid date, mode, addresses, ...)
-    extra = rec.get("_extra")
+    extra = dict(rec.get("_extra") or {})
+    if rec.get("_emi_os") not in (None, ""):          # EMI 0/S: used for ENR above AND kept on the case
+        try:
+            extra.setdefault("x_emi_os", float(rec["_emi_os"]))
+        except (TypeError, ValueError):
+            pass
+    if not kwargs.get("remarks") and extra.get("x_tc_remark"):   # sheets with only a TC REMARK column
+        kwargs["remarks"] = extra["x_tc_remark"]
     if extra:
         kwargs["extra"] = extra
     return kwargs

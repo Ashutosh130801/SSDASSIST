@@ -26,6 +26,7 @@ OBSTACLE = {"DISPUTE", "WRONG NUMBER", "WRONG_NUMBER", "RNR", "SWITCHED OFF", "S
             "NOT REACHABLE", "NOT_REACHABLE", "REFUSED", "NC", "NO_CONTACT", "NO CONTACT"}
 
 router = APIRouter(prefix="/api/mis", tags=["mis"])
+DEFAULT_TARGET_PCT = 85.0          # every FOS / caller, every portfolio — unless set explicitly
 
 MIS_ROLES = ("admin", "manager", "backend", "headoffice", "teamlead")
 
@@ -236,12 +237,20 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
                                                  models.MisTarget.product == product).all()}
     # ONE product-wide target % (manager/back-office sets it once) — same goal for every
     # FOS and caller, not per-person. Stored under the sentinel emp_name "*ALL*".
-    product_target = targets.get("*ALL*", 0.0)
+    # Default 85% for every FOS / caller in every portfolio unless a target is set explicitly:
+    # a per-person target (by emp code or name) wins over the portfolio-wide '*ALL*' target.
+    product_target = targets.get("*ALL*") or DEFAULT_TARGET_PCT
+    _tup = {str(k).strip().upper(): v for k, v in targets.items() if v}
+
+    def _person_target(label):
+        lab = (label or "").strip().upper()
+        code = lab.split("(")[-1].rstrip(")").strip() if "(" in lab else ""
+        return _tup.get(code) or _tup.get(lab) or _tup.get(lab.split(" (")[0].strip()) or product_target
 
     def _leaderboard(groups):
         lb = []
         for r in groups:
-            tgt = product_target
+            tgt = _person_target(r.get("label"))
             tenr = round(r["enr"] * tgt / 100.0, 2)
             to_tgt = _pct(r["paid_enr"], tenr) if tenr else 0.0
             lb.append({
@@ -599,7 +608,7 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
     cards = []
     for (bank, product, branch), rows in buckets.items():
         a = _agg(rows)
-        tgt = targets.get((bank, product), 0.0)
+        tgt = targets.get((bank, product)) or DEFAULT_TARGET_PCT
         tenr = round(a["enr"] * tgt / 100.0, 2)
 
         # the whole portfolio (same bank/product/branch/month) — to rank me against peers
@@ -747,7 +756,7 @@ def mis_by_cycle(month_bucket: str | None = "current",
 
     out = []
     for (bank, product, branch), cyc_map in portfolios.items():
-        tgt = targets.get((bank, product), 0.0)
+        tgt = targets.get((bank, product)) or DEFAULT_TARGET_PCT
         cycles = []
         for cyc, rows in cyc_map.items():
             a = _agg(rows)
@@ -800,7 +809,7 @@ def rtsb(month_bucket: str | None = "current", role: str | None = None,
     rows: dict[tuple, dict] = {}
     for c in cases:
         enr = _f(c.enr)
-        tenr_share = enr * targets.get((c.bank, c.product), 0.0) / 100.0
+        tenr_share = enr * (targets.get((c.bank, c.product)) or DEFAULT_TARGET_PCT) / 100.0
         for pid, prole in ((c.assigned_caller_id, "caller"), (c.assigned_fos_id, "fos")):
             if not pid:
                 continue
@@ -1087,3 +1096,50 @@ def overview(db: Session = Depends(get_db), user: models.User = Depends(require_
 
     return {"by_product": summarise(lambda c: (c.bank or "—") + " · " + (c.product or "—")),
             "by_bank": summarise(lambda c: c.bank)}
+
+
+# ───────────────────────────── MIS PIVOT (the team's own pivot workbook, live) ─────────────────────────────
+def _pivot_cases(db, user, bank, product, month_bucket, branch):
+    from sqlalchemy import func as _func
+    from .cases import _bucket_for_period
+    period = _period_for(month_bucket)
+    q = _scope(db.query(models.Case), user, bucket=_bucket_for_period(period)).filter(
+        models.Case.bank == bank, models.Case.product == product, models.Case.removed.isnot(True))
+    if period:
+        q = q.filter(models.Case.period == period)
+    br = [b.strip().lower() for b in (_csv_str(branch) or []) if b.strip()]
+    if br:
+        q = q.filter(_func.lower(_func.trim(models.Case.branch)).in_(br))
+    return q.all(), period
+
+
+@router.get("/pivot-data")
+def pivot_data(bank: str = Query(...), product: str = Query(...), month_bucket: str | None = None,
+               branch: str | None = None, db: Session = Depends(get_db),
+               user: models.User = Depends(require_roles(*MIS_ROLES))):
+    """Rows (same 46 columns as the team's MAIN sheet) + FOS targets, for the in-app pivot viewer."""
+    from .. import mis_pivot
+    cases, period = _pivot_cases(db, user, bank, product, month_bucket, branch)
+    rows = mis_pivot.build_rows(db, cases)
+    return {"columns": mis_pivot.COLUMNS, "rows": rows, "targets": mis_pivot.targets_for(db, bank, product, rows),
+            "default_target": mis_pivot.DEFAULT_TARGET, "bank": bank, "product": product,
+            "period": period, "branch": branch or "", "count": len(rows)}
+
+
+@router.get("/pivot-xlsx")
+def pivot_xlsx(bank: str = Query(...), product: str = Query(...), month_bucket: str | None = None,
+               branch: str | None = None, db: Session = Depends(get_db),
+               user: models.User = Depends(require_roles(*MIS_ROLES))):
+    """The team's MIS pivot workbook (real pivots + slicers), filled from live RecoverIQ data."""
+    from .. import mis_pivot, audit
+    cases, period = _pivot_cases(db, user, bank, product, month_bucket, branch)
+    rows = mis_pivot.build_rows(db, cases)
+    data = mis_pivot.render_xlsx(rows, f"{bank} · {product}", mis_pivot.targets_for(db, bank, product, rows))
+    safe = "".join(ch for ch in f"MIS_PIVOT_{bank}_{product}_{branch or 'ALL'}_{period or 'all'}"
+                   if ch.isalnum() or ch in "-_ ").replace(" ", "_")
+    audit.record(db, user, "download", None, entity_type="download",
+                 detail=f"MIS pivot Excel — {bank} / {product}{' / ' + branch if branch else ''} ({len(rows)} cases)")
+    db.commit()
+    return StreamingResponse(io.BytesIO(data),
+                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{safe}.xlsx"'})

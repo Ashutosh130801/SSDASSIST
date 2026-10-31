@@ -6502,6 +6502,207 @@ function CycleMIS({ compact, bank, product, monthBucket }) {
 }
 
 /* ==================== MIS (analysis core) ==================== */
+/* ==================== MIS PIVOT viewer — the team's own pivot MIS, read-only, in a popup ====================
+   Same sheets (MIS · MAIN), same 12 tables in the same order and the same slicers as the Excel
+   (CYC · CALLER · AREA · FOS NAME on every pivot; DATE · V DATE on the FOS-count table; PAID/UNPAID on
+   the cycle-count table; a cycle picker on the selected-cycle target table). View only — no editing.
+   Full-screen, print, and download the real Excel (live pivots + slicers). */
+function MisPivotViewer({ bank, product, monthB, branch, onClose }) {
+  const [d, setD] = useState(null); const [err, setErr] = useState('');
+  const [sheet, setSheet] = useState('MIS');
+  const [sl, setSl] = useState({ CYC: [], CALLER: [], AREA: [], 'FOS NAME': [], DATE: [], 'V DATE': [] });
+  const [pu4, setPu4] = useState('');            // PAID/UNPAID page filter on the cycle-count table
+  const [selCyc, setSelCyc] = useState('ALL');   // selected-cycle target table
+  const [mainLimit, setMainLimit] = useState(500);
+  const [full, setFull] = useState(false);
+  const boxRef = React.useRef(null); const printRef = React.useRef(null);
+  const qs = `bank=${encodeURIComponent(bank)}&product=${encodeURIComponent(product)}${monthB ? '&month_bucket=' + monthB : ''}${branch ? '&branch=' + encodeURIComponent(branch) : ''}`;
+  useEffect(() => { api('/api/mis/pivot-data?' + qs).then(setD).catch(e => setErr(e.message || 'Could not load')); }, [qs]);
+  useEffect(() => {
+    const h = () => setFull(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', h);
+    return () => document.removeEventListener('fullscreenchange', h);
+  }, []);
+  const toggleFull = () => { try { document.fullscreenElement ? document.exitFullscreen() : boxRef.current.requestFullscreen(); } catch (e) {} };
+  const fname = `MIS_PIVOT_${bank}_${product}${branch ? '_' + branch : ''}_${(d && d.period) || 'all'}.xlsx`.replace(/[^\w.-]+/g, '_');
+  const dl = () => download('/api/mis/pivot-xlsx?' + qs, fname);
+  const doPrint = () => {
+    const w = window.open('', '_blank'); if (!w || !printRef.current) return;
+    w.document.write(`<html><head><title>${bank} · ${product} — MIS</title><style>${PV_CSS}
+      body{font-family:Calibri,Arial,sans-serif;margin:12px} .pv-grid{display:block!important} .pv-col{display:block;margin:0 0 14px}
+      @page{size:landscape;margin:8mm}</style></head><body>${printRef.current.innerHTML}</body></html>`);
+    w.document.close(); setTimeout(() => { w.focus(); w.print(); }, 300);
+  };
+
+  // ── data ──
+  const cols = (d && d.columns) || [];
+  const all = React.useMemo(() => !d ? [] : d.rows.map(a => { const o = {}; cols.forEach((c, i) => { o[c] = a[i]; }); return o; }), [d]);
+  const by = (k) => (o) => !sl[k].length || sl[k].includes(String(o[k] ?? ''));
+  const rows = all.filter(o => by('CYC')(o) && by('CALLER')(o) && by('AREA')(o) && by('FOS NAME')(o));
+  const rowsDate = rows.filter(o => by('DATE')(o) && by('V DATE')(o));
+  const uniq = (k, src = all) => [...new Set(src.map(o => String(o[k] ?? '')))].sort((a, b) => {
+    const na = Number(a), nb = Number(b); return (!isNaN(na) && !isNaN(nb) && a !== '' && b !== '') ? na - nb : a.localeCompare(b);
+  });
+  const N = (v) => Number(v) || 0;
+  const sum = (rs, k) => rs.reduce((s, o) => s + N(o[k]), 0);
+  const paid = (o) => o['PAID/UNPAID'] === 'PAID';
+  const tgtOf = (name) => (d && d.targets && d.targets[name] != null) ? d.targets[name] : ((d && d.default_target) || 0.85);
+  const money = (v) => v ? '₹' + Math.round(v).toLocaleString('en-IN') : '';
+  const cnt = (v) => v ? Math.round(v).toLocaleString('en-IN') : '';
+  const pct = (v) => (v * 100).toFixed(1) + '%';
+  const tint = (v) => v >= 0.6 ? 'pv-good' : v >= 0.3 ? 'pv-mid' : 'pv-bad';
+  const fosList = uniq('FOS NAME', rows);
+
+  // MIS block: group → COUNT. / % / ENR. / AMT. rows × PAID(NORM, STAB, Total) · UNPAID · Grand Total
+  const MisBlock = ({ title, k, src }) => {
+    const groups = uniq(k, src);
+    const meas = (rs) => {
+      const segs = [rs.filter(o => paid(o) && o.STATUS === 'NORM'), rs.filter(o => paid(o) && o.STATUS === 'STAB'), rs.filter(paid), rs.filter(o => !paid(o)), rs];
+      const t = sum(rs, 'ENR') || 1;
+      return [['COUNT.', segs.map(s => s.length), cnt], ['%', segs.map(s => sum(s, 'ENR') / t), pct],
+              ['ENR.', segs.map(s => sum(s, 'ENR')), money], ['AMT.', segs.map(s => sum(s, 'AMOUNT')), money]];
+    };
+    return <table className="pv-t"><thead>
+      <tr><th colSpan={6} className="pv-title">{title}</th></tr>
+      <tr><th rowSpan={2}>Row Labels</th><th colSpan={3} className="pv-green">PAID</th><th rowSpan={2} className="pv-red">UNPAID</th><th rowSpan={2}>Grand Total</th></tr>
+      <tr><th className="pv-green">NORM</th><th className="pv-green">STAB</th><th className="pv-green">PAID Total</th></tr></thead>
+      <tbody>{groups.map(g => { const rs = src.filter(o => String(o[k] ?? '') === g); return <React.Fragment key={g}>
+        <tr className="pv-grp"><td colSpan={6}>{g || '(blank)'}</td></tr>
+        {meas(rs).map(([m, vals, f]) => <tr key={m}><td className="pv-m">{m}</td>{vals.map((v, i) =>
+          <td key={i} className={cx(m === '%' && i === 2 && tint(v), i === 4 && 'pv-b')}>{m === '%' ? pct(v) : f(v)}</td>)}</tr>)}
+      </React.Fragment>; })}
+      {meas(src).map(([m, vals, f]) => <tr key={'t' + m} className="pv-tot"><td>Total {m}</td>{vals.map((v, i) => <td key={i}>{m === '%' ? pct(v) : f(v)}</td>)}</tr>)}
+      </tbody></table>;
+  };
+  const Simple = ({ title, heads, colors, rowsOf, fmt, src = rows, label = 'Row Labels' }) => {
+    const names = uniq('FOS NAME', src);
+    const tot = heads.map((_, j) => names.reduce((s, n) => s + N(rowsOf(src.filter(o => o['FOS NAME'] === n))[j]), 0));
+    return <table className="pv-t"><thead><tr><th colSpan={heads.length + 1} className="pv-title">{title}</th></tr>
+      <tr><th>{label}</th>{heads.map((h, j) => <th key={h} className={colors && colors[j]}>{h}</th>)}</tr></thead>
+      <tbody>{names.map((n, i) => { const v = rowsOf(src.filter(o => o['FOS NAME'] === n)); return <tr key={n} className={i % 2 ? 'pv-z' : ''}>
+        <td className="pv-name">{n}</td>{v.map((x, j) => <td key={j}>{(fmt[j] || cnt)(x)}</td>)}</tr>; })}
+        <tr className="pv-tot"><td>Grand Total</td>{tot.map((x, j) => <td key={j}>{(fmt[j] || cnt)(x)}</td>)}</tr></tbody></table>;
+  };
+  const Target = ({ title, src, names }) => {
+    const H = ['COUNT', 'UNPAID', 'PAID', 'ENR', 'TARGET %', 'TARGET ENR', 'ACHIEVED %', 'ACHIEVED ENR', 'PENDING VISIT', 'CASH COLL'];
+    const C = ['pv-blue', 'pv-red', 'pv-green', 'pv-blue', 'pv-amber', 'pv-amber', 'pv-green', 'pv-green', 'pv-slate', 'pv-sky'];
+    const line = (rs, name) => { const enr = sum(rs, 'ENR'), pe = sum(rs.filter(paid), 'ENR'), t = name ? tgtOf(name) : null;
+      return [rs.length, rs.filter(o => !paid(o)).length, rs.filter(paid).length, enr, t, t == null ? null : enr * t, enr ? pe / enr : 0, pe,
+              rs.filter(o => o.VISITS === 'NOT VISITED').length, sum(rs, 'AMOUNT')]; };
+    const lines = names.map(n => [n, line(src.filter(o => o['FOS NAME'] === n), n)]);
+    const tt = line(src, null); tt[5] = lines.reduce((s, [, v]) => s + (v[5] || 0), 0); tt[4] = tt[3] ? tt[5] / tt[3] : (d.default_target || 0.85);
+    const F = [cnt, cnt, cnt, money, pct, money, pct, money, cnt, money];
+    return <table className="pv-t"><thead><tr><th colSpan={11} className="pv-title pv-violet">{title}</th></tr>
+      <tr><th>EMP NAME</th>{H.map((h, j) => <th key={h} className={C[j]}>{h}</th>)}</tr></thead>
+      <tbody>{lines.map(([n, v], i) => <tr key={n} className={i % 2 ? 'pv-z' : ''}><td className="pv-name">{n}</td>
+        {v.map((x, j) => <td key={j} className={cx(j === 4 && 'pv-tgt', j === 6 && tint(x))}>{x == null ? '' : F[j](x)}</td>)}</tr>)}
+        <tr className="pv-tot"><td>Grand Total</td>{tt.map((x, j) => <td key={j}>{x == null ? '' : F[j](x)}</td>)}</tr></tbody></table>;
+  };
+
+  const slicer = (k, label, icon, src = all) => <MultiSelect key={k} label={label} icon={icon} width={260} selected={sl[k]}
+    onChange={v => setSl(s => ({ ...s, [k]: v }))} options={uniq(k, src).map(v => ({ value: v, label: v || '(blank)' }))} />;
+  const anyFilter = Object.values(sl).some(a => a.length) || pu4;
+
+  return <div className="drawer-bg" style={{ zIndex: 3000 }} onClick={onClose}>
+    <style>{PV_CSS}</style>
+    <div ref={boxRef} className="glass" onClick={e => e.stopPropagation()}
+      style={{ position: 'fixed', inset: full ? 0 : '3vh 2vw', background: '#fff', borderRadius: full ? 0 : 14, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,.35)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: '#0F2747', color: '#fff', flexWrap: 'wrap' }}>
+        <b style={{ fontSize: 15 }}>📊 MIS Pivot — {bank} · {product}{branch ? ' · ' + branch : ''}</b>
+        <span style={{ fontSize: 12, opacity: .8 }}>{d ? `${d.period || 'All months'} · ${rows.length}${rows.length !== all.length ? ' of ' + all.length : ''} cases · view only` : ''}</span>
+        <div style={{ flex: 1 }} />
+        {['MIS', 'MAIN'].map(s => <div key={s} onClick={() => setSheet(s)} className="chip"
+          style={{ background: sheet === s ? '#fff' : 'rgba(255,255,255,.12)', color: sheet === s ? '#0F2747' : '#fff', border: 'none' }}>{s}</div>)}
+        <button className="btn sm" onClick={toggleFull}>{full ? '🗗 Exit full screen' : '⛶ Full screen'}</button>
+        <button className="btn sm" onClick={doPrint} disabled={!d}>🖨 Print</button>
+        <button className="btn sm gold" onClick={dl} disabled={!d}>⬇ Download Excel</button>
+        <button className="btn sm" onClick={() => { if (document.fullscreenElement) document.exitFullscreen(); onClose(); }}>✕</button>
+      </div>
+      {d && <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderBottom: '1px solid #D6DEEA', flexWrap: 'wrap', background: '#F7F9FC' }}>
+        <b style={{ fontSize: 12, color: '#0F2747' }}>Slicers:</b>
+        {slicer('CYC', 'CYC', '🔄')}{slicer('CALLER', 'CALLER', '📞')}{slicer('AREA', 'AREA', '📍')}{slicer('FOS NAME', 'FOS NAME', '🧍')}
+        <span style={{ width: 1, height: 18, background: '#CBD5E1' }} />
+        <span className="muted" style={{ fontSize: 11 }}>FOS-count table:</span>{slicer('DATE', 'DATE', '📅', rows)}{slicer('V DATE', 'V DATE', '🛵', rows)}
+        {anyFilter && <div className="chip" style={{ color: 'var(--bad)' }} onClick={() => { setSl({ CYC: [], CALLER: [], AREA: [], 'FOS NAME': [], DATE: [], 'V DATE': [] }); setPu4(''); }}>✕ Clear</div>}
+      </div>}
+      <div style={{ flex: 1, overflow: 'auto', padding: 14, background: '#fff' }}>
+        {err ? <div className="muted" style={{ color: 'var(--bad)' }}>{err}</div> : !d ? <Loader /> : d.rows.length === 0 ?
+          <div className="muted">No cases in this portfolio for the selected month.</div> :
+        <div ref={printRef}>
+          {sheet === 'MIS' ? <div className="pv-grid">
+            <div className="pv-col">
+              <MisBlock title="MIS — CYCLE wise" k="CYC" src={rows} />
+              <div className="pv-page"><b>PAID/UNPAID</b>
+                <select value={pu4} onChange={e => setPu4(e.target.value)}><option value="">(All)</option><option>PAID</option><option>UNPAID</option></select></div>
+              <table className="pv-t"><thead><tr><th colSpan={2} className="pv-title">CYCLE wise — COUNT</th></tr>
+                <tr><th>Row Labels</th><th>Count of ENR</th></tr></thead><tbody>
+                {(() => { const src = rows.filter(o => !pu4 || o['PAID/UNPAID'] === pu4); return <>
+                  {uniq('CYC', src).map((c, i) => <tr key={c} className={i % 2 ? 'pv-z' : ''}><td>{c}</td><td>{src.filter(o => String(o.CYC) === c).length}</td></tr>)}
+                  <tr className="pv-tot"><td>Grand Total</td><td>{src.length}</td></tr></>; })()}
+              </tbody></table>
+              <MisBlock title="MIS — CAT ALLO wise" k="CAT ALLO" src={rows} />
+            </div>
+            <div className="pv-col">
+              {(() => { const names = fosList; const F3 = (rs) => { const t = sum(rs, 'ENR') || 1; return [rs.filter(paid), rs.filter(o => !paid(o)), rs].flatMap(s => [s.length, sum(s, 'ENR') / t, sum(s, 'ENR')]); };
+                const tot = F3(rows);
+                return <table className="pv-t"><thead><tr><th colSpan={10} className="pv-title">MIS — FOS wise PAID / UNPAID</th></tr>
+                  <tr><th rowSpan={2}>Row Labels</th><th colSpan={3} className="pv-green">PAID</th><th colSpan={3} className="pv-red">UNPAID</th><th colSpan={3}>Total</th></tr>
+                  <tr>{[0, 1, 2].flatMap(g => ['COUNT.', '%', 'ENR.'].map(h => <th key={g + h} className={g === 0 ? 'pv-green' : g === 1 ? 'pv-red' : ''}>{h}</th>))}</tr></thead>
+                  <tbody>{names.map((n, i) => { const v = F3(rows.filter(o => o['FOS NAME'] === n)); return <tr key={n} className={i % 2 ? 'pv-z' : ''}><td className="pv-name">{n}</td>
+                    {v.map((x, j) => <td key={j} className={j === 1 ? tint(x) : ''}>{j % 3 === 0 ? cnt(x) : j % 3 === 1 ? pct(x) : money(x)}</td>)}</tr>; })}
+                    <tr className="pv-tot"><td>Grand Total</td>{tot.map((x, j) => <td key={j}>{j % 3 === 0 ? cnt(x) : j % 3 === 1 ? pct(x) : money(x)}</td>)}</tr></tbody></table>; })()}
+            </div>
+            <div className="pv-col"><Simple title="FOS — VISITS" heads={['VISITED', 'NOT VISITED', 'Grand Total']} colors={['pv-green', 'pv-red', '']}
+              rowsOf={rs => [rs.filter(o => o.VISITS === 'VISITED').length, rs.filter(o => o.VISITS === 'NOT VISITED').length, rs.length]} fmt={[]} /></div>
+            <div className="pv-col"><Simple title="FOS — CASH COLLECTED" heads={['Sum of AMOUNT']} colors={['pv-green']} rowsOf={rs => [sum(rs, 'AMOUNT')]} fmt={[money]} /></div>
+            <div className="pv-col"><Target title="FOS TARGET — ALL CYCLES (follows the slicers)" src={rows} names={fosList} /></div>
+            <div className="pv-col">
+              <div className="pv-page"><b>FOS TARGET — CYCLE ▸</b>
+                <select value={selCyc} onChange={e => setSelCyc(e.target.value)}><option>ALL</option>{uniq('CYC').map(c => <option key={c}>{c}</option>)}</select></div>
+              <Target title={'FOS TARGET — ' + (selCyc === 'ALL' ? 'ALL CYCLES' : 'CYCLE ' + selCyc)} src={all.filter(o => selCyc === 'ALL' || String(o.CYC) === selCyc)} names={uniq('FOS NAME')} />
+            </div>
+            <div className="pv-col"><MisBlock title="MIS — AREA wise" k="AREA" src={rows} /></div>
+            <div className="pv-col"><MisBlock title="MIS — CALLER wise" k="CALLER" src={rows} /></div>
+            <div className="pv-col"><Simple title="FOS — CASES (DATE / V DATE slicers)" heads={['Count of ENR']} rowsOf={rs => [rs.length]} fmt={[]} src={rowsDate} /></div>
+            <div className="pv-col"><Simple title="FOS — PAID / UNPAID × VISITS" heads={['PAID', 'UNPAID · NOT VISITED', 'UNPAID · VISITED', 'UNPAID Total', 'Grand Total']}
+              colors={['pv-green', 'pv-red', 'pv-amber', 'pv-red', '']} fmt={[]}
+              rowsOf={rs => { const up = rs.filter(o => !paid(o)); return [rs.filter(paid).length, up.filter(o => o.VISITS === 'NOT VISITED').length, up.filter(o => o.VISITS === 'VISITED').length, up.length, rs.length]; }} /></div>
+          </div> : <div>
+            <table className="pv-t pv-main"><thead><tr>{cols.map((c, j) => <th key={c} className={j < 4 ? '' : 'pv-blue'}>{c}</th>)}</tr></thead>
+              <tbody>{rows.slice(0, mainLimit).map((o, i) => <tr key={i} className={i % 2 ? 'pv-z' : ''}>{cols.map(c => {
+                const v = o[c]; const isM = ['ENR', 'AMOUNT', 'NORM', 'STAB', 'PENDING', 'CURR_BAL', 'PRI', 'CREDIT', 'EXCESS LIMIT', 'EMI 0/S', 'LAST PAYMENT AMOUNT'].includes(c);
+                return <td key={c} className={cx(c === 'PAID/UNPAID' && (v === 'PAID' ? 'pv-paid' : 'pv-unpaid'), !isM && typeof v === 'string' && 'pv-name')}>{isM ? (v == null || v === '' ? '' : money(N(v)) || '₹0') : (v ?? '')}</td>; })}</tr>)}</tbody></table>
+            {rows.length > mainLimit && <button className="btn sm" style={{ marginTop: 8 }} onClick={() => setMainLimit(l => l + 1000)}>Show more ({rows.length - mainLimit} more rows)</button>}
+          </div>}
+        </div>}
+      </div>
+    </div>
+  </div>;
+}
+const PV_CSS = `
+.pv-grid{display:flex;gap:18px;align-items:flex-start}
+.pv-col{flex:0 0 auto;display:flex;flex-direction:column;gap:14px}
+.pv-t{border-collapse:collapse;font-size:12px;font-family:Calibri,Arial,sans-serif;background:#fff}
+.pv-t th,.pv-t td{border:1px solid #D6DEEA;padding:3px 8px;text-align:center;white-space:nowrap;color:#1F2937}
+.pv-t th{background:#0F2747;color:#fff;font-weight:700}
+.pv-t th.pv-title{background:#0F2747;text-align:left;font-size:13px}
+.pv-t th.pv-violet{background:#7C3AED}
+.pv-t th.pv-green{background:#15803D}.pv-t th.pv-red{background:#B91C1C}.pv-t th.pv-blue{background:#1D4ED8}
+.pv-t th.pv-amber{background:#B45309}.pv-t th.pv-slate{background:#64748B}.pv-t th.pv-sky{background:#0369A1}
+.pv-t td.pv-name,.pv-t td.pv-m{text-align:left}.pv-t td.pv-m{color:#334155;padding-left:16px}
+.pv-t tr.pv-grp td{background:#EEF3FF;color:#0F2747;font-weight:700;text-align:left}
+.pv-t tr.pv-z td{background:#F7F9FC}
+.pv-t tr.pv-tot td{background:#DCE6FA;color:#0F2747;font-weight:700;border-top:2px solid #0F2747}
+.pv-t tr.pv-tot td:first-child{text-align:left}
+.pv-t td.pv-b{font-weight:700}
+.pv-t td.pv-good{background:#C6EFCE!important}.pv-t td.pv-mid{background:#FFEB9C!important}.pv-t td.pv-bad{background:#FFC7CE!important}
+.pv-t td.pv-tgt{background:#FFF7D6!important;color:#92400E;font-weight:700}
+.pv-t td.pv-paid{background:#DCFCE7!important;color:#166534;font-weight:700}.pv-t td.pv-unpaid{background:#FEE2E2!important;color:#991B1B;font-weight:700}
+.pv-main td{max-width:260px;overflow:hidden;text-overflow:ellipsis}
+.pv-page{display:flex;gap:8px;align-items:center;font-size:12px;color:#0F2747}
+.pv-page select{border:1px solid #D6DEEA;background:#FFF7D6;border-radius:6px;padding:2px 6px;font-weight:700;color:#92400E}
+`;
+
 function MISView({ user }) {
   const canTarget = ['admin', 'manager', 'backend', 'headoffice'].includes(user.role);
   const [prods, setProds] = useState(null); const [sel, setSel] = useState(null); const [ov, setOv] = useState(null);
@@ -6510,6 +6711,7 @@ function MISView({ user }) {
   const [monthB, setMonthB] = useState('current');   // month-wise MIS: 'current' | 'next' | '' (all)
   const misAutoMonth = React.useRef(false);          // auto-pick a month that has data, once
   const [cycleView, setCycleView] = useState(false); // 'Cycle-wise MIS' — every portfolio by cycle
+  const [pivotOpen, setPivotOpen] = useState(false); // the team's own pivot MIS (view / print / download)
   const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // area-wise MIS
   const [cyclesSel, setCyclesSel] = useState([]); const [fosSel, setFosSel] = useState([]); const [callerSel, setCallerSel] = useState([]);
   const [tlSel, setTlSel] = useState([]);   // team-lead-wise filter (values are team-lead names/codes)
@@ -6657,6 +6859,8 @@ function MISView({ user }) {
           <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
         {/* Cycle-wise MIS — every portfolio broken down by billing cycle. */}
         <div className={cx('chip', cycleView && 'on')} onClick={() => setCycleView(v => !v)} title="MIS analytics for each portfolio, per billing cycle">🔄 Cycle-wise MIS</div>
+        {sel && <button className="btn sm gold" onClick={() => setPivotOpen(true)} title="The team's MIS pivot sheet for this portfolio — view, filter, print or download as Excel">📊 MIS Pivot</button>}
+        {pivotOpen && sel && <MisPivotViewer bank={sel.bank} product={sel.product} monthB={monthB} branch={branchSel.join(',')} onClose={() => setPivotOpen(false)} />}
         {/* Multi-select filters — the whole dashboard (tables + charts + %) recomputes on the filtered set. */}
         <MultiSelect label="Cycle" icon="🔄" width={150} selected={cyclesSel} onChange={setCyclesSel}
           options={(filterOpts.cycles || []).map(c => ({ value: c, label: 'Cycle ' + c }))} />
