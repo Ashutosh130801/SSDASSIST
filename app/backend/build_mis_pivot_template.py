@@ -115,6 +115,7 @@ defs = {
     "h_amber": xf(0, F_WHITE, FI[AMBER], wrap=True), "h_slate": xf(0, F_WHITE, FI[SLATE], wrap=True),
     "h_sky": xf(0, F_WHITE, FI[SKY], wrap=True), "title": xf(0, F_TITLE, FI[VIOLET], "left"),
     "sel": xf(0, F_AMBER, FI[YEL]),
+    "p_title": xf(0, F_TITLE, FI[NAVY], "left"),       # heading above each pivot table
     # target-table body + totals
     "name": xf(0, F_TEXT, 0, "left"), "int": xf(3), "rup": xf(NF_RUP), "pct": xf(NF_PCT), "tgt": xf(9, F_AMBER, FI[YEL]),
     "t_name": xf(0, F_NAVY, FI[TOT], "left"), "t_int": xf(3, F_NAVY, FI[TOT]), "t_rup": xf(NF_RUP, F_NAVY, FI[TOT]),

@@ -34,6 +34,19 @@ MONEY = {"EXCESS LIMIT", "CREDIT", "ENR", "EMI 0/S", "CURR_BAL", "PRI", "NORM", 
          "LAST PAYMENT AMOUNT"}
 ALWAYS_NUM = {"ENR", "AMOUNT", "NORM", "STAB", "PENDING", "CURR_BAL", "PRI"}   # never blank (SUMPRODUCT safe)
 DEFAULT_TARGET = 0.85
+SHIFT = 2                       # rows every pivot is moved down (heading row above each table)
+# top row of each side-by-side pivot in the team's own sheet (K1, V2, AC3, BF3, BM3, BT3, CA3)
+BASE_TOP = {"PivotTable3": 1, "PivotTable5": 2, "PivotTable7": 3, "PivotTable8": 3, "PivotTable9": 3,
+            "PivotTable2": 3, "PivotTable11": 3}
+T0 = 4                          # FOS target tables: heading row; header T0+1; data from T0+2
+# heading + width for every pivot (same titles as the in-app viewer)
+PIVOT_TITLES = {
+    "PivotTable1": ("MIS — CYCLE wise", 6), "PivotTable4": ("CYCLE wise — COUNT", 2),
+    "PivotTable6": ("MIS — CAT ALLO wise", 6), "PivotTable3": ("MIS — FOS wise PAID / UNPAID", 10),
+    "PivotTable5": ("FOS — VISITS", 4), "PivotTable7": ("FOS — CASH COLLECTED", 2),
+    "PivotTable8": ("MIS — AREA wise", 6), "PivotTable9": ("MIS — CALLER wise", 6),
+    "PivotTable2": ("FOS — CASES (DATE / V DATE slicers)", 2), "PivotTable11": ("FOS — PAID / UNPAID × VISITS", 6),
+}
 
 
 # ───────────────────────────────────────── rows from RecoverIQ ─────────────────────────────────────────
@@ -352,13 +365,19 @@ def render_xlsx(rows, title, targets, template=None):
     put("xl/pivotCache/pivotCacheRecords1.xml", head + open_tag + "".join(recs) + "</pivotCacheRecords>")
 
     # ── pivot tables: field items follow the new shared items; layout rebuilt by Excel on open ──
-    ncyc = len([k for k in item_idx["CYC"][1] if k[0] != "m"]) or 1
+    # Column A holds three pivots stacked one under another (cycle MIS → cycle count → CAT ALLO).
+    # Place each right under the previous one, sized to THIS portfolio's cycles / categories, so a
+    # 2-cycle portfolio doesn't leave a 100-row gap (and a 30-cycle one never overlaps).
+    # Every pivot sits 2 rows lower than in the team's sheet, leaving room for a heading above it.
+    ncyc = len(item_idx["CYC"][1]) or 1            # incl. a "(blank)" cycle if any case has none
     ncat = len(item_idx["CAT ALLO"][1]) or 1
-    pt1_end = 3 + ncyc * 5 + 4
-    pt4_top = max(115, pt1_end + 6)
-    pt4_end = pt4_top + ncyc + 1
-    pt6_top = max(135, pt4_end + 4)
+    pt1_top = 1 + SHIFT
+    pt1_end = pt1_top - 1 + 3 + ncyc * 5 + 4       # caption + 2 header rows, 5 rows / cycle, 4 total rows
+    pt4_top = pt1_end + 5                          # heading (top-3), PAID/UNPAID filter (top-2), blank (top-1)
+    pt4_end = pt4_top + ncyc + 1                   # header + one row / cycle + Grand Total
+    pt6_top = pt4_end + 3                          # blank row, heading (top-1)
     pt6_end = pt6_top + 3 + ncat * 5 + 4
+    pivot_heads = {}                               # pivot name -> (first col, top row, has page field)
     for pn in [p for p in parts if re.match(r"xl/pivotTables/pivotTable\d+\.xml$", p)]:
         x = T(pn)
         ptname = re.search(r' name="([^"]+)"', x).group(1)
@@ -389,11 +408,17 @@ def render_xlsx(rows, title, targets, template=None):
         x = re.sub(r'<colItems count="\d+">.*?</colItems>', "", x, flags=re.S)
         x = re.sub(r'(<pageField [^>]*?) item="\d+"', r"\1", x)
         if ptname == "PivotTable1":
-            x = re.sub(r'<location ref="[^"]+"', f'<location ref="A1:F{pt1_end}"', x)
+            x = re.sub(r'<location ref="[^"]+"', f'<location ref="A{pt1_top}:F{pt1_end}"', x)
         elif ptname == "PivotTable4":
             x = re.sub(r'<location ref="[^"]+"', f'<location ref="A{pt4_top}:B{pt4_end}"', x)
         elif ptname == "PivotTable6":
             x = re.sub(r'<location ref="[^"]+"', f'<location ref="A{pt6_top}:F{pt6_end}"', x)
+        elif ptname in BASE_TOP:                   # the side-by-side pivots: same columns, 2 rows lower
+            top = BASE_TOP[ptname] + SHIFT         # fixed from the team's sheet → never shifts twice
+            x = re.sub(r'<location ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"',
+                       lambda m: f'<location ref="{m.group(1)}{top}:{m.group(3)}{top + int(m.group(4)) - int(m.group(2))}"', x)
+        lm = re.search(r'<location ref="([A-Z]+)(\d+):', x)
+        pivot_heads[ptname] = (lm.group(1), int(lm.group(2)), "<pageFields" in x)
         put(pn, x)
 
     # ── slicers: every value selectable ──
@@ -462,18 +487,32 @@ def render_xlsx(rows, title, targets, template=None):
     HSTY = ["h_blue", "h_red", "h_green", "h_blue", "h_amber", "h_amber", "h_green", "h_green", "h_slate", "h_sky"]
     BODY = ["int", "int", "int", "rup", "tgt", "rup", "pct", "rup", "int", "rup"]
     TOTS = ["t_int", "t_int", "t_int", "t_rup", "t_tgt", "t_rup", "t_pct", "t_rup", "t_int", "t_rup"]
-    TL = "$GQ$4:$GR$2000"           # target list (FOS → target %)
+    TL = f"$GQ${T0 + 2}:$GR$2000"   # target list (FOS → target %)
+    H, D0 = T0 + 1, T0 + 2          # header row, first data row (lines up with the FOS pivot's rows)
+
+    # headings above every pivot
+    for pname, (title, width) in PIVOT_TITLES.items():
+        if pname not in pivot_heads:
+            continue
+        col, top, has_page = pivot_heads[pname]
+        hr = top - 3 if has_page else top - 1
+        c_ = _colnum(col)
+        add(f"{col}{hr}", _cell(f"{col}{hr}", title, XF.get("p_title", XF["title"])))
+        for j in range(1, width):
+            add(f"{_col(c_ + j)}{hr}", _cell(f"{_col(c_ + j)}{hr}", "", XF.get("p_title", XF["title"])))
 
     # FOS TARGET — ALL (follows the slicers; pulls each figure from the pivots by FOS name)
     c0 = _colnum("AG")
-    add("AG2", _cell("AG2", "FOS TARGET — ALL CYCLES (follows the slicers)", XF["title"]))
+    _ref = lambda name, dflt: (lambda h: f"${h[0]}${h[1]}" if h else dflt)(pivot_heads.get(name))
+    KREF, VREF, CREF = _ref("PivotTable3", "$K$3"), _ref("PivotTable5", "$V$4"), _ref("PivotTable7", "$AC$5")
+    add(f"AG{T0}", _cell(f"AG{T0}", "FOS TARGET — ALL CYCLES (follows the slicers)", XF["title"]))
     for j in range(1, 11):
-        add(f"{_col(c0 + j)}2", _cell(f"{_col(c0 + j)}2", "", XF["title"]))
-    add("AG3", _cell("AG3", "EMP NAME", XF["h_navy"]))
+        add(f"{_col(c0 + j)}{T0}", _cell(f"{_col(c0 + j)}{T0}", "", XF["title"]))
+    add(f"AG{H}", _cell(f"AG{H}", "EMP NAME", XF["h_navy"]))
     for j, h in enumerate(HEAD):
-        add(f"{_col(c0 + 1 + j)}3", _cell(f"{_col(c0 + 1 + j)}3", h, XF[HSTY[j]]))
+        add(f"{_col(c0 + 1 + j)}{H}", _cell(f"{_col(c0 + 1 + j)}{H}", h, XF[HSTY[j]]))
     nrows = max(len(fos), 1) + 1
-    first, lastr = 4, 3 + nrows
+    first, lastr = D0, D0 - 1 + nrows
     for r in range(first, lastr + 1):
         tot = r == lastr
         nm = f"$AG{r}"
@@ -483,16 +522,16 @@ def render_xlsx(rows, title, targets, template=None):
         wrap = lambda e: f'IF({nm}="","",{e})'
         f = [
             f'IF(K{r}="","",K{r})',
-            wrap(g("COUNT.", "$K$1")),
-            wrap(g("COUNT.", "$K$1", ',"PAID/UNPAID","UNPAID"')),
-            wrap(g("COUNT.", "$K$1", ',"PAID/UNPAID","PAID"')),
-            wrap(g("ENR.", "$K$1")),
+            wrap(g("COUNT.", KREF)),
+            wrap(g("COUNT.", KREF, ',"PAID/UNPAID","UNPAID"')),
+            wrap(g("COUNT.", KREF, ',"PAID/UNPAID","PAID"')),
+            wrap(g("ENR.", KREF)),
             wrap(f'IF({gt},IFERROR(AM{r}/AK{r},{DEFAULT_TARGET}),IFERROR(VLOOKUP({nm},{TL},2,0),{DEFAULT_TARGET}))'),
             wrap(f'IF({gt},SUM(AM${first}:AM{r - 1}),AK{r}*AL{r})') if r > first else wrap(f"AK{r}*AL{r}"),
             wrap(f"IFERROR(AO{r}/AK{r},0)"),
-            wrap(g("ENR.", "$K$1", ',"PAID/UNPAID","PAID"')),
-            wrap(g("COUNT.", "$V$2", ',"VISITS","NOT VISITED"')),
-            wrap(g("Sum of AMOUNT", "$AC$3")),
+            wrap(g("ENR.", KREF, ',"PAID/UNPAID","PAID"')),
+            wrap(g("COUNT.", VREF, ',"VISITS","NOT VISITED"')),
+            wrap(g("Sum of AMOUNT", CREF)),
         ]
         for j, formula in enumerate(f):
             ref = f"{_col(c0 + j)}{r}"
@@ -501,27 +540,28 @@ def render_xlsx(rows, title, targets, template=None):
 
     # FOS TARGET — SELECTED CYCLE (yellow cell AW2: ALL or a cycle) — straight from MAIN
     c1 = _colnum("AT")
-    add("AT2", _cell("AT2", "FOS TARGET — CYCLE ▸", XF["title"]))
+    add(f"AT{T0}", _cell(f"AT{T0}", "FOS TARGET — CYCLE ▸", XF["title"]))
     for j in (1, 2):
-        add(f"{_col(c1 + j)}2", _cell(f"{_col(c1 + j)}2", "", XF["title"]))
+        add(f"{_col(c1 + j)}{T0}", _cell(f"{_col(c1 + j)}{T0}", "", XF["title"]))
     default_sel = "ALL"
-    add("AW2", _cell("AW2", default_sel, XF["sel"]))
-    add("AX2", _cell("AX2", "◂ choose ALL or a cycle", XF["title"]))
+    add(f"AW{T0}", _cell(f"AW{T0}", default_sel, XF["sel"]))
+    add(f"AX{T0}", _cell(f"AX{T0}", "◂ choose ALL or a cycle", XF["title"]))
     for j in range(5, 11):
         if c1 + j != _colnum("AX"):
-            add(f"{_col(c1 + j)}2", _cell(f"{_col(c1 + j)}2", "", XF["title"]))
-    add("AT3", _cell("AT3", "EMP NAME", XF["h_navy"]))
+            add(f"{_col(c1 + j)}{T0}", _cell(f"{_col(c1 + j)}{T0}", "", XF["title"]))
+    add(f"AT{H}", _cell(f"AT{H}", "EMP NAME", XF["h_navy"]))
     for j, h in enumerate(HEAD):
-        add(f"{_col(c1 + 1 + j)}3", _cell(f"{_col(c1 + 1 + j)}3", h, XF[HSTY[j]]))
-    cyc_ok = '((($AW$2="ALL")+((Table1[CYC]&"")=($AW$2&"")))>0)'
+        add(f"{_col(c1 + 1 + j)}{H}", _cell(f"{_col(c1 + 1 + j)}{H}", h, XF[HSTY[j]]))
+    SEL = f"$AW${T0}"
+    cyc_ok = f'((({SEL}="ALL")+((Table1[CYC]&"")=({SEL}&"")))>0)'
     for i, name in enumerate(fos + ["Grand Total"]):
-        r = 4 + i
+        r = D0 + i
         tot = name == "Grand Total"
         add(f"AT{r}", _cell(f"AT{r}", name, XF["t_name" if tot else "name"]))
         if tot:
-            fs = [f"SUM({L}4:{L}{r - 1})" for L in ("AU", "AV", "AW", "AX")]
-            fs += [f"IFERROR(AZ{r}/AX{r},{DEFAULT_TARGET})", f"SUM(AZ4:AZ{r - 1})", f"IFERROR(BB{r}/AX{r},0)",
-                   f"SUM(BB4:BB{r - 1})", f"SUM(BC4:BC{r - 1})", f"SUM(BD4:BD{r - 1})"]
+            fs = [f"SUM({L}{D0}:{L}{r - 1})" for L in ("AU", "AV", "AW", "AX")]
+            fs += [f"IFERROR(AZ{r}/AX{r},{DEFAULT_TARGET})", f"SUM(AZ{D0}:AZ{r - 1})", f"IFERROR(BB{r}/AX{r},0)",
+                   f"SUM(BB{D0}:BB{r - 1})", f"SUM(BC{D0}:BC{r - 1})", f"SUM(BD{D0}:BD{r - 1})"]
         else:
             cond = f"(Table1[FOS NAME]=$AT{r})*{cyc_ok}"
             fs = [f"SUMPRODUCT({cond})",
@@ -539,24 +579,24 @@ def render_xlsx(rows, title, targets, template=None):
             add(ref, _fcell(ref, formula, XF[(TOTS if tot else BODY)[j]]))
 
     # target list (85% unless set) — used by both target tables
-    add("GQ3", _cell("GQ3", "FOS (target list)", XF["h_navy"]))
-    add("GR3", _cell("GR3", "TARGET %", XF["h_amber"]))
+    add(f"GQ{H}", _cell(f"GQ{H}", "FOS (target list)", XF["h_navy"]))
+    add(f"GR{H}", _cell(f"GR{H}", "TARGET %", XF["h_amber"]))
     for i, name in enumerate(fos):
-        add(f"GQ{4 + i}", _cell(f"GQ{4 + i}", name, XF["name"]))
-        add(f"GR{4 + i}", _cell(f"GR{4 + i}", float(targets.get(name, DEFAULT_TARGET)), XF["tgt"]))
+        add(f"GQ{D0 + i}", _cell(f"GQ{D0 + i}", name, XF["name"]))
+        add(f"GR{D0 + i}", _cell(f"GR{D0 + i}", float(targets.get(name, DEFAULT_TARGET)), XF["tgt"]))
 
     rows_xml = []
     for rr in sorted(cellrows):
         cs = "".join(x for _, x in sorted(cellrows[rr]))
-        extra = ' ht="32" customHeight="1"' if rr == 3 else (' ht="22" customHeight="1"' if rr == 2 else "")
+        extra = ' ht="32" customHeight="1"' if rr == T0 + 1 else (' ht="22" customHeight="1"' if rr in (2, 3, T0) else "")
         rows_xml.append(f'<row r="{rr}"{extra}>{cs}</row>')
     mis = re.sub(r"<sheetData>.*?</sheetData>|<sheetData/>", "<sheetData>" + "".join(rows_xml) + "</sheetData>", mis, flags=re.S)
-    mis = re.sub(r'<dimension ref="[^"]*"/>', f'<dimension ref="A1:GR{max(lastr, 4 + len(fos), pt6_end)}"/>', mis)
+    mis = re.sub(r'<dimension ref="[^"]*"/>', f'<dimension ref="A1:GR{max(lastr, D0 + len(fos), pt6_end)}"/>', mis)
     # only the %-colour scales on pivot areas survive; old rules on the target area go
     mis = re.sub(r"<conditionalFormatting (?!pivot=)[^>]*>.*?</conditionalFormatting>", "", mis, flags=re.S)
     dv_list = ",".join(["ALL"] + [str(c) for c in cycles])[:250]
     dv = (f'<dataValidations count="1"><dataValidation type="list" allowBlank="1" showInputMessage="1" '
-          f'promptTitle="Cycle" prompt="Pick ALL or one cycle" sqref="AW2"><formula1>"{escape(dv_list)}"</formula1>'
+          f'promptTitle="Cycle" prompt="Pick ALL or one cycle" sqref="AW{T0}"><formula1>"{escape(dv_list)}"</formula1>'
           f'</dataValidation></dataValidations>')
     mis = re.sub(r"<dataValidations.*?</dataValidations>", "", mis, flags=re.S)
     anchor = re.search(r"<(hyperlinks|printOptions|pageMargins)\b", mis)
