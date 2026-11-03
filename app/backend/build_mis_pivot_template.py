@@ -180,6 +180,8 @@ for n in [p for p in parts if p.startswith("xl/slicers/") and p.endswith(".xml")
 
 # MAIN table: cells carry their own RecoverIQ styling, so no banded table style on top
 tb = T("xl/tables/table1.xml")
+tb = re.sub(r"<calculatedColumnFormula[^>]*>.*?</calculatedColumnFormula>", "", tb, flags=re.S)   # old formulas ([1]! ext link)
+tb = re.sub(r"<sortState\b.*?</sortState>", "", tb, flags=re.S)                                     # old 269-row sort
 tb = re.sub(r"<tableStyleInfo [^>]*/>", '<tableStyleInfo showFirstColumn="0" showLastColumn="0" showRowStripes="0" showColumnStripes="0"/>', tb)
 put("xl/tables/table1.xml", tb)
 

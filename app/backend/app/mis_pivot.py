@@ -266,6 +266,36 @@ def _plain_items(vals):
     return f'<sharedItems {" ".join(attrs)}/>'.replace("<sharedItems />", "<sharedItems/>")
 
 
+_BAD_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+
+
+def _clean_rows(rows):
+    """Make every value safe for Excel's pivot cache:
+      * drop control characters that are illegal in XML (they creep in from bank sheets),
+      * drop NaN / infinity numbers,
+      * for the grouped fields (CYC, CALLER, AREA, FOS NAME, …) treat values that differ only by
+        capital letters / extra spaces as ONE item ("Guntur" = "GUNTUR ") — Excel rejects a pivot
+        whose items are duplicates when compared that way."""
+    import math
+    canon = {name: {} for name in ITEM_FIELDS}
+    out = []
+    for r in rows:
+        nr = []
+        for i, v in enumerate(r):
+            name = COLUMNS[i]
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                v = None
+            if isinstance(v, str):
+                v = _BAD_XML.sub("", v)
+                if name in ITEM_FIELDS:
+                    v = " ".join(v.split())
+                    key = v.upper()
+                    v = canon[name].setdefault(key, v)
+            nr.append("" if v is None else v)
+        out.append(nr)
+    return out
+
+
 def render_xlsx(rows, title, targets, template=None):
     tpl = template or ASSET.read_bytes()
     meta = json.loads(META.read_text(encoding="utf-8"))
@@ -278,6 +308,7 @@ def render_xlsx(rows, title, targets, template=None):
     def put(n, s):
         parts[n] = s.encode("utf-8")
 
+    rows = _clean_rows(rows)
     n = len(rows)
     cols = list(zip(*rows)) if rows else [[] for _ in COLUMNS]
     item_idx = {}
@@ -408,6 +439,13 @@ def render_xlsx(rows, title, targets, template=None):
     tb = re.sub(r'(<table [^>]*?)ref="[^"]+"', rf'\1ref="{ref}"', tb, count=1)
     tb = re.sub(r'<autoFilter ref="[^"]+"', f'<autoFilter ref="{ref}"', tb)
     tb = re.sub(r' totalsRowCount="\d+"', "", tb)
+    # The team's table carried old "calculated column" formulas (one pointing at another workbook,
+    # [1]!Table1) and a saved sort for 269 rows. Excel treats either as a broken table and then drops
+    # every pivot that reads it — so the MAIN table keeps plain values only.
+    tb = re.sub(r"<calculatedColumnFormula[^>]*>.*?</calculatedColumnFormula>|<calculatedColumnFormula[^>]*/>", "", tb, flags=re.S)
+    tb = re.sub(r"<totalsRowFormula[^>]*>.*?</totalsRowFormula>", "", tb, flags=re.S)
+    tb = re.sub(r"<sortState\b.*?</sortState>|<sortState\b[^>]*/>", "", tb, flags=re.S)
+    tb = re.sub(r'<autoFilter ref="[^"]+"([^>]*?)(?:/>|>.*?</autoFilter>)', rf'<autoFilter ref="{ref}"\1/>', tb, flags=re.S)
     put("xl/tables/table1.xml", tb)
 
     # ── MIS sheet: pivots draw themselves; we write the two FOS TARGET tables + target list ──
