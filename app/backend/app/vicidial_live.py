@@ -200,10 +200,19 @@ def agents_live(conn, agents):
 
 # RecoverIQ disposition → ViciDial status code (max 6 chars). Admin can override per connection
 # in Connections ("Disposition map"); every code used must exist in the campaign's statuses.
+# Matched to the statuses already in the office ViciDial campaign (A, B, CALLBK, DAIR, DC, DEC,
+# DNC, N, NI, NP, SALE, XFER) — no new statuses needed. A PTP goes in as a scheduled CALLBACK on
+# the promised date, so ViciDial rings the customer again that day.
 DEFAULT_DISPO_MAP = {
-    "PTP": "PTP", "RTP": "RTP", "PAID": "PAID", "DISPUTE": "DISPUT",
-    "RNR": "NA", "BUSY": "B", "NOT REACHABLE": "NA", "SWITCHED OFF": "SWOFF",
-    "WRONG NUMBER": "WN",
+    "PAID": "SALE",            # money collected
+    "PTP": "CALLBK",           # promise to pay → callback on the PTP date
+    "RTP": "NI",               # refused to pay → Not Interested
+    "DISPUTE": "DEC",          # disputes the dues → Declined
+    "RNR": "N",                # rang, no response → No Answer
+    "NOT REACHABLE": "N",      # network / not reachable → No Answer (retry)
+    "SWITCHED OFF": "N",       # switched off → No Answer (retry)
+    "BUSY": "B",               # busy
+    "WRONG NUMBER": "DC",      # wrong / invalid number → Disconnected Number
 }
 
 VICI_MARKER = "[via ViciDial]"      # stamped on a call log saved from the live-call bar (dedupe key)
@@ -217,13 +226,13 @@ def vici_status_for(conn, disposition: str) -> str:
     return (custom.get(d) or DEFAULT_DISPO_MAP.get(d) or re.sub(r"[^A-Z0-9]", "", d)[:6] or "NI")[:6]
 
 
-def agent_api(conn, agent: str, function: str, value: str, timeout: float = 6.0) -> tuple[bool, str]:
+def agent_api(conn, agent: str, function: str, value: str, timeout: float = 6.0, extra: dict | None = None) -> tuple[bool, str]:
     """One Agent-API command for this agent. Returns (ok, ViciDial's reply text)."""
     caps = conn.capabilities or {}
     if not caps.get("vici_user") or not caps.get("vici_pass"):
         raise LiveCallError("ViciDial API credentials are missing. Ask an administrator to update Connections.")
     params = {"source": str(caps.get("source") or "recoveriq")[:20], "user": caps["vici_user"],
-              "pass": caps["vici_pass"], "agent_user": agent, "function": function, "value": value}
+              "pass": caps["vici_pass"], "agent_user": agent, "function": function, "value": value, **(extra or {})}
     try:
         with httpx.Client(timeout=timeout, verify=False, follow_redirects=False) as client:
             r = client.get(conn.base_url.rstrip("/") + "/agc/api.php", params=params)

@@ -4921,7 +4921,8 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
       if (viaVici === true) {
         try {
           const r = await api('/api/integration/vicidial/my-dispo', { method: 'POST',
-            body: { case_id: c.id, disposition: dispo, call_log_id: log && log.id, ready: true } });
+            body: { case_id: c.id, disposition: dispo, call_log_id: log && log.id, ready: true,
+                    ptp_date: isPTP ? (ptpDate || null) : null, ptp_amount: isPTP ? (amt || null) : null } });
           if (r.ok) toast(`Saved · ViciDial ${r.status} · back to Ready`);
           else toast(r.warning || 'Saved in RecoverIQ — finish the disposition on the ViciDial screen.', 'err');
         } catch (e) { toast('Saved in RecoverIQ — ViciDial: ' + (e.message || 'not reachable') + '. Disposition it on the ViciDial screen.', 'err'); }
@@ -9046,7 +9047,7 @@ function ConnectionsView({ user }) {
             placeholder={'TC001=8001\nTC002=8002'} /></div>
         <div className="field"><label>Disposition map — RecoverIQ disposition = ViciDial status code (used by the live-call bar's "Save &amp; Ready")</label>
           <textarea className="input" rows={4} value={vf.dispo_map} onChange={e => setVf({ ...vf, dispo_map: e.target.value })}
-            placeholder={'Leave blank for defaults:\nPTP=PTP\nRTP=RTP\nPAID=PAID\nRNR=NA\nBUSY=B\nNOT REACHABLE=NA\nSWITCHED OFF=SWOFF\nWRONG NUMBER=WN\nDISPUTE=DISPUT'} />
+            placeholder={'Leave blank for defaults (match your campaign):\nPAID=SALE\nPTP=CALLBK\nRTP=NI\nDISPUTE=DEC\nRNR=N\nNOT REACHABLE=N\nSWITCHED OFF=N\nBUSY=B\nWRONG NUMBER=DC'} />
           <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>Every status code here must exist in your ViciDial campaign (Campaigns → Statuses), max 6 characters.</div></div>
         <button className="btn gold" onClick={viciConnect} disabled={vbusy}>{vbusy ? 'Saving…' : '💾 Save ViciDial connection'}</button>
         {startCallUrl && <div className="glass" style={{ marginTop: 12, padding: 10, borderRadius: 10 }}>

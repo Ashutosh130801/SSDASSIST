@@ -980,7 +980,17 @@ def vicidial_my_dispo(body: dict = Body(...), db: Session = Depends(get_db),
             db.commit()
     status = vici_status_for(conn, body.get("disposition") or "")
     try:
-        ok, txt = agent_api(conn, agent, "external_status", status)
+        extra = None
+        if status == "CALLBK":                       # PTP → ViciDial callback on the promised date
+            from datetime import date as _date
+            pd_ = str(body.get("ptp_date") or "")[:10]
+            try:
+                _date.fromisoformat(pd_)
+            except ValueError:
+                pd_ = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
+            extra = {"callback_datetime": f"{pd_} 10:00:00", "callback_type": "USERONLY",
+                     "callback_comments": ("PTP ₹" + str(body.get("ptp_amount") or "")).strip()[:100]}
+        ok, txt = agent_api(conn, agent, "external_status", status, extra=extra)
     except LiveCallError as exc:
         return {"ok": False, "status": status, "warning": str(exc)}
     if not ok:
