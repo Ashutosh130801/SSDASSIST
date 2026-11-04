@@ -10705,7 +10705,7 @@ function PredictiveScreenPop({ user }) {
     </div>}
     {pops.map((pop, index) => <div key={pop.c.id} style={{ display: index === pops.length - 1 ? 'contents' : 'none' }}>
       <CaseDrawer c={pop.c} manageBack={false} focusOnOpen={index === pops.length - 1} onClose={closeTop}
-        notice={'Received call • Agent ' + pop.call.agent_user + ' • Case #' + pop.c.id + (pops.length > 1 ? ' • Close to return to your previous open case (draft kept).' : '')}
+        notice={(pop.call ? 'Received call • Agent ' + (pop.call.agent_user || '') : '📞 Calling via ViciDial') + ' • Case #' + pop.c.id + (pops.length > 1 ? ' • Close to return to your previous open case (draft kept).' : '')}
         onChanged={() => window.dispatchEvent(new CustomEvent('ssd-case-changed'))} />
     </div>)}
   </>;
