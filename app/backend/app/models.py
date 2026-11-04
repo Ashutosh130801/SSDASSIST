@@ -770,6 +770,89 @@ class PredictiveCallEvent(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
 
 
+# ---------------------------------------------------------------- payouts (salary via gateway)
+# Money moves ONLY from an Admin-approved batch. Amounts are integer paise (no float rounding).
+# Full bank account numbers are never stored here — only last-4 + a SHA-256 fingerprint taken at
+# approval; the number is read from the employee record at send time and must still match.
+class PayoutBatch(Base):
+    __tablename__ = "payout_batches"
+    id = Column(Integer, primary_key=True)
+    ref = Column(String(40), unique=True, nullable=False, index=True)    # PB-20261104-0001
+    provider = Column(String(20), nullable=False, default="razorpayx")
+    mode = Column(String(8), nullable=False, default="test")             # test | live (frozen at creation)
+    title = Column(String(160))
+    purpose = Column(String(30), default="salary")
+    period = Column(String(20), index=True)                              # e.g. 2026-11 — one salary per employee per period
+    source = Column(String(30), default="manual")                       # manual | payroll_run
+    source_id = Column(Integer, nullable=True)
+    # draft → approved → sending → completed | partial | failed ; draft → cancelled
+    status = Column(String(20), nullable=False, default="draft", index=True)
+    total_paise = Column(Integer, nullable=False, default=0)
+    item_count = Column(Integer, nullable=False, default=0)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    approval_hash = Column(String(64))                                   # SHA-256 over every (item, amount, account fp)
+    sent_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    note = Column(Text)
+
+
+class PayoutItem(Base):
+    __tablename__ = "payout_items"
+    __table_args__ = (UniqueConstraint("batch_id", "user_id", name="uq_payout_batch_user"),)
+    id = Column(Integer, primary_key=True)
+    batch_id = Column(Integer, ForeignKey("payout_batches.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    emp_code = Column(String(30))
+    name = Column(String(160))
+    account_last4 = Column(String(4))
+    account_fp = Column(String(64))          # SHA-256(account|ifsc) frozen at approval
+    ifsc = Column(String(20))
+    amount_paise = Column(Integer, nullable=False)
+    pay_mode = Column(String(8), default="NEFT")     # NEFT | IMPS | RTGS
+    narration = Column(String(30))
+    reference_id = Column(String(40), unique=True, index=True)
+    attempt = Column(Integer, nullable=False, default=1)
+    idempotency_key = Column(String(36), unique=True)     # per attempt — a retry of the SAME attempt can never pay twice
+    fund_account_id = Column(String(40))
+    payout_id = Column(String(40), index=True)
+    # pending (not sent) → queued/processing/pending_approval → processed | reversed | failed | rejected | cancelled | blocked
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    utr = Column(String(40))
+    fees_paise = Column(Integer)
+    tax_paise = Column(Integer)
+    failure_reason = Column(String(300))
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PayoutFundAccount(Base):
+    """Cache of gateway contact + fund-account ids per employee bank account (by fingerprint)."""
+    __tablename__ = "payout_fund_accounts"
+    __table_args__ = (UniqueConstraint("provider", "mode", "user_id", "account_fp", name="uq_payout_fa"),)
+    id = Column(Integer, primary_key=True)
+    provider = Column(String(20), nullable=False)
+    mode = Column(String(8), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    account_fp = Column(String(64), nullable=False)
+    contact_id = Column(String(40))
+    fund_account_id = Column(String(40))
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class PayoutWebhookEvent(Base):
+    """Every verified gateway webhook (dedupe by event id; replay-safe)."""
+    __tablename__ = "payout_webhook_events"
+    id = Column(Integer, primary_key=True)
+    event_id = Column(String(80), unique=True, nullable=False)
+    event = Column(String(40))
+    payout_id = Column(String(40), index=True)
+    status = Column(String(20))
+    applied = Column(Boolean, default=False)
+    received_at = Column(DateTime(timezone=True), default=utcnow)
+
+
 # ---------------------------------------------------------------- branch synonyms
 # Different spellings of the SAME place. Any branch/location written with a synonym is stored
 # under the one canonical name, so filters, portfolios and reports never split it in two.

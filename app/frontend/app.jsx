@@ -8912,6 +8912,190 @@ function ViciDialTestCall({ connection, onClose, onAccepted }) {
   </section>;
 }
 
+/* 💸 Salary payouts via RazorpayX (Admin only). Money moves only from an approved batch:
+   draft → approve (password + 2FA + type the exact total) → send → status/UTR by webhook or Refresh. */
+const PO_ST = { pending: ['Not sent', 'var(--ink-dim)'], queued: ['Queued (low balance)', '#b45309'], processing: ['Processing', '#2563eb'],
+  pending_approval: ['Awaiting RazorpayX approval', '#b45309'], processed: ['Paid ✓', 'var(--good)'], reversed: ['Reversed', 'var(--bad)'],
+  failed: ['Failed', 'var(--bad)'], rejected: ['Rejected', 'var(--bad)'], cancelled: ['Cancelled', 'var(--ink-dim)'], blocked: ['Blocked', 'var(--bad)'] };
+const PB_ST = { draft: ['Draft', '#64748b'], approved: ['Approved 🔒', '#2563eb'], sending: ['Sending…', '#2563eb'], completed: ['Completed ✓', '#16a34a'],
+  partial: ['Partly paid', '#b45309'], failed: ['Failed', '#dc2626'], cancelled: ['Cancelled', '#94a3b8'] };
+const inr2 = v => '₹ ' + Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const poErr = e => { try { const j = JSON.parse(e.message); return (j.message || '') + (j.errors ? ':\n• ' + j.errors.join('\n• ') : ''); } catch { return e.message; } };
+const Pill = ({ c, children }) => <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 8, color: c, background: 'color-mix(in srgb, ' + c + ' 12%, white)', whiteSpace: 'nowrap' }}>{children}</span>;
+
+// 🔒 Locked by the owner — the backend refuses every payout call too (SECTION_LOCKED in routers/payouts.py).
+const SALARY_LOCKED = true;
+function PayoutsView({ user }) {
+  if (SALARY_LOCKED) return <div className="glass card" style={{ padding: 40, textAlign: 'center', maxWidth: 560, margin: '40px auto' }}>
+    <div style={{ fontSize: 46 }}>🔒</div>
+    <h2 style={{ margin: '8px 0 6px' }}>Salary &amp; Payslips — Section locked</h2>
+    <div className="muted">This section is not enabled yet. It will be unlocked by the administrator.</div>
+  </div>;
+  return <PayoutsViewInner user={user} />;
+}
+function PayoutsViewInner({ user }) {
+  const [gw, setGw] = useState(null);
+  const [batches, setBatches] = useState(null);
+  const [openId, setOpenId] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const load = () => {
+    api('/api/payouts/gateway').then(setGw).catch(e => setGw({ error: e.message }));
+    api('/api/payouts/batches').then(setBatches).catch(() => setBatches([]));
+  };
+  useEffect(() => { load(); }, []);
+  if (user.role !== 'admin') return <div className="glass card" style={{ padding: 20 }}>Salary payouts are Admin-only.</div>;
+  const test = () => api('/api/payouts/gateway/test', { method: 'POST' }).then(r => toast('✓ RazorpayX ' + r.mode + ' keys work')).catch(e => toast(e.message, 'err'));
+  return <div>
+    <div className="section-h"><h2 style={{ margin: 0 }}>💸 Salary Payouts</h2>
+      <button className="btn" disabled={!gw || !gw.configured} onClick={() => setCreating(true)}>＋ New payout batch</button></div>
+    <div className="glass card" style={{ padding: 14, marginBottom: 12 }}>
+      {!gw ? <Loader /> : gw.error ? <div style={{ color: 'var(--bad)' }}>{gw.error}</div> : <>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <b>RazorpayX Payouts</b>
+          {gw.configured ? <Pill c={gw.mode === 'live' ? '#dc2626' : '#16a34a'}>{gw.mode === 'live' ? 'LIVE — real money' : 'TEST MODE — no real money'}</Pill> : <Pill c="#dc2626">Not connected</Pill>}
+          {gw.key_hint && <span className="muted" style={{ fontSize: 12 }}>Key {gw.key_hint} · Account {gw.account_hint || '—'}</span>}
+          <span style={{ flex: 1 }} />
+          <button className="btn ghost sm" disabled={!gw.configured} onClick={test}>Test connection</button>
+        </div>
+        {gw.problems && gw.problems.length > 0 && <div style={{ marginTop: 8, fontSize: 12.5 }}>
+          <div style={{ color: 'var(--bad)' }}>{gw.problems.map(p => <div key={p}>• {p}</div>)}</div>
+          <div className="muted" style={{ marginTop: 6 }}>Add the keys to the server <code>.env</code> (never here) and restart the backend:<br />
+            <code>RAZORPAYX_KEY_ID=rzp_test_…  RAZORPAYX_KEY_SECRET=…  RAZORPAYX_ACCOUNT_NUMBER=…  RAZORPAYX_WEBHOOK_SECRET=…</code></div></div>}
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          Webhook URL for the RazorpayX Dashboard: <code style={{ userSelect: 'all' }}>{gw.webhook_url}</code>
+          {' '}{gw.webhook_secret_set ? <Pill c="#16a34a">secret set</Pill> : <Pill c="#b45309">RAZORPAYX_WEBHOOK_SECRET missing — use Refresh for status</Pill>}
+          <br />Caps: {inr2(gw.caps && gw.caps.per_item)} per employee · {inr2(gw.caps && gw.caps.per_batch)} per batch</div>
+      </>}
+    </div>
+    <div className="glass card" style={{ padding: 0 }}>
+      {!batches ? <Loader /> : !batches.length ? <div className="muted" style={{ padding: 16 }}>No payout batches yet.</div> :
+        <div className="tablewrap"><table><thead><tr><th>Batch</th><th>Period</th><th>Mode</th><th style={{ textAlign: 'right' }}>Employees</th><th style={{ textAlign: 'right' }}>Total</th><th style={{ textAlign: 'right' }}>Paid</th><th>Status</th><th>Created</th><th></th></tr></thead>
+          <tbody>{batches.map(b => <tr key={b.id}>
+            <td><b>{b.ref}</b><div className="muted" style={{ fontSize: 11 }}>{b.title}</div></td><td>{b.period}</td>
+            <td><Pill c={b.mode === 'live' ? '#dc2626' : '#16a34a'}>{(b.mode || '').toUpperCase()}</Pill></td>
+            <td style={{ textAlign: 'right' }}>{b.count}</td><td style={{ textAlign: 'right' }}>{inr2(b.total)}</td>
+            <td style={{ textAlign: 'right', color: 'var(--good)', fontWeight: 700 }}>{inr2(b.paid_total)}</td>
+            <td><Pill c={(PB_ST[b.status] || [])[1] || '#64748b'}>{(PB_ST[b.status] || [b.status])[0]}</Pill></td>
+            <td style={{ fontSize: 12 }}>{b.created_by}<div className="muted">{(b.created_at || '').slice(0, 16).replace('T', ' ')}</div></td>
+            <td><button className="btn ghost sm" onClick={() => setOpenId(b.id)}>Open</button></td></tr>)}</tbody></table></div>}
+    </div>
+    {creating && <PayoutCreate gw={gw} onClose={() => setCreating(false)} onDone={b => { setCreating(false); load(); setOpenId(b.id); }} />}
+    {openId && <PayoutBatchModal id={openId} user={user} onClose={() => { setOpenId(null); load(); }} />}
+  </div>;
+}
+
+function PayoutCreate({ gw, onClose, onDone }) {
+  const now = new Date();
+  const [period, setPeriod] = useState(now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0'));
+  const [title, setTitle] = useState('');
+  const [emps, setEmps] = useState(null);
+  const [sel, setSel] = useState({});        // id -> {amount, mode}
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api('/api/payouts/eligible').then(setEmps).catch(e => { toast(e.message, 'err'); setEmps([]); }); }, []);
+  const pick = (e, on) => setSel(s => { const n = { ...s }; if (on) n[e.id] = n[e.id] || { amount: gw.mode === 'test' ? '1.00' : '', mode: 'NEFT' }; else delete n[e.id]; return n; });
+  const ids = Object.keys(sel);
+  const total = ids.reduce((a, k) => a + (parseFloat(sel[k].amount) || 0), 0);
+  const create = async () => {
+    const items = ids.map(k => ({ user_id: +k, amount: sel[k].amount, mode: sel[k].mode }));
+    if (!items.length) { toast('Select at least one employee', 'err'); return; }
+    if (items.some(i => !(parseFloat(i.amount) > 0))) { toast('Every selected employee needs an amount', 'err'); return; }
+    setBusy(true);
+    try { onDone(await api('/api/payouts/batches', { method: 'POST', body: { period, title: title || ('Salary ' + period), items } })); toast('Draft batch created — review and approve'); }
+    catch (e) { alert(poErr(e)); } finally { setBusy(false); }
+  };
+  const list = (emps || []).filter(e => !q || (e.name + ' ' + (e.emp_code || '')).toLowerCase().includes(q.toLowerCase()));
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 980, width: '96%', maxHeight: '92vh', overflow: 'auto' }}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>＋ New payout batch {gw.mode === 'test' && <Pill c="#16a34a">TEST MODE</Pill>}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}>
+      <label className="muted" style={{ fontSize: 12 }}>Salary month <input className="input" type="month" value={period} onChange={e => setPeriod(e.target.value)} /></label>
+      <input className="input" placeholder="Title (optional)" value={title} onChange={e => setTitle(e.target.value)} style={{ minWidth: 220 }} />
+      <input className="input" placeholder="Search name / ID" value={q} onChange={e => setQ(e.target.value)} />
+      <button className="btn ghost sm" onClick={() => (emps || []).filter(e => !e.issues.length).forEach(e => pick(e, true))}>☑ All eligible</button>
+      <button className="btn ghost sm" onClick={() => setSel({})}>☐ None</button>
+    </div>
+    {!emps ? <Loader /> : <div className="tablewrap" style={{ maxHeight: '55vh', overflow: 'auto' }}><table><thead><tr><th></th><th>Employee</th><th>Bank</th><th>IFSC</th><th style={{ width: 140 }}>Amount ₹</th><th>Mode</th><th>Checks</th></tr></thead>
+      <tbody>{list.map(e => { const s = sel[e.id]; const bad = e.issues.length > 0;
+        return <tr key={e.id} style={{ opacity: bad ? .55 : 1 }}>
+          <td><input type="checkbox" disabled={bad} checked={!!s} onChange={ev => pick(e, ev.target.checked)} /></td>
+          <td><b>{e.name}</b> <span className="muted">({e.emp_code || '—'})</span><div className="muted" style={{ fontSize: 11 }}>{e.designation || e.role}</div></td>
+          <td style={{ fontSize: 12 }}>{e.bank || '—'} {e.account}</td><td style={{ fontSize: 12 }}>{e.ifsc || '—'}</td>
+          <td>{s && <input className="input" inputMode="decimal" value={s.amount} onChange={ev => setSel(x => ({ ...x, [e.id]: { ...x[e.id], amount: ev.target.value.replace(/[^0-9.]/g, '') } }))} style={{ width: 120 }} />}</td>
+          <td>{s && <select className="input" value={s.mode} onChange={ev => setSel(x => ({ ...x, [e.id]: { ...x[e.id], mode: ev.target.value } }))}><option>NEFT</option><option>IMPS</option><option>RTGS</option></select>}</td>
+          <td style={{ fontSize: 11.5, color: bad ? 'var(--bad)' : 'var(--good)' }}>{bad ? e.issues.join(' · ') : 'OK'}</td></tr>; })}</tbody></table></div>}
+    <div className="toolbar" style={{ marginTop: 10 }}>
+      <b>{ids.length} selected · {inr2(total)}</b><span style={{ flex: 1 }} />
+      <span className="muted" style={{ fontSize: 12 }}>Creates a DRAFT only — nothing is paid until Admin approves and sends.</span>
+      <button className="btn" disabled={busy || !ids.length} onClick={create}>{busy ? 'Creating…' : 'Create draft'}</button>
+    </div>
+  </div></div>;
+}
+
+function PayoutBatchModal({ id, user, onClose }) {
+  const [b, setB] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [appr, setAppr] = useState(null);   // {password, otp, total}
+  const load = () => api('/api/payouts/batches/' + id).then(setB).catch(e => toast(e.message, 'err'));
+  useEffect(() => { load(); }, [id]);
+  useEffect(() => {                            // keep polling while money is in flight
+    if (!b || b.status !== 'sending') return;
+    const t = setInterval(() => api('/api/payouts/batches/' + id + '/refresh', { method: 'POST' }).then(setB).catch(() => {}), 15000);
+    return () => clearInterval(t);
+  }, [b && b.status]);
+  const act = async (path, body, label) => {
+    setBusy(label);
+    try { setB(await api('/api/payouts/batches/' + id + '/' + path, { method: 'POST', body: body || {} })); return true; }
+    catch (e) { alert(poErr(e)); return false; } finally { setBusy(''); }
+  };
+  const approve = async () => { if (await act('approve', { password: appr.password, otp: appr.otp, confirm_total: appr.total }, 'approve')) { setAppr(null); toast('Approved & locked 🔒'); } };
+  const send = () => { if (window.confirm(`Send ${b.count} payout(s) totalling ${inr2(b.total)} via RazorpayX (${b.mode.toUpperCase()})?`)) act('send', {}, 'send'); };
+  const retry = async (it) => {
+    const reason = window.prompt(`Retry payout to ${it.name}? Reason (e.g. "bank details corrected"):`); if (!reason) return;
+    const password = window.prompt('Your password to confirm:'); if (!password) return;
+    const otp = window.prompt('2FA code (leave blank if 2FA is off):') || '';
+    try { setB(await api('/api/payouts/items/' + it.id + '/retry', { method: 'POST', body: { reason, password, otp } })); toast('New attempt opened — press Send'); }
+    catch (e) { alert(poErr(e)); }
+  };
+  const pending = b ? b.items.filter(i => i.status === 'pending').length : 0;
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 1080, width: '96%', maxHeight: '92vh', overflow: 'auto' }}>
+    {!b ? <Loader /> : <>
+      <div className="section-h"><h3 style={{ margin: 0 }}>{b.ref} · {b.title} <Pill c={b.mode === 'live' ? '#dc2626' : '#16a34a'}>{b.mode.toUpperCase()}</Pill> <Pill c={(PB_ST[b.status] || [])[1]}>{(PB_ST[b.status] || [b.status])[0]}</Pill></h3>
+        <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+      <div className="kpis" style={{ marginBottom: 10 }}>
+        <StatCard icon="👥" label="Employees" value={b.count} /><StatCard icon="💰" label="Batch total" value={inr2(b.total)} />
+        <StatCard icon="✅" label="Paid" value={inr2(b.paid_total)} /><StatCard icon="⏳" label="Not yet paid" value={inr2(b.total - b.paid_total)} />
+      </div>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>Created by {b.created_by} · {b.approved_by ? `Approved by ${b.approved_by} ${(b.approved_at || '').slice(0, 16).replace('T', ' ')}` : 'Not approved'}{b.sent_by ? ` · Sent by ${b.sent_by}` : ''}</div>
+      <div className="tablewrap"><table><thead><tr><th>Employee</th><th>Account</th><th>Mode</th><th style={{ textAlign: 'right' }}>Amount</th><th>Status</th><th>UTR</th><th>Note</th><th></th></tr></thead>
+        <tbody>{b.items.map(i => <tr key={i.id}>
+          <td><b>{i.name}</b> <span className="muted">({i.emp_code || '—'})</span>{i.attempt > 1 && <div className="muted" style={{ fontSize: 11 }}>attempt {i.attempt}</div>}</td>
+          <td style={{ fontSize: 12 }}>{i.account} · {i.ifsc}</td><td>{i.mode}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{inr2(i.amount)}</td>
+          <td><Pill c={(PO_ST[i.status] || [])[1] || '#64748b'}>{(PO_ST[i.status] || [i.status])[0]}</Pill></td>
+          <td style={{ fontSize: 12, fontFamily: 'monospace' }}>{i.utr || '—'}</td>
+          <td style={{ fontSize: 11.5, color: 'var(--bad)', maxWidth: 260 }}>{i.failure_reason || ''}</td>
+          <td>{['failed', 'reversed', 'rejected', 'blocked'].includes(i.status) && <button className="btn ghost sm" onClick={() => retry(i)}>Retry</button>}</td></tr>)}</tbody></table></div>
+      <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
+        {b.status === 'draft' && <button className="btn ghost" disabled={!!busy} onClick={() => window.confirm('Cancel this draft?') && act('cancel', {}, 'cancel')}>Cancel batch</button>}
+        {b.status === 'approved' && <button className="btn ghost" disabled={!!busy} onClick={() => window.confirm('Cancel this approved batch? Nothing has been sent yet.') && act('cancel', {}, 'cancel')}>Cancel batch</button>}
+        <span style={{ flex: 1 }} />
+        {['sending', 'partial', 'failed', 'completed'].includes(b.status) && <button className="btn ghost" disabled={!!busy} onClick={() => act('refresh', {}, 'refresh')}>{busy === 'refresh' ? 'Refreshing…' : '↻ Refresh status'}</button>}
+        {b.status === 'draft' && <button className="btn" onClick={() => setAppr({ password: '', otp: '', total: '' })}>🔒 Approve {inr2(b.total)}</button>}
+        {(b.status === 'approved' || (pending > 0 && ['sending', 'partial', 'failed'].includes(b.status))) &&
+          <button className="btn" style={{ background: 'var(--good)' }} disabled={!!busy} onClick={send}>{busy === 'send' ? 'Sending…' : `💸 Send ${pending} payout(s)`}</button>}
+      </div>
+      {appr && <div className="glass card" style={{ marginTop: 12, padding: 14, border: '2px solid var(--brand)' }}>
+        <b>🔒 Approve {b.ref}</b><div className="muted" style={{ fontSize: 12, margin: '4px 0 10px' }}>After approval the employees, amounts and bank accounts are locked. If anyone's bank details change later, their payout is blocked.</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input className="input" placeholder={'Type the total: ' + b.total} value={appr.total} onChange={e => setAppr({ ...appr, total: e.target.value })} />
+          <input className="input" type="password" placeholder="Your password" value={appr.password} onChange={e => setAppr({ ...appr, password: e.target.value })} />
+          <input className="input" placeholder="2FA code (if enabled)" value={appr.otp} onChange={e => setAppr({ ...appr, otp: e.target.value })} style={{ width: 150 }} />
+          <button className="btn" disabled={busy === 'approve' || !appr.total || !appr.password} onClick={approve}>{busy === 'approve' ? 'Approving…' : 'Approve & lock'}</button>
+          <button className="btn ghost" onClick={() => setAppr(null)}>Cancel</button>
+        </div></div>}
+    </>}
+  </div></div>;
+}
+
 function ConnectionsView({ user }) {
   const [rows, setRows] = useState(null);
   const [form, setForm] = useState({ name: '', base_url: '', api_key: '', branch: '' });
@@ -9243,7 +9427,7 @@ function JointCasesView({ config }) {
 }
 
 const NAV = {
-  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['security', '🔒', 'Security']],
+  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['payouts', '🔒', 'Salary Payouts'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['fcases', '🗂️', 'My Accounts'], ['jointcases', '🤝', 'Joint Cases'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
@@ -10565,6 +10749,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'ai': return <AIAssist user={user} />;
       case 'security': return <SecurityView user={user} />;
       case 'connections': return <ConnectionsView user={user} />;
+      case 'payouts': return <PayoutsView user={user} />;
       case 'attendance': return <AttendanceView user={user} />;
       case 'todo': return <TodoView user={user} />;
       case 'rtsb': return <RTSBView user={user} />;

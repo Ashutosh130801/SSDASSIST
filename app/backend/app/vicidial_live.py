@@ -52,7 +52,10 @@ def parse_agent_status(text):
         if "AGENT NOT FOUND" in text:
             raise LiveCallError("ViciDial agent not found. Check your employee-code mapping in Connections.")
         # Show ViciDial's own reason (it never contains the password) so the exact missing setting is clear.
-        reason = text.splitlines()[0][:160]
+        # Keep only ViciDial's fixed UPPER-CASE wording — it appends the API user / values after it,
+        # and those must never be echoed back to the browser.
+        first = text.splitlines()[0][6:].split(" - ")[0].split("|")[0]
+        reason = "ERROR: " + " ".join(w for w in first.split() if re.fullmatch(r"[A-Z][A-Z_/]*|agent_status", w))[:160]
         raise LiveCallError("ViciDial rejected the status request — " + reason +
                             ". Check API credentials, agent_status access, View Reports and user-group access.")
     try:

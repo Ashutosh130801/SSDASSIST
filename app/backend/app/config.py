@@ -48,6 +48,19 @@ class Settings(BaseSettings):
     turn_user: str = ""
     turn_password: str = ""
 
+    # RazorpayX Payouts (salary via gateway). Keys live ONLY here (.env) — never in the DB or UI.
+    #   RAZORPAYX_KEY_ID=rzp_test_...   RAZORPAYX_KEY_SECRET=...
+    #   RAZORPAYX_ACCOUNT_NUMBER=<your RazorpayX business account number (Dashboard → My Account)>
+    #   RAZORPAYX_WEBHOOK_SECRET=<the secret you type when adding the webhook in the Dashboard>
+    # Live keys (rzp_live_...) are REFUSED unless RAZORPAYX_ALLOW_LIVE=true is also set.
+    razorpayx_key_id: str = ""
+    razorpayx_key_secret: str = ""
+    razorpayx_account_number: str = ""
+    razorpayx_webhook_secret: str = ""
+    razorpayx_allow_live: bool = False
+    payout_max_item_rupees: int = 200000      # hard cap per employee per payout
+    payout_max_batch_rupees: int = 2500000    # hard cap per batch
+
     # Product branding (shown on login + sidebar). Change to your own brand.
     brand_name: str = "RecoverIQ"
     brand_tagline: str = "Collections & Recovery Intelligence"

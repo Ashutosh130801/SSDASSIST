@@ -74,7 +74,7 @@ class HalfDayTests(unittest.TestCase):
         self.assertEqual(d["status"], "half_leave")
         self.assertEqual((d["present_days"], d["leave_days"], d["absent_days"]), (0.5, 0.5, 0))
         self.assertTrue(d["late"])
-        self.assertEqual(m["days"]["2026-10-08"], "HD")
+        self.assertEqual(m["days"]["2026-10-08"], "H•")
         self.assertEqual((m["present"], m["leave"], m["half_days"], m["late"]), (0.5, 0.5, 1, 1))
         self.assertEqual(m["worked_hours"], 4)
         b = self.client.get("/api/leaves/balance").json()[0]
@@ -140,9 +140,9 @@ class HalfDayTests(unittest.TestCase):
         self.assertEqual(self.day()["status"], "leave")
         self.assertEqual(self.month()["days"]["2026-10-08"], "LV")
         self.assertEqual(self.month()["present"], 0)
-        lid = self.apply(start="2026-10-04").json()["id"]; self.decision(lid)
-        self.assertEqual(self.day("2026-10-04")["status"], "half_leave")
-        self.assertEqual(self.month()["days"]["2026-10-04"], "HD")
+        # Sunday is a weekly off: a leave on it is refused and the day stays a week-off.
+        self.assertEqual(self.apply(start="2026-10-04").status_code, 400)
+        self.assertEqual(self.month()["days"]["2026-10-04"], "W")
 
     def test_excel_export_fractional_totals_and_legend(self):
         import openpyxl
@@ -152,12 +152,15 @@ class HalfDayTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text[:100] if r.status_code != 200 else "")
         wb = openpyxl.load_workbook(io.BytesIO(r.content))
         sheet = wb.worksheets[0]
-        headers = [c.value for c in sheet[1]]
-        row = [c.value for c in sheet[2]]
-        self.assertEqual(row[headers.index("08")], "HD")
+        hr = next(r for r in range(1, 15) if "Present" in [str(c.value) for c in sheet[r]])   # header row (title rows above it)
+        # two header rows: names/weekday on top, day numbers below
+        headers = [str(b.value) if b.value is not None else (str(a.value) if a.value is not None else None)
+                   for a, b in zip(sheet[hr], sheet[hr + 1])]
+        row = [c.value for c in sheet[hr + 2]]
+        self.assertEqual(str(row[headers.index("08")]).split("\n")[0], "H•")   # cell = code + check-in time
         self.assertEqual(row[headers.index("Present")], 0.5)
         self.assertEqual(row[headers.index("Leave")], 0.5)
-        self.assertEqual(row[headers.index("Half-day leaves")], 1)
+        self.assertEqual(row[headers.index("Half-day leaves (H•)")], 1)
         self.assertIn("Legend", wb.sheetnames)
 
     def test_non_manager_team_scope_remains_private(self):

@@ -578,7 +578,9 @@ def _correct_scan(records, default_bank, product, db, want_fields=None, scope=No
         q = db.query(models.Case).filter(models.Case.removed.isnot(True))
         if is_tl:                                    # a team lead can only correct their own team's cases
             q = q.filter(_tl_case_filter(actor))
-        sc = scope or {}
+        sc = dict(scope or {})
+        if sc.get("branch"):                          # 'Vizag' → 'VISAKHAPATNAM' (same synonyms as stored cases)
+            sc["branch"] = models.canonical_place(sc["branch"])
         if sc.get("selected"):
             # Empty values in a chosen portfolio mean an empty dimension, not 'all portfolios'.
             from sqlalchemy import func as _f

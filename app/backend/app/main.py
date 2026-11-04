@@ -16,7 +16,7 @@ from . import close_sync  # noqa: F401  (close date follows the case's current c
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
                       team, mis, feedback, reminders, audit_log, archive, catalog, manpower,
-                      notifications, dpr, support, attendance, collab, integrations)
+                      notifications, dpr, support, attendance, collab, integrations, payouts)
 
 settings = get_settings()
 
@@ -583,7 +583,7 @@ async def _security_headers(request, call_next):
 for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, devices,
           leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis, feedback,
           reminders, audit_log, archive, catalog, manpower, notifications, dpr, support,
-          attendance, collab, integrations):
+          attendance, collab, integrations, payouts):
     app.include_router(r.router)
 
 
