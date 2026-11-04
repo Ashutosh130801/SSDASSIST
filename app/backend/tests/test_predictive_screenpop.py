@@ -146,13 +146,53 @@ class ScreenPopTests(unittest.TestCase):
                 result = self.client.get("/api/integration/vicidial/my-live-call").json()
             self.assertEqual(result["state"], "unmatched")
 
+    def test_manual_dial_shows_dialing_then_links_connected_call(self):
+        from app.vicidial_live import note_dial, clear_dial
+        note_dial(self.actor.id, self.case.id)
+        try:
+            for sub in ("DIAL", "RING"):
+                with patch("app.vicidial_live.read_agent_status", return_value=parse_agent_status(wire(real_time_sub_status=sub, vendor_lead_code=""))):
+                    r = self.client.get("/api/integration/vicidial/my-live-call").json()
+                self.assertEqual((r["state"], r.get("case_id")), ("dialing", self.case.id))
+            # answered; ViciDial reused an old lead with another vendor code → still this case
+            with patch("app.vicidial_live.read_agent_status", return_value=parse_agent_status(wire(vendor_lead_code="", phone_number="1112223334"))):
+                r = self.client.get("/api/integration/vicidial/my-live-call").json()
+            self.assertEqual((r["state"], r.get("case_id")), ("connected", self.case.id))
+        finally:
+            clear_dial(self.actor.id)
+        with patch("app.vicidial_live.read_agent_status", return_value=parse_agent_status(wire(real_time_sub_status="DIAL", vendor_lead_code=""))):
+            r = self.client.get("/api/integration/vicidial/my-live-call").json()
+        self.assertNotEqual(r["state"], "dialing")              # no RecoverIQ dial → nothing to show
+
+    def test_phone_fallback_only_for_exactly_one_own_case(self):
+        # ViciDial re-used an old lead (vendor_lead_code isn't our id): match the dialled number,
+        # but only when exactly ONE of this caller's own cases has it.
+        self.case.phone = "919876543210"; self.db.commit()
+        reply = parse_agent_status(wire(vendor_lead_code="", phone_number="9876543210"))
+        with patch("app.vicidial_live.read_agent_status", return_value=reply):
+            result = self.client.get("/api/integration/vicidial/my-live-call").json()
+        self.assertEqual((result["state"], result.get("case_id")), ("connected", self.case.id))
+        twin = models.Case(customer_name="Twin", account_no="A2", bank="ICICI", product="FR", branch="Vizag",
+                           assigned_caller_id=self.actor.id, phone="9876543210", period=self.case.period)
+        self.db.add(twin); self.db.commit()
+        with patch("app.vicidial_live.read_agent_status", return_value=reply):
+            result = self.client.get("/api/integration/vicidial/my-live-call").json()
+        self.assertEqual(result["state"], "unmatched")          # ambiguous → never guess
+
     def test_csv_headers_and_quoted_names(self):
         row = parse_agent_status(wire())
         self.assertEqual(row["full_name"], "Agent, One")
         self.assertEqual(row["vendor_lead_code"], "1")
-        for text in ["", "<html>Login</html>", "INCALL|1|2", "status,call_id\nINCALL,x", wire() + wire()]:
+        for text in ["", "<html>Login</html>", "status,call_id"]:
             with self.assertRaises(LiveCallError):
                 parse_agent_status(text)
+        # Real servers vary: pipe instead of CSV, no header, older versions with fewer columns,
+        # unquoted commas in the agent name. These must still parse (missing fields stay blank).
+        self.assertEqual(parse_agent_status("INCALL|M1|104|C|1|Admin|ADMIN|9|BRK2||3125551212|123457|8600051")["vendor_lead_code"], "123457")
+        self.assertEqual(parse_agent_status("PAUSED||105|C|1|Admin|ADMIN|9||PREVIEW")["vendor_lead_code"], "")
+        r = parse_agent_status("status,call_id,lead_id,campaign_id,calls_today,full_name,user_group,user_level,pause_code,"
+                               "real_time_sub_status,phone_number,vendor_lead_code,session_id\nINCALL,M1,104,C,1,Karnapu, Likitha,AG,1,,,999,77,860")
+        self.assertEqual((r["full_name"], r["vendor_lead_code"]), ("Karnapu, Likitha", "77"))
 
     def test_logged_out_and_permission_errors(self):
         self.assertEqual(parse_agent_status("ERROR: agent_status AGENT NOT LOGGED IN - secret")['status'], "LOGGED_OUT")

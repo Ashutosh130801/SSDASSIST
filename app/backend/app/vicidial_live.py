@@ -58,16 +58,51 @@ def parse_agent_status(text):
         reason = "ERROR: " + " ".join(w for w in first.split() if re.fullmatch(r"[A-Z][A-Z_/]*|agent_status", w))[:160]
         raise LiveCallError("ViciDial rejected the status request — " + reason +
                             ". Check API credentials, agent_status access, View Reports and user-group access.")
-    try:
-        rows = list(csv.reader(io.StringIO(text)))
-        rows = [row for row in rows if any(cell.strip() for cell in row)]
-        header = [cell.strip().lower() for cell in rows[0]]
-        required = {"status", "call_id", "lead_id", "vendor_lead_code", "real_time_sub_status"}
-        if len(rows) != 2 or not required.issubset(header) or len(header) != len(set(header)) or len(rows[1]) != len(header):
-            raise ValueError()
-        return dict(zip(header, (cell.strip() for cell in rows[1])))
-    except (ValueError, IndexError, csv.Error):
-        raise LiveCallError("Unexpected ViciDial status response. Check that agent_status supports CSV with headers on your server.") from None
+    return _parse_agent_rows(text)
+
+
+# Documented agent_status column order (NON-AGENT_API.txt). Older servers stop earlier (no phone_number /
+# vendor_lead_code / session_id); include_ip adds computer_ip at the end.
+AGENT_STATUS_COLS = ["status", "call_id", "lead_id", "campaign_id", "calls_today", "full_name", "user_group",
+                     "user_level", "pause_code", "real_time_sub_status", "phone_number", "vendor_lead_code",
+                     "session_id", "computer_ip"]
+_STATUSES = {"READY", "QUEUE", "INCALL", "PAUSED", "CLOSER", "MQUEUE", "DEAD", "DISPO", "LOGGED_OUT"}
+
+
+def _split(line):
+    # ViciDial does not quote fields and even its own docs mix ',' and '|' in one reply — pick per line.
+    if "|" in line:
+        return [c.strip() for c in line.split("|")]
+    if "\t" in line:
+        return [c.strip() for c in line.split("\t")]
+    return [c.strip() for c in next(csv.reader([line]))]
+
+
+def _parse_agent_rows(text):
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        raise LiveCallError("ViciDial returned an empty status reply. Check the agent ID in Security → My ViciDial agent ID.")
+    header = None
+    first = _split(lines[0])
+    if first and first[0].strip().lower() == "status":
+        header = [h.strip().lower() for h in first]
+        lines = lines[1:]
+    if not lines:
+        raise LiveCallError("ViciDial returned only a header — the agent may not be logged in. Log in to the ViciDial agent screen.")
+    cells = _split(lines[0])
+    if not cells or cells[0].upper() not in _STATUSES:
+        print(f"[SSD] ViciDial agent_status: unrecognised reply ({len(lines)} line(s), {len(cells)} field(s))", flush=True)
+        raise LiveCallError("Unexpected ViciDial status reply. Ask the admin to check the ViciDial version / API user.")
+    names = header or AGENT_STATUS_COLS
+    if len(cells) > len(names) and "full_name" in names:
+        # an unquoted comma inside the agent's full name — rebuild it from both ends
+        i = names.index("full_name")
+        tail = len(names) - i - 1
+        cells = cells[:i] + [", ".join(cells[i:len(cells) - tail])] + (cells[len(cells) - tail:] if tail else [])
+    row = {n: (cells[k] if k < len(cells) else "") for k, n in enumerate(names)}
+    for n in AGENT_STATUS_COLS:
+        row.setdefault(n, "")
+    return row
 
 
 def read_agent_status(conn, agent):
@@ -86,6 +121,28 @@ def read_agent_status(conn, agent):
         return parse_agent_status(response.text)
     except httpx.HTTPError:
         raise LiveCallError("Cannot reach ViciDial securely. Check the server URL, network/VPN and TLS certificate. Retrying automatically.") from None
+
+
+# Calls a caller started from RecoverIQ (click-to-call). Lets the live-call window show from the moment
+# ViciDial starts dialing, and links the call to the case even when ViciDial reused an old lead.
+import time as _time
+_RECENT_DIALS: dict = {}          # user_id -> (case_id, started_at)
+DIAL_WINDOW_S = 180
+
+
+def note_dial(user_id, case_id):
+    _RECENT_DIALS[int(user_id)] = (int(case_id), _time.time())
+
+
+def recent_dial(user_id):
+    v = _RECENT_DIALS.get(int(user_id))
+    if v and _time.time() - v[1] <= DIAL_WINDOW_S:
+        return v[0]
+    return None
+
+
+def clear_dial(user_id):
+    _RECENT_DIALS.pop(int(user_id), None)
 
 
 def live_call_for(db, user):
@@ -125,16 +182,43 @@ def live_call_for(db, user):
     result = {"state": "waiting", "agent_status": status, "substatus": substatus, "poll_after_ms": 2000}
     if status == "LOGGED_OUT":
         return {**result, "state": "logged_out", "detail": "Sign in to your ViciDial agent/audio session to receive calls.", "poll_after_ms": 10000}
+    dialed_id = recent_dial(user.id)
+    # A call this caller started from RecoverIQ is still ringing / being dialled → show "Dialing…".
+    if dialed_id and ((status == "INCALL" and substatus in ("DIAL", "RING")) or status == "QUEUE"):
+        dialed = _scope(db.query(models.Case), user).filter(models.Case.id == dialed_id).first()
+        if dialed:
+            return {**result, "state": "dialing", "case_id": dialed.id, "agent_user": agent,
+                    "call_id": row.get("call_id", "") or row.get("lead_id", ""), "poll_after_ms": 1500}
     # INCALL may still refer to a ringing, dead or disposition-stage call. Only a live
     # conversation (including a transferred/parked existing conversation) may pop.
     if status != "INCALL" or substatus not in ("", "3-WAY", "PARK"):
-        return result
+        return result                  # not live (any more) — an open call window moves to disposition
     ref = row.get("vendor_lead_code", "")
-    call_id = row.get("call_id", "")
-    if not call_id or not re.fullmatch(r"[0-9]{1,18}", ref) or int(ref) <= 0:
-        return {**result, "state": "unmatched", "detail": "Connected lead has no valid RecoverIQ case ID. Push the case from RecoverIQ or correct vendor_lead_code in ViciDial."}
-    case = _scope(db.query(models.Case), user).filter(models.Case.id == int(ref)).first()
-    if not case or (conn.branch and (case.branch or "").strip().casefold() != conn.branch.strip().casefold()):
+    call_id = row.get("call_id", "") or row.get("lead_id", "")
+    case = None
+    if re.fullmatch(r"[0-9]{1,18}", ref or "") and int(ref) > 0:
+        case = _scope(db.query(models.Case), user).filter(models.Case.id == int(ref)).first()
+    if not case:
+        # ViciDial reused an existing lead (search=YES) or the agent dialled by hand: its vendor_lead_code
+        # isn't our case id. Fall back to the dialled number — only if exactly ONE of this caller's cases has it.
+        digits = re.sub(r"\D", "", row.get("phone_number", ""))[-10:]
+        if len(digits) == 10:
+            from sqlalchemy import or_
+            like = f"%{digits}"
+            hits = (_scope(db.query(models.Case), user)
+                    .filter(models.Case.removed.isnot(True),
+                            or_(models.Case.phone.like(like), models.Case.alt_phone.like(like), models.Case.new_phone.like(like)))
+                    .limit(3).all())
+            if len(hits) == 1:
+                case = hits[0]
+    if not case and dialed_id:
+        # ViciDial reused an existing lead for our click-to-call: the call is the case we just dialled.
+        case = _scope(db.query(models.Case), user).filter(models.Case.id == dialed_id).first()
+    if not case and re.fullmatch(r"[0-9]{1,18}", ref or "") and int(ref) > 0:
+        return {**result, "state": "unavailable", "detail": "Connected case is unavailable in your current role/branch. Ask your manager to check allocation and portfolio status."}
+    if not call_id or not case:
+        return {**result, "state": "unmatched", "detail": "On a call, but it isn't linked to one of your RecoverIQ cases (no case ID and the number doesn't match exactly one of your cases)."}
+    if conn.branch and (case.branch or "").strip().casefold() != conn.branch.strip().casefold():
         return {**result, "state": "unavailable", "detail": "Connected case is unavailable in your current role/branch. Ask your manager to check allocation and portfolio status."}
     # Use call identity, not phone/lead alone: repeat calls to one customer must pop again.
     return {**result, "state": "connected", "event_id": event_key(conn.id, agent, call_id, case.id),

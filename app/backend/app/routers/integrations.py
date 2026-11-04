@@ -232,7 +232,10 @@ def click_to_call(body: dict = Body(...), db: Session = Depends(get_db),
                 # Most common cause: the agent isn't logged into the ViciDial agent screen.
                 raise HTTPException(status_code=502,
                                     detail=f"ViciDial: {txt[:180] or 'no response'} — make sure the agent is logged into the ViciDial agent screen with their phone registered.")
-            return {"ok": True, "dialer": vici.name, "via": "vicidial", "agent_user": agent_user, "detail": txt[:200]}
+            from ..vicidial_live import note_dial
+            note_dial(user.id, case.id)       # live-call window shows "Dialing…" and links the call to this case
+            return {"ok": True, "dialer": vici.name, "via": "vicidial", "agent_user": agent_user, "detail": txt[:200],
+                    "case_id": case.id}
         except HTTPException:
             raise
         except Exception as e:
@@ -953,6 +956,8 @@ def vicidial_my_hangup(body: dict = Body(default={}), db: Session = Depends(get_
     if not ok:
         raise HTTPException(502, f"ViciDial didn't hang up: {txt}")
     cid = body.get("case_id")
+    from ..vicidial_live import clear_dial
+    clear_dial(user.id)
     audit.record(db, user, "call", None, entity_type="dialer",
                  detail=f"Hung up ViciDial call from RecoverIQ" + (f" (case #{cid})" if cid else ""))
     db.commit()
@@ -967,6 +972,8 @@ def vicidial_my_dispo(body: dict = Body(...), db: Session = Depends(get_db),
     dispo callback attaches the recording to it instead of logging the call twice, (2) sends the
     matching status to ViciDial (Agent API external_status) and (3) puts the caller back to READY."""
     from ..vicidial_live import my_agent, agent_api, vici_status_for, resume_ready_later, LiveCallError, VICI_MARKER
+    from ..vicidial_live import clear_dial
+    clear_dial(user.id)                 # this call is done — don't link the next ViciDial call to it
     try:
         conn, agent = my_agent(db, user)
     except LiveCallError as exc:

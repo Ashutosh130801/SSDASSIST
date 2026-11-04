@@ -171,10 +171,16 @@ const dialerStatus = () => (_dialerStatus ||= api('/api/integration/status')
   .then(s => !!(s.dialer && s.dialer.connected)).catch(() => false));
 // Click-to-call through ViciDial: ViciDial dials the customer in the caller's logged-in agent session
 // (Zoiper rings as the agent line), with the case id attached → recording + disposition come back.
+// Remember a click-to-call so the case window shows "Dialing…" at once (and opens if it isn't open).
+const markViciDial = (caseId) => {
+  try { window.__riqDialing = { case_id: Number(caseId), t0: Date.now() };
+    window.dispatchEvent(new CustomEvent('riq-dial-start', { detail: { case_id: Number(caseId) } })); } catch (e) {}
+};
 const dialCaseViaVici = async (caseId) => {
   onCallStart();
   try { const r = await api('/api/integration/click-to-call', { method: 'POST', body: { case_id: caseId } });
     toast('📞 Dialing via ' + (r.dialer || 'ViciDial') + ' — answer on your ViciDial line');
+    if (r.via === 'vicidial') markViciDial(caseId);
   } catch (e) { toast(e.message || 'ViciDial call failed', 'err'); }
 };
 function CallMenu({ phone, label = 'Call', size = 'sm', gold, caseId }) {
@@ -4829,31 +4835,51 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
     if (!isCaller) return;
     const onLive = (st) => {
       if (!st) return;
+      const mine = Number(st.case_id) === Number(c.id);
       setLiveCall(prev => {
-        if (st.state === 'connected' && Number(st.case_id) === Number(c.id)) {
-          return (prev && prev.callId === st.call_id) ? prev : { phase: 'live', callId: st.call_id, t0: Date.now() };
+        if (st.state === 'dialing' && mine) {
+          if (prev && prev.phase === 'live') return prev;
+          return { phase: 'dialing', callId: st.call_id, t0: (prev && prev.phase === 'dialing' && prev.t0) || Date.now(), seen: true };
         }
-        // The call we were showing is no longer connected → it ended (customer or agent hung up).
-        if (prev && prev.phase === 'live' && !(st.state === 'connected' && st.call_id === prev.callId)
-            && ['waiting', 'connected', 'logged_out'].includes(st.state)) return { ...prev, phase: 'ended', t1: Date.now() };
-        return prev;
+        if (st.state === 'connected' && mine) {
+          return (prev && prev.phase === 'live' && prev.callId === st.call_id) ? prev
+            : { phase: 'live', callId: st.call_id, t0: Date.now(), answered: true };
+        }
+        if (!prev || !['live', 'dialing'].includes(prev.phase)) return prev;
+        if (!['waiting', 'connected', 'logged_out', 'unmatched', 'unavailable'].includes(st.state)) return prev;
+        if (prev.phase === 'live' && st.state === 'connected' && st.call_id === prev.callId) return prev;
+        // Just dialled but ViciDial hasn't started ringing yet — don't end the window too early.
+        if (prev.phase === 'dialing' && !prev.seen && Date.now() - prev.t0 < 12000) return prev;
+        try { if (window.__riqDialing && window.__riqDialing.case_id === Number(c.id)) window.__riqDialing = null; } catch (e) {}
+        if (prev.phase === 'dialing') setDispo('RNR');          // never answered → default to RNR
+        return { ...prev, phase: 'ended', t1: Date.now() };
       });
     };
+    // Dialled from a list a moment ago (or from the Call button inside this window) → "Dialing…".
+    const onDialStart = (e) => { if (e.detail && Number(e.detail.case_id) === Number(c.id)) {
+      setLiveCall({ phase: 'dialing', t0: Date.now() }); setWatchUntil(Date.now() + 180000); } };
+    window.addEventListener('riq-dial-start', onDialStart);
+    try { (window.__riqOpenCases ||= new Map()).set(Number(c.id), ((window.__riqOpenCases.get(Number(c.id)) || 0) + 1)); } catch (e) {}
+    const d = window.__riqDialing;
+    if (d && d.case_id === Number(c.id) && Date.now() - d.t0 < 180000) {
+      setLiveCall(prev => prev || { phase: 'dialing', t0: d.t0 }); setWatchUntil(d.t0 + 180000);
+    }
     onLiveRef.current = onLive;
     onLive(window.__riqLive);
     const h = (e) => onLive(e.detail);
     window.addEventListener('riq-vici-live', h);
-    return () => window.removeEventListener('riq-vici-live', h);
+    return () => { window.removeEventListener('riq-vici-live', h); window.removeEventListener('riq-dial-start', onDialStart);
+      try { const m = window.__riqOpenCases, n = (m.get(Number(c.id)) || 1) - 1; n > 0 ? m.set(Number(c.id), n) : m.delete(Number(c.id)); } catch (e) {} };
   }, [c.id]);
-  useEffect(() => { if (!liveCall || liveCall.phase !== 'live') return; const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, [liveCall && liveCall.phase]);
+  useEffect(() => { if (!liveCall || !['live', 'dialing'].includes(liveCall.phase)) return; const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, [liveCall && liveCall.phase]);
   // While a call is live on this case (or right after dialing it), check ViciDial every 2 s so the
   // bar flips to the disposition step the moment the customer hangs up. Idle otherwise.
-  const polling = isCaller && ((liveCall && liveCall.phase === 'live') || watchUntil > Date.now());
+  const polling = isCaller && ((liveCall && ['live', 'dialing'].includes(liveCall.phase)) || watchUntil > Date.now());
   useEffect(() => {
     if (!polling) return;
     let alive = true;
     const t = setInterval(() => {
-      if (watchUntil && Date.now() > watchUntil && !(liveCall && liveCall.phase === 'live')) { setWatchUntil(0); return; }
+      if (watchUntil && Date.now() > watchUntil && !(liveCall && ['live', 'dialing'].includes(liveCall.phase))) { setWatchUntil(0); return; }
       api('/api/integration/vicidial/my-live-call').then(st => { if (!alive) return;
         try { window.__riqLive = st; } catch (e) {} onLiveRef.current(st); }).catch(() => {});
     }, 2000);
@@ -4862,6 +4888,8 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
   const hangUp = async () => {
     setHanging(true);
     try { await api('/api/integration/vicidial/my-hangup', { method: 'POST', body: { case_id: c.id } });
+      if (liveCall && liveCall.phase === 'dialing') setDispo('RNR');
+      try { window.__riqDialing = null; } catch (e) {}
       setLiveCall(lc => lc ? { ...lc, phase: 'ended', t1: Date.now() } : lc); setTab('call');
     } catch (e) { toast(e.message || 'Could not hang up', 'err'); } finally { setHanging(false); }
   };
@@ -4871,7 +4899,10 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
     setDialing(true);
     try { const r = await api('/api/integration/click-to-call', { method: 'POST', body: { case_id: c.id } });
       toast('Dialing via ' + (r.dialer || 'dialer') + '…');
-      if (r.via === 'vicidial') setWatchUntil(Date.now() + 90000);   // show the live-call bar once it connects
+      if (r.via === 'vicidial') {                                       // live-call window from the first second
+        try { window.__riqDialing = { case_id: Number(c.id), t0: Date.now() }; } catch (e) {}
+        setLiveCall({ phase: 'dialing', t0: Date.now() }); setWatchUntil(Date.now() + 180000);
+      }
     } catch (e) { toast(e.message || 'Dialer call failed', 'err'); } finally { setDialing(false); }
   };
   const saveContact = async () => {
@@ -4971,6 +5002,12 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
     <div className="drawer-bg" onClick={onClose} style={notice ? { zIndex: 2600 } : undefined}>
       <div className="drawer glass" ref={drawerRef} tabIndex={-1} role="dialog" aria-label={'Case ' + c.id} onClick={e => e.stopPropagation()}>
         {notice && <div role="status" style={{ padding: '8px 12px', marginBottom: 10, background: 'rgba(37,99,235,.10)', color: 'var(--info)', borderRadius: 8 }}>{notice}</div>}
+        {liveCall && liveCall.phase === 'dialing' && <div role="status" style={{ position: 'sticky', top: 0, zIndex: 3, display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, borderRadius: 10, background: '#DBEAFE', border: '1px solid #93C5FD' }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#2563EB', boxShadow: '0 0 0 4px rgba(37,99,235,.2)' }} />
+          <b style={{ color: '#1E3A8A' }}>📞 Dialing · {cur.customer_name || 'customer'} · {cur.phone || ''} · {mmss(Date.now() - liveCall.t0)}</b>
+          <div style={{ flex: 1 }} />
+          <button className="btn sm" style={{ background: '#DC2626', color: '#fff', borderColor: '#DC2626' }} disabled={hanging} onClick={hangUp}>{hanging ? 'Hanging up…' : '⏹ Hang up'}</button>
+        </div>}
         {liveCall && liveCall.phase === 'live' && <div role="status" style={{ position: 'sticky', top: 0, zIndex: 3, display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, borderRadius: 10, background: '#DCFCE7', border: '1px solid #86EFAC' }}>
           <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#16A34A', boxShadow: '0 0 0 4px rgba(22,163,74,.2)' }} />
           <b style={{ color: '#166534' }}>📞 On call · {cur.customer_name || 'customer'} · {mmss(Date.now() - liveCall.t0)}</b>
@@ -4979,7 +5016,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
         </div>}
         {liveCall && liveCall.phase === 'ended' && <div style={{ position: 'sticky', top: 0, zIndex: 3, padding: '10px 12px', marginBottom: 10, borderRadius: 10, background: '#FEF3C7', border: '1px solid #FCD34D' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <b style={{ color: '#92400E' }}>Call ended{liveCall.t1 ? ' · ' + mmss(liveCall.t1 - liveCall.t0) : ''} — disposition</b>
+            <b style={{ color: '#92400E' }}>{liveCall.answered ? 'Call ended' : 'Not answered'}{liveCall.t1 ? ' · ' + mmss(liveCall.t1 - liveCall.t0) : ''} — disposition</b>
             <div style={{ flex: 1 }} />
             <button className="btn ghost sm" title="Dismiss — disposition it on the ViciDial screen instead" onClick={() => setLiveCall(null)}>✕</button>
           </div>
@@ -10637,10 +10674,20 @@ function PredictiveScreenPop({ user }) {
       }
     });
     const wake = () => { if (!document.hidden) watcher.poll(); };
+    // Dialled from a list/sheet → open the case window right away (it shows "Dialing…").
+    const onDial = async (e) => {
+      const id = e.detail && e.detail.case_id; if (!id) return;
+      if (window.__riqOpenCases && window.__riqOpenCases.get(Number(id))) return;   // its window is already open
+      try { const c = await api('/api/cases/' + id);
+        setPops(previous => { const existing = previous.find(p => p.c.id === c.id);
+          return [...previous.filter(p => p.c.id !== c.id), existing || { c, call: null }]; });
+      } catch (err) {}
+    };
+    window.addEventListener('riq-dial-start', onDial);
     document.addEventListener('visibilitychange', wake);
     window.addEventListener('online', wake);
     watcher.start();
-    return () => { watcher.stop(); document.removeEventListener('visibilitychange', wake); window.removeEventListener('online', wake); };
+    return () => { watcher.stop(); document.removeEventListener('visibilitychange', wake); window.removeEventListener('online', wake); window.removeEventListener('riq-dial-start', onDial); };
   }, [user.id, user.role]);
   const labels = { checking: 'Connecting live screen-pop…', waiting: 'Predictive screen-pop ready • push delivery', connected: 'Latest call received', logged_out: 'Dialer session signed out — waiting for call events', unmapped: 'Dialer agent not mapped', unavailable: 'Connected case access needs attention', unmatched: 'Connected lead not linked', error: 'Screen-pop needs attention' };
   return <>
