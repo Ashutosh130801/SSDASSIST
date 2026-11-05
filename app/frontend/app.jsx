@@ -3736,6 +3736,7 @@ function TrustBadge({ level, reasons, review }) {
 /* ---- Flagged (possibly fake) visits report for TL / manager / HO / admin ---- */
 function FlaggedVisitsModal({ onClose }) {
   useBackClose(true, onClose);
+  const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');   // was missing → crashed on paid visits
   const today = new Date().toLocaleDateString('en-CA', { timeZone: IST_TZ });
   const [start, setStart] = useState(today.slice(0, 8) + '01'); const [end, setEnd] = useState(today);
   const [level, setLevel] = useState('flagged'); const [fos, setFos] = useState('');
