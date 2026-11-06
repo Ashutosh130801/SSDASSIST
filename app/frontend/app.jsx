@@ -8126,7 +8126,7 @@ function StaffFormModal({ existing, roles, onClose, onDone, isAdmin }) {
             Also a field agent — adds a Field Agent view they can switch to
             {existing.fos_emp_code ? <> (field-agent ID: <b>{existing.fos_emp_code}</b>)</> : <> (a field-agent ID is generated on save)</>}
           </label>)}
-        {editing && f.role === 'fos' && (
+        {editing && ['fos', 'manager'].includes(f.role) && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, margin: '6px 0' }}>
             <input type="checkbox" checked={!!f.also_caller} onChange={e => set('also_caller', e.target.checked)} />
             Also a caller — adds a Tele-calling view they can switch to
