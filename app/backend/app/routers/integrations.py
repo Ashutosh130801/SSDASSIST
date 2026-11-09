@@ -201,7 +201,13 @@ def click_to_call(body: dict = Body(...), db: Session = Depends(get_db),
     from .cases import _ensure_open
     _ensure_open(case, user)          # no dialing on closed / escalated cases for FOS & callers
     from . import compliance as _compliance
-    _compliance.guard_dial(db, user, case)   # 🛡️ contact hours / attempt caps / certification (if the add-on is on)
+    try:
+        _compliance.guard_dial(db, user, case)   # 🛡️ contact hours / attempt caps / certification (if the add-on is on)
+    except HTTPException:
+        raise
+    except Exception as exc:                     # an add-on must never break dialling
+        db.rollback()
+        print(f"[SSD] compliance check skipped: {exc!r}", flush=True)
     # ── ViciDial path (existing office dialer) ────────────────────────────────────
     vici = _pick_vici(db, case.branch)
     if vici:

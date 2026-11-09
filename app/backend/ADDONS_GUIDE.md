@@ -7,7 +7,7 @@ Two new buttons sit under your name in the top-right corner:
 
 New add-ons start **OFF**. Switch them on in ⚙️ Services when you are ready. AI Assist stays on, because it was already in use.
 
-Keys never go into the app or the chat. They go only in the server `.env` file. Restart the server after you change `.env`.
+**API keys** (Gemini / OpenRouter, Razorpay, MSG91 / WhatsApp) can be entered by the Admin in ⚙️ Services → the add-on's ⚙ Settings. They're stored encrypted, never shown again (only the last 4 characters), can be replaced or removed any time, and every change is in the Audit Log. A key set in the server `.env` is used when none is saved in the app. Live Razorpay keys still need `RAZORPAY_ALLOW_LIVE=true` in `.env`. Changing the server's `SECRET_KEY` makes saved keys unreadable — re-enter them.
 
 ---
 

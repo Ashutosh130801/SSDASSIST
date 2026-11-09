@@ -584,6 +584,9 @@ async def _service_gate(request, call_next):
             db = SessionLocal()
             try:
                 on = _svc.is_on(db, key)
+            except Exception as exc:          # never let the switchboard itself break a request
+                print(f"[SSD] service gate skipped for {path}: {exc!r}", flush=True)
+                on = True
             finally:
                 db.close()
             if not on:
@@ -666,6 +669,16 @@ async def _attendance_sweeper():
         await asyncio.sleep(180)
 
 
+def _ai_on(db) -> bool:
+    try:
+        from . import services as _svc
+        from . import ai_llm
+        conf = {**_svc.settings_of(db, "ai_assist"), **_svc.secrets_of(db, "ai_assist")}
+        return _svc.is_on(db, "ai_assist") and ai_llm.provider_status(conf)["configured"]
+    except Exception:
+        return bool(settings.gemini_api_key)
+
+
 @app.get("/api/config")
 def config(db: Session = Depends(get_db)):
     from .products import catalog
@@ -682,7 +695,7 @@ def config(db: Session = Depends(get_db)):
         "google_maps_api_key": settings.google_maps_api_key,
         "google_client_id": settings.google_client_id,
         "location_ping_seconds": settings.location_ping_seconds,
-        "ai_enabled": bool(settings.gemini_api_key),
+        "ai_enabled": _ai_on(db),
         "upi_vpa": settings.upi_vpa,
         "upi_payee_name": settings.upi_payee_name,
         "geofence_metres": settings.geofence_metres,

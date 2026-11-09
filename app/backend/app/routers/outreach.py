@@ -236,7 +236,9 @@ def _in_hours(db) -> bool:
 def _send(channel, to, text, c):
     if _transport:
         return _transport(channel, to, text, c)
-    s = get_settings()
+    from types import SimpleNamespace
+    s = SimpleNamespace(whatsapp_token=c.get("whatsapp_token"), whatsapp_phone_id=c.get("whatsapp_phone_id"),
+                        msg91_auth_key=c.get("msg91_auth_key"))
     if channel == "whatsapp":
         if c.get("whatsapp_provider") != "meta" or not (s.whatsapp_token and s.whatsapp_phone_id and c.get("wa_template")):
             return None, None
@@ -254,7 +256,7 @@ def _send(channel, to, text, c):
 
 
 def send_queued(db, limit: int = 2000) -> dict:
-    c = svc.settings_of(db, KEY)
+    c = {**svc.settings_of(db, KEY), **svc.secrets_of(db, KEY)}     # keys: ⚙️ Services first, .env fallback
     if not _in_hours(db):
         return {"sent": 0, "manual": 0, "failed": 0, "waiting": "outside contact hours"}
     sent = manual = failed = 0

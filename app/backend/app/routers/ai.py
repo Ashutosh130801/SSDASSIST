@@ -40,7 +40,8 @@ META_TOOLS = {
 
 
 def _conf(db):
-    return svc.settings_of(db, "ai_assist")
+    # settings + API keys (in-app keys first, .env fallback). Never returned to the browser.
+    return {**svc.settings_of(db, "ai_assist"), **svc.secrets_of(db, "ai_assist")}
 
 
 def _system(user, conf):
@@ -223,6 +224,58 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     return {"conversation_id": conv.id, "reply": reply, **out}
+
+
+@router.get("/providers/models")
+def provider_models(provider: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Admin: models the saved key / server offers, for the model dropdown in ⚙️ Services."""
+    if user.role != "admin":
+        raise HTTPException(403, "Only Admin can configure AI Assist.")
+    try:
+        return {"provider": provider, "models": ai_llm.list_models(_conf(db), provider)}
+    except ai_llm.LLMError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/providers/test")
+def provider_test(body: dict = Body(default={}), db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Admin: one real question that needs a tool call — proves the model can actually drive AI Assist
+    (small models often chat fine but can't call tools)."""
+    import time as _t
+    if user.role != "admin":
+        raise HTTPException(403, "Only Admin can configure AI Assist.")
+    conf = _conf(db)
+    which = "fallback" if body.get("fallback") else "main"
+    if which == "fallback":
+        conf = {**conf, "provider": conf.get("fallback_provider"), "model": conf.get("fallback_model"), "fallback_provider": "none"}
+    else:
+        conf = {**conf, "fallback_provider": "none"}
+    st = ai_llm.provider_status(conf)
+    if not st["configured"]:
+        return {"ok": False, "step": "setup", "detail": st["hint"], **st}
+    spec = [{"name": "whoami", "description": "Who is the signed-in user (name and role).", "parameters": {"type": "object", "properties": {}}}]
+    t0 = _t.time()
+    try:
+        r1 = ai_llm.call_llm(conf, "You are a test. Use the whoami tool to answer.", [{"role": "user", "content": "Who am I? Use the tool."}], spec, timeout=120)
+    except ai_llm.LLMError as e:
+        return {"ok": False, "step": "connect", "detail": str(e), **st}
+    t1 = _t.time()
+    if not r1["tool_calls"] or r1["tool_calls"][0]["name"] != "whoami":
+        return {"ok": False, "step": "tools", "seconds": round(t1 - t0, 1), **st,
+                "detail": "Connected, but the model didn't use the tool. AI Assist needs a model that supports tool/function calling — pick another model."}
+    call = r1["tool_calls"][0]
+    try:
+        r2 = ai_llm.call_llm(conf, "Answer in one short sentence.",
+                             [{"role": "user", "content": "Who am I? Use the tool."},
+                              {"role": "assistant", "content": "", "tool_calls": [call]},
+                              {"role": "tool", "tool_call_id": call["id"], "name": "whoami", "content": json.dumps({"name": user.name, "role": user.role})}],
+                             spec, timeout=120)
+    except ai_llm.LLMError as e:
+        return {"ok": False, "step": "answer", "detail": str(e), **st}
+    total = round(_t.time() - t0, 1)
+    audit.record(db, user, "ai.test", entity_type="ai", detail=f"{st['provider']} / {st['model']}: ok in {total}s")
+    db.commit()
+    return {"ok": True, "seconds": total, "answer": (r2["content"] or "")[:300], **st}
 
 
 @router.get("/status")

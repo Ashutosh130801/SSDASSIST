@@ -23,6 +23,8 @@ def list_services(db: Session = Depends(get_db), user: models.User = Depends(get
         if admin:
             row["settings"] = state[s["key"]]["settings"]
             row["schema"] = s.get("settings") or []
+            if any(f["type"] == "secret" for f in row["schema"]):
+                row["secrets"] = svc.secret_status(db, s["key"])
         out.append(row)
     return out
 
@@ -41,13 +43,15 @@ def update_service(key: str, body: dict = Body(...), db: Session = Depends(get_d
         raise HTTPException(400, f"{s['name']} is a core service and can't be turned off.")
     before = svc.load(db, fresh=True)[key]
     try:
-        svc.save(db, key, body.get("enabled"), body.get("settings"))
+        svc.save(db, key, body.get("enabled"), body.get("settings"), body.get("secrets"), body.get("clear_secrets"))
     except ValueError as e:
         raise HTTPException(400, str(e))
     after = svc.load(db, fresh=True)[key]
+    keys_changed = [k for k, v in (body.get("secrets") or {}).items() if str(v or "").strip()] + list(body.get("clear_secrets") or [])
     audit.record(db, user, "service.update", entity_type="settings",
                  detail=f"{s['name']}: " + ("ON" if after["enabled"] else "OFF") +
-                        ("" if before["settings"] == after["settings"] else " · settings changed"),
+                        ("" if before["settings"] == after["settings"] else " · settings changed") +
+                        (f" · API keys changed: {', '.join(keys_changed)}" if keys_changed else ""),
                  old=before, new=after)
     db.commit()
     return {"key": key, **after}

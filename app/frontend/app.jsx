@@ -67,6 +67,8 @@ async function api(path, { method, body, form, auth = true, signal } = {}) {
   if (!res.ok) {
     let msg = res.statusText;
     if (ct.includes('json')) { try { msg = (await res.json()).detail || msg; } catch {} }
+    else { try { const t = (await res.text()).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(); if (t) msg = t.slice(0, 160); } catch {} }
+    if (!msg) msg = 'Server error (HTTP ' + res.status + ')';
     const error = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
     error.status = res.status;
     throw error;
@@ -5360,7 +5362,7 @@ function ServicesView({ user }) {
           </div>
           {(s.schema || []).length > 0 && !s.reminder && <div style={{ marginTop: 8 }}>
             <button className="btn ghost sm" onClick={() => setOpen(open === s.key ? null : s.key)}>{open === s.key ? '▲ Hide settings' : '⚙ Settings'}</button>
-            {open === s.key && <SvcSettings s={s} onSave={v => save(s.key, { settings: v })} />}</div>}
+            {open === s.key && <SvcSettings key={JSON.stringify(s.secrets || {})} s={s} onSave={body => save(s.key, body)} />}</div>}
         </div>)}
       </div></div>)}
   </div>;
@@ -5368,15 +5370,74 @@ function ServicesView({ user }) {
 
 function SvcSettings({ s, onSave }) {
   const [v, setV] = useState({ ...(s.settings || {}) });
+  const [keys, setKeys] = useState({}); const [clear, setClear] = useState([]);
+  const sec = s.secrets || {};
+  const save = async () => {
+    const ok = await onSave({ settings: v, secrets: Object.fromEntries(Object.entries(keys).filter(([, x]) => (x || '').trim())), clear_secrets: clear });
+    if (ok) { setKeys({}); setClear([]); }
+  };
+  // A field with "for": [providers] only shows when that provider is the main or backup choice.
+  const shown = f => !f.for || f.for.includes(v.provider) || f.for.includes(v.fallback_provider);
+  const isAi = s.key === 'ai_assist';
   return <div style={{ marginTop: 8, borderTop: '1px dashed var(--line, #e2e8f0)', paddingTop: 8 }}>
-    {s.schema.map(f => <div key={f.key} className="field" style={{ marginBottom: 6 }}>
+    {s.schema.filter(shown).map(f => isAi && (f.key === 'model' || f.key === 'fallback_model')
+      ? <AiModelField key={f.key} f={f} v={v} setV={setV} />
+      : <div key={f.key} className="field" style={{ marginBottom: 6 }}>
       {f.type === 'bool' ? <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}><input type="checkbox" checked={!!v[f.key]} onChange={e => setV({ ...v, [f.key]: e.target.checked })} />{f.label}</label>
+        : f.type === 'secret' ? <>
+          <label style={{ fontSize: 12 }}>🔑 {f.label}</label>
+          <input className="input" type="password" autoComplete="new-password" value={keys[f.key] || ''} onChange={e => setKeys({ ...keys, [f.key]: e.target.value })}
+            placeholder={sec[f.key] && sec[f.key].set ? `Saved ${sec[f.key].hint} (${sec[f.key].source === 'env' ? 'from server .env' : 'in app'}) — type to replace` : 'Not set — paste the key'} />
+          {sec[f.key] && sec[f.key].source === 'app' && <label style={{ fontSize: 11.5, display: 'flex', gap: 4, alignItems: 'center' }} className="muted">
+            <input type="checkbox" checked={clear.includes(f.key)} onChange={e => setClear(e.target.checked ? [...clear, f.key] : clear.filter(x => x !== f.key))} />Remove the saved key</label>}
+        </>
         : <><label style={{ fontSize: 12 }}>{f.label}</label>
           {f.type === 'select' ? <select className="input" value={v[f.key] ?? ''} onChange={e => setV({ ...v, [f.key]: e.target.value })}>{Object.entries(f.options).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
-            : f.type === 'secret_hint' ? <div className="muted" style={{ fontSize: 12 }}>🔑 {f.default} — keys are never stored in the app.</div>
+            : f.type === 'secret_hint' ? <div className="muted" style={{ fontSize: 12 }}>🔑 {f.default}</div>
             : <input className="input" type={f.type === 'number' ? 'number' : f.type === 'time' ? 'time' : 'text'} value={v[f.key] ?? ''} onChange={e => setV({ ...v, [f.key]: e.target.value })} />}</>}
     </div>)}
-    <button className="btn gold sm" onClick={() => onSave(v)}>Save settings</button>
+    {isAi && <AiTestBox v={v} saved={s.settings || {}} />}
+    {Object.keys(sec).length > 0 && <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>Keys are stored encrypted, never shown again after saving (only the last 4 characters), and every change is written to the Audit Log.</div>}
+    <button className="btn gold sm" onClick={save}>Save settings</button>
+  </div>;
+}
+
+function AiModelField({ f, v, setV }) {
+  const prov = f.key === 'model' ? v.provider : v.fallback_provider;
+  const [list, setList] = useState([]); const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  if (f.key === 'fallback_model' && (!prov || prov === 'none')) return null;
+  const load = () => { setBusy(true); setErr('');
+    api('/api/ai/providers/models?provider=' + encodeURIComponent(prov)).then(r => { setList(r.models || []); if (!(r.models || []).length) setErr('No models found.'); })
+      .catch(e => setErr(e.message + ' — save the key / URL first')).finally(() => setBusy(false)); };
+  const id = 'dl-' + f.key;
+  return <div className="field" style={{ marginBottom: 6 }}>
+    <label style={{ fontSize: 12 }}>{f.label}</label>
+    <div style={{ display: 'flex', gap: 6 }}>
+      <input className="input" list={id} value={v[f.key] ?? ''} onChange={e => setV({ ...v, [f.key]: e.target.value })} placeholder={prov === 'ollama' ? 'qwen3:4b' : 'provider default'} />
+      <button className="btn ghost sm" type="button" disabled={busy} onClick={load} title="Load the models your key / server offers">{busy ? '…' : '⟳ Load models'}</button>
+    </div>
+    <datalist id={id}>{list.map(m => <option key={m} value={m} />)}</datalist>
+    {list.length > 0 && <div className="muted" style={{ fontSize: 11 }}>{list.length} models — click the box to pick.</div>}
+    {err && <div style={{ fontSize: 11, color: 'var(--bad)' }}>{err}</div>}
+  </div>;
+}
+
+function AiTestBox({ v, saved }) {
+  const [res, setRes] = useState(null); const [busy, setBusy] = useState('');
+  const dirty = ['provider', 'model', 'local_url', 'custom_url', 'fallback_provider', 'fallback_model'].some(k => (v[k] ?? '') !== (saved[k] ?? ''));
+  const run = fb => { setBusy(fb ? 'fb' : 'main'); setRes(null);
+    api('/api/ai/providers/test', { method: 'POST', body: { fallback: fb } }).then(r => setRes({ ...r, fb })).catch(e => setRes({ ok: false, detail: e.message, fb })).finally(() => setBusy('')); };
+  return <div className="glass card" style={{ padding: 8, margin: '6px 0' }}>
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+      <b style={{ fontSize: 12.5 }}>🧪 Test</b>
+      <button className="btn sm" type="button" disabled={!!busy || dirty} onClick={() => run(false)}>{busy === 'main' ? 'Testing…' : 'Test main provider'}</button>
+      {saved.fallback_provider && saved.fallback_provider !== 'none' && <button className="btn ghost sm" type="button" disabled={!!busy || dirty} onClick={() => run(true)}>{busy === 'fb' ? 'Testing…' : 'Test backup'}</button>}
+      {dirty && <span className="muted" style={{ fontSize: 11 }}>Save settings first, then test.</span>}
+    </div>
+    {res && <div style={{ fontSize: 12, marginTop: 6, color: res.ok ? 'var(--good)' : 'var(--bad)' }}>
+      {res.ok ? <>✅ {res.provider_label} · {res.model} works with AI Assist — answered in {res.seconds}s{res.local ? ' · data stays on your server' : ' · cloud (masked data)'}. <span className="muted">“{res.answer}”</span></>
+        : <>❌ {res.provider_label ? res.provider_label + ' · ' + (res.model || '') + ': ' : ''}{res.detail}</>}
+    </div>}
   </div>;
 }
 
@@ -5471,7 +5532,7 @@ function AIAssist({ user }) {
         <span className="muted" onClick={e => { e.stopPropagation(); if (window.confirm('Delete this chat?')) api('/api/ai/conversations/' + c.id, { method: 'DELETE' }).then(() => { if (c.id === cid) { setCid(null); setMsgs([]); } loadConvs(); }); }}>✕</span></div>)}
     </div>
     <div className="glass card" style={{ display: 'flex', flexDirection: 'column', padding: 12, minWidth: 0 }}>
-      <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>{st && !st.error ? <>✨ {st.provider === 'local' ? 'Local model on your server' : st.provider} · {st.model}{st.mask_pii ? ' · phone/account numbers masked' : ''} · {st.used_today}/{st.daily_limit} today
+      <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>{st && !st.error ? <>✨ {st.local ? '🏢 ' + (st.provider_label || 'Local model') + ' (data stays on your server)' : '☁️ ' + (st.provider_label || st.provider)} · {st.model}{st.mask_pii ? ' · phone/account numbers masked' : ''} · {st.used_today}/{st.daily_limit} today
         {!st.configured && <b style={{ color: 'var(--bad)' }}> · not set up: {st.hint}</b>}</> : st && st.error}</div>
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
         {!msgs.length && <div className="muted" style={{ margin: 'auto', textAlign: 'center', maxWidth: 520 }}>Hi {user.name.split(' ')[0]} — ask about your cases, PTPs, team, visits, calls, attendance, leave or payslips, or how to do anything in RecoverIQ. I only see what you can see.

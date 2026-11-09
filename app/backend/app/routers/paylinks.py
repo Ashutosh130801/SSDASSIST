@@ -42,19 +42,19 @@ RZP = "https://api.razorpay.com/v1"
 _transport = None          # tests: fn(method, url, json) -> dict
 
 
-def _rzp_keys():
-    s = get_settings()
-    if not (s.razorpay_key_id and s.razorpay_key_secret):
-        raise HTTPException(400, "Razorpay keys are not set — add RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET to the server .env")
-    if s.razorpay_key_id.startswith("rzp_live_") and not s.razorpay_allow_live:
-        raise HTTPException(400, "Live Razorpay keys are blocked until RAZORPAY_ALLOW_LIVE=true is set (test first with rzp_test_ keys)")
-    return s.razorpay_key_id, s.razorpay_key_secret
+def _rzp_keys(db):
+    kid, sec = svc.secret(db, KEY, "razorpay_key_id"), svc.secret(db, KEY, "razorpay_key_secret")
+    if not (kid and sec):
+        raise HTTPException(400, "Razorpay keys are not set — add them in ⚙️ Services → Payment links")
+    if kid.startswith("rzp_live_") and not get_settings().razorpay_allow_live:
+        raise HTTPException(400, "Live Razorpay keys are blocked until RAZORPAY_ALLOW_LIVE=true is set in the server .env (test first with rzp_test_ keys)")
+    return kid, sec
 
 
-def _rzp(method, path, body=None):
+def _rzp(db, method, path, body=None):
     if _transport:
         return _transport(method, path, body)
-    kid, sec = _rzp_keys()
+    kid, sec = _rzp_keys(db)
     r = httpx.request(method, RZP + path, json=body, auth=(kid, sec), timeout=20)
     if r.status_code >= 300:
         try:
@@ -141,7 +141,7 @@ def create_link(body: dict = Body(...), request: Request = None, db: Session = D
                "callback_url": f"{_base_url(request)}/pay/{tok}", "callback_method": "get"}
         if partial:
             req["first_min_partial_amount"] = int(D(c.get("min_amount") or 100) * 100)
-        r = _rzp("POST", "/payment_links", req)
+        r = _rzp(db, "POST", "/payment_links", req)
         link.provider_id, link.short_url = r.get("id"), r.get("short_url")
     else:
         s = get_settings()
@@ -165,7 +165,7 @@ def cancel_link(lid: int, db: Session = Depends(get_db), user=Depends(get_curren
         raise HTTPException(400, f"Link is already {l.status}")
     if l.provider == "razorpay" and l.provider_id:
         try:
-            _rzp("POST", f"/payment_links/{l.provider_id}/cancel")
+            _rzp(db, "POST", f"/payment_links/{l.provider_id}/cancel")
         except HTTPException:
             pass
     l.status = "cancelled"
@@ -208,7 +208,7 @@ def _apply(db, link: models.PaymentLink, amount: Decimal, ref: str, source: str,
 async def webhook(request: Request, db: Session = Depends(get_db)):
     """Razorpay → us. Verified with RAZORPAY_WEBHOOK_SECRET (X-Razorpay-Signature, HMAC-SHA256 of the raw body)."""
     raw = await request.body()
-    secret = get_settings().razorpay_webhook_secret
+    secret = svc.secret(db, KEY, "razorpay_webhook_secret")
     sig = request.headers.get("X-Razorpay-Signature", "")
     if not secret or not hmac.compare_digest(hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest(), sig):
         raise HTTPException(400, "Bad signature")
