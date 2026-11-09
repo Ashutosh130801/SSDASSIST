@@ -5894,6 +5894,7 @@ function ArchiveView({ user }) {
   const [cycle, setCycle] = useState(null);
   const [f, setF] = useState({ closing_type: '', product: '', cyc: '' });
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const [zipping, setZipping] = useState(false);
   useEffect(() => { api('/api/archive/periods').then(ps => { setPeriods(ps); if (ps.length && !period) setPeriod(ps[0].period); }).catch(() => setPeriods([])); }, []);
   useEffect(() => { if (!period) return; setCycle(null); api('/api/archive/cycle-report?period=' + period).then(setCycle).catch(() => setCycle(null)); }, [period]);
   useEffect(() => {
@@ -5926,6 +5927,11 @@ function ArchiveView({ user }) {
               <option value="">All products</option>{[...new Set(data.products.map(p => p.product))].map(p => <option key={p} value={p}>{p}</option>)}</select>}
             <input className="input" style={{ ...sel, minWidth: 90 }} type="number" min="1" max="31" placeholder="Cycle day" value={f.cyc} onChange={e => set('cyc', e.target.value)} />
             {(f.closing_type || f.product || f.cyc) && <button className="btn ghost" onClick={() => setF({ closing_type: '', product: '', cyc: '' })}>Clear</button>}
+            <span style={{ flex: 1 }} />
+            <button className="btn gold" disabled={!period || zipping} title="Everything for this month in one ZIP: summary, every portfolio, MIS pivots, calls, payments, visits and case history"
+              onClick={async () => { setZipping(true); toast('Preparing the ' + pretty(period) + ' archive — large months can take a minute…');
+                try { await download('/api/archive/export.zip?period=' + period, 'RecoverIQ_Archive_' + period + '.zip'); } finally { setZipping(false); } }}>
+              {zipping ? '⏳ Preparing ZIP…' : '📦 Download month (ZIP)'}</button>
           </div>
         </div>
 
