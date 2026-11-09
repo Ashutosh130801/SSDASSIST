@@ -108,6 +108,7 @@ import `in`.recoveriq.app.ui.screens.CommunicationScreen
 import `in`.recoveriq.app.ui.screens.DevicesScreen
 import `in`.recoveriq.app.ui.screens.ChangeRequestsScreen
 import `in`.recoveriq.app.ui.screens.LeaveScreen
+import `in`.recoveriq.app.ui.screens.PayslipsScreen
 import `in`.recoveriq.app.ui.screens.LitigationScreen
 import `in`.recoveriq.app.ui.screens.ForcePasswordChangeScreen
 import `in`.recoveriq.app.ui.screens.ProfileScreen
@@ -278,9 +279,13 @@ private fun HomeScaffold(
     onNeedTrackingPermissions: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
 ) {
-    val items = remember(user.role) {
+    // "My Payslips" appears only when the salary section is enabled on the server (it answers 423 while locked).
+    var payslipsOn by remember { mutableStateOf(false) }
+    LaunchedEffect(user.id) { payslipsOn = runCatching { vm.repo.myPayslips() }.isSuccess }
+    val items = remember(user.role, payslipsOn) {
         navEntriesFor(vm, user, onOpenCase, onNeedTrackingPermissions, onRequestBatteryExemption) +
-            NavEntry("attendance", "Attendance", Icons.Filled.Schedule) { AttendanceScreen(vm, user) }
+            NavEntry("attendance", "Attendance", Icons.Filled.Schedule) { AttendanceScreen(vm, user) } +
+            (if (payslipsOn) listOf(NavEntry("payslips", "My Payslips", Icons.Filled.Receipt) { PayslipsScreen(vm) }) else emptyList())
     }
     // Section back-stack: Back steps through the sections you actually visited (full history)
     // instead of exiting the app or jumping to home. Persisted across rotation / process death

@@ -19,3 +19,4 @@ webauthn==2.2.0
 fpdf2
 pypdf
 paramiko==3.4.0
+python-docx

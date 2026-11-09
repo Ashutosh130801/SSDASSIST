@@ -4838,6 +4838,8 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
       if (!st) return;
       const mine = Number(st.case_id) === Number(c.id);
       setLiveCall(prev => {
+        // Hang-up wasn't confirmed: keep the "Save & end" panel while ViciDial still reports this same call.
+        if (prev && prev.stillOn && (!st.call_id || st.call_id === prev.callId) && ['dialing', 'connected'].includes(st.state)) return prev;
         if (st.state === 'dialing' && mine) {
           if (prev && prev.phase === 'live') return prev;
           return { phase: 'dialing', callId: st.call_id, t0: (prev && prev.phase === 'dialing' && prev.t0) || Date.now(), seen: true };
@@ -4888,7 +4890,11 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
   }, [polling, watchUntil]);
   const hangUp = async () => {
     setHanging(true);
-    try { await api('/api/integration/vicidial/my-hangup', { method: 'POST', body: { case_id: c.id } });
+    try { const r = await api('/api/integration/vicidial/my-hangup', { method: 'POST', body: { case_id: c.id } });
+      if (r && r.ended === false) { toast(r.warning || 'ViciDial has not dropped the call — pick the outcome and press Save & end.', 'err');
+        try { window.__riqDialing = null; } catch (e) {}
+        setLiveCall(lc => lc ? { ...lc, phase: 'ended', stillOn: true, callId: r.call_id || lc.callId, answered: lc.phase === 'live', t1: Date.now() } : lc); setTab('call'); return; }
+      if (r && r.warning) toast(r.warning, 'err');
       if (liveCall && liveCall.phase === 'dialing') setDispo('RNR');
       try { window.__riqDialing = null; } catch (e) {}
       setLiveCall(lc => lc ? { ...lc, phase: 'ended', t1: Date.now() } : lc); setTab('call');
@@ -4954,8 +4960,10 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
         try {
           const r = await api('/api/integration/vicidial/my-dispo', { method: 'POST',
             body: { case_id: c.id, disposition: dispo, call_log_id: log && log.id, ready: true,
+                    was_live: !!(liveCall && liveCall.stillOn), call_id: (liveCall && liveCall.callId) || null,
                     ptp_date: isPTP ? (ptpDate || null) : null, ptp_amount: isPTP ? (amt || null) : null } });
-          if (r.ok) toast(`Saved · ViciDial ${r.status} · back to Ready`);
+          if (r.ok && r.warning) toast(r.warning, 'err');
+          else if (r.ok) toast(`Saved · ViciDial ${r.status}${liveCall && liveCall.stillOn ? ' · call ended' : ''} · back to Ready`);
           else toast(r.warning || 'Saved in RecoverIQ — finish the disposition on the ViciDial screen.', 'err');
         } catch (e) { toast('Saved in RecoverIQ — ViciDial: ' + (e.message || 'not reachable') + '. Disposition it on the ViciDial screen.', 'err'); }
         setLiveCall(null);
@@ -5017,7 +5025,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
         </div>}
         {liveCall && liveCall.phase === 'ended' && <div style={{ position: 'sticky', top: 0, zIndex: 3, padding: '10px 12px', marginBottom: 10, borderRadius: 10, background: '#FEF3C7', border: '1px solid #FCD34D' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <b style={{ color: '#92400E' }}>{liveCall.answered ? 'Call ended' : 'Not answered'}{liveCall.t1 ? ' · ' + mmss(liveCall.t1 - liveCall.t0) : ''} — disposition</b>
+            <b style={{ color: '#92400E' }}>{liveCall.stillOn ? '⚠️ ViciDial hasn\'t dropped the call — choose the outcome and press Save & end' : (liveCall.answered ? 'Call ended' : 'Not answered')}{!liveCall.stillOn && liveCall.t1 ? ' · ' + mmss(liveCall.t1 - liveCall.t0) : ''}{liveCall.stillOn ? '' : ' — disposition'}</b>
             <div style={{ flex: 1 }} />
             <button className="btn ghost sm" title="Dismiss — disposition it on the ViciDial screen instead" onClick={() => setLiveCall(null)}>✕</button>
           </div>
@@ -5028,7 +5036,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
             {isPaid && <input className="input" style={{ maxWidth: 140 }} type="number" placeholder="Collected ₹" value={amt} onChange={e => setAmt(e.target.value)} />}
             {!isPTP && !isPaid && <input className="input" style={{ maxWidth: 150 }} type="date" title="Schedule next call (optional)" value={followDate} onChange={e => setFollowDate(e.target.value)} />}
             <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Remark" value={callNote} onChange={e => setCallNote(e.target.value)} />
-            <button className="btn gold" disabled={busy || cur.closed} onClick={() => logCall(true)}>✓ Save &amp; Ready</button>
+            <button className="btn gold" disabled={busy || cur.closed} onClick={() => logCall(true)}>{liveCall.stillOn ? '✓ Save & end call' : <>✓ Save &amp; Ready</>}</button>
           </div>
           <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>Saves the call log here and dispositions the call in ViciDial — no need to log it again.</div>
         </div>}
@@ -5309,36 +5317,186 @@ function CallQueue() {
   );
 }
 
-/* ============================== AI Assist ============================== */
-function AIAssist({ user }) {
-  const [msgs, setMsgs] = useState([{ who: 'bot', text: `Hi ${user.name.split(' ')[0]} — I'm your recovery assistant. Ask me to prioritise cases, draft a payment reminder, write a call script, or explain your numbers.` }]);
-  const [input, setInput] = useState(''); const [busy, setBusy] = useState(false); const end = useRef(null);
-  useEffect(() => { end.current && end.current.scrollIntoView({ behavior: 'smooth' }); }, [msgs]);
-  const send = async () => {
-    if (!input.trim() || busy) return; const prompt = input.trim();
-    setMsgs(m => [...m, { who: 'me', text: prompt }]); setInput(''); setBusy(true);
-    try { const r = await api('/api/ai', { method: 'POST', body: { prompt } });
-      setMsgs(m => [...m, { who: 'bot', text: r.reply }]);
-    } catch (e) { setMsgs(m => [...m, { who: 'bot', text: 'Error: ' + e.message }]); } finally { setBusy(false); }
+/* ============================== ⚙️ Services & 🧩 Add-ons ==============================
+   Every feature is a "service" the Admin can switch on/off and configure (top-right ⚙️ Services).
+   Add-ons (extra modules) open from 🧩 Add-ons, each as its own sub-section. */
+let _svcCache = null;
+const loadServices = (force) => { if (force || !_svcCache) _svcCache = api('/api/services').catch(() => []); return _svcCache; };
+const svcOn = (list, key) => { const s = (list || []).find(x => x.key === key); return !s || s.enabled; };
+
+function SvcToggle({ on, disabled, onChange }) {
+  return <span onClick={() => !disabled && onChange(!on)} title={disabled ? 'Always on' : on ? 'Turn off' : 'Turn on'}
+    style={{ display: 'inline-block', width: 42, height: 24, borderRadius: 12, background: on ? 'var(--good)' : '#cbd5e1', position: 'relative', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? .6 : 1, transition: 'background .2s', flexShrink: 0 }}>
+    <span style={{ position: 'absolute', top: 3, left: on ? 21 : 3, width: 18, height: 18, borderRadius: 9, background: '#fff', transition: 'left .2s', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} /></span>;
+}
+
+function ServicesView({ user }) {
+  const [list, setList] = useState(null); const [open, setOpen] = useState(null); const [q, setQ] = useState('');
+  const load = () => loadServices(true).then(setList);
+  useEffect(() => { load(); }, []);
+  if (user.role !== 'admin') return <div className="glass card" style={{ padding: 20 }}>Only Admin can manage services.</div>;
+  const save = async (key, body) => {
+    try { await api('/api/services/' + key, { method: 'PUT', body }); toast('Saved'); await load(); try { window.dispatchEvent(new CustomEvent('riq-services-changed')); } catch (e) {} return true; }
+    catch (e) { alert(e.message); return false; }
   };
-  const quick = ['Which cases should I prioritise today?', 'Draft a polite WhatsApp payment reminder', 'Write a firm but compliant call script', 'Summarise my current recovery numbers'];
-  return (
-    <div className="glass card" style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 150px)', minHeight: 420 }}>
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-        {msgs.map((m, i) => <div key={i} className={cx('ai-msg', m.who === 'me' ? 'me' : 'bot')}>{m.text}</div>)}
-        {busy && <div className="ai-msg bot">…thinking</div>}
+  if (!list) return <Loader />;
+  const match = s => !q || (s.name + ' ' + s.desc).toLowerCase().includes(q.toLowerCase());
+  const groups = [['core', '🧱 Core services', list.filter(s => s.group === 'core' && match(s))],
+    ['addon', '🧩 Add-ons', list.filter(s => s.group === 'addon' && !s.reminder && match(s))],
+    ['soon', '🔔 Coming soon', list.filter(s => s.reminder && match(s))]];
+  return <div>
+    <div className="section-h"><h2 style={{ margin: 0 }}>⚙️ Services</h2>
+      <input className="input" placeholder="Search services" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 240 }} /></div>
+    <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>Turn a service off and it disappears from everyone's menu and its features stop working, until you turn it back on. Data is kept. Core services marked "always on" are needed for the app to work.</div>
+    {groups.map(([g, title, items]) => items.length > 0 && <div key={g} style={{ marginBottom: 16 }}>
+      <h3 style={{ margin: '6px 0 8px' }}>{title}</h3>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(330px,1fr))', gap: 10 }}>
+        {items.map(s => <div key={s.key} className="glass card" style={{ padding: 12, opacity: s.reminder ? .7 : 1 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+            <span style={{ fontSize: 24 }}>{s.icon}</span>
+            <div style={{ flex: 1 }}><b>{s.name}</b>{s.required && <span className="muted" style={{ fontSize: 11 }}> · always on</span>}
+              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{s.desc}</div></div>
+            {s.reminder ? <Pill c="#b45309">Coming soon</Pill> : <SvcToggle on={s.enabled} disabled={s.required} onChange={v => save(s.key, { enabled: v })} />}
+          </div>
+          {(s.schema || []).length > 0 && !s.reminder && <div style={{ marginTop: 8 }}>
+            <button className="btn ghost sm" onClick={() => setOpen(open === s.key ? null : s.key)}>{open === s.key ? '▲ Hide settings' : '⚙ Settings'}</button>
+            {open === s.key && <SvcSettings s={s} onSave={v => save(s.key, { settings: v })} />}</div>}
+        </div>)}
+      </div></div>)}
+  </div>;
+}
+
+function SvcSettings({ s, onSave }) {
+  const [v, setV] = useState({ ...(s.settings || {}) });
+  return <div style={{ marginTop: 8, borderTop: '1px dashed var(--line, #e2e8f0)', paddingTop: 8 }}>
+    {s.schema.map(f => <div key={f.key} className="field" style={{ marginBottom: 6 }}>
+      {f.type === 'bool' ? <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}><input type="checkbox" checked={!!v[f.key]} onChange={e => setV({ ...v, [f.key]: e.target.checked })} />{f.label}</label>
+        : <><label style={{ fontSize: 12 }}>{f.label}</label>
+          {f.type === 'select' ? <select className="input" value={v[f.key] ?? ''} onChange={e => setV({ ...v, [f.key]: e.target.value })}>{Object.entries(f.options).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+            : f.type === 'secret_hint' ? <div className="muted" style={{ fontSize: 12 }}>🔑 {f.default} — keys are never stored in the app.</div>
+            : <input className="input" type={f.type === 'number' ? 'number' : f.type === 'time' ? 'time' : 'text'} value={v[f.key] ?? ''} onChange={e => setV({ ...v, [f.key]: e.target.value })} />}</>}
+    </div>)}
+    <button className="btn gold sm" onClick={() => onSave(v)}>Save settings</button>
+  </div>;
+}
+
+// Which add-on screens each role may open (the server enforces data access separately).
+const ADDON_ROLES = {
+  ai_assist: null, payments: null, settlement: null, skip_tracing: ['admin', 'headoffice', 'manager', 'teamlead', 'fos', 'telecaller'],
+  compliance: ['admin', 'headoffice', 'manager', 'hr'], outreach: ['admin', 'headoffice', 'manager'],
+  smart_allocation: ['admin', 'headoffice', 'manager', 'teamlead', 'fos'], legal_notices: ['admin', 'headoffice', 'manager'],
+  analytics: ['admin', 'headoffice', 'manager', 'teamlead'], billing: ['admin', 'headoffice'], open_api: ['admin'],
+};
+const ADDON_VIEWS = {
+  ai_assist: u => <AIAssist user={u} />, compliance: u => <AddonCompliance user={u} />, payments: u => <AddonPayments user={u} />,
+  outreach: u => <AddonOutreach user={u} />, settlement: u => <AddonSettlement user={u} />, smart_allocation: u => <AddonSmart user={u} />,
+  legal_notices: u => <AddonNotices user={u} />, analytics: u => <AddonAnalytics user={u} />, billing: u => <AddonBilling user={u} />,
+  skip_tracing: u => <AddonSkipTrace user={u} />, open_api: u => <AddonOpenApi user={u} />,
+};
+
+function AddonsHub({ user }) {
+  const [list, setList] = useState(null);
+  const [sub, setSub] = useState(() => { try { return sessionStorage.getItem('riq_addon') || ''; } catch (e) { return ''; } });
+  useEffect(() => { loadServices(true).then(setList); }, []);
+  useEffect(() => { try { sessionStorage.setItem('riq_addon', sub); } catch (e) {} }, [sub]);
+  if (!list) return <Loader />;
+  const addons = list.filter(s => s.group === 'addon');
+  const allowed = s => { const r = ADDON_ROLES[s.key]; return !r || r.includes(user.role); };
+  const cur = addons.find(s => s.key === sub && s.enabled && allowed(s));
+  return <div>
+    <div className="section-h"><h2 style={{ margin: 0 }}>🧩 Add-ons{cur ? <span className="muted" style={{ fontSize: 15 }}> › {cur.icon} {cur.name}</span> : null}</h2>
+      {cur && <button className="btn ghost sm" onClick={() => setSub('')}>← All add-ons</button>}</div>
+    {cur ? <div>{(ADDON_VIEWS[cur.key] || (() => <div className="muted">Coming soon</div>))(user)}</div> :
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 12 }}>
+        {addons.filter(allowed).map(s => {
+          const usable = s.enabled && !s.reminder;
+          return <div key={s.key} className="glass card" onClick={() => usable && setSub(s.key)}
+            style={{ padding: 14, cursor: usable ? 'pointer' : 'default', opacity: usable ? 1 : .6, borderTop: '3px solid ' + (usable ? 'var(--brand)' : '#cbd5e1') }}>
+            <div style={{ fontSize: 28 }}>{s.icon}</div><b>{s.name}</b>
+            <div className="muted" style={{ fontSize: 12, margin: '4px 0 8px', minHeight: 32 }}>{s.desc}</div>
+            {s.reminder ? <Pill c="#b45309">🔔 Coming soon — on the roadmap</Pill> : s.enabled ? <Pill c="#16a34a">Open →</Pill>
+              : <Pill c="#64748b">Turned off{user.role === 'admin' ? ' — enable in ⚙️ Services' : ' by admin'}</Pill>}
+          </div>; })}
+      </div>}
+  </div>;
+}
+
+/* ---------------- ✨ AI Assist (rebuilt) ---------------- */
+function MiniMd({ text }) {
+  const lines = String(text || '').split('\n'); const out = []; let i = 0;
+  const inline = s => s.split(/(\*\*[^*]+\*\*)/g).map((p, k) => p.startsWith('**') && p.endsWith('**') ? <b key={k}>{p.slice(2, -2)}</b> : p);
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^\s*\|.*\|\s*$/.test(l)) {
+      const rows = []; while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(lines[i]); i++; }
+      const cells = rows.filter(r => !/^\s*\|[\s:|-]+\|\s*$/.test(r)).map(r => r.trim().slice(1, -1).split('|').map(c => c.trim()));
+      out.push(<div key={i} className="tablewrap" style={{ margin: '6px 0' }}><table style={{ fontSize: 12.5 }}><thead><tr>{(cells[0] || []).map((c, k) => <th key={k}>{inline(c)}</th>)}</tr></thead>
+        <tbody>{cells.slice(1).map((r, a) => <tr key={a}>{r.map((c, k) => <td key={k}>{inline(c)}</td>)}</tr>)}</tbody></table></div>);
+      continue;
+    }
+    if (/^#{1,3} /.test(l)) out.push(<div key={i} style={{ fontWeight: 700, margin: '6px 0 2px' }}>{inline(l.replace(/^#+ /, ''))}</div>);
+    else if (/^\s*[-*] /.test(l)) out.push(<div key={i} style={{ paddingLeft: 14 }}>• {inline(l.replace(/^\s*[-*] /, ''))}</div>);
+    else if (/^\s*\d+\. /.test(l)) out.push(<div key={i} style={{ paddingLeft: 14 }}>{inline(l.trim())}</div>);
+    else if (l.trim() === '') out.push(<div key={i} style={{ height: 6 }} />);
+    else out.push(<div key={i}>{inline(l)}</div>);
+    i++;
+  }
+  return <div>{out}</div>;
+}
+
+function AIAssist({ user }) {
+  const [convs, setConvs] = useState([]); const [cid, setCid] = useState(null);
+  const [msgs, setMsgs] = useState([]); const [input, setInput] = useState(''); const [busy, setBusy] = useState(false);
+  const [st, setSt] = useState(null); const [openCase, setOpenCase] = useState(null); const end = useRef(null);
+  const loadConvs = () => api('/api/ai/conversations').then(setConvs).catch(() => {});
+  useEffect(() => { loadConvs(); api('/api/ai/status').then(setSt).catch(e => setSt({ error: e.message })); }, []);
+  useEffect(() => { end.current && end.current.scrollIntoView && end.current.scrollIntoView({ behavior: 'smooth' }); }, [msgs, busy]);
+  const openConv = async (id) => { setCid(id); try { const c = await api('/api/ai/conversations/' + id); setMsgs(c.messages); } catch (e) { toast(e.message, 'err'); } };
+  const send = async (text) => {
+    const t = (text ?? input).trim(); if (!t || busy) return;
+    setMsgs(m => [...m, { role: 'user', content: t }]); setInput(''); setBusy(true);
+    try { const r = await api('/api/ai/chat', { method: 'POST', body: { message: t, conversation_id: cid } });
+      setCid(r.conversation_id); setMsgs(m => [...m, { role: 'assistant', content: r.reply, files: r.files, actions: r.actions, tools: r.tools }]); loadConvs();
+      api('/api/ai/status').then(setSt).catch(() => {});
+    } catch (e) { setMsgs(m => [...m, { role: 'assistant', content: '⚠️ ' + e.message }]); } finally { setBusy(false); }
+  };
+  const confirm = async (a) => { try { await api(`/api/ai/actions/${a.token}/confirm`, { method: 'POST' }); toast('Done ✓'); a.done = true; setMsgs(m => [...m]); } catch (e) { alert(e.message); } };
+  const quick = ['Summarise my portfolio this month', 'Which cases should I prioritise today?', 'Overdue PTPs — make an Excel', 'My team performance this month',
+    'How do I upload a DPR file?', 'Write a polite WhatsApp payment reminder', 'Make a PDF of my visits this week', 'Write an SOP for field visits as a Word file'];
+  return <div style={{ display: 'grid', gridTemplateColumns: 'minmax(170px,220px) 1fr', gap: 10, height: 'calc(100vh - 170px)', minHeight: 460 }}>
+    <div className="glass card" style={{ padding: 8, overflowY: 'auto' }}>
+      <button className="btn gold sm" style={{ width: '100%', marginBottom: 6 }} onClick={() => { setCid(null); setMsgs([]); }}>＋ New chat</button>
+      {convs.map(c => <div key={c.id} onClick={() => openConv(c.id)} style={{ padding: '6px 8px', borderRadius: 8, cursor: 'pointer', fontSize: 12.5, background: c.id === cid ? 'rgba(37,99,235,.1)' : 'transparent', display: 'flex', gap: 4 }}>
+        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title}</span>
+        <span className="muted" onClick={e => { e.stopPropagation(); if (window.confirm('Delete this chat?')) api('/api/ai/conversations/' + c.id, { method: 'DELETE' }).then(() => { if (c.id === cid) { setCid(null); setMsgs([]); } loadConvs(); }); }}>✕</span></div>)}
+    </div>
+    <div className="glass card" style={{ display: 'flex', flexDirection: 'column', padding: 12, minWidth: 0 }}>
+      <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>{st && !st.error ? <>✨ {st.provider === 'local' ? 'Local model on your server' : st.provider} · {st.model}{st.mask_pii ? ' · phone/account numbers masked' : ''} · {st.used_today}/{st.daily_limit} today
+        {!st.configured && <b style={{ color: 'var(--bad)' }}> · not set up: {st.hint}</b>}</> : st && st.error}</div>
+      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {!msgs.length && <div className="muted" style={{ margin: 'auto', textAlign: 'center', maxWidth: 520 }}>Hi {user.name.split(' ')[0]} — ask about your cases, PTPs, team, visits, calls, attendance, leave or payslips, or how to do anything in RecoverIQ. I only see what you can see.
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 10 }}>{quick.map(qq => <div key={qq} className="chip" onClick={() => send(qq)}>{qq}</div>)}</div></div>}
+        {msgs.map((m, i) => <div key={i} className={cx('ai-msg', m.role === 'user' ? 'me' : 'bot')} style={{ maxWidth: '88%', alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+          {m.role === 'user' ? m.content : <MiniMd text={m.content} />}
+          {(m.files || []).map(f => <div key={f.token} style={{ marginTop: 6 }}><button className="btn gold sm" onClick={() => download('/api/ai/files/' + f.token, f.name)}>📎 {f.name}{f.rows != null ? ` (${f.rows} rows)` : ''}</button></div>)}
+          {(m.actions || []).map((a, k) => <div key={k} style={{ marginTop: 6 }}>
+            {a.type === 'follow_up' && (a.done ? <Pill c="#16a34a">✓ {a.label}</Pill> : <button className="btn sm" onClick={() => confirm(a)}>✔ Confirm: {a.label}</button>)}
+            {a.type === 'open_case' && <button className="btn ghost sm" onClick={() => setOpenCase(a.case_id)}>📂 {a.label}</button>}
+            {a.type === 'whatsapp' && <a className="btn ghost sm" href={waHref(a.phone, a.text)} target="_blank" rel="noreferrer">💬 {a.label}</a>}
+          </div>)}
+          {m.tools && m.tools.length > 0 && <div className="muted" style={{ fontSize: 10.5, marginTop: 4 }}>sources: {[...new Set(m.tools)].join(', ')}</div>}
+        </div>)}
+        {busy && <div className="ai-msg bot">…looking it up</div>}
         <div ref={end} />
       </div>
-      <div className="toolbar" style={{ margin: '10px 0 0' }}>{quick.map(q =>
-        <div key={q} className="chip" onClick={() => setInput(q)}>{q}</div>)}</div>
-      <div className="toolbar" style={{ margin: '8px 0 0' }}>
-        <input className="input" value={input} onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && send()} placeholder="Ask the assistant…" />
-        <button className="btn gold" onClick={send} disabled={busy}>Send</button>
-      </div>
+      <div className="toolbar" style={{ marginTop: 8 }}>
+        <input className="input" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Ask anything — e.g. 'Excel of unpaid Axis X-bucket cases with PTP this week'" />
+        <button className="btn gold" onClick={() => send()} disabled={busy}>Send</button></div>
     </div>
-  );
+    {openCase && <CaseDrawer c={{ id: openCase }} onClose={() => setOpenCase(null)} onChanged={() => {}} />}
+  </div>;
 }
+
 
 /* ============================== PTP Tracker ============================== */
 function PTPTracker() {
@@ -8950,6 +9108,839 @@ function ViciDialTestCall({ connection, onClose, onAccepted }) {
   </section>;
 }
 
+/* ============================== 💰 Salary & Payslips (payroll) ==============================
+   Runs (cycle → draft → approve 🔒 → bank file / gateway → paid → payslips released), salary
+   structures per employee (+ bulk upload), advances / loans, bank file formats (mapped from any
+   bank's own sample), and every payroll rule as a form. Admin approves; HR prepares. */
+const PR_ST = { draft: ['Draft', '#64748b'], approved: ['Approved 🔒', '#2563eb'], paid: ['Paid ✓', '#16a34a'], cancelled: ['Cancelled', '#94a3b8'] };
+const prErr = e => { try { const j = JSON.parse(e.message); return (j.message || '') + (j.errors ? ':\n• ' + j.errors.join('\n• ') : ''); } catch { return e.message; } };
+const fmtDate = d => d ? new Date(d + (d.length === 10 ? 'T00:00:00' : '')).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+const thisPeriod = () => { const n = new Date(); return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0'); };
+
+// Same split as the server (payroll_engine.split_gross) — live preview while typing a salary.
+function splitGross(gross, comps, ov) {
+  const g = Number(gross) || 0, by = {}; ov = ov || {};
+  const r2 = x => Math.round(x * 100) / 100;
+  comps.forEach(c => { const o = ov[c.code];
+    if (o !== undefined && o !== '' && o !== null) by[c.code] = r2(Number(o));
+    else if (c.calc === 'percent_gross') by[c.code] = r2(g * (Number(c.value) || 0) / 100);
+    else if (c.calc === 'fixed') by[c.code] = r2(Number(c.value) || 0); });
+  comps.forEach(c => { if (by[c.code] === undefined && c.calc === 'percent_basic') by[c.code] = r2((by.BASIC || 0) * (Number(c.value) || 0) / 100); });
+  const used = Object.values(by).reduce((a, b) => a + b, 0);
+  comps.forEach(c => { if (by[c.code] === undefined && c.calc === 'balance') by[c.code] = Math.max(0, r2(g - used)); });
+  let over = Object.values(by).reduce((a, b) => a + b, 0) - g;
+  [...comps].reverse().forEach(c => { if (over > 0) { const cut = Math.min(by[c.code] || 0, over); by[c.code] = r2((by[c.code] || 0) - cut); over -= cut; } });
+  return comps.map(c => ({ code: c.code, name: c.name, amount: by[c.code] || 0 }));
+}
+
+function SalaryLocked() {
+  return <div className="glass card" style={{ padding: 40, textAlign: 'center', maxWidth: 560, margin: '40px auto' }}>
+    <div style={{ fontSize: 46 }}>🔒</div>
+    <h2 style={{ margin: '8px 0 6px' }}>Salary &amp; Payslips — Section locked</h2>
+    <div className="muted">This section is not enabled yet. It will be unlocked by the administrator.</div>
+  </div>;
+}
+
+function PayrollSection({ user }) {
+  return SALARY_LOCKED ? <SalaryLocked /> : <PayrollMain user={user} />;
+}
+function PayrollMain({ user }) {
+  const isAdmin = user.role === 'admin';
+  const [tab, setTab] = useState('runs');
+  const [cfg, setCfg] = useState(null);
+  const loadCfg = () => api('/api/payroll/config').then(setCfg).catch(e => toast(e.message, 'err'));
+  useEffect(() => { loadCfg(); }, []);
+  const tabs = [['runs', '🗓️ Payroll runs'], ['employees', '👥 Employee salaries'], ['advances', '💳 Advances & loans'],
+    ['tax', '💹 Income tax'], ['fnf', '👋 Full & final'],
+    ...(isAdmin ? [['formats', '🏦 Bank file formats'], ['settings', '⚙️ Rules & settings'], ['gateway', '💸 Gateway payouts']] : [])];
+  return <div>
+    <div className="section-h"><h2 style={{ margin: 0 }}>💰 Salary &amp; Payslips</h2>
+      <span className="muted" style={{ fontSize: 12.5 }}>{isAdmin ? 'Admin: approve, pay and set rules' : 'HR: prepare payroll — Admin approves'}</span></div>
+    <div className="toolbar" style={{ flexWrap: 'wrap', marginBottom: 10 }}>
+      {tabs.map(([k, l]) => <div key={k} className={cx('chip', tab === k && 'on')} onClick={() => setTab(k)}>{l}</div>)}</div>
+    {!cfg ? <Loader /> : <>
+      {tab === 'runs' && <PayRuns user={user} cfg={cfg.config} />}
+      {tab === 'employees' && <PayEmployees cfg={cfg.config} />}
+      {tab === 'advances' && <PayAdvances />}
+      {tab === 'tax' && <PayTax user={user} />}
+      {tab === 'fnf' && <PayFnf user={user} />}
+      {tab === 'formats' && isAdmin && <PayBankFormats fields={cfg.bank_fields} />}
+      {tab === 'settings' && isAdmin && <PaySettings meta={cfg} onSaved={loadCfg} />}
+      {tab === 'gateway' && isAdmin && <PayoutsViewInner user={user} />}
+    </>}
+  </div>;
+}
+
+/* ---------------- runs ---------------- */
+function PayRuns({ user, cfg }) {
+  const [runs, setRuns] = useState(null);
+  const [open, setOpen] = useState(null);
+  const [period, setPeriod] = useState(thisPeriod());
+  const [busy, setBusy] = useState(false);
+  const load = () => api('/api/payroll/runs').then(setRuns).catch(e => { toast(e.message, 'err'); setRuns([]); });
+  useEffect(() => { load(); }, []);
+  const create = async () => {
+    setBusy(true);
+    try { const r = await api('/api/payroll/runs', { method: 'POST', body: { period } }); toast('Payroll draft created from attendance + salaries'); load(); setOpen(r.id); }
+    catch (e) { alert(prErr(e)); } finally { setBusy(false); }
+  };
+  if (open) return <PayRunDetail id={open} user={user} cfg={cfg} onBack={() => { setOpen(null); load(); }} />;
+  return <div>
+    <div className="glass card" style={{ padding: 14, marginBottom: 12, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <label className="muted" style={{ fontSize: 12 }}>Salary month<br /><input className="input" type="month" value={period} onChange={e => setPeriod(e.target.value)} /></label>
+      <button className="btn gold" disabled={busy} onClick={create}>{busy ? 'Calculating…' : '＋ Start payroll for this month'}</button>
+      <span className="muted" style={{ fontSize: 12 }}>Cycle: {cfg.cycle.start_day > 1 ? `${cfg.cycle.start_day}th of the previous month → ${cfg.cycle.start_day - 1}th` : 'calendar month'} · pulls attendance, leave, salaries, advances</span>
+    </div>
+    <div className="glass card" style={{ padding: 0 }}>
+      {!runs ? <Loader /> : !runs.length ? <div className="muted" style={{ padding: 18 }}>No payroll runs yet. Set employee salaries first, then start a month.</div> :
+        <div className="tablewrap"><table><thead><tr><th>Month</th><th>Cycle</th><th style={{ textAlign: 'right' }}>Employees</th><th style={{ textAlign: 'right' }}>Gross</th><th style={{ textAlign: 'right' }}>Net payable</th><th>Status</th><th>Payslips</th><th></th></tr></thead>
+          <tbody>{runs.map(r => <tr key={r.id}>
+            <td><b>{r.label}</b></td><td style={{ fontSize: 12 }}>{fmtDate(r.cycle_start)} → {fmtDate(r.cycle_end)}</td>
+            <td style={{ textAlign: 'right' }}>{(r.totals || {}).count || 0}</td><td style={{ textAlign: 'right' }}>{inr2((r.totals || {}).gross)}</td>
+            <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--good)' }}>{inr2((r.totals || {}).net)}</td>
+            <td><Pill c={(PR_ST[r.status] || [])[1] || '#64748b'}>{(PR_ST[r.status] || [r.status])[0]}</Pill></td>
+            <td>{r.released ? <Pill c="#16a34a">Released</Pill> : <span className="muted" style={{ fontSize: 12 }}>Not released</span>}</td>
+            <td><button className="btn ghost sm" onClick={() => setOpen(r.id)}>Open</button></td></tr>)}</tbody></table></div>}
+    </div>
+  </div>;
+}
+
+function PayRunDetail({ id, user, cfg, onBack }) {
+  const isAdmin = user.role === 'admin';
+  const [r, setR] = useState(null);
+  const [q, setQ] = useState('');
+  const [show, setShow] = useState('all');
+  const [line, setLine] = useState(null);
+  const [modal, setModal] = useState(null);           // approve | reopen | adj | adjup | status
+  const [busy, setBusy] = useState('');
+  const [tpls, setTpls] = useState([]);
+  const [tpl, setTpl] = useState('');
+  const load = () => api('/api/payroll/runs/' + id).then(setR).catch(e => toast(e.message, 'err'));
+  useEffect(() => { load(); if (isAdmin) api('/api/payroll/bank-templates').then(t => { setTpls(t); const d = t.find(x => x.is_default) || t[0]; if (d) setTpl(String(d.id)); }).catch(() => {}); }, [id]);
+  const act = async (path, body, label, method = 'POST') => {
+    setBusy(label);
+    try { const out = await api('/api/payroll/runs/' + id + path, { method, body: body || {} }); if (out && out.lines) setR(out); else load(); return out || true; }
+    catch (e) { alert(prErr(e)); return false; } finally { setBusy(''); }
+  };
+  if (!r) return <Loader />;
+  const t = r.totals || {}, draft = r.status === 'draft', frozen = ['approved', 'paid'].includes(r.status);
+  const lines = r.lines.filter(l => (!q || ((l.snapshot.name || '') + ' ' + (l.snapshot.emp_code || '')).toLowerCase().includes(q.toLowerCase()))
+    && (show === 'all' || (show === 'flags' && l.flags.some(f => f.level !== 'info')) || (show === 'excluded' && !l.included) || (show === 'hold' && l.hold)));
+  const lvl = l => l.flags.some(f => f.level === 'error') ? 'error' : l.flags.some(f => f.level === 'warn') ? 'warn' : '';
+  const steps = ['Draft', 'Approved 🔒', 'Paid', 'Payslips released'];
+  const stepAt = r.status === 'draft' ? 0 : r.status === 'approved' ? 1 : r.released ? 3 : 2;
+  const toggle = async (l, body) => act('/lines/' + l.id, body, 'line', 'PATCH');
+  return <div>
+    <div className="toolbar" style={{ marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
+      <button className="btn ghost sm" onClick={onBack}>← All runs</button>
+      <h3 style={{ margin: 0 }}>Payroll {r.label}</h3>
+      <Pill c={(PR_ST[r.status] || [])[1]}>{(PR_ST[r.status] || [r.status])[0]}</Pill>
+      <span className="muted" style={{ fontSize: 12 }}>Cycle {fmtDate(r.cycle_start)} → {fmtDate(r.cycle_end)} · Pay date {fmtDate(r.pay_date)}{r.approved_by ? ` · Approved by ${r.approved_by}` : ''}</span>
+    </div>
+    <div className="glass card" style={{ padding: '10px 14px', marginBottom: 10, display: 'flex', gap: 0 }}>
+      {steps.map((s, i) => <div key={s} style={{ flex: 1, textAlign: 'center', fontSize: 12, fontWeight: i === stepAt ? 700 : 500, color: i < stepAt ? 'var(--good)' : i === stepAt ? 'var(--info)' : 'var(--ink-dim)' }}>
+        <div style={{ width: 24, height: 24, borderRadius: 12, margin: '0 auto 4px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: i < stepAt ? 'var(--good)' : i === stepAt ? 'var(--brand)' : '#e2e8f0', color: i <= stepAt ? '#fff' : '#475569', fontWeight: 800 }}>{i < stepAt ? '✓' : i + 1}</div>{s}</div>)}
+    </div>
+    <div className="kpis" style={{ marginBottom: 10 }}>
+      <StatCard icon="👥" label="Employees paid" value={t.count || 0} sub={`${t.excluded || 0} excluded · ${t.on_hold || 0} on hold`} />
+      <StatCard icon="💼" label="Gross earnings" value={inr2(t.gross)} />
+      <StatCard icon="➖" label="Deductions" value={inr2(t.deductions)} />
+      <StatCard icon="✅" label="NET payable" value={inr2(t.net)} valueColor="var(--good)" sub={t.net_on_hold ? `+ ${inr2(t.net_on_hold)} on hold` : ''} />
+      <StatCard icon="🏢" label="Cost to company" value={inr2(t.ctc)} sub={`Employer PF/ESI ${inr2(t.employer)}`} />
+    </div>
+    {(t.errors > 0 || t.warnings > 0 || (t.missing || []).length > 0) && <div className="glass card" style={{ padding: 10, marginBottom: 10, fontSize: 13 }}>
+      {t.errors > 0 && <div style={{ color: 'var(--bad)' }}>⛔ {t.errors} problem(s) block approval — fix the employee's bank details, or exclude / hold them with a reason.</div>}
+      {t.warnings > 0 && <div style={{ color: '#b45309' }}>⚠️ {t.warnings} warning(s) to review (big change vs last month, bank details changed…).</div>}
+      {(t.missing || []).length > 0 && <div className="muted">ℹ️ {(t.missing || []).length} active employee(s) have no salary set, so they are not in this run: {(t.missing || []).slice(0, 8).map(m => m.name).join(', ')}{(t.missing || []).length > 8 ? '…' : ''} — set it in Employee salaries, then Recalculate.</div>}
+    </div>}
+    <div className="glass card" style={{ padding: 12 }}>
+      <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+        <input className="input" placeholder="Search name / ID" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 220 }} />
+        {[['all', 'All'], ['flags', '⚠️ Needs review'], ['excluded', 'Excluded'], ['hold', 'On hold']].map(([k, l]) => <div key={k} className={cx('chip', show === k && 'on')} onClick={() => setShow(k)}>{l}</div>)}
+        <span style={{ flex: 1 }} />
+        {draft && <><button className="btn ghost sm" disabled={!!busy} onClick={() => act('/recalculate', {}, 'recalc')}>{busy === 'recalc' ? 'Recalculating…' : '↻ Recalculate'}</button>
+          <button className="btn ghost sm" onClick={() => setModal('adj')}>＋ Incentive / deduction</button>
+          <button className="btn ghost sm" onClick={() => setModal('adjup')}>⬆ Upload adjustments</button></>}
+      </div>
+      <div className="tablewrap" style={{ maxHeight: '60vh', overflow: 'auto' }}><table><thead><tr>
+        <th>Pay</th><th>Employee</th><th style={{ textAlign: 'right' }}>Monthly gross</th><th style={{ textAlign: 'right' }}>Paid days</th><th style={{ textAlign: 'right' }}>Gross earned</th><th style={{ textAlign: 'right' }}>Deductions</th><th style={{ textAlign: 'right' }}>NET</th><th>Bank</th><th>Checks</th><th></th></tr></thead>
+        <tbody>{lines.map(l => { const s = l.snapshot, a = l.attendance || {};
+          return <tr key={l.id} style={{ opacity: l.included ? 1 : .55, background: lvl(l) === 'error' && l.included ? 'rgba(220,38,38,.05)' : undefined }}>
+            <td><input type="checkbox" checked={l.included} disabled={!draft || !!busy} title={l.included ? 'Exclude from this run' : 'Include'}
+              onChange={() => { if (l.included) { const why = window.prompt('Reason for excluding ' + s.name + ' from this payroll?'); if (why) toggle(l, { included: false, exclude_reason: why }); } else toggle(l, { included: true }); }} /></td>
+            <td><b>{s.name}</b> <span className="muted">({s.emp_code || '—'})</span><div className="muted" style={{ fontSize: 11 }}>{s.designation}{s.location ? ' · ' + s.location : ''}</div>
+              {!l.included && <div style={{ fontSize: 11, color: '#b45309' }}>Excluded: {l.exclude_reason}</div>}
+              {l.hold && <div style={{ fontSize: 11, color: 'var(--bad)' }}>⏸ Salary on hold</div>}</td>
+            <td style={{ textAlign: 'right' }}>{inr2(s.monthly_gross)}</td>
+            <td style={{ textAlign: 'right' }}>{draft ? <input key={l.id + ':' + a.paid_days_final} className="input" style={{ width: 70, textAlign: 'right', padding: '3px 6px' }} defaultValue={a.paid_days_final}
+              title={`Auto: ${a.paid_days} of ${a.divisor} (LOP ${a.lop}). Change to override; clear to go back to auto.`}
+              onBlur={e => { const v = e.target.value.trim(); const cur = l.paid_days_override; if ((v === '' && cur != null) || (v !== '' && Number(v) !== Number(a.paid_days_final))) toggle(l, { paid_days_override: v }); }} /> : a.paid_days_final}
+              <div className="muted" style={{ fontSize: 10.5 }}>of {a.divisor}{l.paid_days_override != null ? ' · manual' : ''}</div></td>
+            <td style={{ textAlign: 'right' }}>{inr2(l.gross)}</td><td style={{ textAlign: 'right' }}>{inr2(l.total_deductions)}</td>
+            <td style={{ textAlign: 'right', fontWeight: 800, color: 'var(--good)' }}>{l.included ? inr2(l.net) : '—'}</td>
+            <td style={{ fontSize: 11.5 }}>{s.payment_mode !== 'bank' ? <Pill c="#64748b">{s.payment_mode}</Pill> : <>{(s.bank_name || '').replace(' BANK', '')} {s.account_masked}</>}
+              {l.utr && <div className="muted">UTR {l.utr}</div>}{l.pay_status !== 'unpaid' && <div><Pill c={l.pay_status === 'paid' ? '#16a34a' : '#dc2626'}>{l.pay_status}</Pill></div>}</td>
+            <td style={{ fontSize: 11.5, maxWidth: 240 }}>{l.flags.filter(f => f.level !== 'info').map((f, i) => <div key={i} style={{ color: f.level === 'error' ? 'var(--bad)' : '#b45309' }}>{f.level === 'error' ? '⛔' : '⚠️'} {f.text}</div>)}
+              {l.flags.filter(f => f.level === 'info').map((f, i) => <div key={'i' + i} className="muted">{f.text}</div>)}
+              {!l.flags.length && <span style={{ color: 'var(--good)' }}>OK</span>}</td>
+            <td style={{ whiteSpace: 'nowrap' }}><button className="btn ghost sm" onClick={() => setLine(l)}>Payslip</button>
+              {draft && l.included && <button className="btn ghost sm" onClick={() => toggle(l, { hold: !l.hold })}>{l.hold ? 'Release' : 'Hold'}</button>}</td>
+          </tr>; })}</tbody></table></div>
+      {r.adjustments.length > 0 && <div style={{ marginTop: 10 }}><b style={{ fontSize: 13 }}>Adjustments this month</b>
+        <div className="tablewrap" style={{ maxHeight: 200, overflow: 'auto' }}><table><thead><tr><th>Employee</th><th>Type</th><th style={{ textAlign: 'right' }}>Amount</th><th>Note</th><th>Source</th><th></th></tr></thead>
+          <tbody>{r.adjustments.map(a => <tr key={a.id}><td>{a.name}</td><td><Pill c={a.kind === 'earning' ? '#16a34a' : '#dc2626'}>{a.code}</Pill></td>
+            <td style={{ textAlign: 'right' }}>{inr2(a.amount)}</td><td className="muted" style={{ fontSize: 12 }}>{a.note}</td><td className="muted" style={{ fontSize: 12 }}>{a.source}</td>
+            <td>{draft && <button className="btn ghost sm" onClick={() => window.confirm('Remove this adjustment?') && act('/adjustments/' + a.id, null, 'adj', 'DELETE')}>✕</button>}</td></tr>)}</tbody></table></div></div>}
+    </div>
+
+    <div className="glass card" style={{ padding: 12, marginTop: 10 }}>
+      <b style={{ fontSize: 13 }}>Downloads</b>
+      <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+        <button className="btn sm" onClick={() => download(`/api/payroll/runs/${id}/register.xlsx`, `Salary_Register_${r.period}.xlsx`)}>⬇ Salary register (Excel)</button>
+        <button className="btn sm" onClick={() => download(`/api/payroll/runs/${id}/payslips.pdf`, `Payslips_${r.period}.pdf`)}>⬇ All payslips (PDF)</button>
+        <button className="btn sm" onClick={() => download(`/api/payroll/runs/${id}/statutory.xlsx`, `Statutory_${r.period}.xlsx`)}>⬇ PF / ESI / PT statement</button>
+        <button className="btn sm" onClick={() => download(`/api/payroll/runs/${id}/ecr.txt`, `PF_ECR_${r.period}.txt`)}>⬇ PF ECR file</button>
+        {isAdmin && frozen && <><select className="input" value={tpl} onChange={e => setTpl(e.target.value)} style={{ maxWidth: 260 }}>{tpls.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
+          <button className="btn gold sm" disabled={!tpl} onClick={() => { const x = tpls.find(y => String(y.id) === String(tpl)) || {}; download(`/api/payroll/runs/${id}/bank-file?template_id=${tpl}`, `${(x.bank || 'Bank').replace(/[^A-Za-z0-9]/g, '')}_Salary_${r.period}.${x.file_type || 'xlsx'}`); }}>🏦 Bank upload file</button></>}
+      </div>
+      {isAdmin && !frozen && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>The bank file is available after Admin approval.</div>}
+    </div>
+
+    {isAdmin && <div className="glass card" style={{ padding: 12, marginTop: 10 }}>
+      <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}>
+        {draft && <><button className="btn gold" disabled={!!busy || t.errors > 0} title={t.errors > 0 ? 'Fix the ⛔ problems first' : ''} onClick={() => setModal('approve')}>🔒 Approve {inr2(t.net)}</button>
+          <button className="btn ghost" onClick={async () => { const why = window.prompt('Cancel this draft? Reason:'); if (why) { if (await act('/cancel', { reason: why }, 'cancel')) onBack(); } }}>Cancel run</button></>}
+        {r.status === 'approved' && <><button className="btn" style={{ background: 'var(--good)', color: '#fff' }} onClick={() => { const d = window.prompt('Mark all as paid on date (YYYY-MM-DD) — after the bank processed the file:', new Date().toISOString().slice(0, 10)); if (d) act('/mark-paid', { paid_on: d }, 'paid'); }}>✓ Mark as paid</button>
+          <button className="btn ghost" onClick={() => setModal('status')}>⬆ Upload bank status report</button>
+          <button className="btn ghost" onClick={async () => { if (window.confirm('Create a RazorpayX payout batch from this run? It still needs its own approval in Gateway payouts.')) { const o = await act('/send-to-gateway', {}, 'gw'); if (o && o.batch) toast('Payout batch ' + o.batch.ref + ' created — approve it in Gateway payouts'); } }}>💸 Send to payout gateway</button>
+          <button className="btn ghost" onClick={() => setModal('reopen')}>↩ Reopen for changes</button></>}
+        {r.status === 'paid' && <button className="btn ghost" onClick={() => setModal('status')}>⬆ Upload bank status report</button>}
+        {frozen && <><span style={{ flex: 1 }} />
+          <button className="btn" onClick={() => act('/release', { released: !r.released }, 'rel')}>{r.released ? '🙈 Hide payslips from employees' : '📨 Release payslips to employees'}</button>
+          {r.released && <button className="btn ghost" onClick={async () => { const o = await act('/email-payslips', {}, 'mail'); if (o && o.sent !== undefined) alert(`Emailed ${o.sent}. Skipped (no email) ${o.skipped.length}. Failed ${o.failed.length}.${o.failed.length ? '\n' + o.failed.join('\n') : ''}`); }}>✉ Email payslips</button>}</>}
+      </div>
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>Approval locks every amount and bank account. If an employee's bank details change after approval, the bank file is refused until you reopen and re-approve.</div>
+    </div>}
+
+    {line && <PayslipModal run={r} l={line} onClose={() => setLine(null)} />}
+    {modal === 'approve' && <SecretModal title={`🔒 Approve payroll ${r.label}`} total={t.net} note={`${t.count} employees will be paid ${inr2(t.net)}. Amounts and bank accounts lock after approval.`}
+      onClose={() => setModal(null)} onSubmit={async v => { if (await act('/approve', v, 'approve')) { setModal(null); toast('Approved & locked 🔒'); } }} />}
+    {modal === 'reopen' && <SecretModal title="↩ Reopen payroll" reason note="Advances recovered by this run are added back. The run goes back to Draft and must be approved again."
+      onClose={() => setModal(null)} onSubmit={async v => { if (await act('/reopen', v, 'reopen')) setModal(null); }} />}
+    {modal === 'adj' && <AdjModal r={r} cfg={cfg} onClose={() => setModal(null)} onSave={async b => { if (await act('/adjustments', b, 'adj')) setModal(null); }} />}
+    {modal === 'adjup' && <PayUploadModal title="⬆ Upload incentives / bonuses / deductions" template={() => download(`/api/payroll/runs/${id}/adjustments-template.xlsx`, `adjustments_${r.period}.xlsx`)}
+      help="Columns: Emp ID, Type (INCENTIVE, BONUS, ARREARS, REIMB, FINE, OTHER_DED … — see the Types sheet), Amount, Note."
+      url={`/api/payroll/runs/${id}/adjustments/upload`} onClose={() => setModal(null)} onDone={() => { setModal(null); load(); }}
+      cols={[['name', 'Employee'], ['code', 'Type'], ['amount', 'Amount'], ['note', 'Note']]} />}
+    {modal === 'status' && <StatusUpload id={id} onClose={() => setModal(null)} onDone={x => { setModal(null); setR(x.run); alert(`Matched ${x.matched} · failed ${x.failed} · unmatched ${x.unmatched.length}`); }} />}
+  </div>;
+}
+
+function SecretModal({ title, note, total, reason, checkbox, onClose, onSubmit }) {
+  const [v, setV] = useState({ password: '', otp: '', confirm_total: '', reason: '', mark_left: true });
+  const [busy, setBusy] = useState(false);
+  const go = async () => { setBusy(true); try { await onSubmit(v); } finally { setBusy(false); } };
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>{title}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>{note}</div>
+    {total !== undefined && <div className="field"><label>Type the net total to confirm ({inr2(total)})</label><input className="input" inputMode="decimal" value={v.confirm_total} onChange={e => setV({ ...v, confirm_total: e.target.value })} placeholder={String(Math.round(total))} /></div>}
+    {reason && <div className="field"><label>Reason</label><input className="input" value={v.reason} onChange={e => setV({ ...v, reason: e.target.value })} /></div>}
+    {checkbox && <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, margin: '4px 0 8px' }}><input type="checkbox" checked={v.mark_left} onChange={e => setV({ ...v, mark_left: e.target.checked })} />{checkbox}</label>}
+    <div className="field"><label>Your password</label><input className="input" type="password" value={v.password} onChange={e => setV({ ...v, password: e.target.value })} /></div>
+    <div className="field"><label>2FA code (if enabled)</label><input className="input" value={v.otp} onChange={e => setV({ ...v, otp: e.target.value })} /></div>
+    <div className="toolbar"><span style={{ flex: 1 }} /><button className="btn ghost" onClick={onClose}>Cancel</button>
+      <button className="btn gold" disabled={busy || !v.password || (total !== undefined && !v.confirm_total) || (reason && v.reason.trim().length < 5)} onClick={go}>{busy ? 'Working…' : 'Confirm'}</button></div>
+  </div></div>;
+}
+
+function AdjModal({ r, cfg, onClose, onSave }) {
+  const types = cfg.adjustment_types || [];
+  const [b, setB] = useState({ user_id: '', code: (types[0] || {}).code || '', amount: '', note: '' });
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>＋ Incentive / bonus / deduction</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div className="field"><label>Employee</label><select className="input" value={b.user_id} onChange={e => setB({ ...b, user_id: e.target.value })}><option value="">Choose…</option>
+      {r.lines.map(l => <option key={l.user_id} value={l.user_id}>{l.snapshot.name} ({l.snapshot.emp_code || '—'})</option>)}</select></div>
+    <div className="field"><label>Type</label><select className="input" value={b.code} onChange={e => setB({ ...b, code: e.target.value })}>
+      {types.map(t => <option key={t.code} value={t.code}>{t.name} ({t.kind === 'earning' ? '+ earning' : '− deduction'})</option>)}</select></div>
+    <div className="field"><label>Amount ₹</label><input className="input" inputMode="decimal" value={b.amount} onChange={e => setB({ ...b, amount: e.target.value })} /></div>
+    <div className="field"><label>Note (shows on the payslip)</label><input className="input" value={b.note} onChange={e => setB({ ...b, note: e.target.value })} /></div>
+    <div className="toolbar"><span style={{ flex: 1 }} /><button className="btn gold" disabled={!b.user_id || !(Number(b.amount) > 0)} onClick={() => onSave(b)}>Add</button></div>
+  </div></div>;
+}
+
+function PayUploadModal({ title, help, url, template, cols, onClose, onDone }) {
+  const [file, setFile] = useState(null); const [prev, setPrev] = useState(null); const [busy, setBusy] = useState(false);
+  const send = async (commit) => {
+    setBusy(true);
+    try { const fd = new FormData(); fd.append('file', file); fd.append('commit', commit ? 'true' : 'false');
+      const r = await api(url, { method: 'POST', form: fd }); if (commit) { toast(`Saved ${r.valid.length} row(s)`); onDone(); } else setPrev(r); }
+    catch (e) { alert(prErr(e)); } finally { setBusy(false); }
+  };
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 760, width: '95%', maxHeight: '90vh', overflow: 'auto' }}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>{title}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>{help}</div>
+    <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}>{template && <button className="btn ghost sm" onClick={template}>⬇ Download template</button>}
+      <input type="file" accept=".xlsx,.csv" onChange={e => { setFile(e.target.files[0] || null); setPrev(null); }} />
+      <button className="btn sm" disabled={!file || busy} onClick={() => send(false)}>{busy && !prev ? 'Checking…' : 'Check file'}</button></div>
+    {prev && <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 13 }}><b style={{ color: 'var(--good)' }}>{prev.valid.length} ready</b>{prev.errors.length > 0 && <b style={{ color: 'var(--bad)', marginLeft: 10 }}>{prev.errors.length} problem(s)</b>}</div>
+      {prev.errors.length > 0 && <div style={{ color: 'var(--bad)', fontSize: 12, margin: '6px 0' }}>{prev.errors.slice(0, 20).map((e, i) => <div key={i}>• {e}</div>)}</div>}
+      <div className="tablewrap" style={{ maxHeight: 260, overflow: 'auto' }}><table><thead><tr>{cols.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
+        <tbody>{prev.valid.slice(0, 200).map((v, i) => <tr key={i}>{cols.map(([k]) => <td key={k}>{typeof v[k] === 'number' ? inr2(v[k]) : String(v[k] ?? '')}</td>)}</tr>)}</tbody></table></div>
+      <div className="toolbar" style={{ marginTop: 8 }}><span style={{ flex: 1 }} /><button className="btn gold" disabled={busy || prev.errors.length > 0 || !prev.valid.length} onClick={() => send(true)}>{busy ? 'Saving…' : `Save ${prev.valid.length} row(s)`}</button></div>
+    </div>}
+  </div></div>;
+}
+
+function StatusUpload({ id, onClose, onDone }) {
+  const [file, setFile] = useState(null); const [busy, setBusy] = useState(false);
+  const go = async () => { setBusy(true); try { const fd = new FormData(); fd.append('file', file); onDone(await api(`/api/payroll/runs/${id}/bank-status`, { method: 'POST', form: fd })); } catch (e) { alert(prErr(e)); } finally { setBusy(false); } };
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>⬆ Bank status report</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Upload the bank's response / status file (Excel or CSV). RecoverIQ matches each row by Customer Ref (PR…), Emp ID, or account + amount, and saves the UTR and Paid / Failed per employee.</div>
+    <input type="file" accept=".xlsx,.csv" onChange={e => setFile(e.target.files[0] || null)} />
+    <div className="toolbar" style={{ marginTop: 10 }}><span style={{ flex: 1 }} /><button className="btn gold" disabled={!file || busy} onClick={go}>{busy ? 'Matching…' : 'Upload & match'}</button></div>
+  </div></div>;
+}
+
+function PayslipModal({ run, l, onClose }) {
+  const s = l.snapshot, a = l.attendance || {};
+  const row = (k, v, i) => <tr key={i}><td>{k}</td><td style={{ textAlign: 'right' }}>{inr2(v)}</td></tr>;
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 760, width: '96%', maxHeight: '92vh', overflow: 'auto', padding: 0 }}>
+    <div style={{ background: 'linear-gradient(120deg,#1e3a8a,#2563eb)', color: '#fff', padding: '14px 18px', display: 'flex', justifyContent: 'space-between' }}>
+      <div><b style={{ fontSize: 17 }}>{s.name}</b> <span style={{ opacity: .8 }}>({s.emp_code || '—'})</span><div style={{ fontSize: 12, opacity: .85 }}>{s.designation}{s.location ? ' · ' + s.location : ''}</div></div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}><div style={{ textAlign: 'right' }}><b>PAYSLIP</b><div style={{ fontSize: 12 }}>{run.label}</div></div>
+        <button className="btn ghost sm" style={{ color: '#fff', borderColor: 'rgba(255,255,255,.5)' }} onClick={onClose}>✕</button></div></div>
+    <div style={{ padding: 16 }}>
+      <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Days {a.cycle_days} · Present {a.present} · Leave {a.leave} · Absent {a.absent} · Late {a.late} · LOP {a.lop} · Paid days <b>{a.paid_days_final}</b> of {a.divisor} ({a.basis})
+        {a.not_employed > 0 ? ` · not employed ${a.not_employed} day(s)` : ''}{!a.attendance_used ? ' · attendance not applied' : ''}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div className="tablewrap"><table><thead><tr><th>Earnings</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
+          <tbody>{l.earnings.map((e, i) => row(e.name + (e.note ? ` — ${e.note}` : ''), e.amount, i))}<tr><td><b>Gross</b></td><td style={{ textAlign: 'right' }}><b>{inr2(l.gross)}</b></td></tr></tbody></table></div>
+        <div className="tablewrap"><table><thead><tr><th>Deductions</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
+          <tbody>{l.deductions.map((d, i) => row(d.name + (d.note ? ` — ${d.note}` : ''), d.amount, i))}<tr><td><b>Total</b></td><td style={{ textAlign: 'right' }}><b>{inr2(l.total_deductions)}</b></td></tr></tbody></table></div>
+      </div>
+      <div style={{ margin: '12px 0', background: '#166534', color: '#fff', borderRadius: 10, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>NET PAY</span><b style={{ fontSize: 22 }}>{inr2(l.net)}</b></div>
+      {l.employer.length > 0 && <div className="muted" style={{ fontSize: 12 }}>Employer: {l.employer.map(e => `${e.name} ${inr2(e.amount)}`).join(' · ')}</div>}
+      <div className="toolbar" style={{ marginTop: 10 }}><span className="muted" style={{ fontSize: 12 }}>{s.bank_name} {s.account_masked} · {s.ifsc}</span><span style={{ flex: 1 }} />
+        <button className="btn gold sm" onClick={() => download(`/api/payroll/runs/${run.id}/payslips.pdf?line_id=${l.id}`, `Payslip_${run.period}_${s.emp_code || l.user_id}.pdf`)}>⬇ PDF</button></div>
+    </div>
+  </div></div>;
+}
+
+/* ---------------- employee salaries ---------------- */
+function PayEmployees({ cfg }) {
+  const [rows, setRows] = useState(null); const [q, setQ] = useState(''); const [f, setF] = useState('active');
+  const [edit, setEdit] = useState(null); const [up, setUp] = useState(false);
+  const load = () => api('/api/payroll/employees').then(setRows).catch(e => { toast(e.message, 'err'); setRows([]); });
+  useEffect(() => { load(); }, []);
+  const list = (rows || []).filter(r => (f === 'all' || (f === 'active' && r.active) || (f === 'missing' && r.active && !r.salary) || (f === 'exempt' && r.salary && !r.salary.on_payroll) || (f === 'bank' && r.active && r.bank_issues.length))
+    && (!q || (r.name + ' ' + (r.emp_code || '')).toLowerCase().includes(q.toLowerCase())));
+  const total = (rows || []).filter(r => r.active && r.salary && r.salary.on_payroll).reduce((a, r) => a + r.salary.monthly_gross, 0);
+  return <div>
+    <div className="glass card" style={{ padding: 12, marginBottom: 10 }}>
+      <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <input className="input" placeholder="Search name / ID" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 220 }} />
+        {[['active', 'Active'], ['missing', 'No salary set'], ['bank', 'Bank details missing'], ['exempt', 'Exempt'], ['all', 'All incl. left']].map(([k, l]) => <div key={k} className={cx('chip', f === k && 'on')} onClick={() => setF(k)}>{l}</div>)}
+        <span style={{ flex: 1 }} /><span className="muted" style={{ fontSize: 12.5 }}>Monthly payroll (gross): <b>{inr2(total)}</b></span>
+        <button className="btn sm" onClick={() => setUp(true)}>⬆ Bulk upload salaries</button></div>
+    </div>
+    <div className="glass card" style={{ padding: 0 }}>{!rows ? <Loader /> :
+      <div className="tablewrap" style={{ maxHeight: '65vh', overflow: 'auto' }}><table><thead><tr><th>Employee</th><th>Role</th><th style={{ textAlign: 'right' }}>Monthly gross</th><th>Breakup</th><th>Statutory</th><th>From</th><th>Bank</th><th></th></tr></thead>
+        <tbody>{list.map(r => { const s = r.salary; return <tr key={r.id} style={{ opacity: r.active ? 1 : .5 }}>
+          <td><b>{r.name}</b> <span className="muted">({r.emp_code || '—'})</span><div className="muted" style={{ fontSize: 11 }}>{r.designation || ''}{r.location ? ' · ' + r.location : ''}{!r.active ? ' · left' : ''}</div></td>
+          <td style={{ fontSize: 12 }}>{roleName(r.role)}</td>
+          <td style={{ textAlign: 'right', fontWeight: 700 }}>{s ? inr2(s.monthly_gross) : <span style={{ color: 'var(--bad)' }}>Not set</span>}{s && !s.on_payroll && <div><Pill c="#64748b">Exempt</Pill></div>}</td>
+          <td style={{ fontSize: 11.5 }} className="muted">{r.breakup.map(b => `${b.code} ${Math.round(b.amount).toLocaleString('en-IN')}`).join(' · ')}</td>
+          <td style={{ fontSize: 11.5 }}>{s ? [s.pf_applicable && 'PF', s.esi_applicable && 'ESI', s.pt_applicable && 'PT', s.lwf_applicable && 'LWF', s.tds_monthly > 0 && 'TDS'].filter(Boolean).join(' · ') || '—' : '—'}{s && s.attendance_exempt ? <div className="muted">no LOP</div> : null}</td>
+          <td style={{ fontSize: 12 }}>{s ? fmtDate(s.effective_from) : '—'}</td>
+          <td style={{ fontSize: 11.5 }}>{r.bank_issues.length ? <span style={{ color: 'var(--bad)' }}>{r.bank_issues.join(', ')}</span> : <>{(r.bank_name || '').replace(' BANK', '')} {r.account}</>}</td>
+          <td><button className="btn ghost sm" onClick={() => setEdit(r)}>{s ? 'Revise' : 'Set salary'}</button></td></tr>; })}</tbody></table></div>}</div>
+    {edit && <SalaryEditor emp={edit} cfg={cfg} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
+    {up && <PayUploadModal title="⬆ Bulk upload salary structures" template={() => download('/api/payroll/employees-template.xlsx', 'salary_structures.xlsx')}
+      help="Download the template (pre-filled with your active staff), fill Monthly Gross and the Y/N switches, and upload. Each row becomes a new salary revision from its Effective From date — history is kept."
+      url="/api/payroll/employees/upload" onClose={() => setUp(false)} onDone={() => { setUp(false); load(); }}
+      cols={[['emp_code', 'Emp ID'], ['name', 'Name'], ['monthly_gross', 'Monthly gross'], ['effective_from', 'From']]} />}
+  </div>;
+}
+
+function SalaryEditor({ emp, cfg, onClose, onSaved }) {
+  const s = emp.salary || {};
+  const [v, setV] = useState({ monthly_gross: s.monthly_gross || '', effective_from: new Date().toISOString().slice(0, 10), on_payroll: s.on_payroll !== false,
+    exempt_reason: s.exempt_reason || '', pf_applicable: s.pf_applicable !== false, esi_applicable: s.esi_applicable !== false, pt_applicable: s.pt_applicable !== false,
+    lwf_applicable: !!s.lwf_applicable, attendance_exempt: !!s.attendance_exempt, tds_monthly: s.tds_monthly || 0, payment_mode: s.payment_mode || 'bank',
+    uan: s.uan || '', pf_number: s.pf_number || '', esic_number: s.esic_number || '', note: '', overrides: { ...(s.overrides || {}) } });
+  const [hist, setHist] = useState(null); const [busy, setBusy] = useState(false);
+  useEffect(() => { api('/api/payroll/employees/' + emp.id).then(setHist).catch(() => setHist([])); }, [emp.id]);
+  const set = (k, x) => setV(o => ({ ...o, [k]: x }));
+  const parts = splitGross(v.monthly_gross, cfg.components, v.overrides);
+  const annual = (Number(v.monthly_gross) || 0) * 12;
+  const save = async () => { setBusy(true); try { await api(`/api/payroll/employees/${emp.id}/salary`, { method: 'POST', body: v }); toast('Salary saved'); onSaved(); } catch (e) { alert(prErr(e)); } finally { setBusy(false); } };
+  const tog = (k, l) => <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}><input type="checkbox" checked={!!v[k]} onChange={e => set(k, e.target.checked)} />{l}</label>;
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 820, width: '96%', maxHeight: '92vh', overflow: 'auto' }}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>💰 Salary — {emp.name} <span className="muted" style={{ fontSize: 13 }}>({emp.emp_code || '—'})</span></h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    {emp.bank_issues.length > 0 && <div style={{ color: 'var(--bad)', fontSize: 12.5, marginBottom: 8 }}>⚠️ Bank: {emp.bank_issues.join(', ')} — update it in Manpower before paying by bank.</div>}
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+      <div>
+        <div className="field"><label>Monthly gross salary ₹</label><input className="input" inputMode="decimal" value={v.monthly_gross} onChange={e => set('monthly_gross', e.target.value.replace(/[^0-9.]/g, ''))} />
+          <div className="muted" style={{ fontSize: 11.5 }}>Annual ≈ {inr2(annual)}{emp.ctc ? ` · CTC in Manpower: ${emp.ctc}` : ''}</div></div>
+        <div className="field"><label>Effective from (revision date)</label><input className="input" type="date" value={v.effective_from} onChange={e => set('effective_from', e.target.value)} /></div>
+        <div className="field"><label>Payment mode</label><select className="input" value={v.payment_mode} onChange={e => set('payment_mode', e.target.value)}><option value="bank">Bank transfer</option><option value="cash">Cash</option><option value="cheque">Cheque</option></select></div>
+        <div className="field"><label>TDS per month ₹ (income tax)</label><input className="input" inputMode="decimal" value={v.tds_monthly} onChange={e => set('tds_monthly', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, margin: '8px 0' }}>
+          {tog('on_payroll', 'On payroll')}{tog('attendance_exempt', 'No LOP from attendance')}
+          {tog('pf_applicable', 'PF applies')}{tog('esi_applicable', 'ESI applies')}{tog('pt_applicable', 'Professional tax')}{tog('lwf_applicable', 'LWF applies')}</div>
+        {!v.on_payroll && <div className="field"><label>Why exempt?</label><input className="input" value={v.exempt_reason} onChange={e => set('exempt_reason', e.target.value)} placeholder="Partner / consultant / paid separately" /></div>}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+          <div className="field"><label>UAN</label><input className="input" value={v.uan} onChange={e => set('uan', e.target.value)} /></div>
+          <div className="field"><label>PF number</label><input className="input" value={v.pf_number} onChange={e => set('pf_number', e.target.value)} /></div>
+          <div className="field"><label>ESIC number</label><input className="input" value={v.esic_number} onChange={e => set('esic_number', e.target.value)} /></div></div>
+        <div className="field"><label>Note (why this revision)</label><input className="input" value={v.note} onChange={e => set('note', e.target.value)} /></div>
+      </div>
+      <div>
+        <b style={{ fontSize: 13 }}>Monthly breakup</b><div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>From your component rules. Type an amount to fix a component for this employee only.</div>
+        <div className="tablewrap"><table><thead><tr><th>Component</th><th>Rule</th><th style={{ textAlign: 'right' }}>₹ / month</th><th>Fixed</th></tr></thead>
+          <tbody>{cfg.components.map(c => { const p = parts.find(x => x.code === c.code) || {}; const fixed = v.overrides[c.code] !== undefined && v.overrides[c.code] !== '';
+            return <tr key={c.code}><td>{c.name}</td><td className="muted" style={{ fontSize: 11 }}>{c.calc === 'percent_gross' ? `${c.value}% gross` : c.calc === 'percent_basic' ? `${c.value}% basic` : c.calc === 'fixed' ? `₹${c.value}` : 'balance'}</td>
+              <td style={{ textAlign: 'right', fontWeight: 600 }}>{inr2(p.amount)}</td>
+              <td>{c.calc !== 'balance' && <input className="input" style={{ width: 90, padding: '3px 6px' }} placeholder="auto" value={fixed ? v.overrides[c.code] : ''} onChange={e => { const x = e.target.value.replace(/[^0-9.]/g, ''); setV(o => { const ov = { ...o.overrides }; if (x === '') delete ov[c.code]; else ov[c.code] = x; return { ...o, overrides: ov }; }); }} />}</td></tr>; })}
+            <tr><td><b>Total</b></td><td /><td style={{ textAlign: 'right' }}><b>{inr2(parts.reduce((a, b) => a + b.amount, 0))}</b></td><td /></tr></tbody></table></div>
+        <b style={{ fontSize: 13, display: 'block', marginTop: 12 }}>Revision history</b>
+        {!hist ? <Loader /> : !hist.length ? <div className="muted" style={{ fontSize: 12 }}>No salary set yet.</div> :
+          <div className="tablewrap" style={{ maxHeight: 180, overflow: 'auto' }}><table><thead><tr><th>From</th><th style={{ textAlign: 'right' }}>Gross</th><th>Note</th></tr></thead>
+            <tbody>{hist.map(h => <tr key={h.id}><td>{fmtDate(h.effective_from)}</td><td style={{ textAlign: 'right' }}>{inr2(h.monthly_gross)}{!h.on_payroll ? ' (exempt)' : ''}</td><td className="muted" style={{ fontSize: 11.5 }}>{h.note || ''}</td></tr>)}</tbody></table></div>}
+      </div>
+    </div>
+    <div className="toolbar" style={{ marginTop: 10 }}><span style={{ flex: 1 }} /><button className="btn ghost" onClick={onClose}>Cancel</button>
+      <button className="btn gold" disabled={busy || !(Number(v.monthly_gross) >= 0) || v.monthly_gross === ''} onClick={save}>{busy ? 'Saving…' : 'Save salary'}</button></div>
+  </div></div>;
+}
+
+/* ---------------- advances ---------------- */
+function PayAdvances() {
+  const [rows, setRows] = useState(null); const [emps, setEmps] = useState([]);
+  const [b, setB] = useState({ user_id: '', kind: 'advance', principal: '', emi: '', start_period: thisPeriod(), note: '' });
+  const load = () => api('/api/payroll/advances').then(setRows).catch(() => setRows([]));
+  useEffect(() => { load(); api('/api/payroll/employees').then(r => setEmps(r.filter(x => x.active))).catch(() => {}); }, []);
+  const add = async () => { try { await api('/api/payroll/advances', { method: 'POST', body: b }); toast('Saved — it will be recovered from payroll'); setB({ ...b, user_id: '', principal: '', emi: '', note: '' }); load(); } catch (e) { alert(prErr(e)); } };
+  return <div>
+    <div className="glass card" style={{ padding: 12, marginBottom: 10 }}>
+      <b>＋ New salary advance / loan</b>
+      <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+        <select className="input" value={b.user_id} onChange={e => setB({ ...b, user_id: e.target.value })} style={{ maxWidth: 240 }}><option value="">Employee…</option>{emps.map(x => <option key={x.id} value={x.id}>{x.name} ({x.emp_code || '—'})</option>)}</select>
+        <select className="input" value={b.kind} onChange={e => setB({ ...b, kind: e.target.value })} style={{ maxWidth: 120 }}><option value="advance">Advance</option><option value="loan">Loan</option></select>
+        <input className="input" placeholder="Amount ₹" inputMode="decimal" value={b.principal} onChange={e => setB({ ...b, principal: e.target.value })} style={{ maxWidth: 120 }} />
+        <input className="input" placeholder="Recover ₹ / month" inputMode="decimal" value={b.emi} onChange={e => setB({ ...b, emi: e.target.value })} style={{ maxWidth: 150 }} />
+        <label className="muted" style={{ fontSize: 12 }}>From <input className="input" type="month" value={b.start_period} onChange={e => setB({ ...b, start_period: e.target.value })} /></label>
+        <input className="input" placeholder="Note" value={b.note} onChange={e => setB({ ...b, note: e.target.value })} style={{ maxWidth: 200 }} />
+        <button className="btn gold sm" disabled={!b.user_id || !(Number(b.principal) > 0) || !(Number(b.emi) > 0)} onClick={add}>Save</button></div>
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>The instalment is deducted automatically in each approved payroll (never more than the net pay), and the balance falls as months are approved.</div>
+    </div>
+    <div className="glass card" style={{ padding: 0 }}>{!rows ? <Loader /> : !rows.length ? <div className="muted" style={{ padding: 16 }}>No advances.</div> :
+      <div className="tablewrap"><table><thead><tr><th>Employee</th><th>Type</th><th style={{ textAlign: 'right' }}>Amount</th><th style={{ textAlign: 'right' }}>Per month</th><th style={{ textAlign: 'right' }}>Balance</th><th>From</th><th>Status</th><th>Note</th><th></th></tr></thead>
+        <tbody>{rows.map(a => <tr key={a.id}><td><b>{a.name}</b></td><td>{a.kind}</td><td style={{ textAlign: 'right' }}>{inr2(a.principal)}</td><td style={{ textAlign: 'right' }}>{inr2(a.emi)}</td>
+          <td style={{ textAlign: 'right', fontWeight: 700 }}>{inr2(a.balance)}</td><td>{a.start_period}</td><td><Pill c={a.status === 'active' ? '#2563eb' : '#64748b'}>{a.status}</Pill></td>
+          <td className="muted" style={{ fontSize: 12 }}>{a.note}</td><td>{a.status === 'active' && <button className="btn ghost sm" onClick={() => window.confirm('Close this advance? Nothing more will be recovered.') && api(`/api/payroll/advances/${a.id}/close`, { method: 'POST' }).then(load).catch(e => alert(e.message))}>Close</button>}</td></tr>)}</tbody></table></div>}</div>
+  </div>;
+}
+
+/* ---------------- bank file formats ---------------- */
+function PayBankFormats({ fields }) {
+  const [rows, setRows] = useState(null); const [edit, setEdit] = useState(null); const [busy, setBusy] = useState(false);
+  const load = () => api('/api/payroll/bank-templates').then(setRows).catch(() => setRows([]));
+  useEffect(() => { load(); }, []);
+  const fromSample = async (file) => {
+    if (!file) return; setBusy(true);
+    try { const fd = new FormData(); fd.append('file', file); const p = await api('/api/payroll/bank-templates/parse', { method: 'POST', form: fd });
+      setEdit({ name: file.name.replace(/\.[^.]+$/, ''), bank: '', file_type: p.file_type, delimiter: p.delimiter, include_header: true, columns: p.columns, samples: p.samples,
+        options: { debit_account: '', same_bank_ifsc: '', mode_same_bank: 'I', mode_other: 'N', date_format: '%d-%m-%Y', narration: 'SALARY {MONTH} {CODE}' } });
+    } catch (e) { alert(prErr(e)); } finally { setBusy(false); }
+  };
+  return <div>
+    <div className="glass card" style={{ padding: 12, marginBottom: 10 }}>
+      <b>Make your bank's exact upload format</b>
+      <div className="muted" style={{ fontSize: 12.5, margin: '4px 0 8px' }}>Upload the blank / sample bulk-salary file your bank gave you (Excel or CSV). RecoverIQ reads its column headings and guesses what goes in each — you check the mapping, add your debit account, and save. Works for any bank.</div>
+      <div className="toolbar" style={{ gap: 8 }}><label className="btn gold sm" style={{ cursor: 'pointer' }}>{busy ? 'Reading…' : '⬆ Upload bank sample file'}<input type="file" accept=".xlsx,.xls,.csv,.txt" style={{ display: 'none' }} onChange={e => fromSample(e.target.files[0])} /></label>
+        <button className="btn ghost sm" onClick={() => setEdit({ name: '', bank: '', file_type: 'xlsx', delimiter: ',', include_header: true, columns: [{ header: 'Amount', field: 'amount' }, { header: 'Account Number', field: 'beneficiary_account' }], options: { mode_same_bank: 'I', mode_other: 'N', date_format: '%d-%m-%Y', narration: 'SALARY {MONTH} {CODE}' } })}>＋ Build by hand</button></div>
+    </div>
+    <div className="glass card" style={{ padding: 0 }}>{!rows ? <Loader /> :
+      <div className="tablewrap"><table><thead><tr><th>Format</th><th>Bank</th><th>File</th><th>Columns</th><th>Debit account</th><th></th></tr></thead>
+        <tbody>{rows.map(t => <tr key={t.id}><td><b>{t.name}</b>{t.is_default && <> <Pill c="#16a34a">Default</Pill></>}</td><td>{t.bank}</td><td>{t.file_type.toUpperCase()}</td>
+          <td className="muted" style={{ fontSize: 11.5 }}>{t.columns.map(c => c.header).join(' · ')}</td><td>{(t.options || {}).debit_account ? '••••' + String(t.options.debit_account).slice(-4) : <span style={{ color: 'var(--bad)' }}>not set</span>}</td>
+          <td style={{ whiteSpace: 'nowrap' }}><button className="btn ghost sm" onClick={() => setEdit(t)}>Edit</button> <button className="btn ghost sm" onClick={() => window.confirm('Delete this format?') && api('/api/payroll/bank-templates/' + t.id, { method: 'DELETE' }).then(load).catch(e => alert(e.message))}>✕</button></td></tr>)}</tbody></table></div>}</div>
+    {edit && <BankFormatEditor t={edit} fields={fields} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
+  </div>;
+}
+
+function BankFormatEditor({ t, fields, onClose, onSaved }) {
+  const [v, setV] = useState({ ...t, options: { ...(t.options || {}) }, columns: (t.columns || []).map(c => ({ ...c })) });
+  const [busy, setBusy] = useState(false);
+  const setO = (k, x) => setV(o => ({ ...o, options: { ...o.options, [k]: x } }));
+  const setC = (i, k, x) => setV(o => ({ ...o, columns: o.columns.map((c, j) => j === i ? { ...c, [k]: x } : c) }));
+  const move = (i, d) => setV(o => { const c = [...o.columns]; const j = i + d; if (j < 0 || j >= c.length) return o; [c[i], c[j]] = [c[j], c[i]]; return { ...o, columns: c }; });
+  const save = async () => { setBusy(true); try { await api('/api/payroll/bank-templates' + (t.id ? '/' + t.id : ''), { method: t.id ? 'PUT' : 'POST', body: v }); toast('Bank format saved'); onSaved(); } catch (e) { alert(prErr(e)); } finally { setBusy(false); } };
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 900, width: '96%', maxHeight: '92vh', overflow: 'auto' }}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>🏦 Bank file format</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
+      <div className="field"><label>Name</label><input className="input" value={v.name} onChange={e => setV({ ...v, name: e.target.value })} /></div>
+      <div className="field"><label>Bank</label><input className="input" value={v.bank || ''} onChange={e => setV({ ...v, bank: e.target.value })} placeholder="AXIS / ICICI / HDFC…" /></div>
+      <div className="field"><label>File type</label><select className="input" value={v.file_type} onChange={e => setV({ ...v, file_type: e.target.value })}><option value="xlsx">Excel (.xlsx)</option><option value="csv">CSV</option><option value="txt">Text (.txt)</option></select></div>
+      <div className="field"><label>Separator (csv/txt)</label><input className="input" value={v.delimiter || ','} onChange={e => setV({ ...v, delimiter: e.target.value })} /></div>
+      <div className="field"><label>Company debit account no.</label><input className="input" value={v.options.debit_account || ''} onChange={e => setO('debit_account', e.target.value)} /></div>
+      <div className="field"><label>Same-bank IFSC starts with</label><input className="input" value={v.options.same_bank_ifsc || ''} onChange={e => setO('same_bank_ifsc', e.target.value.toUpperCase())} placeholder="UTIB for Axis" /></div>
+      <div className="field"><label>Mode code: same bank</label><input className="input" value={v.options.mode_same_bank || ''} onChange={e => setO('mode_same_bank', e.target.value)} placeholder="I / IFT / WIB" /></div>
+      <div className="field"><label>Mode code: other banks</label><input className="input" value={v.options.mode_other || ''} onChange={e => setO('mode_other', e.target.value)} placeholder="N / NEFT / NFT" /></div>
+      <div className="field"><label>Date format</label><select className="input" value={v.options.date_format || '%d-%m-%Y'} onChange={e => setO('date_format', e.target.value)}>
+        {['%d-%m-%Y', '%d/%m/%Y', '%d%m%Y', '%Y-%m-%d', '%d-%b-%Y', '%m/%d/%Y'].map(f => <option key={f} value={f}>{f.replace('%d', 'DD').replace('%m', 'MM').replace('%Y', 'YYYY').replace('%b', 'MON')}</option>)}</select></div>
+      <div className="field" style={{ gridColumn: 'span 2' }}><label>Narration — {'{MONTH} {CODE} {NAME}'}</label><input className="input" value={v.options.narration || ''} onChange={e => setO('narration', e.target.value)} /></div>
+      <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, marginTop: 18 }}><input type="checkbox" checked={v.include_header} onChange={e => setV({ ...v, include_header: e.target.checked })} />Header row</label>
+    </div>
+    <b style={{ fontSize: 13 }}>Columns (in file order)</b>
+    <div className="tablewrap" style={{ marginTop: 6 }}><table><thead><tr><th>#</th><th>Column heading (as in the bank file)</th><th>Fill with</th><th>Fixed text</th>{v.samples && <th>Bank sample</th>}<th></th></tr></thead>
+      <tbody>{v.columns.map((c, i) => <tr key={i}><td>{i + 1}</td>
+        <td><input className="input" value={c.header} onChange={e => setC(i, 'header', e.target.value)} /></td>
+        <td><select className="input" value={c.field} onChange={e => setC(i, 'field', e.target.value)}>{Object.entries(fields).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></td>
+        <td>{c.field === 'constant' && <input className="input" value={c.value || ''} onChange={e => setC(i, 'value', e.target.value)} />}</td>
+        {v.samples && <td className="muted" style={{ fontSize: 11.5 }}>{(v.samples[0] || [])[i] || ''}</td>}
+        <td style={{ whiteSpace: 'nowrap' }}><button className="btn ghost sm" onClick={() => move(i, -1)}>↑</button><button className="btn ghost sm" onClick={() => move(i, 1)}>↓</button>
+          <button className="btn ghost sm" onClick={() => setV(o => ({ ...o, columns: o.columns.filter((_, j) => j !== i) }))}>✕</button></td></tr>)}</tbody></table></div>
+    <div className="toolbar" style={{ marginTop: 8 }}><button className="btn ghost sm" onClick={() => setV(o => ({ ...o, columns: [...o.columns, { header: '', field: 'blank' }] }))}>＋ Column</button>
+      <span style={{ flex: 1 }} /><button className="btn ghost" onClick={onClose}>Cancel</button>
+      <button className="btn gold" disabled={busy || !v.name} onClick={save}>{busy ? 'Saving…' : 'Save format'}</button></div>
+  </div></div>;
+}
+
+/* ---------------- rules & settings ---------------- */
+// Top-level (not inside PaySettings) so inputs keep focus while typing.
+const Box = ({ title, children, help }) => <div className="glass card" style={{ padding: 14, marginBottom: 12 }}><b>{title}</b>{help && <div className="muted" style={{ fontSize: 12, margin: '2px 0 8px' }}>{help}</div>}{children}</div>;
+const F = ({ label, children, span }) => <div className="field" style={span ? { gridColumn: `span ${span}` } : undefined}><label>{label}</label>{children}</div>;
+function PaySettings({ meta, onSaved }) {
+  const [c, setC] = useState(JSON.parse(JSON.stringify(meta.config)));
+  const [busy, setBusy] = useState(false);
+  const up = (path, x) => setC(o => { const n = JSON.parse(JSON.stringify(o)); let p = n; path.slice(0, -1).forEach(k => { p = p[k]; }); p[path.at(-1)] = x; return n; });
+  const num = x => x === '' ? '' : Number(x);
+  const save = async () => { setBusy(true); try { await api('/api/payroll/config', { method: 'PUT', body: { config: c } }); toast('Payroll rules saved — recalculate draft runs to apply'); onSaved(); } catch (e) { alert(prErr(e)); } finally { setBusy(false); } };
+  const logo = f => { if (!f) return; if (f.size > 400000) { alert('Logo must be under 400 KB'); return; } const r = new FileReader(); r.onload = () => up(['company', 'logo'], r.result); r.readAsDataURL(f); };
+  const st = c.statutory;
+  const grid = n => ({ display: 'grid', gridTemplateColumns: `repeat(${n},1fr)`, gap: 8 });
+  const chk = (path, label) => { let p = c; path.forEach(k => { p = p == null ? p : p[k]; }); return <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}><input type="checkbox" checked={!!p} onChange={e => up(path, e.target.checked)} />{label}</label>; };
+  return <div>
+    <Box title="🏢 Company (printed on payslips)">
+      <div style={grid(3)}>
+        <F label="Company name"><input className="input" value={c.company.name} onChange={e => up(['company', 'name'], e.target.value)} /></F>
+        <F label="PAN"><input className="input" value={c.company.pan} onChange={e => up(['company', 'pan'], e.target.value)} /></F>
+        <F label="TAN"><input className="input" value={c.company.tan} onChange={e => up(['company', 'tan'], e.target.value)} /></F>
+        <F label="Address" span={3}><input className="input" value={c.company.address} onChange={e => up(['company', 'address'], e.target.value)} /></F>
+        <F label="PF establishment code"><input className="input" value={c.company.pf_code} onChange={e => up(['company', 'pf_code'], e.target.value)} /></F>
+        <F label="ESI employer code"><input className="input" value={c.company.esi_code} onChange={e => up(['company', 'esi_code'], e.target.value)} /></F>
+        <F label="Authorised signatory"><input className="input" value={c.company.signatory} onChange={e => up(['company', 'signatory'], e.target.value)} /></F>
+        <F label="Payslip footer" span={2}><input className="input" value={c.company.footer} onChange={e => up(['company', 'footer'], e.target.value)} /></F>
+        <F label="Logo (PNG/JPG)"><div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>{c.company.logo && <img src={c.company.logo} alt="" style={{ height: 32 }} />}<input type="file" accept="image/png,image/jpeg" onChange={e => logo(e.target.files[0])} />{c.company.logo && <button className="btn ghost sm" onClick={() => up(['company', 'logo'], '')}>✕</button>}</div></F>
+      </div>
+    </Box>
+    <Box title="🗓️ Salary cycle & pay days" help="Cycle start day 21 = 21st of last month to 20th of this month. 1 = calendar month. Pay-day basis decides how one day's pay is worked out.">
+      <div style={grid(3)}>
+        <F label="Cycle starts on day"><input className="input" type="number" min="1" max="28" value={c.cycle.start_day} onChange={e => up(['cycle', 'start_day'], num(e.target.value))} /></F>
+        <F label="Pay date (day of month, 0 = last day)"><input className="input" type="number" min="0" max="31" value={c.cycle.pay_day} onChange={e => up(['cycle', 'pay_day'], num(e.target.value))} /></F>
+        <F label="Pay-day basis"><select className="input" value={c.pay_basis} onChange={e => up(['pay_basis'], e.target.value)}>{Object.entries(meta.pay_basis_options).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></F>
+      </div>
+    </Box>
+    <Box title="🕘 Attendance → loss of pay (LOP)" help="Absent days and half days come from Attendance and approved leave. Leave whose type contains one of the words below is unpaid.">
+      <div style={grid(3)}>
+        <div style={{ paddingTop: 22 }}>{chk(['attendance', 'use_attendance'], 'Cut pay for absences from Attendance')}</div>
+        <F label="Late marks: every N lates…"><input className="input" type="number" min="0" value={c.attendance.late_every} onChange={e => up(['attendance', 'late_every'], num(e.target.value))} /></F>
+        <F label="…deduct days (0 = no late penalty)"><input className="input" type="number" step="0.5" min="0" value={c.attendance.late_deduct_days} onChange={e => up(['attendance', 'late_deduct_days'], num(e.target.value))} /></F>
+        <F label="Unpaid-leave words (comma separated)" span={3}><input className="input" value={(c.attendance.unpaid_leave_keywords || []).join(', ')} onChange={e => up(['attendance', 'unpaid_leave_keywords'], e.target.value.split(',').map(x => x.trim()).filter(Boolean))} /></F>
+      </div>
+    </Box>
+    <Box title="🧾 Salary components" help="How the monthly gross is split. One component may take the balance. Prorate = reduced for LOP. PF / ESI = counts for those wages.">
+      <div className="tablewrap"><table><thead><tr><th>Code</th><th>Name</th><th>Calculation</th><th>Value</th><th>Prorate</th><th>PF wage</th><th>ESI wage</th><th></th></tr></thead>
+        <tbody>{c.components.map((x, i) => <tr key={i}>
+          <td><input className="input" style={{ width: 90 }} value={x.code} onChange={e => up(['components', i, 'code'], e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ''))} /></td>
+          <td><input className="input" value={x.name} onChange={e => up(['components', i, 'name'], e.target.value)} /></td>
+          <td><select className="input" value={x.calc} onChange={e => up(['components', i, 'calc'], e.target.value)}>{Object.entries(meta.calc_options).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></td>
+          <td>{x.calc !== 'balance' && <input className="input" style={{ width: 90 }} type="number" value={x.value} onChange={e => up(['components', i, 'value'], num(e.target.value))} />}</td>
+          <td><input type="checkbox" checked={x.prorate !== false} onChange={e => up(['components', i, 'prorate'], e.target.checked)} /></td>
+          <td><input type="checkbox" checked={!!x.pf} onChange={e => up(['components', i, 'pf'], e.target.checked)} /></td>
+          <td><input type="checkbox" checked={x.esi !== false} onChange={e => up(['components', i, 'esi'], e.target.checked)} /></td>
+          <td><button className="btn ghost sm" onClick={() => setC(o => ({ ...o, components: o.components.filter((_, j) => j !== i) }))}>✕</button></td></tr>)}</tbody></table></div>
+      <button className="btn ghost sm" style={{ marginTop: 6 }} onClick={() => setC(o => ({ ...o, components: [...o.components, { code: 'NEW', name: 'New allowance', calc: 'fixed', value: 0, prorate: true, pf: false, esi: true }] }))}>＋ Component</button>
+    </Box>
+    <Box title="🏛️ Statutory deductions">
+      <div style={grid(4)}>
+        <div style={{ gridColumn: 'span 4' }}>{chk(['statutory', 'pf', 'enabled'], 'Provident Fund (PF)')}</div>
+        <F label="Employee %"><input className="input" type="number" step="0.01" value={st.pf.employee_rate} onChange={e => up(['statutory', 'pf', 'employee_rate'], num(e.target.value))} /></F>
+        <F label="Employer %"><input className="input" type="number" step="0.01" value={st.pf.employer_rate} onChange={e => up(['statutory', 'pf', 'employer_rate'], num(e.target.value))} /></F>
+        <F label="Pension (EPS) %"><input className="input" type="number" step="0.01" value={st.pf.eps_rate} onChange={e => up(['statutory', 'pf', 'eps_rate'], num(e.target.value))} /></F>
+        <F label="Wage ceiling ₹"><input className="input" type="number" value={st.pf.wage_ceiling} onChange={e => up(['statutory', 'pf', 'wage_ceiling'], num(e.target.value))} /></F>
+        <div style={{ gridColumn: 'span 4' }}>{chk(['statutory', 'pf', 'restrict_to_ceiling'], 'Calculate PF only up to the wage ceiling')}</div>
+        <div style={{ gridColumn: 'span 4', marginTop: 6 }}>{chk(['statutory', 'esi', 'enabled'], 'ESI')}</div>
+        <F label="Employee %"><input className="input" type="number" step="0.01" value={st.esi.employee_rate} onChange={e => up(['statutory', 'esi', 'employee_rate'], num(e.target.value))} /></F>
+        <F label="Employer %"><input className="input" type="number" step="0.01" value={st.esi.employer_rate} onChange={e => up(['statutory', 'esi', 'employer_rate'], num(e.target.value))} /></F>
+        <F label="Applies up to gross ₹"><input className="input" type="number" value={st.esi.threshold} onChange={e => up(['statutory', 'esi', 'threshold'], num(e.target.value))} /></F><div />
+        <div style={{ gridColumn: 'span 4', marginTop: 6 }}>{chk(['statutory', 'pt', 'enabled'], 'Professional Tax')}</div>
+        <F label="State"><input className="input" value={st.pt.state} onChange={e => up(['statutory', 'pt', 'state'], e.target.value)} /></F>
+        <div style={{ gridColumn: 'span 3' }}><label className="muted" style={{ fontSize: 12 }}>Slabs on monthly gross (leave "up to" empty for the last slab)</label>
+          {st.pt.slabs.map((s, i) => <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
+            <span className="muted" style={{ fontSize: 12 }}>from ₹</span><input className="input" style={{ width: 100 }} type="number" value={s.min} onChange={e => up(['statutory', 'pt', 'slabs', i, 'min'], num(e.target.value))} />
+            <span className="muted" style={{ fontSize: 12 }}>up to ₹</span><input className="input" style={{ width: 100 }} type="number" value={s.max ?? ''} onChange={e => up(['statutory', 'pt', 'slabs', i, 'max'], e.target.value === '' ? null : Number(e.target.value))} />
+            <span className="muted" style={{ fontSize: 12 }}>tax ₹</span><input className="input" style={{ width: 80 }} type="number" value={s.amount} onChange={e => up(['statutory', 'pt', 'slabs', i, 'amount'], num(e.target.value))} />
+            <button className="btn ghost sm" onClick={() => setC(o => { const n = JSON.parse(JSON.stringify(o)); n.statutory.pt.slabs.splice(i, 1); return n; })}>✕</button></div>)}
+          <button className="btn ghost sm" style={{ marginTop: 4 }} onClick={() => setC(o => { const n = JSON.parse(JSON.stringify(o)); n.statutory.pt.slabs.push({ min: 0, max: null, amount: 0 }); return n; })}>＋ Slab</button></div>
+        <div style={{ gridColumn: 'span 4', marginTop: 6 }}>{chk(['statutory', 'lwf', 'enabled'], 'Labour Welfare Fund (LWF)')}</div>
+        <F label="Employee ₹"><input className="input" type="number" value={st.lwf.employee} onChange={e => up(['statutory', 'lwf', 'employee'], num(e.target.value))} /></F>
+        <F label="Employer ₹"><input className="input" type="number" value={st.lwf.employer} onChange={e => up(['statutory', 'lwf', 'employer'], num(e.target.value))} /></F>
+        <F label="In months (e.g. 6, 12)" span={2}><input className="input" value={(st.lwf.months || []).join(', ')} onChange={e => up(['statutory', 'lwf', 'months'], e.target.value.split(',').map(x => parseInt(x)).filter(x => x >= 1 && x <= 12))} /></F>
+      </div>
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>Income tax (TDS) is entered per employee (Employee salaries → TDS per month).</div>
+    </Box>
+    <Box title="➕ Adjustment types" help="One-off items added to a month: incentives, bonus, arrears, reimbursements, fines… ESI / PT = counted for those taxes.">
+      <div className="tablewrap"><table><thead><tr><th>Code</th><th>Name</th><th>Kind</th><th>ESI</th><th>PT</th><th></th></tr></thead>
+        <tbody>{(c.adjustment_types || []).map((x, i) => <tr key={i}>
+          <td><input className="input" style={{ width: 110 }} value={x.code} onChange={e => up(['adjustment_types', i, 'code'], e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ''))} /></td>
+          <td><input className="input" value={x.name} onChange={e => up(['adjustment_types', i, 'name'], e.target.value)} /></td>
+          <td><select className="input" value={x.kind} onChange={e => up(['adjustment_types', i, 'kind'], e.target.value)}><option value="earning">+ Earning</option><option value="deduction">− Deduction</option></select></td>
+          <td>{x.kind === 'earning' && <input type="checkbox" checked={x.esi !== false} onChange={e => up(['adjustment_types', i, 'esi'], e.target.checked)} />}</td>
+          <td>{x.kind === 'earning' && <input type="checkbox" checked={x.pt !== false} onChange={e => up(['adjustment_types', i, 'pt'], e.target.checked)} />}</td>
+          <td><button className="btn ghost sm" onClick={() => setC(o => ({ ...o, adjustment_types: o.adjustment_types.filter((_, j) => j !== i) }))}>✕</button></td></tr>)}</tbody></table></div>
+      <button className="btn ghost sm" style={{ marginTop: 6 }} onClick={() => setC(o => ({ ...o, adjustment_types: [...(o.adjustment_types || []), { code: 'NEW', name: 'New item', kind: 'earning', esi: true, pt: true }] }))}>＋ Type</button>
+    </Box>
+    <TaxSettingsBox c={c} up={up} setC={setC} />
+    <FnfSettingsBox c={c} up={up} />
+    <Box title="🔎 Checks, rounding & payslip">
+      <div style={grid(4)}>
+        <F label="Warn if net changes more than %"><input className="input" type="number" value={c.checks.net_change_pct} onChange={e => up(['checks', 'net_change_pct'], num(e.target.value))} /></F>
+        <F label="Round net pay"><select className="input" value={c.rounding} onChange={e => up(['rounding'], e.target.value)}><option value="rupee">To the rupee</option><option value="paise">Keep paise</option></select></F>
+        <F label="Payslip title"><input className="input" value={c.payslip.title} onChange={e => up(['payslip', 'title'], e.target.value)} /></F>
+        <F label="Payslip colour"><input className="input" type="color" value={c.payslip.accent} onChange={e => up(['payslip', 'accent'], e.target.value)} /></F>
+        <div>{chk(['payslip', 'show_attendance'], 'Show attendance')}</div><div>{chk(['payslip', 'show_employer'], 'Show employer PF/ESI')}</div><div>{chk(['payslip', 'show_ytd'], 'Show year-to-date')}</div>
+      </div>
+    </Box>
+    <div className="toolbar" style={{ position: 'sticky', bottom: 0, background: 'var(--bg, #fff)', padding: '10px 0' }}><span style={{ flex: 1 }} />
+      <button className="btn ghost" onClick={() => setC(JSON.parse(JSON.stringify(meta.config)))}>Undo changes</button>
+      <button className="btn gold" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save payroll rules'}</button></div>
+  </div>;
+}
+
+/* ---------------- my payslips (every employee) ---------------- */
+function MyPayslips() {
+  const [rows, setRows] = useState(null);
+  useEffect(() => { api('/api/payroll/my').then(setRows).catch(e => { setRows([]); if (!String(e.message).includes('locked')) toast(e.message, 'err'); }); }, []);
+  return <div>
+    <div className="section-h"><h2 style={{ margin: 0 }}>🧾 My Payslips</h2></div>
+    <div className="glass card" style={{ padding: 0 }}>{!rows ? <Loader /> : !rows.length ? <div className="muted" style={{ padding: 18 }}>No payslips released yet.</div> :
+      <div className="tablewrap"><table><thead><tr><th>Month</th><th style={{ textAlign: 'right' }}>Gross</th><th style={{ textAlign: 'right' }}>Deductions</th><th style={{ textAlign: 'right' }}>Net pay</th><th>Status</th><th></th></tr></thead>
+        <tbody>{rows.map(p => <tr key={p.line_id}><td><b>{p.label}</b></td><td style={{ textAlign: 'right' }}>{inr2(p.gross)}</td><td style={{ textAlign: 'right' }}>{inr2(p.deductions)}</td>
+          <td style={{ textAlign: 'right', fontWeight: 800, color: 'var(--good)' }}>{inr2(p.net)}</td>
+          <td>{p.hold ? <Pill c="#dc2626">On hold</Pill> : <Pill c={p.pay_status === 'paid' ? '#16a34a' : '#2563eb'}>{p.pay_status === 'paid' ? 'Paid' + (p.paid_on ? ' ' + fmtDate(p.paid_on) : '') : 'Processed'}</Pill>}</td>
+          <td><button className="btn gold sm" onClick={() => download(`/api/payroll/my/${p.line_id}.pdf`, `Payslip_${p.period}.pdf`)}>⬇ PDF</button></td></tr>)}</tbody></table></div>}</div>
+    <MyTax />
+  </div>;
+}
+
+/* ---------------- income tax (TDS) ---------------- */
+const curFY = () => { const n = new Date(); const y = n.getMonth() >= 3 ? n.getFullYear() : n.getFullYear() - 1; return `${y}-${String(y + 1).slice(2)}`; };
+const fyOptions = () => { const c = Number(curFY().slice(0, 4)); return [c + 1, c, c - 1, c - 2].map(y => `${y}-${String(y + 1).slice(2)}`); };
+
+function PayTax({ user }) {
+  const [fy, setFy] = useState(curFY());
+  const [d, setD] = useState(null); const [q, setQ] = useState(''); const [edit, setEdit] = useState(null); const [qtr, setQtr] = useState('Q1');
+  const load = () => { setD(null); api('/api/payroll/tax/declarations?fy=' + fy).then(setD).catch(e => { toast(e.message, 'err'); setD({ rows: [], fields: {} }); }); };
+  useEffect(load, [fy]);
+  const rows = ((d || {}).rows || []).filter(r => !q || (r.name + ' ' + (r.emp_code || '')).toLowerCase().includes(q.toLowerCase()));
+  const totalTds = rows.reduce((a, r) => a + ((r.projection || {}).monthly_tds || 0), 0);
+  return <div>
+    <div className="glass card" style={{ padding: 12, marginBottom: 10 }}>
+      <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <label className="muted" style={{ fontSize: 12 }}>Financial year <select className="input" value={fy} onChange={e => setFy(e.target.value)}>{fyOptions().map(f => <option key={f}>{f}</option>)}</select></label>
+        <input className="input" placeholder="Search" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 200 }} />
+        <span style={{ flex: 1 }} /><span className="muted" style={{ fontSize: 12.5 }}>Projected TDS this month: <b>{inr2(totalTds)}</b></span>
+        <button className="btn sm" onClick={() => download(`/api/payroll/tax/form16.pdf?fy=${fy}`, `Tax_Statements_FY${fy}.pdf`)}>⬇ All tax statements (Form 16 Part B)</button>
+        <select className="input" value={qtr} onChange={e => setQtr(e.target.value)} style={{ maxWidth: 80 }}>{['Q1', 'Q2', 'Q3', 'Q4'].map(x => <option key={x}>{x}</option>)}</select>
+        <button className="btn sm" onClick={() => download(`/api/payroll/tax/24q.xlsx?fy=${fy}&quarter=${qtr}`, `TDS_24Q_FY${fy}_${qtr}.xlsx`)}>⬇ 24Q TDS sheet</button>
+      </div>
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>TDS is worked out every payroll from the full-year projection (actual months + this month + remaining months) and each employee's regime and declarations. Slabs are in Rules &amp; settings → Income tax. An employee with a fixed "TDS per month" in their salary is not auto-calculated.</div>
+    </div>
+    <div className="glass card" style={{ padding: 0 }}>{!d ? <Loader /> :
+      <div className="tablewrap" style={{ maxHeight: '62vh', overflow: 'auto' }}><table><thead><tr><th>Employee</th><th>PAN</th><th>Regime</th><th style={{ textAlign: 'right' }}>Taxable (projected)</th><th style={{ textAlign: 'right' }}>Annual tax</th><th style={{ textAlign: 'right' }}>Other regime</th><th style={{ textAlign: 'right' }}>TDS so far</th><th style={{ textAlign: 'right' }}>TDS / month</th><th></th></tr></thead>
+        <tbody>{rows.map(r => { const p = r.projection; const better = p && p.other_regime_tax < p.annual_tax;
+          return <tr key={r.id}><td><b>{r.name}</b> <span className="muted">({r.emp_code || '—'})</span>{r.declaration.locked && <> <Pill c="#64748b">🔒 verified</Pill></>}</td>
+            <td style={{ fontSize: 12, color: r.pan ? undefined : 'var(--bad)' }}>{r.pan || 'missing'}</td>
+            <td><Pill c={r.declaration.regime === 'new' ? '#2563eb' : '#7c3aed'}>{r.declaration.regime}</Pill>{!r.declaration.saved && <span className="muted" style={{ fontSize: 11 }}> default</span>}</td>
+            {p ? <><td style={{ textAlign: 'right' }}>{inr2(p.taxable)}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{inr2(p.annual_tax)}</td>
+              <td style={{ textAlign: 'right', color: better ? 'var(--good)' : 'var(--ink-dim)', fontSize: 12 }}>{inr2(p.other_regime_tax)}{better ? ' ↓' : ''}</td>
+              <td style={{ textAlign: 'right' }}>{inr2(p.tds_so_far)}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{inr2(p.monthly_tds)}</td></>
+              : <td colSpan={5} className="muted" style={{ fontSize: 12 }}>No salary set</td>}
+            <td style={{ whiteSpace: 'nowrap' }}><button className="btn ghost sm" onClick={() => setEdit(r)}>Declaration</button>
+              <button className="btn ghost sm" onClick={() => download(`/api/payroll/tax/form16.pdf?fy=${fy}&user_id=${r.id}`, `Tax_Statement_${r.emp_code || r.id}_FY${fy}.pdf`)}>⬇</button></td></tr>; })}</tbody></table></div>}</div>
+    {edit && <TaxDeclModal title={`Tax declaration — ${edit.name} · FY ${fy}`} fields={d.fields} decl={edit.declaration} staff
+      onClose={() => setEdit(null)} onSave={async b => { try { await api(`/api/payroll/tax/declarations/${edit.id}?fy=${fy}`, { method: 'PUT', body: b }); toast('Saved — recalculate draft payroll to apply'); setEdit(null); load(); } catch (e) { alert(prErr(e)); } }} />}
+  </div>;
+}
+
+function TaxDeclModal({ title, fields, decl, staff, onClose, onSave, projection }) {
+  const [v, setV] = useState({ regime: decl.regime || 'new', metro: !!decl.metro, locked: !!decl.locked, data: { ...(decl.data || {}) } });
+  const setF = (k, x) => setV(o => ({ ...o, data: { ...o.data, [k]: x.replace(/[^0-9.]/g, '') } }));
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 640, width: '96%', maxHeight: '92vh', overflow: 'auto' }}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>🧾 {title}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div className="toolbar" style={{ gap: 8, marginBottom: 8 }}>
+      {[['new', 'New regime (lower rates, few deductions)'], ['old', 'Old regime (80C, HRA, home loan…)']].map(([k, l]) => <div key={k} className={cx('chip', v.regime === k && 'on')} onClick={() => setV({ ...v, regime: k })}>{l}</div>)}</div>
+    {projection && <div className="glass card" style={{ padding: 10, marginBottom: 8, fontSize: 12.5 }}>Projected tax this year — your regime <b>{inr2(projection.annual.total)}</b> · other regime {inr2(projection.other.total)}. Monthly TDS now {inr2(projection.monthly_tds)}.</div>}
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+      {Object.entries(fields).filter(([k]) => v.regime === 'old' || ['prev_employer_income', 'prev_employer_tds', 'tds_outside', 'other_income'].includes(k)).map(([k, l]) =>
+        <div className="field" key={k}><label style={{ fontSize: 12 }}>{l}</label><input className="input" inputMode="decimal" value={v.data[k] ?? ''} onChange={e => setF(k, e.target.value)} placeholder="0" /></div>)}
+    </div>
+    {v.regime === 'old' && <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}><input type="checkbox" checked={v.metro} onChange={e => setV({ ...v, metro: e.target.checked })} />I live in a metro city (Delhi, Mumbai, Kolkata, Chennai) — 50% HRA rule</label>}
+    {staff && <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, marginTop: 6 }}><input type="checkbox" checked={v.locked} onChange={e => setV({ ...v, locked: e.target.checked })} />Proofs verified — lock (employee can no longer change it)</label>}
+    <div className="toolbar" style={{ marginTop: 10 }}><span style={{ flex: 1 }} /><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn gold" onClick={() => onSave(v)}>Save</button></div>
+  </div></div>;
+}
+
+/* ---------------- full & final settlement ---------------- */
+const FNF_ST = { draft: ['Draft', '#64748b'], approved: ['Approved 🔒', '#2563eb'], paid: ['Paid ✓', '#16a34a'], cancelled: ['Cancelled', '#94a3b8'] };
+function PayFnf({ user }) {
+  const [rows, setRows] = useState(null); const [open, setOpen] = useState(null); const [creating, setCreating] = useState(false);
+  const load = () => api('/api/payroll/fnf').then(setRows).catch(() => setRows([]));
+  useEffect(() => { load(); }, []);
+  return <div>
+    <div className="glass card" style={{ padding: 12, marginBottom: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+      <button className="btn gold" onClick={() => setCreating(true)}>＋ New full &amp; final settlement</button>
+      <span className="muted" style={{ fontSize: 12.5 }}>For someone leaving: last salary, leave encashment, gratuity, notice period, advance recovery — all worked out, all editable. Approved settlements are never paid again in a payroll run.</span>
+    </div>
+    <div className="glass card" style={{ padding: 0 }}>{!rows ? <Loader /> : !rows.length ? <div className="muted" style={{ padding: 16 }}>No settlements yet.</div> :
+      <div className="tablewrap"><table><thead><tr><th>Employee</th><th>Last working day</th><th>Reason</th><th style={{ textAlign: 'right' }}>Payable</th><th style={{ textAlign: 'right' }}>Recoveries</th><th style={{ textAlign: 'right' }}>Net</th><th>Status</th><th></th></tr></thead>
+        <tbody>{rows.map(f => <tr key={f.id}><td><b>{f.name}</b></td><td>{fmtDate(f.last_working_day)}</td><td>{f.reason}</td>
+          <td style={{ textAlign: 'right' }}>{inr2(f.total_earnings)}</td><td style={{ textAlign: 'right' }}>{inr2(f.total_deductions)}</td>
+          <td style={{ textAlign: 'right', fontWeight: 800, color: f.net >= 0 ? 'var(--good)' : 'var(--bad)' }}>{inr2(f.net)}</td>
+          <td><Pill c={(FNF_ST[f.status] || [])[1]}>{(FNF_ST[f.status] || [f.status])[0]}</Pill></td>
+          <td><button className="btn ghost sm" onClick={() => setOpen(f)}>Open</button></td></tr>)}</tbody></table></div>}</div>
+    {(creating || open) && <FnfEditor user={user} f={open} onClose={() => { setCreating(false); setOpen(null); }} onSaved={() => { setCreating(false); setOpen(null); load(); }} />}
+  </div>;
+}
+
+function FnfEditor({ user, f, onClose, onSaved }) {
+  const isAdmin = user.role === 'admin';
+  const [emps, setEmps] = useState([]);
+  const [p, setP] = useState({ user_id: f ? f.user_id : '', last_working_day: f ? f.last_working_day : new Date().toISOString().slice(0, 10), reason: f ? f.reason : 'resigned',
+    notice_served_days: '', notice_pay_days: '', waive_notice: false, encash_days: '' });
+  const [items, setItems] = useState(f ? f.items.map(i => ({ ...i })) : null);
+  const [work, setWork] = useState(f ? f.workings : {}); const [note, setNote] = useState(f ? f.note || '' : '');
+  const [busy, setBusy] = useState(''); const [modal, setModal] = useState(null); const [cur, setCur] = useState(f);
+  useEffect(() => { api('/api/payroll/employees').then(setEmps).catch(() => {}); }, []);
+  const editable = !cur || cur.status === 'draft';
+  const calc = async () => { setBusy('calc'); try { const r = await api('/api/payroll/fnf/preview', { method: 'POST', body: p }); setItems(r.items); setWork(r.workings); } catch (e) { alert(prErr(e)); } finally { setBusy(''); } };
+  const setI = (i, k, x) => setItems(a => a.map((it, j) => j === i ? { ...it, [k]: k === 'amount' ? x.replace(/[^0-9.]/g, '') : x } : it));
+  const earn = (items || []).filter(i => i.kind === 'earning').reduce((a, i) => a + (Number(i.amount) || 0), 0);
+  const ded = (items || []).filter(i => i.kind === 'deduction').reduce((a, i) => a + (Number(i.amount) || 0), 0);
+  const save = async () => { setBusy('save'); try {
+      const body = { ...p, items, workings: work, note };
+      const r = cur ? await api('/api/payroll/fnf/' + cur.id, { method: 'PUT', body }) : await api('/api/payroll/fnf', { method: 'POST', body });
+      setCur(r); toast('Settlement saved as draft'); } catch (e) { alert(prErr(e)); } finally { setBusy(''); } };
+  const act = async (path, body) => { try { const r = await api(`/api/payroll/fnf/${cur.id}/${path}`, { method: 'POST', body: body || {} }); setCur(r); return true; } catch (e) { alert(prErr(e)); return false; } };
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 900, width: '96%', maxHeight: '94vh', overflow: 'auto' }}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>👋 Full &amp; final settlement {cur && <Pill c={(FNF_ST[cur.status] || [])[1]}>{(FNF_ST[cur.status] || [cur.status])[0]}</Pill>}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
+      <div className="field" style={{ gridColumn: 'span 2' }}><label>Employee</label><select className="input" disabled={!!cur} value={p.user_id} onChange={e => setP({ ...p, user_id: e.target.value })}><option value="">Choose…</option>
+        {emps.map(x => <option key={x.id} value={x.id}>{x.name} ({x.emp_code || '—'}){x.active ? '' : ' · left'}</option>)}</select></div>
+      <div className="field"><label>Last working day</label><input className="input" type="date" disabled={!editable} value={p.last_working_day} onChange={e => setP({ ...p, last_working_day: e.target.value })} /></div>
+      <div className="field"><label>Reason</label><select className="input" disabled={!editable} value={p.reason} onChange={e => setP({ ...p, reason: e.target.value })}>{['resigned', 'terminated', 'absconding', 'retired', 'contract end', 'other'].map(x => <option key={x}>{x}</option>)}</select></div>
+      {!cur && <><div className="field"><label>Notice served (days)</label><input className="input" type="number" value={p.notice_served_days} onChange={e => setP({ ...p, notice_served_days: e.target.value })} /></div>
+        <div className="field"><label>Notice pay in lieu (days)</label><input className="input" type="number" value={p.notice_pay_days} onChange={e => setP({ ...p, notice_pay_days: e.target.value })} /></div>
+        <div className="field"><label>Leave to encash (blank = balance)</label><input className="input" type="number" value={p.encash_days} onChange={e => setP({ ...p, encash_days: e.target.value })} /></div>
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, marginTop: 18 }}><input type="checkbox" checked={p.waive_notice} onChange={e => setP({ ...p, waive_notice: e.target.checked })} />Waive notice shortfall</label>
+        <div style={{ gridColumn: 'span 4' }}><button className="btn" disabled={!p.user_id || busy === 'calc'} onClick={calc}>{busy === 'calc' ? 'Calculating…' : items ? '↻ Recalculate suggestions' : '🧮 Calculate settlement'}</button></div></>}
+    </div>
+    {Object.keys(work || {}).length > 0 && <div className="muted" style={{ fontSize: 12, margin: '6px 0' }}>{Object.values(work).map((w, i) => <div key={i}>• {w}</div>)}</div>}
+    {items && <>
+      <div className="tablewrap" style={{ marginTop: 6 }}><table><thead><tr><th>Type</th><th>Item</th><th style={{ textAlign: 'right' }}>Amount ₹</th><th>Note</th><th></th></tr></thead>
+        <tbody>{items.map((it, i) => <tr key={i}>
+          <td>{editable ? <select className="input" value={it.kind} onChange={e => setI(i, 'kind', e.target.value)}><option value="earning">+ Payable</option><option value="deduction">− Recovery</option></select> : <Pill c={it.kind === 'earning' ? '#16a34a' : '#dc2626'}>{it.kind === 'earning' ? 'Payable' : 'Recovery'}</Pill>}</td>
+          <td>{editable ? <input className="input" value={it.name} onChange={e => setI(i, 'name', e.target.value)} /> : it.name}</td>
+          <td style={{ textAlign: 'right' }}>{editable ? <input className="input" style={{ width: 120, textAlign: 'right' }} value={it.amount} onChange={e => setI(i, 'amount', e.target.value)} /> : inr2(it.amount)}</td>
+          <td>{editable ? <input className="input" value={it.note || ''} onChange={e => setI(i, 'note', e.target.value)} /> : <span className="muted" style={{ fontSize: 12 }}>{it.note}</span>}</td>
+          <td>{editable && <button className="btn ghost sm" onClick={() => setItems(a => a.filter((_, j) => j !== i))}>✕</button>}</td></tr>)}</tbody></table></div>
+      {editable && <div className="toolbar" style={{ gap: 6, marginTop: 6 }}><button className="btn ghost sm" onClick={() => setItems(a => [...a, { kind: 'earning', code: 'OTHER', name: 'Bonus / other dues', amount: '' }])}>＋ Payable</button>
+        <button className="btn ghost sm" onClick={() => setItems(a => [...a, { kind: 'deduction', code: 'OTHER_DED', name: 'Asset / other recovery', amount: '' }])}>＋ Recovery</button></div>}
+      <div style={{ margin: '10px 0', background: earn - ded >= 0 ? '#166534' : '#b91c1c', color: '#fff', borderRadius: 10, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>{earn - ded >= 0 ? 'NET PAYABLE TO EMPLOYEE' : 'RECOVERABLE FROM EMPLOYEE'} · payable {inr2(earn)} − recoveries {inr2(ded)}</span><b style={{ fontSize: 20 }}>{inr2(Math.abs(Math.round(earn - ded)))}</b></div>
+      <div className="field"><label>Note</label><input className="input" disabled={!editable} value={note} onChange={e => setNote(e.target.value)} /></div>
+    </>}
+    <div className="toolbar" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+      {cur && <button className="btn ghost" onClick={() => download(`/api/payroll/fnf/${cur.id}.pdf`, `FnF_${cur.id}.pdf`)}>⬇ Settlement letter (PDF)</button>}
+      {cur && cur.status === 'draft' && isAdmin && <button className="btn ghost" onClick={async () => { if (window.confirm('Cancel this draft settlement?') && await act('cancel')) onSaved(); }}>Cancel</button>}
+      <span style={{ flex: 1 }} />
+      {editable && items && <button className="btn" disabled={!!busy} onClick={save}>{busy === 'save' ? 'Saving…' : '💾 Save draft'}</button>}
+      {cur && cur.status === 'draft' && isAdmin && <button className="btn gold" onClick={() => setModal('approve')}>🔒 Approve {inr2(cur.net)}</button>}
+      {cur && cur.status === 'approved' && isAdmin && <button className="btn" style={{ background: 'var(--good)', color: '#fff' }} onClick={async () => { const d = window.prompt('Paid on (YYYY-MM-DD):', new Date().toISOString().slice(0, 10)); if (!d) return; const utr = window.prompt('UTR / cheque no. (optional):', '') || ''; if (await act('paid', { paid_on: d, utr })) toast('Marked paid'); }}>✓ Mark paid</button>}
+    </div>
+    {modal === 'approve' && <SecretModal title="🔒 Approve full & final" total={Math.abs(cur.net)} checkbox="Mark the employee as left (blocks their login)"
+      note="Amounts lock. Open advances are closed. This employee will not be included in later payroll runs."
+      onClose={() => setModal(null)} onSubmit={async v => { if (await act('approve', v)) { setModal(null); toast('Settlement approved 🔒'); } }} />}
+  </div></div>;
+}
+
+/* ---------------- my tax (employee self-service) ---------------- */
+function MyTax() {
+  const [d, setD] = useState(null); const [edit, setEdit] = useState(false);
+  const load = () => api('/api/payroll/my/tax').then(setD).catch(() => setD(false));
+  useEffect(() => { load(); }, []);
+  if (d === false || (d && !d.projection && !d.declaration.saved && !d.allow_edit)) return null;
+  if (!d) return <Loader />;
+  const p = d.projection;
+  return <div className="glass card" style={{ padding: 14, marginTop: 12 }}>
+    <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}><b>🧾 My income tax — FY {d.fy}</b><span style={{ flex: 1 }} />
+      {d.allow_edit && <button className="btn sm" onClick={() => setEdit(true)}>✎ Regime &amp; declarations</button>}
+      <button className="btn ghost sm" onClick={() => download(`/api/payroll/my/form16.pdf?fy=${d.fy}`, `Tax_Statement_FY${d.fy}.pdf`)}>⬇ Tax statement</button></div>
+    {p ? <div style={{ fontSize: 13, marginTop: 6 }}>Regime: <b>{p.regime}</b> · projected taxable income <b>{inr2(p.annual.taxable)}</b> · tax for the year <b>{inr2(p.annual.total)}</b>
+      {p.other.total < p.annual.total && <span style={{ color: 'var(--good)' }}> · the {p.regime === 'new' ? 'old' : 'new'} regime would be {inr2(p.other.total)}</span>}
+      <div className="muted" style={{ fontSize: 12 }}>TDS deducted so far {inr2(p.tds_so_far)} · TDS per month now {inr2(p.monthly_tds)}</div></div>
+      : <div className="muted" style={{ fontSize: 12.5 }}>Your salary is not set up yet.</div>}
+    {d.declaration.locked && <div className="muted" style={{ fontSize: 12 }}>🔒 Verified by HR — ask HR to change it.</div>}
+    {edit && <TaxDeclModal title={`My tax declaration · FY ${d.fy}`} fields={d.fields} decl={d.declaration} projection={p} onClose={() => setEdit(false)}
+      onSave={async b => { try { await api('/api/payroll/my/tax', { method: 'PUT', body: b }); toast('Saved'); setEdit(false); load(); } catch (e) { alert(prErr(e)); } }} />}
+  </div>;
+}
+
+/* ---------------- settings blocks: income tax + F&F ---------------- */
+function TaxSettingsBox({ c, up, setC }) {
+  const it = c.income_tax, num = x => x === '' ? '' : Number(x);
+  const slabEd = (reg) => <div><b style={{ fontSize: 12.5 }}>{reg === 'new' ? 'New regime' : 'Old regime'} slabs (annual taxable income)</b>
+    {it[reg].slabs.map((s, i) => <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
+      <span className="muted" style={{ fontSize: 12 }}>up to ₹</span><input className="input" style={{ width: 120 }} type="number" value={s.upto ?? ''} placeholder="above" onChange={e => up(['income_tax', reg, 'slabs', i, 'upto'], e.target.value === '' ? null : Number(e.target.value))} />
+      <span className="muted" style={{ fontSize: 12 }}>rate %</span><input className="input" style={{ width: 70 }} type="number" value={s.rate} onChange={e => up(['income_tax', reg, 'slabs', i, 'rate'], num(e.target.value))} />
+      <button className="btn ghost sm" onClick={() => setC(o => { const n = JSON.parse(JSON.stringify(o)); n.income_tax[reg].slabs.splice(i, 1); return n; })}>✕</button></div>)}
+    <button className="btn ghost sm" style={{ marginTop: 4 }} onClick={() => setC(o => { const n = JSON.parse(JSON.stringify(o)); n.income_tax[reg].slabs.push({ upto: null, rate: 0 }); return n; })}>＋ Slab</button>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, marginTop: 6 }}>
+      <F label="Standard deduction ₹"><input className="input" type="number" value={it[reg].std_deduction} onChange={e => up(['income_tax', reg, 'std_deduction'], num(e.target.value))} /></F>
+      <F label="87A: income up to ₹"><input className="input" type="number" value={it[reg].rebate_limit} onChange={e => up(['income_tax', reg, 'rebate_limit'], num(e.target.value))} /></F>
+      <F label="87A: max rebate ₹"><input className="input" type="number" value={it[reg].rebate_max} onChange={e => up(['income_tax', reg, 'rebate_max'], num(e.target.value))} /></F></div></div>;
+  return <Box title="💹 Income tax (TDS)" help="Defaults are the FY 2025-26 / 2026-27 slabs. Update them after each Budget. TDS = projected annual tax spread over the remaining months.">
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 8 }}>
+      <F label="TDS mode"><select className="input" value={it.mode} onChange={e => up(['income_tax', 'mode'], e.target.value)}><option value="auto">Auto-calculate</option><option value="manual">Manual per employee</option></select></F>
+      <F label="Default regime"><select className="input" value={it.default_regime} onChange={e => up(['income_tax', 'default_regime'], e.target.value)}><option value="new">New</option><option value="old">Old</option></select></F>
+      <F label="Health & education cess %"><input className="input" type="number" value={it.cess} onChange={e => up(['income_tax', 'cess'], num(e.target.value))} /></F>
+      <div style={{ paddingTop: 22 }}><label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}><input type="checkbox" checked={!!it.allow_self_declaration} onChange={e => up(['income_tax', 'allow_self_declaration'], e.target.checked)} />Employees declare their own</label></div>
+    </div>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>{slabEd('new')}{slabEd('old')}</div>
+  </Box>;
+}
+
+function FnfSettingsBox({ c, up }) {
+  const f = c.fnf, num = x => x === '' ? '' : Number(x);
+  return <Box title="👋 Full & final settlement" help="Used to suggest the settlement lines; every line can still be edited per employee.">
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
+      <F label="Notice period (days)"><input className="input" type="number" value={f.notice_days} onChange={e => up(['fnf', 'notice_days'], num(e.target.value))} /></F>
+      <F label="Encash leave types (comma)"><input className="input" value={(f.encash_leave_types || []).join(', ')} onChange={e => up(['fnf', 'encash_leave_types'], e.target.value.split(',').map(x => x.trim()).filter(Boolean))} /></F>
+      <F label="Encash per-day on"><select className="input" value={f.encash_basis} onChange={e => up(['fnf', 'encash_basis'], e.target.value)}><option value="basic">Basic</option><option value="gross">Gross</option></select></F>
+      <F label="… divided by days"><input className="input" type="number" value={f.encash_divisor} onChange={e => up(['fnf', 'encash_divisor'], num(e.target.value))} /></F>
+      <F label="Max days to encash"><input className="input" type="number" value={f.encash_max_days} onChange={e => up(['fnf', 'encash_max_days'], num(e.target.value))} /></F>
+      <F label="Gratuity after (years)"><input className="input" type="number" value={f.gratuity_min_years} onChange={e => up(['fnf', 'gratuity_min_years'], num(e.target.value))} /></F>
+      <F label="Gratuity cap ₹"><input className="input" type="number" value={f.gratuity_cap} onChange={e => up(['fnf', 'gratuity_cap'], num(e.target.value))} /></F>
+    </div>
+  </Box>;
+}
+
 /* 💸 Salary payouts via RazorpayX (Admin only). Money moves only from an approved batch:
    draft → approve (password + 2FA + type the exact total) → send → status/UTR by webhook or Refresh. */
 const PO_ST = { pending: ['Not sent', 'var(--ink-dim)'], queued: ['Queued (low balance)', '#b45309'], processing: ['Processing', '#2563eb'],
@@ -9141,7 +10132,7 @@ function ConnectionsView({ user }) {
   // ViciDial connection form (connect RecoverIQ to the EXISTING office ViciDial — no self-hosted dialer)
   const [vf, setVf] = useState({ name: 'ViciDial', base_url: '', vici_user: '', vici_pass: '',
     campaign_id: '', list_id: '', source: 'recoveriq', phone_code: '91', recording_base: '', branch: '', agent_map: '', dispo_map: '',
-    sftp_host: '', sftp_port: '22', sftp_user: '', sftp_pass: '', sftp_base: '' });
+    sftp_host: '', sftp_port: '22', sftp_user: '', sftp_pass: '', sftp_base: '', ami_host: '', ami_port: '5038', ami_user: '', ami_secret: '' });
   const [vbusy, setVbusy] = useState(false);
   const [dispoUrl, setDispoUrl] = useState('');
   const [startCallUrl, setStartCallUrl] = useState('');
@@ -9263,6 +10254,13 @@ function ConnectionsView({ user }) {
           <div className="field"><label>SFTP user</label><input className="input" value={vf.sftp_user} onChange={e => setVf({ ...vf, sftp_user: e.target.value })} placeholder="admin" /></div>
           <div className="field"><label>SFTP password</label><input className="input" type="password" value={vf.sftp_pass} onChange={e => setVf({ ...vf, sftp_pass: e.target.value })} placeholder="leave blank to keep existing" /></div>
           <div className="field" style={{ gridColumn: '1 / -1' }}><label>Recordings folder on the server</label><input className="input" value={vf.sftp_base} onChange={e => setVf({ ...vf, sftp_base: e.target.value })} placeholder="/home   (recordings are under /home/<GROUP>/<year>/<month>) — comma-separate multiple roots" /></div>
+        </div>
+        <div style={{ fontSize: 12.5, fontWeight: 600, margin: '10px 0 4px' }}>☎️ Asterisk manager (AMI) for Hang up <span className="muted" style={{ fontWeight: 400 }}>(optional — lets ⏹ Hang up in RecoverIQ end a call that is still ringing; ViciDial's own API only ends answered calls. From /etc/asterisk/manager.conf; allow only the RecoverIQ server's IP.)</span></div>
+        <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="field"><label>AMI host</label><input className="input" value={vf.ami_host} onChange={e => setVf({ ...vf, ami_host: e.target.value })} placeholder="192.168.75.250 (ViciDial server)" /></div>
+          <div className="field"><label>AMI port</label><input className="input" value={vf.ami_port} onChange={e => setVf({ ...vf, ami_port: e.target.value })} placeholder="5038" /></div>
+          <div className="field"><label>AMI user</label><input className="input" value={vf.ami_user} onChange={e => setVf({ ...vf, ami_user: e.target.value })} placeholder="recoveriq" /></div>
+          <div className="field"><label>AMI secret</label><input className="input" type="password" value={vf.ami_secret} onChange={e => setVf({ ...vf, ami_secret: e.target.value })} placeholder="leave blank to keep existing" /></div>
         </div>
         <div className="field"><label>Agent map — RecoverIQ emp code = ViciDial agent user (one per line)</label>
           <textarea className="input" rows={3} value={vf.agent_map} onChange={e => setVf({ ...vf, agent_map: e.target.value })}
@@ -9465,18 +10463,20 @@ function JointCasesView({ config }) {
 }
 
 const NAV = {
-  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['payouts', '🔒', 'Salary Payouts'], ['security', '🔒', 'Security']],
+  admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['payroll', '💰', 'Salary & Payslips'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   fos: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['fcases', '🗂️', 'My Accounts'], ['jointcases', '🤝', 'Joint Cases'], ['fmap', '📍', 'Field Tracking'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   telecaller: [['dashboard', '📊', 'My Stats'], ['myperf', '🏆', 'My Performance'], ['queue', '📞', 'Calling'], ['sheet', '📊', 'Live Sheet'], ['feedback', '🏦', 'Bank Feedback'], ['ptp', '🤝', 'PTP Tracker'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   teamlead: [['tldash', '👥', 'My Team'], ['portfolios', '🗂️', 'My Portfolios'], ['cases', '🗂️', 'Team Accounts'], ['mis', '📈', 'MIS'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['audit', '📜', 'Audit Log'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   backend: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['escalations', '🚩', 'Escalations'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
   headoffice: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Portfolios'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['security', '🔒', 'Security']],
-  hr: [['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
+  hr: [['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['leave', '🌴', 'Leave'], ['payroll', '💰', 'Salary & Payslips'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
   it: [['attendance', '🕐', 'Attendance'], ['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
   staff: [['attendance', '🕐', 'Attendance'], ['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
 };
 // Everyone gets a Help & Support entry (raise a query, track it).
+// Everyone gets their own payslips (hidden while the salary section is locked).
+if (!SALARY_LOCKED) Object.keys(NAV).forEach(r => { if (!NAV[r].some(n => n[0] === 'payslips')) NAV[r].push(['payslips', '🧾', 'My Payslips']); });
 Object.keys(NAV).forEach(r => { if (!NAV[r].some(n => n[0] === 'help')) NAV[r].push(['help', '🆘', 'Help & Support']); });
 // Hidden tech-support role: a Support inbox + every screen, so they can reproduce any role's issue.
 NAV.techsupport = [
@@ -10712,17 +11712,501 @@ function PredictiveScreenPop({ user }) {
   </>;
 }
 
+/* ---------------- 🧩 Add-on sub-sections ---------------- */
+function AdTabs({ tabs, cur, set }) {
+  return <div className="toolbar" style={{ gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>{tabs.map(([k, l]) =>
+    <div key={k} className={cx('chip', cur === k && 'active')} data-tab={k} onClick={() => set(k)}
+      style={cur === k ? { background: 'var(--brand)', color: '#fff' } : {}}>{l}</div>)}</div>;
+}
+function AdTable({ cols, rows, empty = 'Nothing here yet.', max = 400 }) {
+  if (!rows || !rows.length) return <div className="muted" style={{ padding: 12 }}>{empty}</div>;
+  return <div className="tablewrap" style={{ maxHeight: 520, overflow: 'auto' }}><table style={{ fontSize: 12.5 }}>
+    <thead><tr>{cols.map(([k, l], j) => <th key={j}>{l}</th>)}</tr></thead>
+    <tbody>{rows.slice(0, max).map((r, i) => <tr key={i}>{cols.map(([k, , f], j) => <td key={j}>{f ? f(r[k], r) : (r[k] ?? '')}</td>)}</tr>)}</tbody></table></div>;
+}
+const AdStat = ({ label, value, c }) => <div className="glass card" style={{ padding: '10px 14px', minWidth: 130 }}>
+  <div className="muted" style={{ fontSize: 11.5 }}>{label}</div><div style={{ fontSize: 20, fontWeight: 800, color: c || 'var(--brand)' }}>{value}</div></div>;
+const adErr = e => alert(e.message || String(e));
+const useLoad = (fn, deps = []) => { const [d, setD] = useState(null); const [err, setErr] = useState('');
+  const load = () => fn().then(x => { setD(x); setErr(''); }).catch(e => setErr(e.message)); useEffect(() => { load(); }, deps); return [d, load, err]; };
+const AdErr = ({ err }) => err ? <div className="glass card" style={{ padding: 12, color: 'var(--bad)' }}>{err}</div> : null;
+
+/* 🛡️ Compliance */
+function AddonCompliance({ user }) {
+  const [tab, setTab] = useState('overview');
+  const tabs = [['overview', 'Overview']]; if (['admin', 'headoffice', 'manager', 'hr'].includes(user.role)) tabs.push(['certs', 'Certifications']);
+  if (['admin', 'headoffice', 'manager'].includes(user.role)) tabs.push(['requests', 'Data requests (DPDP)']); if (user.role === 'admin') tabs.push(['retention', 'Retention']);
+  return <div><AdTabs tabs={tabs} cur={tab} set={setTab} />
+    {tab === 'overview' && <CompOverview />}{tab === 'certs' && <CompCerts />}{tab === 'requests' && <CompRequests />}{tab === 'retention' && <CompRetention />}</div>;
+}
+function CompOverview() {
+  const [d, , err] = useLoad(() => api('/api/compliance/summary'));
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  const s = d.settings || {};
+  return <div>
+    <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Rules: contact {s.enforce_hours ? `${s.hours_from}–${s.hours_to}` : 'any time'} · max {s.max_calls_per_day || '∞'} calls/day · max {s.max_visits_per_week || '∞'} visits/week{s.block_uncertified ? ' · certification required' : ''}. Dialling is blocked when a rule is broken; calls/visits logged outside the rules are flagged here.</div>
+    <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}>
+      <AdStat label="Flags (30 days)" value={d.events.length} c="var(--bad)" /><AdStat label="Agents certified" value={`${d.certs.certified}/${d.certs.agents}`} />
+      <AdStat label="Expiring in 30 days" value={d.certs.expiring_30d} c="#b45309" /><AdStat label="Open data requests" value={d.open_requests} />
+      <AdStat label="Overdue requests" value={d.overdue_requests} c="var(--bad)" /></div>
+    <h4>By agent</h4><AdTable cols={[['agent', 'Agent'], ['violations', 'Flagged'], ['blocked', 'Blocked dials']]} rows={d.by_agent} empty="No flags — all clear." />
+    <h4>Recent</h4><AdTable cols={[['at', 'When', fmtDT], ['agent', 'Agent'], ['action', 'Type', v => v === 'compliance.blocked' ? <Pill c="#b91c1c">blocked</Pill> : <Pill c="#b45309">flagged</Pill>], ['case_id', 'Case'], ['detail', 'Detail']]} rows={d.events} />
+  </div>;
+}
+function CompCerts() {
+  const [d, load, err] = useLoad(() => api('/api/compliance/certifications'));
+  const [f, setF] = useState(null);
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  const C = { valid: '#16a34a', expiring: '#b45309', expired: '#b91c1c', missing: '#64748b' };
+  const save = () => api('/api/compliance/certifications', { method: 'POST', body: f }).then(() => { toast('Saved'); setF(null); load(); }).catch(adErr);
+  return <div>
+    <AdTable cols={[['name', 'Agent'], ['emp_code', 'ID'], ['role', 'Role'], ['branch', 'Branch'], ['status', 'Status', v => <Pill c={C[v]}>{v}</Pill>],
+      ['certs', 'Certificates', v => (v || []).map(c => <div key={c.id} style={{ fontSize: 11.5 }}>{c.name} {c.number} · till {fmtDate(c.valid_until)} <span className="muted" style={{ cursor: 'pointer' }} onClick={() => window.confirm('Remove this certificate?') && api('/api/compliance/certifications/' + c.id, { method: 'DELETE' }).then(load)}>✕</span></div>)],
+      ['user_id', '', (v, r) => <button className="btn ghost sm" onClick={() => setF({ user_id: v, name: 'IIBF Debt Recovery Agent', number: '', valid_until: '', who: r.name })}>＋ Add</button>]]} rows={d} />
+    {f && <div className="modal-bg" onClick={() => setF(null)}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+      <h3 style={{ marginTop: 0 }}>Certificate — {f.who}</h3>
+      <div className="field"><label>Certificate</label><input className="input" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} /></div>
+      <div className="field"><label>Number</label><input className="input" value={f.number} onChange={e => setF({ ...f, number: e.target.value })} /></div>
+      <div className="field"><label>Valid until</label><input className="input" type="date" value={f.valid_until} onChange={e => setF({ ...f, valid_until: e.target.value })} /></div>
+      <div className="toolbar"><span style={{ flex: 1 }} /><button className="btn ghost" onClick={() => setF(null)}>Cancel</button><button className="btn gold" onClick={save}>Save</button></div></div></div>}
+  </div>;
+}
+function CompRequests() {
+  const [st, setSt] = useState('open');
+  const [d, load, err] = useLoad(() => api('/api/compliance/requests?status=' + st), [st]);
+  const [f, setF] = useState(null);
+  const add = () => api('/api/compliance/requests', { method: 'POST', body: f }).then(() => { toast('Logged'); setF(null); load(); }).catch(adErr);
+  const close = (r, status) => {
+    const resolution = window.prompt(status === 'done' ? 'What was done?' : 'Why rejected?') ; if (resolution === null) return;
+    let body = { status, resolution };
+    if (status === 'done' && r.kind === 'erasure' && r.case_id && window.confirm('Also erase this customer\'s personal details from the case now? (Only possible once the account is closed/paid.)')) {
+      const c = window.prompt('Type ERASE to confirm'); if (c === null) return; body = { ...body, erase: true, confirm: c };
+    }
+    api(`/api/compliance/requests/${r.id}/close`, { method: 'POST', body }).then(() => { toast('Closed'); load(); }).catch(adErr);
+  };
+  if (err) return <AdErr err={err} />;
+  return <div>
+    <div className="toolbar" style={{ gap: 6 }}>{['open', 'done', 'rejected', 'all'].map(s => <div key={s} className={cx('chip', st === s && 'active')} onClick={() => setSt(s)}>{s}</div>)}
+      <span style={{ flex: 1 }} /><button className="btn gold sm" onClick={() => setF({ kind: 'access', requester: '', contact: '', case_id: '', details: '', due_days: 30 })}>＋ Log request</button></div>
+    {!d ? <Loader /> : <AdTable cols={[['id', '#'], ['kind', 'Type'], ['requester', 'From'], ['customer', 'Case', (v, r) => r.case_id ? `#${r.case_id} ${v || ''}` : '—'], ['details', 'Details'],
+      ['due_date', 'Due', (v, r) => <span style={{ color: r.status === 'open' && v && v < new Date().toISOString().slice(0, 10) ? 'var(--bad)' : '' }}>{fmtDate(v)}</span>], ['status', 'Status'],
+      ['resolution', 'Resolution'], ['id', '', (v, r) => r.status === 'open' && <><button className="btn sm" onClick={() => close(r, 'done')}>Done</button> <button className="btn ghost sm" onClick={() => close(r, 'rejected')}>Reject</button></>]]} rows={d} />}
+    {f && <div className="modal-bg" onClick={() => setF(null)}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+      <h3 style={{ marginTop: 0 }}>Customer data request</h3>
+      <div className="field"><label>Type</label><select className="input" value={f.kind} onChange={e => setF({ ...f, kind: e.target.value })}>
+        <option value="access">Access (copy of my data)</option><option value="correction">Correction</option><option value="erasure">Erasure</option><option value="grievance">Grievance</option></select></div>
+      <div className="field"><label>Requester name</label><input className="input" value={f.requester} onChange={e => setF({ ...f, requester: e.target.value })} /></div>
+      <div className="field"><label>Contact</label><input className="input" value={f.contact} onChange={e => setF({ ...f, contact: e.target.value })} /></div>
+      <div className="field"><label>Case id (optional)</label><input className="input" value={f.case_id} onChange={e => setF({ ...f, case_id: e.target.value.replace(/\D/g, '') })} /></div>
+      <div className="field"><label>Details</label><textarea className="input" rows={3} value={f.details} onChange={e => setF({ ...f, details: e.target.value })} /></div>
+      <div className="field"><label>Respond within (days)</label><input className="input" type="number" value={f.due_days} onChange={e => setF({ ...f, due_days: e.target.value })} /></div>
+      <div className="toolbar"><span style={{ flex: 1 }} /><button className="btn ghost" onClick={() => setF(null)}>Cancel</button><button className="btn gold" onClick={add}>Save</button></div></div></div>}
+  </div>;
+}
+function CompRetention() {
+  const [d, load, err] = useLoad(() => api('/api/compliance/retention'));
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  if (!d.months) return <div className="glass card" style={{ padding: 14 }}>Retention is off. Set "Keep closed-case personal data for (months)" in ⚙️ Services → Compliance guardrails.</div>;
+  const purge = () => { const c = window.prompt(`This erases names, phones and addresses of ${d.count} cases from before ${d.before}. Amounts and history stay for MIS. Type ERASE to confirm.`); if (c === null) return;
+    api('/api/compliance/retention/purge', { method: 'POST', body: { confirm: c } }).then(r => { toast(`Erased ${r.erased} cases`); load(); }).catch(adErr); };
+  return <div className="glass card" style={{ padding: 14 }}>Keep personal data for <b>{d.months} months</b>. <b>{d.count}</b> cases from before <b>{d.before}</b> are due for erasure.
+    <div style={{ marginTop: 10 }}><button className="btn" disabled={!d.count} onClick={purge} style={{ background: 'var(--bad)', color: '#fff' }}>Erase personal data now</button></div></div>;
+}
+
+/* 💳 Payments */
+function AddonPayments({ user }) {
+  const [tab, setTab] = useState('links');
+  const office = ['admin', 'headoffice', 'manager', 'backend'].includes(user.role);
+  return <div><AdTabs tabs={[['links', 'Payment links'], ['new', '＋ New link'], ...(office ? [['recon', 'Reconcile statement']] : [])]} cur={tab} set={setTab} />
+    {tab === 'links' && <PayLinks />}{tab === 'new' && <PayLinkNew onDone={() => setTab('links')} />}{tab === 'recon' && <PayRecon />}</div>;
+}
+function PayLinks() {
+  const [st, setSt] = useState('');
+  const [d, load, err] = useLoad(() => api('/api/paylinks' + (st ? '?status=' + st : '')), [st]);
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  const C = { created: '#2563eb', paid: '#16a34a', partial: '#0d9488', expired: '#64748b', cancelled: '#64748b' };
+  const copy = t => { try { navigator.clipboard.writeText(t); toast('Copied'); } catch (e) { window.prompt('Copy:', t); } };
+  return <div>
+    <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}><AdStat label="Links" value={d.summary.links} /><AdStat label="Paid / part paid" value={d.summary.paid} c="#16a34a" /><AdStat label="Collected online" value={INR(d.summary.collected)} c="#16a34a" />
+      <span style={{ flex: 1 }} />{['', 'created', 'paid', 'partial', 'expired'].map(s => <div key={s} className={cx('chip', st === s && 'active')} onClick={() => setSt(s)}>{s || 'all'}</div>)}</div>
+    <AdTable cols={[['created_at', 'Created', fmtDT], ['customer', 'Customer', (v, r) => <>{v}<div className="muted" style={{ fontSize: 11 }}>{r.bank} · {r.account_no}</div></>],
+      ['amount', 'Amount', INR], ['paid_amount', 'Paid', INR], ['status', 'Status', v => <Pill c={C[v]}>{v}</Pill>], ['utr', 'UTR'],
+      ['page_url', 'Share', (v, r) => <div style={{ display: 'flex', gap: 4 }}><button className="btn ghost sm" onClick={() => copy(v)}>📋 Copy</button>
+        <a className="btn ghost sm" target="_blank" rel="noreferrer" href={waHref('', `Dear customer, please pay ${INR(r.amount - r.paid_amount)} for your ${r.bank} account ending ${String(r.account_no || '').slice(-4)} securely here: ${v}`)}>💬</a>
+        {r.status === 'created' && <button className="btn ghost sm" onClick={() => window.confirm('Cancel this link?') && api(`/api/paylinks/${r.id}/cancel`, { method: 'POST' }).then(load).catch(adErr)}>✕</button>}</div>]]} rows={d.links} />
+  </div>;
+}
+function PayLinkNew({ onDone }) {
+  const [q, setQ] = useState(''); const [res, setRes] = useState([]); const [pick, setPick] = useState(null); const [amt, setAmt] = useState(''); const [out, setOut] = useState(null);
+  const search = () => api('/api/cases?search=' + encodeURIComponent(q) + '&limit=20').then(r => setRes(Array.isArray(r) ? r : (r.items || r.cases || []))).catch(adErr);
+  const make = () => api('/api/paylinks', { method: 'POST', body: { case_id: pick.id, amount: amt || null } }).then(r => { setOut(r); toast('Link ready'); }).catch(adErr);
+  if (out) return <div className="glass card" style={{ padding: 14, maxWidth: 520 }}>
+    <b>Link for {out.customer}</b> — {INR(out.amount)}<div style={{ margin: '8px 0', wordBreak: 'break-all' }}>{out.page_url}</div>
+    <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}><QR text={out.page_url} size={130} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><a className="btn gold sm" target="_blank" rel="noreferrer" href={waHref('', `Please pay ${INR(out.amount)} for your ${out.bank} account securely here: ${out.page_url}`)}>💬 Send on WhatsApp</a>
+        <button className="btn ghost sm" onClick={onDone}>Done</button></div></div></div>;
+  return <div className="glass card" style={{ padding: 14, maxWidth: 620 }}>
+    <div className="toolbar"><input className="input" placeholder="Search customer / account / phone" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} /><button className="btn" onClick={search}>Search</button></div>
+    {res.map(c => <div key={c.id} onClick={() => { setPick(c); setAmt(''); }} style={{ padding: 6, cursor: 'pointer', borderRadius: 8, background: pick && pick.id === c.id ? 'rgba(37,99,235,.1)' : '' }}>
+      <b>{c.customer_name}</b> · {c.bank} {c.product} · {c.account_no} · pending {INR(c.pending_amount)}</div>)}
+    {pick && <div style={{ marginTop: 10 }}><div className="field"><label>Amount (blank = full pending {INR(pick.pending_amount)})</label><input className="input" type="number" value={amt} onChange={e => setAmt(e.target.value)} /></div>
+      <button className="btn gold" onClick={make}>Create link</button></div>}
+  </div>;
+}
+function PayRecon() {
+  const [file, setFile] = useState(null); const [pv, setPv] = useState(null); const [busy, setBusy] = useState(false);
+  const check = () => { const fd = new FormData(); fd.append('file', file); setBusy(true); api('/api/paylinks/reconcile/preview', { method: 'POST', form: fd }).then(setPv).catch(adErr).finally(() => setBusy(false)); };
+  const apply = () => api('/api/paylinks/reconcile/apply', { method: 'POST', body: { lines: pv.lines.filter(l => l.link_id && !l.duplicate) } }).then(r => { toast(`${r.applied} payment(s) posted to cases`); setPv(null); }).catch(adErr);
+  return <div className="glass card" style={{ padding: 14 }}>
+    <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Upload your bank statement (Excel / CSV with Narration and Credit columns). Credits are matched to open links by the link note, the UTR the customer reported, or account number + amount. Each credit is posted only once.</div>
+    <div className="toolbar"><input type="file" accept=".xlsx,.csv" onChange={e => { setFile(e.target.files[0]); setPv(null); }} /><button className="btn" disabled={!file || busy} onClick={check}>{busy ? 'Checking…' : 'Check'}</button></div>
+    {pv && <><div style={{ margin: '8px 0' }}><b>{pv.matched}</b> of {pv.total} credits matched.</div>
+      <AdTable cols={[['date', 'Date'], ['amount', 'Amount', INR2], ['narration', 'Narration'], ['ref', 'Ref'], ['customer', 'Matched to', (v, r) => r.duplicate ? <Pill c="#64748b">already posted</Pill> : v ? <>{v} <span className="muted">({r.match})</span></> : <span className="muted">no match</span>]]} rows={pv.lines} />
+      <button className="btn gold" style={{ marginTop: 8 }} disabled={!pv.matched} onClick={apply}>Post {pv.matched} payment(s)</button></>}
+  </div>;
+}
+
+/* 📣 Outreach */
+function AddonOutreach() {
+  const [tab, setTab] = useState('journeys');
+  return <div><AdTabs tabs={[['journeys', 'Journeys'], ['messages', 'Messages']]} cur={tab} set={setTab} />{tab === 'journeys' ? <OutJourneys /> : <OutMessages />}</div>;
+}
+const OUT_TRIG = { close: 'Days before close date', ptp: 'Days from PTP date (−1 = day before)', monthly: 'Day of month' };
+function OutJourneys() {
+  const [d, load, err] = useLoad(() => api('/api/outreach/journeys'));
+  const [ed, setEd] = useState(null); const [pv, setPv] = useState(null);
+  const blank = { name: '', trigger: 'close', filters: {}, steps: [{ offset: 3, channel: 'whatsapp', text: 'Dear {name}, ₹{amount} is due on your {bank} account ending {account_last4}. Please pay before {close_date}: {pay_link}' }], active: true };
+  const save = () => api('/api/outreach/journeys' + (ed.id ? '/' + ed.id : ''), { method: ed.id ? 'PUT' : 'POST', body: ed }).then(() => { toast('Saved'); setEd(null); load(); }).catch(adErr);
+  const run = () => api('/api/outreach/run', { method: 'POST', body: {} }).then(r => { toast(r.waiting ? `Created ${r.created} — waiting for contact hours` : `Created ${r.created} · sent ${r.sent} · to send by hand ${r.manual} · failed ${r.failed}`); load(); }).catch(adErr);
+  const step = (i, k, v) => setEd({ ...ed, steps: ed.steps.map((s, j) => j === i ? { ...s, [k]: v } : s) });
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  return <div>
+    <div className="toolbar"><button className="btn gold sm" onClick={() => { setEd(blank); setPv(null); }}>＋ New journey</button><button className="btn sm" onClick={run}>▶ Run today's steps now</button></div>
+    <AdTable cols={[['name', 'Journey'], ['trigger', 'Trigger', v => OUT_TRIG[v]], ['filters', 'For', v => Object.entries(v || {}).map(([k, x]) => `${k}: ${x}`).join(', ') || 'all unpaid'],
+      ['steps', 'Steps', v => (v || []).map((s, i) => <div key={i} style={{ fontSize: 11.5 }}>{s.channel === 'sms' ? '✉️' : '💬'} {s.offset}: {s.text.slice(0, 60)}…</div>)],
+      ['stats', 'Messages', v => Object.entries(v || {}).map(([k, n]) => `${k} ${n}`).join(' · ')], ['active', 'Active', v => v ? '✅' : '⏸'],
+      ['id', '', (v, r) => <><button className="btn ghost sm" onClick={() => { setEd(r); setPv(null); }}>Edit</button>{r.active && <button className="btn ghost sm" onClick={() => api('/api/outreach/journeys/' + v, { method: 'DELETE' }).then(load)}>⏸</button>}</>]]} rows={d} empty="No journeys yet — create one." />
+    {ed && <div className="modal-bg" onClick={() => setEd(null)}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 680, width: '95%', maxHeight: '90vh', overflow: 'auto' }}>
+      <h3 style={{ marginTop: 0 }}>{ed.id ? 'Edit' : 'New'} journey</h3>
+      <div className="field"><label>Name</label><input className="input" value={ed.name} onChange={e => setEd({ ...ed, name: e.target.value })} /></div>
+      <div className="field"><label>Trigger</label><select className="input" value={ed.trigger} onChange={e => setEd({ ...ed, trigger: e.target.value })}>{Object.entries(OUT_TRIG).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6 }}>{['bank', 'product', 'bucket', 'branch'].map(k => <div key={k} className="field"><label>{k}</label>
+        <input className="input" value={(ed.filters || {})[k] || ''} onChange={e => setEd({ ...ed, filters: { ...ed.filters, [k]: e.target.value } })} placeholder="any" /></div>)}</div>
+      <div className="muted" style={{ fontSize: 11.5 }}>Placeholders: {'{name} {amount} {bank} {account_last4} {ptp_date} {ptp_amount} {close_date} {pay_link} {company}'}</div>
+      {ed.steps.map((s, i) => <div key={i} className="glass card" style={{ padding: 8, margin: '6px 0' }}><div className="toolbar" style={{ gap: 6 }}>
+        <input className="input" type="number" style={{ width: 80 }} value={s.offset} onChange={e => step(i, 'offset', e.target.value)} title={OUT_TRIG[ed.trigger]} />
+        <select className="input" style={{ width: 130 }} value={s.channel} onChange={e => step(i, 'channel', e.target.value)}><option value="whatsapp">WhatsApp</option><option value="sms">SMS</option></select>
+        <span style={{ flex: 1 }} /><button className="btn ghost sm" onClick={() => setEd({ ...ed, steps: ed.steps.filter((_, j) => j !== i) })}>✕</button></div>
+        <textarea className="input" rows={2} value={s.text} onChange={e => step(i, 'text', e.target.value)} /></div>)}
+      <button className="btn ghost sm" onClick={() => setEd({ ...ed, steps: [...ed.steps, { offset: 1, channel: 'whatsapp', text: '' }] })}>＋ Step</button>
+      {pv && <div className="glass card" style={{ padding: 8, marginTop: 8, fontSize: 12.5 }}>Reaches <b>{pv.cases}</b> unpaid cases now. Sample: <i>{pv.sample}</i></div>}
+      <div className="toolbar" style={{ marginTop: 10 }}><button className="btn ghost" onClick={() => api('/api/outreach/preview', { method: 'POST', body: ed }).then(setPv).catch(adErr)}>Preview</button><span style={{ flex: 1 }} />
+        <button className="btn ghost" onClick={() => setEd(null)}>Cancel</button><button className="btn gold" onClick={save}>Save</button></div></div></div>}
+  </div>;
+}
+function OutMessages() {
+  const [st, setSt] = useState('manual');
+  const [d, load, err] = useLoad(() => api('/api/outreach/messages' + (st ? '?status=' + st : '')), [st]);
+  if (err) return <AdErr err={err} />;
+  return <div>
+    <div className="toolbar" style={{ gap: 6 }}>{[['manual', 'To send by hand'], ['queued', 'Queued'], ['sent', 'Sent'], ['failed', 'Failed'], ['skipped', 'Skipped'], ['', 'All']].map(([k, l]) =>
+      <div key={k} className={cx('chip', st === k && 'active')} onClick={() => setSt(k)}>{l}</div>)}<span style={{ flex: 1 }} />
+      {st === 'manual' && <button className="btn ghost sm" onClick={() => download('/api/outreach/messages.csv?status=manual', 'outreach_manual.csv')}>⬇ CSV for bulk tool</button>}</div>
+    {!d ? <Loader /> : <AdTable cols={[['run_date', 'Date', fmtDate], ['journey', 'Journey'], ['customer', 'Customer'], ['channel', 'Via'], ['text', 'Message'], ['status', 'Status', (v, r) => <>{v}{r.error && <div className="muted" style={{ fontSize: 11 }}>{r.error}</div>}</>],
+      ['id', '', (v, r) => (r.status === 'manual' || r.status === 'failed') && <div style={{ display: 'flex', gap: 4 }}>
+        {r.channel === 'whatsapp' && <a className="btn ghost sm" target="_blank" rel="noreferrer" href={waHref(r.to, r.text)}>💬</a>}
+        {r.channel === 'sms' && <a className="btn ghost sm" href={`sms:+91${r.to}?body=${encodeURIComponent(r.text)}`}>✉️</a>}
+        <button className="btn sm" onClick={() => api(`/api/outreach/messages/${v}/done`, { method: 'POST' }).then(load)}>✓ Sent</button></div>]]} rows={d} />}
+  </div>;
+}
+
+/* 🤝 Settlement */
+function AddonSettlement({ user }) {
+  const [st, setSt] = useState('');
+  const [d, load, err] = useLoad(() => api('/api/settlements' + (st ? '?status=' + st : '')), [st]);
+  const [lim] = useLoad(() => api('/api/settlements/limits'));
+  const [nw, setNw] = useState(null);
+  const decide = (o, approve) => { const note = window.prompt(approve ? 'Approval note (optional)' : 'Reason for rejecting'); if (note === null) return;
+    api(`/api/settlements/${o.id}/decide`, { method: 'POST', body: { approve, note } }).then(load).catch(adErr); };
+  const setS = (o, body) => api(`/api/settlements/${o.id}/status`, { method: 'POST', body }).then(load).catch(adErr);
+  const C = { pending: '#b45309', approved: '#2563eb', accepted: '#0d9488', completed: '#16a34a', rejected: '#b91c1c', cancelled: '#64748b' };
+  if (err) return <AdErr err={err} />;
+  return <div>
+    {lim && <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Approval limits — caller/FOS up to {lim.caller}% waiver · team lead up to {lim.teamlead}% · manager/HO up to {lim.manager}% · above that Admin.</div>}
+    <div className="toolbar" style={{ gap: 6 }}>{['', 'pending', 'approved', 'accepted', 'completed', 'rejected'].map(s => <div key={s} className={cx('chip', st === s && 'active')} onClick={() => setSt(s)}>{s || 'all'}</div>)}
+      <span style={{ flex: 1 }} /><button className="btn gold sm" onClick={() => setNw({ q: '', res: [], pick: null, offer: '', due: '', reason: '', inst: [] })}>＋ New offer</button></div>
+    {!d ? <Loader /> : <AdTable cols={[['created_at', 'Date', fmtDate], ['customer', 'Customer', (v, r) => <>{v}<div className="muted" style={{ fontSize: 11 }}>{r.bank} · {r.account_no}</div></>],
+      ['outstanding', 'Outstanding', INR], ['offer_amount', 'Offer', INR], ['waiver_pct', 'Waiver', v => v + '%'], ['status', 'Status', (v, r) => <><Pill c={C[v]}>{v}</Pill>{v === 'pending' && <div className="muted" style={{ fontSize: 11 }}>needs {r.needs_role}</div>}</>],
+      ['installments', 'Instalments', (v, r) => (v || []).map((x, i) => <div key={i} style={{ fontSize: 11.5 }}>
+        <label><input type="checkbox" checked={!!x.paid} disabled={!['approved', 'accepted'].includes(r.status)} onChange={e => setS(r, { paid_index: i, paid: e.target.checked })} /> {fmtDate(x.due)} {INR(x.amount)}</label></div>)],
+      ['created_by', 'By'], ['id', '', (v, r) => <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {r.can_decide && <><button className="btn sm" onClick={() => decide(r, true)}>Approve</button><button className="btn ghost sm" onClick={() => decide(r, false)}>Reject</button></>}
+        {r.status === 'approved' && <button className="btn ghost sm" onClick={() => setS(r, { status: 'accepted' })}>Customer agreed</button>}
+        {['approved', 'accepted', 'completed'].includes(r.status) && <button className="btn ghost sm" onClick={() => download(`/api/settlements/${v}/letter.pdf`, `OTS_${v}.pdf`)}>📄 Letter</button>}
+        {['pending', 'approved', 'accepted'].includes(r.status) && <button className="btn ghost sm" onClick={() => window.confirm('Cancel this offer?') && setS(r, { status: 'cancelled' })}>✕</button>}</div>]]} rows={d} />}
+    {nw && <div className="modal-bg" onClick={() => setNw(null)}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 600, width: '95%', maxHeight: '90vh', overflow: 'auto' }}>
+      <h3 style={{ marginTop: 0 }}>New settlement offer</h3>
+      {!nw.pick ? <><div className="toolbar"><input className="input" placeholder="Search customer / account" value={nw.q} onChange={e => setNw({ ...nw, q: e.target.value })} />
+        <button className="btn" onClick={() => api('/api/cases?search=' + encodeURIComponent(nw.q) + '&limit=20').then(r => setNw(n => ({ ...n, res: Array.isArray(r) ? r : (r.items || r.cases || []) }))).catch(adErr)}>Search</button></div>
+        {nw.res.map(c => <div key={c.id} style={{ padding: 6, cursor: 'pointer' }} onClick={() => setNw({ ...nw, pick: c })}><b>{c.customer_name}</b> · {c.bank} · {c.account_no} · pending {INR(c.pending_amount)}</div>)}</>
+        : <>
+          <div><b>{nw.pick.customer_name}</b> · outstanding {INR(nw.pick.pending_amount)}</div>
+          <div className="field"><label>Offer amount</label><input className="input" type="number" value={nw.offer} onChange={e => setNw({ ...nw, offer: e.target.value })} /></div>
+          {nw.offer > 0 && <div className="muted" style={{ fontSize: 12 }}>Waiver {(100 * (1 - nw.offer / (nw.pick.pending_amount || 1))).toFixed(1)}%</div>}
+          {!nw.inst.length && <div className="field"><label>Pay by</label><input className="input" type="date" value={nw.due} onChange={e => setNw({ ...nw, due: e.target.value })} /></div>}
+          {nw.inst.map((x, i) => <div key={i} className="toolbar" style={{ gap: 6 }}><input className="input" type="date" value={x.due} onChange={e => setNw({ ...nw, inst: nw.inst.map((y, j) => j === i ? { ...y, due: e.target.value } : y) })} />
+            <input className="input" type="number" placeholder="₹" value={x.amount} onChange={e => setNw({ ...nw, inst: nw.inst.map((y, j) => j === i ? { ...y, amount: e.target.value } : y) })} />
+            <button className="btn ghost sm" onClick={() => setNw({ ...nw, inst: nw.inst.filter((_, j) => j !== i) })}>✕</button></div>)}
+          <button className="btn ghost sm" onClick={() => setNw({ ...nw, inst: [...nw.inst, { due: '', amount: '' }] })}>＋ Instalment</button>
+          <div className="field"><label>Reason (customer's situation)</label><textarea className="input" rows={2} value={nw.reason} onChange={e => setNw({ ...nw, reason: e.target.value })} /></div>
+          <div className="toolbar"><span style={{ flex: 1 }} /><button className="btn ghost" onClick={() => setNw(null)}>Cancel</button>
+            <button className="btn gold" onClick={() => api('/api/settlements', { method: 'POST', body: { case_id: nw.pick.id, offer_amount: nw.offer, due: nw.due || null, reason: nw.reason, installments: nw.inst } })
+              .then(r => { toast(r.status === 'approved' ? 'Approved' : `Sent for ${r.needs_role} approval`); setNw(null); load(); }).catch(adErr)}>Submit</button></div></>}
+    </div></div>}
+  </div>;
+}
+
+/* 🧠 Smart allocation & route */
+function AddonSmart({ user }) {
+  const lead = ['admin', 'headoffice', 'manager', 'teamlead'].includes(user.role);
+  const [tab, setTab] = useState(user.role === 'fos' ? 'route' : 'scores');
+  const tabs = [['scores', 'Likelihood to pay'], ...(lead ? [['alloc', 'Smart allocation']] : []), ...(lead || user.role === 'fos' ? [['route', 'Route plan']] : [])];
+  return <div><AdTabs tabs={tabs} cur={tab} set={setTab} />{tab === 'scores' && <SmartScores />}{tab === 'alloc' && <SmartAlloc />}{tab === 'route' && <SmartRoute user={user} />}</div>;
+}
+function SmartScores() {
+  const [d, , err] = useLoad(() => api('/api/smart/scores'));
+  const [open, setOpen] = useState(null);
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  return <div><div className="toolbar" style={{ gap: 8 }}><AdStat label="High (70+)" value={d.bands.high || 0} c="#16a34a" /><AdStat label="Medium" value={d.bands.medium || 0} c="#b45309" /><AdStat label="Low" value={d.bands.low || 0} c="#b91c1c" /></div>
+    <AdTable cols={[['score', 'Score', v => <b style={{ color: v >= 70 ? '#16a34a' : v >= 45 ? '#b45309' : '#b91c1c' }}>{v}</b>], ['customer', 'Customer', (v, r) => <span style={{ cursor: 'pointer', color: 'var(--brand)' }} onClick={() => setOpen(r.case_id)}>{v}</span>],
+      ['bank', 'Bank'], ['bucket', 'Bucket'], ['pending', 'Pending', INR], ['why', 'Why', v => (v || []).join(' · ')], ['best_time', 'Best time to call']]} rows={d.rows} />
+    {open && <CaseDrawer c={{ id: open }} onClose={() => setOpen(null)} onChanged={() => {}} />}</div>;
+}
+function SmartAlloc() {
+  const [kind, setKind] = useState('fos'); const [only, setOnly] = useState(true); const [pv, setPv] = useState(null); const [sel, setSel] = useState({}); const [busy, setBusy] = useState(false);
+  const run = () => { setBusy(true); api('/api/smart/allocate/preview', { method: 'POST', body: { kind, only_unallocated: only } }).then(r => { setPv(r); setSel(Object.fromEntries(r.suggestions.map(s => [s.case_id, true]))); }).catch(adErr).finally(() => setBusy(false)); };
+  const apply = () => { const items = pv.suggestions.filter(s => sel[s.case_id]); if (!items.length || !window.confirm(`Allocate ${items.length} case(s)?`)) return;
+    api('/api/smart/allocate/apply', { method: 'POST', body: { kind, items } }).then(r => { toast(`Allocated ${r.applied}`); setPv(null); }).catch(adErr); };
+  return <div>
+    <div className="toolbar" style={{ gap: 8 }}><select className="input" style={{ width: 160 }} value={kind} onChange={e => setKind(e.target.value)}><option value="fos">Field (FOS)</option><option value="caller">Callers</option></select>
+      <label style={{ fontSize: 13 }}><input type="checkbox" checked={only} onChange={e => setOnly(e.target.checked)} /> Only unallocated cases</label>
+      <button className="btn" onClick={run} disabled={busy}>{busy ? 'Working…' : 'Suggest'}</button></div>
+    {pv && <><div className="muted" style={{ fontSize: 12.5, margin: '6px 0' }}>{pv.suggestions.length} suggestions{pv.capacity ? ` (capacity ${pv.capacity} open cases each)` : ''}{pv.skipped_full ? ` · ${pv.skipped_full} left — everyone at capacity` : ''} · {Object.entries(pv.per_user).map(([k, n]) => `${k}: ${n}`).join(' · ')}</div>
+      <AdTable cols={[['case_id', '', v => <input type="checkbox" checked={!!sel[v]} onChange={e => setSel({ ...sel, [v]: e.target.checked })} />], ['customer', 'Customer'], ['pending', 'Pending', INR], ['user', 'Suggested'], ['why', 'Why']]} rows={pv.suggestions} />
+      <button className="btn gold" style={{ marginTop: 8 }} onClick={apply}>Allocate selected</button></>}
+  </div>;
+}
+function SmartRoute({ user }) {
+  const [fos, setFos] = useState(''); const [list, setList] = useState([]); const [d, setD] = useState(null);
+  useEffect(() => { if (user.role !== 'fos') api('/api/users?role=fos').then(r => setList(Array.isArray(r) ? r : [])).catch(() => {}); else load(); }, []);
+  const load = (id) => api('/api/smart/route' + (id ? '?fos_id=' + id : '')).then(setD).catch(adErr);
+  return <div>
+    {user.role !== 'fos' && <div className="toolbar"><select className="input" style={{ maxWidth: 280 }} value={fos} onChange={e => { setFos(e.target.value); e.target.value && load(e.target.value); }}>
+      <option value="">Pick a FOS…</option>{list.map(u => <option key={u.id} value={u.id}>{u.name} {u.emp_code ? `(${u.emp_code})` : ''}</option>)}</select></div>}
+    {d && <><div style={{ margin: '6px 0' }}><b>{d.fos}</b> · {d.stops.length} stops · ≈{d.km} km · start: {d.start}
+      {d.maps_url && <a className="btn gold sm" style={{ marginLeft: 8 }} target="_blank" rel="noreferrer" href={d.maps_url}>🗺 Open in Google Maps</a>}</div>
+      <AdTable cols={[['case_id', '#', (v, r) => d.stops.indexOf(r) + 1], ['customer', 'Customer', (v, r) => <>{v}{r.ptp_due && <Pill c="#b45309">PTP due</Pill>}</>], ['address', 'Address'], ['km_from_prev', 'km'], ['score', 'Score'], ['pending', 'Pending', INR]]} rows={d.stops} empty="No geotagged unpaid cases for this FOS." /></>}
+  </div>;
+}
+
+/* 📨 Legal notices */
+function AddonNotices() {
+  const [tab, setTab] = useState('batches'); const [open, setOpen] = useState(null);
+  return <div><AdTabs tabs={[['batches', 'Batches'], ['new', '＋ New batch']]} cur={tab} set={t => { setTab(t); setOpen(null); }} />
+    {tab === 'new' && <NoticeNew onDone={id => { setTab('batches'); setOpen(id); }} />}
+    {tab === 'batches' && (open ? <NoticeBatch id={open} onBack={() => setOpen(null)} /> : <NoticeBatches onOpen={setOpen} />)}</div>;
+}
+function NoticeBatches({ onOpen }) {
+  const [d, , err] = useLoad(() => api('/api/notices/batches'));
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  return <AdTable cols={[['created_at', 'Date', fmtDate], ['name', 'Batch', (v, r) => <span style={{ cursor: 'pointer', color: 'var(--brand)' }} onClick={() => onOpen(r.id)}>{v}</span>], ['kind', 'Type'], ['count', 'Notices'],
+    ['status', 'Status', v => Object.entries(v || {}).map(([k, n]) => `${k} ${n}`).join(' · ')], ['id', '', v => <button className="btn ghost sm" onClick={() => download(`/api/notices/batches/${v}/pdf`, `notices_${v}.pdf`)}>📄 PDF</button>]]} rows={d} />;
+}
+function NoticeNew({ onDone }) {
+  const [tpls] = useLoad(() => api('/api/notices/templates'));
+  const [f, setF] = useState({ kind: 'demand', subject: '', body: '', filters: { bank: '', product: '', bucket: '', branch: '', disposition: '' }, name: '' });
+  const [pv, setPv] = useState(null);
+  useEffect(() => { if (tpls && !f.body) { const t = tpls.find(x => x.kind === f.kind); t && setF(x => ({ ...x, subject: t.subject, body: t.body })); } }, [tpls]);
+  const pickT = k => { const t = tpls.find(x => x.kind === k); setF({ ...f, kind: k, subject: t.subject, body: t.body }); };
+  const body = () => ({ ...f, filters: Object.fromEntries(Object.entries(f.filters).filter(([, v]) => v)) });
+  if (!tpls) return <Loader />;
+  return <div className="glass card" style={{ padding: 14 }}>
+    <div className="field"><label>Notice type</label><select className="input" value={f.kind} onChange={e => pickT(e.target.value)}>{tpls.map(t => <option key={t.kind} value={t.kind}>{t.name}</option>)}</select></div>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 6 }}>{Object.keys(f.filters).map(k => <div key={k} className="field"><label>{k}</label>
+      <input className="input" value={f.filters[k]} onChange={e => setF({ ...f, filters: { ...f.filters, [k]: e.target.value } })} placeholder="any" /></div>)}</div>
+    <div className="field"><label>Batch name</label><input className="input" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="e.g. AXIS X-BKT demand Nov" /></div>
+    <div className="field"><label>Subject</label><input className="input" value={f.subject} onChange={e => setF({ ...f, subject: e.target.value })} /></div>
+    <div className="field"><label>Notice text</label><textarea className="input" rows={9} value={f.body} onChange={e => setF({ ...f, body: e.target.value })} /></div>
+    <div className="muted" style={{ fontSize: 11.5 }}>Placeholders: {'{name} {address} {pincode} {bank} {account_no} {product} {outstanding} {date} {reply_days} {reply_by} {ref_no} {company} {signatory}'} · Have the wording checked by your advocate before sending.</div>
+    {pv && <div style={{ margin: '8px 0', fontSize: 13 }}><b>{pv.count}</b> unpaid cases match{pv.without_address ? ` · ${pv.without_address} have no address and will be skipped` : ''}.</div>}
+    <div className="toolbar" style={{ marginTop: 8 }}><button className="btn ghost" onClick={() => api('/api/notices/preview', { method: 'POST', body: body() }).then(setPv).catch(adErr)}>Check</button><span style={{ flex: 1 }} />
+      <button className="btn gold" disabled={!pv || !pv.count} onClick={() => api('/api/notices/batches', { method: 'POST', body: body() }).then(r => { toast(`${r.count} notices created`); onDone(r.id); }).catch(adErr)}>Generate notices</button></div>
+  </div>;
+}
+function NoticeBatch({ id, onBack }) {
+  const [d, load, err] = useLoad(() => api('/api/notices/batches/' + id), [id]);
+  const [file, setFile] = useState(null);
+  const set = (n, status) => { const tracking_no = status === 'dispatched' ? window.prompt('Tracking / article no (optional)') : null; if (tracking_no === undefined) return;
+    api(`/api/notices/${n.id}/status`, { method: 'POST', body: { status, mode: status === 'dispatched' ? 'speed_post' : undefined, tracking_no } }).then(load).catch(adErr); };
+  const up = () => { const fd = new FormData(); fd.append('file', file); api(`/api/notices/batches/${id}/tracking`, { method: 'POST', form: fd }).then(r => { toast(`Updated ${r.updated}` + (r.errors.length ? ` · ${r.errors.length} problems` : '')); if (r.errors.length) alert(r.errors.join('\n')); load(); }).catch(adErr); };
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  return <div>
+    <div className="toolbar" style={{ gap: 6, flexWrap: 'wrap' }}><button className="btn ghost sm" onClick={onBack}>← Batches</button><b>{d.name}</b><span style={{ flex: 1 }} />
+      <button className="btn sm" onClick={() => download(`/api/notices/batches/${id}/pdf`, `notices_${id}.pdf`)}>📄 Print PDF</button>
+      <button className="btn ghost sm" onClick={() => download(`/api/notices/tracking-template.xlsx?bid=${id}`, `notice_tracking_${id}.xlsx`)}>⬇ Tracking sheet</button>
+      <input type="file" accept=".xlsx" onChange={e => setFile(e.target.files[0])} /><button className="btn ghost sm" disabled={!file} onClick={up}>⬆ Upload tracking</button></div>
+    <AdTable cols={[['ref_no', 'Ref'], ['customer', 'Customer'], ['status', 'Status'], ['mode', 'Mode'], ['tracking_no', 'Tracking'], ['dispatched_at', 'Sent', fmtDate], ['delivered_at', 'Delivered/returned', fmtDate],
+      ['id', '', (v, r) => <div style={{ display: 'flex', gap: 4 }}>{r.status === 'generated' && <button className="btn ghost sm" onClick={() => set(r, 'dispatched')}>Sent</button>}
+        {r.status === 'dispatched' && <><button className="btn ghost sm" onClick={() => set(r, 'delivered')}>Delivered</button><button className="btn ghost sm" onClick={() => set(r, 'returned')}>Returned</button></>}</div>]]} rows={d.notices} />
+  </div>;
+}
+
+/* 📊 Advanced analytics */
+function AddonAnalytics() {
+  const [d, , err] = useLoad(() => api('/api/insights'));
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  const f = d.forecast, q = d.quality, r = d.rolls;
+  const pct = v => v + '%';
+  return <div>
+    <h4 style={{ marginTop: 0 }}>Month-end forecast ({d.period})</h4>
+    <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}><AdStat label="Collected so far" value={INR(f.collected_so_far)} c="#16a34a" /><AdStat label="Forecast month-end" value={INR(f.forecast_month_end)} />
+      <AdStat label="Open PTP value" value={INR(f.open_ptp_value)} c="#b45309" /><AdStat label="Expected from PTPs" value={INR(f.expected_from_ptps)} /><AdStat label="Days left" value={f.days_left} /></div>
+    <div className="muted" style={{ fontSize: 11.5 }}>Method: {f.method}.</div>
+    <h4>Contact & promise quality</h4>
+    <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}><AdStat label="Attempts" value={q.attempts} /><AdStat label="Connect rate" value={pct(q.connect_rate)} /><AdStat label="PTPs" value={q.ptps} /><AdStat label="PTP kept" value={`${q.ptp_kept}/${q.ptp_due} (${q.kept_ratio}%)`} c="#16a34a" /></div>
+    <h4>Roll-back / roll-forward (same account, last month → this month)</h4>
+    <div className="toolbar" style={{ gap: 8 }}><AdStat label="Rolled back (improved)" value={r.counts.rolled_back || 0} c="#16a34a" /><AdStat label="Stabilised" value={r.counts.stabilised || 0} /><AdStat label="Rolled forward" value={r.counts.rolled_forward || 0} c="#b91c1c" /></div>
+    <AdTable cols={[['from', 'Last month'], ['to', 'This month'], ['cases', 'Cases']]} rows={r.matrix} empty="Needs last month's data for the same accounts." />
+    <h4>Resolution by bank / product / bucket</h4>
+    <AdTable cols={[['bank', 'Bank'], ['product', 'Product'], ['bucket', 'Bucket'], ['cases', 'Cases'], ['paid', 'Paid'], ['partial', 'Part'], ['resolution_pct', 'Resolution', pct], ['received', 'Collected', INR], ['collection_pct', 'Collection %', pct]]} rows={d.resolution} />
+    <h4>Best hours to call</h4>
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 120 }}>{d.hours.map(h => <div key={h.hour} title={`${h.hour}: ${h.connect_rate}% of ${h.attempts}`} style={{ flex: 1, textAlign: 'center', fontSize: 10 }}>
+      <div style={{ height: Math.max(4, h.connect_rate), background: 'var(--brand)', borderRadius: 4 }} />{h.hour.slice(0, 2)}</div>)}</div>
+    <h4>Agent productivity (this month)</h4>
+    <AdTable cols={[['name', 'Agent'], ['role', 'Role'], ['days', 'Days'], ['per_day', 'Actions/day'], ['connect_rate', 'Connect', pct], ['ptps', 'PTPs'], ['visits', 'Visits'], ['collected', 'Collected', INR], ['collected_per_day', '₹/day', INR]]} rows={d.productivity} />
+  </div>;
+}
+
+/* 🧾 Billing */
+function AddonBilling() {
+  const [tab, setTab] = useState('invoices');
+  return <div><AdTabs tabs={[['invoices', 'Invoices'], ['rates', 'Commission rates']]} cur={tab} set={setTab} />{tab === 'rates' ? <BillRates /> : <BillInvoices />}</div>;
+}
+function BillRates() {
+  const [d, load, err] = useLoad(() => api('/api/billing/rates'));
+  const [f, setF] = useState({ bank: '', product: '', bucket: '', basis: 'percent', rate: '', note: '' });
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  return <div>
+    <div className="glass card" style={{ padding: 10, display: 'grid', gridTemplateColumns: 'repeat(6,1fr) auto', gap: 6, alignItems: 'end' }}>
+      {['bank', 'product', 'bucket'].map(k => <div key={k} className="field"><label>{k}{k !== 'bank' && ' (blank = all)'}</label><input className="input" value={f[k]} onChange={e => setF({ ...f, [k]: e.target.value })} /></div>)}
+      <div className="field"><label>Basis</label><select className="input" value={f.basis} onChange={e => setF({ ...f, basis: e.target.value })}><option value="percent">% of collection</option><option value="per_case">₹ per paid case</option><option value="fixed">₹ fixed / month</option></select></div>
+      <div className="field"><label>Rate</label><input className="input" type="number" value={f.rate} onChange={e => setF({ ...f, rate: e.target.value })} /></div>
+      <div className="field"><label>Note</label><input className="input" value={f.note} onChange={e => setF({ ...f, note: e.target.value })} /></div>
+      <button className="btn gold" onClick={() => api('/api/billing/rates', { method: 'POST', body: f }).then(() => { toast('Saved'); setF({ ...f, rate: '', note: '' }); load(); }).catch(adErr)}>{f.id ? 'Update' : 'Add'}</button></div>
+    <AdTable cols={[['bank', 'Bank'], ['product', 'Product', v => v || 'all'], ['bucket', 'Bucket', v => v || 'any'], ['basis', 'Basis'], ['rate', 'Rate'], ['note', 'Note'],
+      ['id', '', (v, r) => <><button className="btn ghost sm" onClick={() => setF({ ...r, product: r.product || '', bucket: r.bucket || '' })}>Edit</button><button className="btn ghost sm" onClick={() => window.confirm('Delete rate?') && api('/api/billing/rates/' + v, { method: 'DELETE' }).then(load)}>✕</button></>]]} rows={d} />
+  </div>;
+}
+function BillInvoices() {
+  const [d, load, err] = useLoad(() => api('/api/billing/invoices'));
+  const [nw, setNw] = useState(null);
+  const C = { draft: '#64748b', issued: '#2563eb', paid: '#16a34a', cancelled: '#b91c1c' };
+  const st = (i, status) => window.confirm(`Mark ${i.number} as ${status}?`) && api(`/api/billing/invoices/${i.id}/status`, { method: 'POST', body: { status } }).then(load).catch(adErr);
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  return <div>
+    <div className="toolbar"><button className="btn gold sm" onClick={() => setNw({ bank: '', period: new Date().toISOString().slice(0, 7), bill_to: '', pv: null })}>＋ New invoice</button></div>
+    <AdTable cols={[['number', 'Invoice'], ['bank', 'Bank'], ['period', 'Month'], ['subtotal', 'Taxable', INR2], ['gst', 'GST', INR2], ['total', 'Total', INR2], ['status', 'Status', v => <Pill c={C[v]}>{v}</Pill>],
+      ['id', '', (v, r) => <div style={{ display: 'flex', gap: 4 }}><button className="btn ghost sm" onClick={() => download(`/api/billing/invoices/${v}.pdf`, `${r.number.replace(/\//g, '-')}.pdf`)}>📄</button>
+        {r.status === 'draft' && <button className="btn sm" onClick={() => st(r, 'issued')}>Issue</button>}{r.status === 'issued' && <button className="btn sm" onClick={() => st(r, 'paid')}>Paid</button>}
+        {['draft', 'issued'].includes(r.status) && <button className="btn ghost sm" onClick={() => st(r, 'cancelled')}>✕</button>}</div>]]} rows={d} />
+    {nw && <div className="modal-bg" onClick={() => setNw(null)}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 680, width: '95%', maxHeight: '90vh', overflow: 'auto' }}>
+      <h3 style={{ marginTop: 0 }}>New invoice</h3>
+      <div className="toolbar" style={{ gap: 6 }}><input className="input" placeholder="Bank (e.g. AXIS)" value={nw.bank} onChange={e => setNw({ ...nw, bank: e.target.value.toUpperCase(), pv: null })} />
+        <input className="input" type="month" value={nw.period} onChange={e => setNw({ ...nw, period: e.target.value, pv: null })} />
+        <button className="btn" onClick={() => api('/api/billing/invoices/preview', { method: 'POST', body: nw }).then(pv => setNw(n => ({ ...n, pv }))).catch(adErr)}>Calculate</button></div>
+      {nw.pv && <><AdTable cols={[['description', 'Line'], ['cases', 'Cases'], ['collected', 'Collected', INR], ['amount', 'Amount', INR2]]} rows={nw.pv.lines} />
+        <div style={{ textAlign: 'right', margin: 6 }}>Taxable {INR2(nw.pv.subtotal)} · GST {INR2(nw.pv.gst)} · <b>Total {INR2(nw.pv.total)}</b></div>
+        <div className="field"><label>Bill to (bank's name, address, GSTIN)</label><textarea className="input" rows={3} value={nw.bill_to} onChange={e => setNw({ ...nw, bill_to: e.target.value })} /></div>
+        <div className="toolbar"><span style={{ flex: 1 }} /><button className="btn gold" onClick={() => api('/api/billing/invoices', { method: 'POST', body: { bank: nw.bank, period: nw.period, bill_to: nw.bill_to } }).then(() => { toast('Draft created'); setNw(null); load(); }).catch(adErr)}>Create draft</button></div></>}
+    </div></div>}
+  </div>;
+}
+
+/* 🔎 Skip tracing */
+function AddonSkipTrace() {
+  const [d, , err] = useLoad(() => api('/api/skiptrace/unreachable'));
+  const [open, setOpen] = useState(null);
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  return <div><div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Unpaid customers you can't reach (RNR / switched off / wrong number). Leads come only from your own data — the same customer's other loans, numbers your team updated and addresses found on visits.</div>
+    <AdTable cols={[['customer', 'Customer'], ['bank', 'Bank'], ['product', 'Product'], ['disposition', 'Last outcome'], ['phone_leads', 'Phone leads'], ['address_leads', 'Address leads'],
+      ['case_id', '', v => <button className="btn sm" onClick={() => setOpen(v)}>🔎 Trace</button>]]} rows={d} empty="No unreachable cases right now." />
+    {open && <SkipTraceModal caseId={open} onClose={() => setOpen(null)} />}</div>;
+}
+function SkipTraceModal({ caseId, onClose }) {
+  const [d, load, err] = useLoad(() => api('/api/skiptrace/case/' + caseId), [caseId]);
+  const use = body => api(`/api/skiptrace/case/${caseId}/apply`, { method: 'POST', body }).then(() => { toast('Saved on the case'); load(); }).catch(adErr);
+  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 640, width: '95%', maxHeight: '90vh', overflow: 'auto' }}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>🔎 Skip-trace leads — case #{caseId}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    {err ? <AdErr err={err} /> : !d ? <Loader /> : <>
+      <h4>Phone numbers</h4>{d.phones.length ? d.phones.map(p => <div key={p.value} className="toolbar" style={{ gap: 6 }}><b>{p.value}</b><span className="muted" style={{ fontSize: 11.5, flex: 1 }}>{p.sources.join(' · ')}</span>
+        <a className="btn ghost sm" href={`tel:${p.value}`}>📞</a><button className="btn sm" onClick={() => use({ phone: p.value })}>Use as new number</button></div>) : <div className="muted">No other numbers found.</div>}
+      <h4>Addresses</h4>{d.addresses.length ? d.addresses.map(a => <div key={a.value} className="toolbar" style={{ gap: 6 }}><span style={{ flex: 1 }}>{a.value}<div className="muted" style={{ fontSize: 11.5 }}>{a.sources.join(' · ')}</div></span>
+        <button className="btn sm" onClick={() => use({ address: a.value })}>Use as new address</button></div>) : <div className="muted">No other addresses found.</div>}
+      {d.related_cases.length > 0 && <><h4>Related accounts</h4><AdTable cols={[['id', '#'], ['bank', 'Bank'], ['product', 'Product'], ['period', 'Month'], ['status', 'Status']]} rows={d.related_cases} /></>}
+    </>}</div></div>;
+}
+
+/* 🔌 Open API & webhooks */
+function AddonOpenApi() {
+  const [d, load, err] = useLoad(() => api('/api/apikeys'));
+  const [k, setK] = useState({ name: '', scopes: ['cases:read'], banks: '' }); const [w, setW] = useState({ url: '', events: [], banks: '' }); const [shown, setShown] = useState(null);
+  if (err) return <AdErr err={err} />; if (!d) return <Loader />;
+  const tog = (arr, v) => arr.includes(v) ? arr.filter(x => x !== v) : [...arr, v];
+  const banks = s => s.split(',').map(x => x.trim()).filter(Boolean);
+  return <div>
+    {shown && <div className="glass card" style={{ padding: 12, borderLeft: '3px solid #b45309', marginBottom: 10 }}>⚠️ Copy now — shown only once:<div style={{ fontFamily: 'monospace', wordBreak: 'break-all', margin: '6px 0' }}>{shown}</div>
+      <button className="btn ghost sm" onClick={() => { try { navigator.clipboard.writeText(shown); toast('Copied'); } catch (e) {} }}>📋 Copy</button> <button className="btn ghost sm" onClick={() => setShown(null)}>Done</button></div>}
+    <h4 style={{ marginTop: 0 }}>API keys</h4>
+    <div className="glass card" style={{ padding: 10 }}><div className="toolbar" style={{ gap: 6, flexWrap: 'wrap' }}>
+      <input className="input" style={{ maxWidth: 200 }} placeholder="Name (e.g. Axis MIS feed)" value={k.name} onChange={e => setK({ ...k, name: e.target.value })} />
+      {d.scopes.map(s => <label key={s} style={{ fontSize: 12.5 }}><input type="checkbox" checked={k.scopes.includes(s)} onChange={() => setK({ ...k, scopes: tog(k.scopes, s) })} /> {s}{s === 'pii' ? ' (full phone numbers)' : ''}</label>)}
+      <input className="input" style={{ maxWidth: 200 }} placeholder="Limit to banks (comma)" value={k.banks} onChange={e => setK({ ...k, banks: e.target.value })} />
+      <button className="btn gold sm" onClick={() => api('/api/apikeys', { method: 'POST', body: { ...k, banks: banks(k.banks) } }).then(r => { setShown(r.key); setK({ name: '', scopes: ['cases:read'], banks: '' }); load(); }).catch(adErr)}>Create key</button></div></div>
+    <AdTable cols={[['name', 'Name'], ['prefix', 'Key', v => v + '…'], ['scopes', 'Scopes', v => (v || []).join(', ')], ['banks', 'Banks', v => (v || []).join(', ') || 'all'], ['last_used_at', 'Last used', fmtDT], ['revoked', 'Status', v => v ? <Pill c="#b91c1c">revoked</Pill> : <Pill c="#16a34a">active</Pill>],
+      ['id', '', (v, r) => !r.revoked && <button className="btn ghost sm" onClick={() => window.confirm('Revoke this key? Systems using it will stop working.') && api(`/api/apikeys/${v}/revoke`, { method: 'POST' }).then(load)}>Revoke</button>]]} rows={d.keys} empty="No keys." />
+    <div className="muted" style={{ fontSize: 11.5, margin: '6px 0' }}>Use: <code>Authorization: Bearer riq_…</code> · GET /api/open/v1/cases · GET /api/open/v1/cases/&lt;account&gt; · POST /api/open/v1/payments {'{account_no, amount, mode, reference}'} · GET /api/open/v1/events?since_id=</div>
+    <h4>Webhooks</h4>
+    <div className="glass card" style={{ padding: 10 }}><div className="toolbar" style={{ gap: 6, flexWrap: 'wrap' }}>
+      <input className="input" style={{ maxWidth: 320 }} placeholder="https://your-system/hook" value={w.url} onChange={e => setW({ ...w, url: e.target.value })} />
+      {d.events.map(ev => <label key={ev} style={{ fontSize: 12.5 }}><input type="checkbox" checked={w.events.includes(ev)} onChange={() => setW({ ...w, events: tog(w.events, ev) })} /> {ev}</label>)}
+      <input className="input" style={{ maxWidth: 180 }} placeholder="Banks (comma, blank=all)" value={w.banks} onChange={e => setW({ ...w, banks: e.target.value })} />
+      <button className="btn gold sm" onClick={() => api('/api/apikeys/webhooks', { method: 'POST', body: { ...w, banks: banks(w.banks) } }).then(r => { setShown(r.secret); setW({ url: '', events: [], banks: '' }); load(); }).catch(adErr)}>Add webhook</button></div>
+      <div className="muted" style={{ fontSize: 11.5 }}>Each delivery is signed: header X-RecoverIQ-Signature = sha256=HMAC(secret, body). Failed deliveries retry up to 6 times.</div></div>
+    {d.webhooks.map(h => <div key={h.id} className="glass card" style={{ padding: 10, marginTop: 6 }}>
+      <div className="toolbar" style={{ gap: 6 }}><b style={{ wordBreak: 'break-all' }}>{h.url}</b><span className="muted" style={{ fontSize: 11.5 }}>{(h.events || []).join(', ') || 'all events'}</span><span style={{ flex: 1 }} />
+        <button className="btn ghost sm" onClick={() => api(`/api/apikeys/webhooks/${h.id}/test`, { method: 'POST' }).then(r => { toast(`Test: ${r.status} ${r.code || ''} ${r.error || ''}`); load(); }).catch(adErr)}>Send test</button>
+        <button className="btn ghost sm" onClick={() => api(`/api/apikeys/webhooks/${h.id}`, { method: 'POST', body: { active: !h.active } }).then(load)}>{h.active ? '⏸ Pause' : '▶ Resume'}</button>
+        <button className="btn ghost sm" onClick={() => window.confirm('Delete webhook?') && api(`/api/apikeys/webhooks/${h.id}`, { method: 'POST', body: { delete: true } }).then(load)}>✕</button></div>
+      <AdTable cols={[['at', 'When', fmtDT], ['event', 'Event'], ['status', 'Status'], ['attempts', 'Tries'], ['code', 'HTTP'], ['error', 'Error']]} rows={h.recent} empty="No deliveries yet." /></div>)}
+  </div>;
+}
+
 function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, onSwitchView }) {
   // Expose the viewer's role so shared perf components can hide peer comparisons from front-line staff.
   try { window.__ssdRole = user.role; } catch (e) {}
   const baseNav = NAV[user.role] || NAV.telecaller;
+  // ⚙️ Services: sections the Admin turned off disappear from everyone's menu.
+  const [svcList, setSvcList] = useState(null);
+  useEffect(() => { const f = () => loadServices(true).then(setSvcList); f();
+    window.addEventListener('riq-services-changed', f); return () => window.removeEventListener('riq-services-changed', f); }, []);
+  const offViews = new Set((svcList || []).filter(x => !x.enabled).flatMap(x => x.nav || []));
   // Everyone gets a personal E-ID / profile entry.
-  const nav = baseNav.some(n => n[0] === 'profile') ? baseNav : [...baseNav, ['profile', '🪪', 'My E-ID']];
+  const nav = (baseNav.some(n => n[0] === 'profile') ? baseNav : [...baseNav, ['profile', '🪪', 'My E-ID']]).filter(n => !offViews.has(n[0]));
   // Section is driven by the URL hash so a RELOAD stays on the current screen and the browser /
   // Android Back & Forward move through the sections you visited (instead of jumping to home).
   const homeView = nav[0][0];
   // Sections reachable from the top bar in addition to the sidebar nav — always safe to land on.
-  const _EXTRA_VIEWS = ['attendance', 'todo', 'rtsb', 'monitor', 'help', 'support'];
+  const _EXTRA_VIEWS = ['attendance', 'todo', 'rtsb', 'monitor', 'help', 'support', 'addons', 'services'];
   const allowedViews = new Set([...nav.map(n => n[0]), ..._EXTRA_VIEWS]);
   const _readHash = () => { try { return decodeURIComponent((window.location.hash || '').replace(/^#\/?/, '')); } catch (e) { return ''; } };
   // Only honour a hash that this role is actually allowed to open — otherwise (e.g. a stale hash
@@ -10761,12 +12245,13 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       if (native && user.role === 'fos' && !localStorage.getItem('ssd_trackonboard')) setTrackOnboard(true);
     } catch (e) {}
   }, []);
-  const EXTRA_TITLE = { attendance: 'Attendance', todo: 'My Work Queue', rtsb: 'RTSB', monitor: 'Live Monitor' };
+  const EXTRA_TITLE = { attendance: 'Attendance', todo: 'My Work Queue', rtsb: 'RTSB', monitor: 'Live Monitor', addons: 'Add-ons', services: 'Services' };
   const title = EXTRA_TITLE[view] || (nav.find(n => n[0] === view) || [, , ''])[2];
   const canMonitor = ['admin', 'manager', 'headoffice', 'teamlead', 'backend'].includes(user.role);
   const canRtsb = ['admin', 'manager', 'headoffice', 'teamlead', 'backend'].includes(user.role);
   const hasQueue = ['fos', 'telecaller', 'teamlead', 'manager', 'admin', 'headoffice', 'backend'].includes(user.role);
   const render = () => {
+    if (offViews.has(view)) return <div className="glass card" style={{ padding: 20 }}>🔒 This section is turned off by your administrator.</div>;
     switch (view) {
       case 'dashboard': return <Dashboard user={user} />;
       case 'cases': return <CasesView user={user} />;
@@ -10795,9 +12280,13 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'sheet': return <SheetView user={user} config={config} />;
       case 'ptp': return <PTPTracker />;
       case 'ai': return <AIAssist user={user} />;
+      case 'addons': return <AddonsHub user={user} />;
+      case 'services': return <ServicesView user={user} />;
       case 'security': return <SecurityView user={user} />;
       case 'connections': return <ConnectionsView user={user} />;
-      case 'payouts': return <PayoutsView user={user} />;
+      case 'payouts': return <PayrollSection user={user} />;
+      case 'payroll': return <PayrollSection user={user} />;
+      case 'payslips': return <MyPayslips />;
       case 'attendance': return <AttendanceView user={user} />;
       case 'todo': return <TodoView user={user} />;
       case 'rtsb': return <RTSBView user={user} />;
@@ -10840,9 +12329,16 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
           <button className="btn ghost sm" title="Attendance" onClick={() => setView('attendance')}
             style={{ marginRight: 8, fontSize: 18, padding: '4px 8px', background: view === 'attendance' ? 'var(--gold-soft,rgba(37,99,235,.12))' : 'transparent' }}>🕐</button>
           <NotificationBell onOpenCase={setNotifCase} style={{ marginRight: 10 }} />
-          <div className="usertag"><div className="avatar">{initials(user.name)}</div>
-            <div><div style={{ fontWeight: 600, fontSize: 14 }}>{user.name}</div>
-              <div className="muted" style={{ fontSize: 12 }}>{user.branch || user.email}</div></div></div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
+            <div className="usertag"><div className="avatar">{initials(user.name)}</div>
+              <div><div style={{ fontWeight: 600, fontSize: 14 }}>{user.name}</div>
+                <div className="muted" style={{ fontSize: 12 }}>{user.branch || user.email}</div></div></div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button className="btn ghost sm" data-top="addons" title="Add-ons — extra modules" onClick={() => setView('addons')}
+                style={{ fontSize: 11.5, padding: '2px 8px', background: view === 'addons' ? 'rgba(37,99,235,.12)' : 'transparent' }}>🧩 Add-ons</button>
+              {user.role === 'admin' && <button className="btn ghost sm" data-top="services" title="Services — turn features on/off and set them up" onClick={() => setView('services')}
+                style={{ fontSize: 11.5, padding: '2px 8px', background: view === 'services' ? 'rgba(37,99,235,.12)' : 'transparent' }}>⚙️ Services</button>}
+            </div></div>
         </div>
         {user.role === 'it_support_view' && <div className="glass card" style={{ margin: '0 0 12px', padding: '8px 12px', borderLeft: '3px solid var(--info)', fontSize: 13 }}>
           👁️ <b>IT Support View</b> — read-only. You can view and download everything, but changes are disabled (any edit will be blocked).

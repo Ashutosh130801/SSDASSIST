@@ -841,6 +841,208 @@ class PayoutFundAccount(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
 
+class PayrollConfig(Base):
+    """Company payroll rules (one row, id=1): salary cycle, pay-day basis, LOP/late rules, salary
+    components, statutory (PF/ESI/PT/LWF/TDS), payslip look. JSON so every org can set its own."""
+    __tablename__ = "payroll_config"
+    id = Column(Integer, primary_key=True)
+    data = Column(JSON, default=dict)
+    updated_by = Column(Integer, nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class EmployeeSalary(Base):
+    """An employee's salary structure from `effective_from` (a revision = a new row; history kept)."""
+    __tablename__ = "employee_salaries"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    effective_from = Column(Date, nullable=False)
+    monthly_gross = Column(Numeric(12, 2), nullable=False, default=0)
+    overrides = Column(JSON, default=dict)           # {component_code: fixed monthly amount}
+    on_payroll = Column(Boolean, default=True)       # False = exempt from payroll (partner, consultant…)
+    exempt_reason = Column(String(160))
+    pf_applicable = Column(Boolean, default=True)
+    esi_applicable = Column(Boolean, default=True)
+    pt_applicable = Column(Boolean, default=True)
+    lwf_applicable = Column(Boolean, default=False)
+    attendance_exempt = Column(Boolean, default=False)   # no LOP from attendance (e.g. senior staff)
+    tds_monthly = Column(Numeric(12, 2), default=0)
+    payment_mode = Column(String(10), default="bank")    # bank / cash / cheque
+    uan = Column(String(20))
+    pf_number = Column(String(30))
+    esic_number = Column(String(20))
+    note = Column(String(300))
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class SalaryAdvance(Base):
+    """Salary advance / loan recovered in instalments by payroll."""
+    __tablename__ = "salary_advances"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    kind = Column(String(12), default="advance")     # advance / loan
+    principal = Column(Numeric(12, 2), nullable=False)
+    emi = Column(Numeric(12, 2), nullable=False)
+    balance = Column(Numeric(12, 2), nullable=False)
+    start_period = Column(String(7))                 # first payroll month (YYYY-MM) to recover in
+    status = Column(String(10), default="active")    # active / closed
+    note = Column(String(300))
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class PayrollRun(Base):
+    __tablename__ = "payroll_runs"
+    id = Column(Integer, primary_key=True)
+    period = Column(String(7), nullable=False, index=True)   # YYYY-MM = the month the cycle ends in
+    cycle_start = Column(Date, nullable=False)
+    cycle_end = Column(Date, nullable=False)
+    pay_date = Column(Date, nullable=True)
+    # draft → approved (locked) → paid ; draft → cancelled ; approved → draft (reopen, admin)
+    status = Column(String(12), default="draft", index=True)
+    rules_snapshot = Column(JSON, default=dict)      # the rules used, frozen with the run
+    totals = Column(JSON, default=dict)
+    approval_hash = Column(String(64))
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    computed_at = Column(DateTime(timezone=True), nullable=True)
+    approved_by = Column(Integer, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+    released = Column(Boolean, default=False)        # payslips visible to employees
+    payout_batch_id = Column(Integer, nullable=True)
+    note = Column(Text)
+
+
+class PayrollLine(Base):
+    __tablename__ = "payroll_lines"
+    __table_args__ = (UniqueConstraint("run_id", "user_id", name="uq_payroll_run_user"),)
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("payroll_runs.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    salary_id = Column(Integer, nullable=True)
+    snapshot = Column(JSON, default=dict)            # name, code, designation, bank (masked), PAN, UAN…
+    included = Column(Boolean, default=True)
+    exclude_reason = Column(String(200))
+    hold = Column(Boolean, default=False)            # computed but not paid this cycle
+    attendance = Column(JSON, default=dict)          # days, present, leave, absent, lop, paid_days…
+    paid_days_override = Column(Numeric(6, 2), nullable=True)
+    earnings = Column(JSON, default=list)            # [{code,name,full,amount}]
+    deductions = Column(JSON, default=list)          # [{code,name,amount}]
+    employer = Column(JSON, default=list)            # [{code,name,amount}]
+    gross = Column(Numeric(12, 2), default=0)
+    total_deductions = Column(Numeric(12, 2), default=0)
+    net = Column(Numeric(12, 2), default=0)
+    flags = Column(JSON, default=list)               # [{level: error|warn|info, text}]
+    pay_status = Column(String(12), default="unpaid")  # unpaid / paid / failed
+    utr = Column(String(40))
+    paid_on = Column(Date, nullable=True)
+    bank_ref = Column(String(40))
+
+
+class PayrollAdjustment(Base):
+    """One-off earnings/deductions for a run: incentive, bonus, arrears, reimbursement, recovery…"""
+    __tablename__ = "payroll_adjustments"
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("payroll_runs.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    kind = Column(String(10), nullable=False)        # earning / deduction
+    code = Column(String(30), nullable=False)        # INCENTIVE, BONUS, ARREARS, REIMB, OTHER_DED…
+    amount = Column(Numeric(12, 2), nullable=False)
+    note = Column(String(300))
+    source = Column(String(12), default="manual")    # manual / upload / auto
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class BankFileTemplate(Base):
+    """A bank's bulk-salary upload layout, mapped column by column (uploaded from the bank's own
+    sample file or built by hand). Any bank, any format — no code change per bank."""
+    __tablename__ = "bank_file_templates"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(80), nullable=False)
+    bank = Column(String(60))
+    file_type = Column(String(6), default="xlsx")    # xlsx / csv / txt
+    delimiter = Column(String(4), default=",")
+    include_header = Column(Boolean, default=True)
+    columns = Column(JSON, default=list)             # [{header, field, value?, format?}]
+    options = Column(JSON, default=dict)             # debit_account, same_bank_ifsc, mode codes, date_format
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class TaxDeclaration(Base):
+    """An employee's income-tax choices for one financial year: regime + investment declarations."""
+    __tablename__ = "tax_declarations"
+    __table_args__ = (UniqueConstraint("user_id", "fy", name="uq_tax_decl_user_fy"),)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    fy = Column(String(7), nullable=False)               # 2026-27
+    regime = Column(String(4), default="new")            # new / old
+    metro = Column(Boolean, default=False)               # rent in a metro city (50% HRA rule)
+    data = Column(JSON, default=dict)                    # sec80c, sec80d, rent_paid_annual, prev_employer_* …
+    locked = Column(Boolean, default=False)              # HR can lock after proof verification
+    updated_by = Column(Integer, nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class FnfSettlement(Base):
+    """Full & final settlement for an employee who is leaving."""
+    __tablename__ = "fnf_settlements"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    last_working_day = Column(Date, nullable=False)
+    reason = Column(String(40))                          # resigned / terminated / absconding / retired …
+    status = Column(String(12), default="draft", index=True)   # draft → approved → paid ; cancelled
+    items = Column(JSON, default=list)                   # [{kind: earning|deduction, code, name, amount, note}]
+    workings = Column(JSON, default=dict)                # how each suggested amount was worked out
+    total_earnings = Column(Numeric(12, 2), default=0)
+    total_deductions = Column(Numeric(12, 2), default=0)
+    net = Column(Numeric(12, 2), default=0)              # negative = employee owes the company
+    note = Column(Text)
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    approved_by = Column(Integer, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    paid_on = Column(Date, nullable=True)
+    utr = Column(String(40))
+
+
+class AiConversation(Base):
+    __tablename__ = "ai_conversations"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String(160))
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class AiMessage(Base):
+    __tablename__ = "ai_messages"
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(Integer, ForeignKey("ai_conversations.id"), nullable=False, index=True)
+    role = Column(String(10), nullable=False)        # user / assistant
+    content = Column(Text)
+    meta = Column(JSON, default=dict)                # files, actions, tools used
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class AiArtifact(Base):
+    """A file or a pending action the AI produced for one user."""
+    __tablename__ = "ai_artifacts"
+    id = Column(Integer, primary_key=True)
+    token = Column(String(40), unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    kind = Column(String(10))                        # file / action
+    name = Column(String(200))
+    path = Column(String(300))
+    payload = Column(JSON, default=dict)
+    status = Column(String(12), default="ready")     # ready / pending / done / cancelled
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
 class PayoutWebhookEvent(Base):
     """Every verified gateway webhook (dedupe by event id; replay-safe)."""
     __tablename__ = "payout_webhook_events"
@@ -851,6 +1053,211 @@ class PayoutWebhookEvent(Base):
     status = Column(String(20))
     applied = Column(Boolean, default=False)
     received_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+# ================================================================ 🧩 Add-ons
+class AgentCertification(Base):
+    """Compliance: an agent's certificate (e.g. IIBF Debt Recovery Agent) with validity."""
+    __tablename__ = "agent_certifications"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(120), default="IIBF Debt Recovery Agent")
+    number = Column(String(60))
+    valid_until = Column(Date)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class DataRequest(Base):
+    """Compliance: a customer's data request under the DPDP Act (access / correction / erasure / grievance)."""
+    __tablename__ = "data_requests"
+    id = Column(Integer, primary_key=True)
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=True, index=True)
+    kind = Column(String(16))                       # access / correction / erasure / grievance
+    requester = Column(String(160))
+    contact = Column(String(80))
+    details = Column(Text)
+    status = Column(String(12), default="open")     # open / done / rejected
+    resolution = Column(Text)
+    due_date = Column(Date)
+    created_by = Column(Integer)
+    closed_by = Column(Integer)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    closed_at = Column(DateTime(timezone=True))
+
+
+class PaymentLink(Base):
+    __tablename__ = "payment_links"
+    id = Column(Integer, primary_key=True)
+    token = Column(String(32), unique=True, index=True)          # public /pay/<token>
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=False, index=True)
+    amount = Column(Numeric(14, 2))
+    allow_partial = Column(Boolean, default=True)
+    provider = Column(String(16))                                 # razorpay / manual_upi
+    provider_id = Column(String(60), index=True)
+    short_url = Column(String(300))
+    status = Column(String(12), default="created", index=True)   # created / paid / partial / expired / cancelled
+    paid_amount = Column(Numeric(14, 2), default=0)
+    utr = Column(String(80))
+    paid_at = Column(DateTime(timezone=True))
+    expires_at = Column(DateTime(timezone=True))
+    created_by = Column(Integer)
+    applied = Column(Boolean, default=False)                      # payment posted to the case
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class PaymentEvent(Base):
+    """Gateway webhook / statement line already applied (dedupe)."""
+    __tablename__ = "payment_events"
+    id = Column(Integer, primary_key=True)
+    ref = Column(String(120), unique=True, nullable=False)
+    link_id = Column(Integer, index=True)
+    case_id = Column(Integer, index=True)
+    amount = Column(Numeric(14, 2))
+    source = Column(String(16))                                   # webhook / statement
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class OutreachJourney(Base):
+    __tablename__ = "outreach_journeys"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(120))
+    trigger = Column(String(16), default="dpd")      # dpd (days into cycle) / ptp (days around PTP date) / unpaid
+    filters = Column(JSON, default=dict)             # bank, product, bucket, branch
+    steps = Column(JSON, default=list)               # [{offset, channel, text}]
+    active = Column(Boolean, default=True)
+    created_by = Column(Integer)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class OutreachMessage(Base):
+    __tablename__ = "outreach_messages"
+    id = Column(Integer, primary_key=True)
+    journey_id = Column(Integer, index=True)
+    case_id = Column(Integer, index=True)
+    step = Column(Integer)
+    channel = Column(String(10))                     # sms / whatsapp
+    to = Column(String(20))
+    text = Column(Text)
+    status = Column(String(12), default="queued", index=True)   # queued / sent / failed / skipped / manual
+    error = Column(String(300))
+    run_date = Column(Date, index=True)
+    sent_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class SettlementOffer(Base):
+    __tablename__ = "settlement_offers"
+    id = Column(Integer, primary_key=True)
+    case_id = Column(Integer, ForeignKey("cases.id"), nullable=False, index=True)
+    outstanding = Column(Numeric(14, 2))
+    offer_amount = Column(Numeric(14, 2))
+    waiver_pct = Column(Numeric(6, 2))
+    installments = Column(JSON, default=list)        # [{due: date, amount, paid: bool}]
+    reason = Column(Text)
+    status = Column(String(12), default="pending", index=True)  # pending / approved / rejected / accepted / completed / cancelled
+    needs_role = Column(String(16))                  # teamlead / manager / admin — who must approve
+    created_by = Column(Integer)
+    approved_by = Column(Integer)
+    approved_at = Column(DateTime(timezone=True))
+    decision_note = Column(Text)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class NoticeBatch(Base):
+    __tablename__ = "notice_batches"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(160))
+    kind = Column(String(20))                        # demand / sec138 / arbitration / pre_sarfaesi / custom
+    subject = Column(String(200))
+    body = Column(Text)                              # with {placeholders}
+    count = Column(Integer, default=0)
+    created_by = Column(Integer)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class LegalNotice(Base):
+    __tablename__ = "legal_notices"
+    id = Column(Integer, primary_key=True)
+    batch_id = Column(Integer, ForeignKey("notice_batches.id"), index=True)
+    case_id = Column(Integer, ForeignKey("cases.id"), index=True)
+    ref_no = Column(String(40), index=True)
+    status = Column(String(12), default="generated")   # generated / dispatched / delivered / returned
+    mode = Column(String(20))                          # speed_post / courier / email / hand
+    tracking_no = Column(String(60))
+    dispatched_at = Column(Date)
+    delivered_at = Column(Date)
+    note = Column(String(300))
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class BillingRate(Base):
+    __tablename__ = "billing_rates"
+    id = Column(Integer, primary_key=True)
+    bank = Column(String(40), index=True)
+    product = Column(String(80))                       # blank = all products of the bank
+    bucket = Column(String(30))                        # blank = any bucket
+    basis = Column(String(16), default="percent")     # percent (of collection) / per_case (paid case) / fixed (monthly)
+    rate = Column(Numeric(10, 4), default=0)
+    note = Column(String(200))
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+    id = Column(Integer, primary_key=True)
+    number = Column(String(40), unique=True)
+    bank = Column(String(40), index=True)
+    period = Column(String(7), index=True)
+    lines = Column(JSON, default=list)
+    subtotal = Column(Numeric(14, 2))
+    gst_rate = Column(Numeric(6, 2))
+    gst = Column(Numeric(14, 2))
+    total = Column(Numeric(14, 2))
+    status = Column(String(12), default="draft")      # draft / issued / paid / cancelled
+    bill_to = Column(Text)
+    created_by = Column(Integer)
+    issued_at = Column(DateTime(timezone=True))
+    paid_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(120))
+    prefix = Column(String(16), index=True)
+    key_hash = Column(String(128))
+    scopes = Column(JSON, default=list)               # cases:read / payments:write / events:read
+    banks = Column(JSON, default=list)                # limit to these banks ([] = all)
+    created_by = Column(Integer)
+    last_used_at = Column(DateTime(timezone=True))
+    revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class Webhook(Base):
+    __tablename__ = "webhooks"
+    id = Column(Integer, primary_key=True)
+    url = Column(String(400))
+    events = Column(JSON, default=list)
+    secret = Column(String(80))
+    banks = Column(JSON, default=list)
+    active = Column(Boolean, default=True)
+    created_by = Column(Integer)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class WebhookDelivery(Base):
+    __tablename__ = "webhook_deliveries"
+    id = Column(Integer, primary_key=True)
+    webhook_id = Column(Integer, index=True)
+    event = Column(String(40))
+    payload = Column(JSON)
+    status = Column(String(10), default="pending")    # pending / ok / failed
+    attempts = Column(Integer, default=0)
+    response_code = Column(Integer)
+    error = Column(String(300))
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+    delivered_at = Column(DateTime(timezone=True))
 
 
 # ---------------------------------------------------------------- branch synonyms

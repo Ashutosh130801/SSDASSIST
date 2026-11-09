@@ -421,4 +421,19 @@ interface ApiService {
 
     @GET("api/chat/unread")
     suspend fun chatUnread(): Map<String, Any?>
+
+    // --- My payslips + tax statement (payroll) ---
+    @GET("api/payroll/my")
+    suspend fun myPayslips(): List<Map<String, Any?>>
+
+    @Streaming
+    @GET("api/payroll/my/{id}.pdf")
+    suspend fun myPayslipPdf(@Path("id") id: Int): ResponseBody
+
+    @GET("api/payroll/my/tax")
+    suspend fun myTax(): Map<String, Any?>
+
+    @Streaming
+    @GET("api/payroll/my/form16.pdf")
+    suspend fun myForm16(@Query("fy") fy: String? = null): ResponseBody
 }

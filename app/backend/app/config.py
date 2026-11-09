@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     razorpayx_account_number: str = ""
     razorpayx_webhook_secret: str = ""
     razorpayx_allow_live: bool = False
+    # 💳 Payment links add-on (Razorpay Payment Links). Test keys (rzp_test_…) only unless RAZORPAY_ALLOW_LIVE=true.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    razorpay_webhook_secret: str = ""
+    razorpay_allow_live: bool = False
+    # Public address customers open (/pay/<token>), e.g. https://recoveriq.ssdenterprises.org.in
+    public_base_url: str = ""
+    # 📣 Outreach add-on providers
+    msg91_auth_key: str = ""
+    msg91_sender: str = ""
+    whatsapp_token: str = ""
+    whatsapp_phone_id: str = ""
     payout_max_item_rupees: int = 200000      # hard cap per employee per payout
     payout_max_batch_rupees: int = 2500000    # hard cap per batch
 

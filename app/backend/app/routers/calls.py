@@ -116,6 +116,13 @@ def log_call(body: schemas.CallCreate, db: Session = Depends(get_db),
     notify_case_change(db, case, user, _summ, ntype="call")
     from .. import presence as _presence
     _presence.touch(db, user.id, active=True)   # logging a call = active (so calls aren't idle)
+    from . import compliance as _compliance
+    _compliance.flag(db, user, case, "call")
+    from .. import webhooks_out
+    webhooks_out.emit(db, "ptp.created" if disp == "PTP" else "call.logged",
+                      {"case_id": case.id, "account_no": case.account_no, "bank": case.bank, "disposition": disp,
+                       "ptp_amount": float(body.ptp_amount or 0), "ptp_date": str(body.ptp_date) if body.ptp_date else None,
+                       "agent": user.name})
     db.commit()
     db.refresh(call)
     from .realtime import notify_data_changed

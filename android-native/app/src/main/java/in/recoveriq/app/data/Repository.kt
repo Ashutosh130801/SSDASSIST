@@ -325,4 +325,10 @@ class Repository(context: Context) {
         Api.service.chatCallback(mapOf("case_id" to caseId, "note" to note))
     suspend fun chatUnread(): Int =
         ((Api.service.chatUnread()["unread"] as? Number)?.toInt()) ?: 0
+
+    // Payroll self-service
+    suspend fun myPayslips(): List<Map<String, Any?>> = Api.service.myPayslips()
+    suspend fun myPayslipPdf(id: Int): okhttp3.ResponseBody = Api.service.myPayslipPdf(id)
+    suspend fun myTax(): Map<String, Any?> = Api.service.myTax()
+    suspend fun myForm16(fy: String?): okhttp3.ResponseBody = Api.service.myForm16(fy)
 }

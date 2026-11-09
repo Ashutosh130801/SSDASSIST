@@ -41,6 +41,8 @@ def _conn_out(c: models.DialerConnection) -> dict:
         caps["vici_pass_set"] = bool(caps.pop("vici_pass"))
     if "sftp_pass" in caps:
         caps["sftp_pass_set"] = bool(caps.pop("sftp_pass"))
+    if "ami_secret" in caps:
+        caps["ami_secret_set"] = bool(caps.pop("ami_secret"))
     return {"id": c.id, "kind": c.kind, "name": c.name, "base_url": c.base_url,
             "api_key_masked": _mask(c.api_key or ""), "branch": c.branch,
             "enabled": bool(c.enabled), "status": c.status,
@@ -198,6 +200,8 @@ def click_to_call(body: dict = Body(...), db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="This case has no phone number")
     from .cases import _ensure_open
     _ensure_open(case, user)          # no dialing on closed / escalated cases for FOS & callers
+    from . import compliance as _compliance
+    _compliance.guard_dial(db, user, case)   # 🛡️ contact hours / attempt caps / certification (if the add-on is on)
     # ── ViciDial path (existing office dialer) ────────────────────────────────────
     vici = _pick_vici(db, case.branch)
     if vici:
@@ -517,6 +521,10 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
         "sftp_port": (body.get("sftp_port") or "").strip(),
         "sftp_user": (body.get("sftp_user") or "").strip(),
         "sftp_base": (body.get("sftp_base") or "").strip(),
+        # Asterisk manager (AMI) — lets Hang up end a call that's still ringing (see vicidial_ami.py)
+        "ami_host": (body.get("ami_host") or "").strip(),
+        "ami_port": (body.get("ami_port") or "").strip(),
+        "ami_user": (body.get("ami_user") or "").strip(),
         "agent_map": body.get("agent_map") or {},
         "dispo_map": body.get("dispo_map") or {},
     }
@@ -529,6 +537,8 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
             caps["vici_pass"] = body["vici_pass"].strip()
         if (body.get("sftp_pass") or "").strip():
             caps["sftp_pass"] = body["sftp_pass"].strip()
+        if (body.get("ami_secret") or "").strip():
+            caps["ami_secret"] = body["ami_secret"].strip()
         if isinstance(body.get("agent_map"), dict):
             caps["agent_map"] = body["agent_map"]
         if isinstance(body.get("dispo_map"), dict) and body["dispo_map"]:
@@ -548,6 +558,8 @@ def vicidial_connect(body: dict = Body(...), db: Session = Depends(get_db),
             caps["vici_pass"] = body["vici_pass"].strip()
         if (body.get("sftp_pass") or "").strip():
             caps["sftp_pass"] = body["sftp_pass"].strip()
+        if (body.get("ami_secret") or "").strip():
+            caps["ami_secret"] = body["ami_secret"].strip()
         c = models.DialerConnection(kind="vicidial", name=name, base_url=base_url,
                                     api_key=_secrets.token_hex(16), branch=branch,
                                     enabled=True, status="unknown", capabilities=caps)
@@ -942,26 +954,93 @@ def vicidial_my_live_call(response: Response, db: Session = Depends(get_db),
         return {"state": "error", "detail": str(exc), "poll_after_ms": 15000}
 
 
+_ENDED_STATES = {"READY", "PAUSED", "DISPO", "LOGGED_OUT", "DEAD", "CLOSER", "QUEUE", "MQUEUE"}
+_hangup_sleep = None      # tests replace the wait
+
+
+def _call_ended(st, call_id) -> bool | None:
+    """True = the agent is no longer on this call; False = still on it; None = can't tell."""
+    if not st:
+        return None
+    status = (st.get("status") or "").upper()
+    if status in _ENDED_STATES:
+        return True
+    if status == "INCALL":
+        cur = (st.get("call_id") or "").strip()
+        return bool(call_id) and cur != call_id
+    return None
+
+
 @router.post("/vicidial/my-hangup")
 def vicidial_my_hangup(body: dict = Body(default={}), db: Session = Depends(get_db),
                        user: models.User = Depends(get_current_user)):
-    """Live-call bar → ⏹ Hang up. Ends the caller's OWN current ViciDial call at once (Agent API
-    external_hangup) — no waiting for the ViciDial agent screen to notice."""
-    from ..vicidial_live import my_agent, agent_api, LiveCallError
+    """Live-call bar → ⏹ Hang up. Ends the caller's OWN current ViciDial call.
+
+    1. Agent API external_hangup (what the ViciDial screen's own button does).
+    2. Checks with agent_status that the call really ended — ViciDial accepts the command even when it
+       will ignore it (a manual dial that is still ringing, or a sleeping background ViciDial tab).
+    3. If it's still on and AMI is set up in Connections, hangs up that exact call's channel on Asterisk.
+    Tells the caller honestly when the call is still on, instead of showing it as ended."""
+    import time as _t
+    from ..vicidial_live import my_agent, agent_api, read_agent_status, LiveCallError, clear_dial
+    from .. import vicidial_ami
+    sleep = _hangup_sleep or _t.sleep
+
+    def status():
+        try:
+            return read_agent_status(conn, agent)
+        except LiveCallError:
+            return None
+
     try:
         conn, agent = my_agent(db, user)
-        ok, txt = agent_api(conn, agent, "external_hangup", "1")
     except LiveCallError as exc:
         raise HTTPException(409, str(exc)) from None
-    if not ok:
-        raise HTTPException(502, f"ViciDial didn't hang up: {txt}")
+    before = status()
+    call_id = ((before or {}).get("call_id") or "").strip()
+    if before and _call_ended(before, call_id) is True:
+        ended, method, api_txt = True, "already-ended", ""
+    else:
+        try:
+            ok, api_txt = agent_api(conn, agent, "external_hangup", "1")
+        except LiveCallError as exc:
+            ok, api_txt = False, str(exc)
+        ended, method = None, "api"
+        if ok:
+            for _ in range(6):                       # ≈3.6 s — the ViciDial screen refreshes every second
+                sleep(0.6)
+                ended = _call_ended(status(), call_id)
+                if ended:
+                    break
+        if not ended and call_id and vicidial_ami.configured(conn):
+            try:
+                chans = vicidial_ami.hangup_call(conn, call_id)
+            except vicidial_ami.AmiError as exc:
+                chans, api_txt = [], f"{api_txt} · {exc}"
+            if chans:
+                method = "ami"
+                ended = True                         # the customer's channel is gone on Asterisk
+        if not ok and not ended:
+            raise HTTPException(502, f"ViciDial didn't hang up: {api_txt}")
     cid = body.get("case_id")
-    from ..vicidial_live import clear_dial
-    clear_dial(user.id)
+    if ended:
+        clear_dial(user.id)
     audit.record(db, user, "call", None, entity_type="dialer",
-                 detail=f"Hung up ViciDial call from RecoverIQ" + (f" (case #{cid})" if cid else ""))
+                 detail=("Hung up" if ended else "Asked ViciDial to hang up") + f" call {call_id or ''} from RecoverIQ ({method})"
+                        + (f" (case #{cid})" if cid else "")
+                        + f" · before: {(before or {}).get('status', '?')}/{(before or {}).get('real_time_sub_status', '')}"
+                        + (f" · ViciDial: {api_txt[:80]}" if api_txt else ""))
     db.commit()
-    return {"ok": True, "detail": txt}
+    out = {"ok": True, "ended": ended, "method": method, "call_id": call_id or None}
+    if ended is False:
+        from ..vicidial_live import keep_hanging_up
+        watching = keep_hanging_up(conn, agent, call_id) if _hangup_sleep is None else bool(call_id)
+        out["watching"] = watching
+        out["warning"] = ("ViciDial hasn't dropped the call yet. Pick the outcome below and press ✓ Save & end — that "
+                          "hangs up and dispositions the call in ViciDial in one step. RecoverIQ also keeps re-trying the hang-up.")
+    elif ended is None:
+        out["warning"] = "Hang-up sent to ViciDial, but RecoverIQ couldn't confirm it ended — check the ViciDial screen."
+    return out
 
 
 @router.post("/vicidial/my-dispo")
@@ -1007,7 +1086,28 @@ def vicidial_my_dispo(body: dict = Body(...), db: Session = Depends(get_db),
                            "campaign or map it in Connections → Disposition map."}
     if body.get("ready", True):
         resume_ready_later(conn, agent)
-    return {"ok": True, "status": status, "ready": bool(body.get("ready", True))}
+    still_on = False
+    if body.get("was_live"):
+        # The caller ended a call ViciDial hadn't dropped: external_status hangs up a live call and
+        # dispositions it. Confirm it really ended, otherwise say so.
+        import time as _t
+        from ..vicidial_live import read_agent_status
+        sleep = _hangup_sleep or _t.sleep
+        for _ in range(5):
+            sleep(0.7)
+            try:
+                st = read_agent_status(conn, agent)
+            except LiveCallError:
+                st = None
+            if _call_ended(st, (body.get("call_id") or "").strip() or None) is not False:
+                break
+        else:
+            still_on = True
+    out = {"ok": True, "status": status, "ready": bool(body.get("ready", True))}
+    if still_on:
+        out["warning"] = ("Saved, but ViciDial still shows you on the call — press Hang up on the ViciDial screen. "
+                          "(Tell the admin: ViciDial ignored both external_hangup and external_status for this agent.)")
+    return out
 
 
 class MyTestCall(BaseModel):

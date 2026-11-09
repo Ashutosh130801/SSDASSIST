@@ -16,7 +16,8 @@ from . import close_sync  # noqa: F401  (close date follows the case's current c
 from .routers import (auth, users, cases, imports, visits, calls, tracking, analytics, ai,
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
                       team, mis, feedback, reminders, audit_log, archive, catalog, manpower,
-                      notifications, dpr, support, attendance, collab, integrations, payouts)
+                      notifications, dpr, support, attendance, collab, integrations, payouts, payroll_extra, payroll, services_api,
+                      compliance, paylinks, outreach, settlements, smart, notices, insights, billing, skiptrace, open_api)
 
 settings = get_settings()
 
@@ -572,6 +573,26 @@ app.add_middleware(
 )
 
 @app.middleware("http")
+async def _service_gate(request, call_next):
+    """A service switched off in ⚙️ Services answers 423 on its API (menus hide it too)."""
+    path = request.url.path
+    if path.startswith("/api/") or path.startswith("/pay/"):
+        from . import services as _svc
+        key = _svc.api_owner(path)
+        if key:
+            from .database import SessionLocal
+            db = SessionLocal()
+            try:
+                on = _svc.is_on(db, key)
+            finally:
+                db.close()
+            if not on:
+                from fastapi.responses import JSONResponse
+                return JSONResponse({"detail": f"{_svc.BY_KEY[key]['name']} is turned off by your administrator."}, status_code=423)
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def _security_headers(request, call_next):
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -583,8 +604,11 @@ async def _security_headers(request, call_next):
 for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, devices,
           leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis, feedback,
           reminders, audit_log, archive, catalog, manpower, notifications, dpr, support,
-          attendance, collab, integrations, payouts):
+          attendance, collab, integrations, payouts, payroll_extra, payroll, services_api,
+          compliance, paylinks, outreach, settlements, smart, notices, insights, billing, skiptrace, open_api):
     app.include_router(r.router)
+app.include_router(paylinks.public)          # /pay/<token> customer page (gated by the Payments add-on)
+app.include_router(open_api.admin_router)    # /api/apikeys
 
 
 @app.on_event("startup")
@@ -595,6 +619,34 @@ async def _capture_loop():
     from .routers import realtime as _rt
     _rt.set_loop(asyncio.get_running_loop())
     asyncio.create_task(_attendance_sweeper())
+    asyncio.create_task(_addons_sweeper())
+
+
+async def _addons_sweeper():
+    """🧩 Add-ons background work: deliver webhooks; run outreach journeys once a day when set to automatic."""
+    import asyncio
+    from . import services as _svc, webhooks_out
+    from .database import SessionLocal
+    last_outreach = None
+    while True:
+        await asyncio.sleep(30)
+        try:
+            db = SessionLocal()
+            try:
+                if _svc.is_on(db, "open_api"):
+                    await asyncio.to_thread(webhooks_out.deliver_pending, db)
+                if _svc.is_on(db, "outreach") and _svc.settings_of(db, "outreach").get("auto_run"):
+                    from .addons_common import now_ist
+                    from .routers import outreach as _out
+                    today = now_ist().date()
+                    if last_outreach != today and _out._in_hours(db) and now_ist().hour >= 10:
+                        base = (settings.public_base_url or "").rstrip("/")
+                        await asyncio.to_thread(_out.run, db, today, base)
+                        last_outreach = today
+            finally:
+                db.close()
+        except Exception:
+            pass
 
 
 async def _attendance_sweeper():

@@ -171,6 +171,11 @@ async def create_visit(
         _alert_suspicious(db, case, user, trust)
     from .. import presence as _presence
     _presence.touch(db, user.id, active=True)   # logging a visit = active
+    from . import compliance as _compliance
+    _compliance.flag(db, user, case, "visit")
+    from .. import webhooks_out
+    webhooks_out.emit(db, "visit.logged", {"case_id": case.id, "account_no": case.account_no, "bank": case.bank,
+                                           "disposition": disposition, "paid": bool(paid), "amount": float(amt or 0), "agent": user.name})
     db.commit()
     db.refresh(visit)
     from .realtime import notify_data_changed

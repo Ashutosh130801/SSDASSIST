@@ -358,3 +358,46 @@ def resume_ready_later(conn, agent, attempts=(1.5, 2.5, 4.0)):
             if ok or "NOT PAUSED" in txt.upper() or "READY" in txt.upper():
                 return
     threading.Thread(target=run, daemon=True).start()
+
+
+# ---------------------------------------------------------------- keep hanging up a ringing call
+_HANGUP_WATCH: dict = {}          # agent -> call_id being watched
+
+
+def keep_hanging_up(conn, agent, call_id, every=2.0, for_s=90.0):
+    """ViciDial's API can't end a manual dial that is still RINGING (its screen only obeys hang-up once
+    the customer is live). Without AMI access, keep re-sending external_hangup in the background until
+    the call is gone — so the moment the customer answers, the call is cut. Never blocks; one per agent."""
+    import threading
+    import time as _t
+    if not call_id or _HANGUP_WATCH.get(agent) == call_id:
+        return False
+    _HANGUP_WATCH[agent] = call_id
+    base = conn.base_url
+    caps = dict(conn.capabilities or {})
+
+    class _C:                                # detached copy — the DB session is closed by then
+        base_url = base
+        capabilities = caps
+
+    def run():
+        try:
+            end = _t.time() + for_s
+            while _t.time() < end:
+                _t.sleep(every)
+                try:
+                    st = read_agent_status(_C, agent)
+                except Exception:
+                    continue
+                status = (st.get("status") or "").upper()
+                if status != "INCALL" or (st.get("call_id") or "").strip() != call_id:
+                    return
+                try:
+                    agent_api(_C, agent, "external_hangup", "1", timeout=5.0)
+                except Exception:
+                    pass
+        finally:
+            if _HANGUP_WATCH.get(agent) == call_id:
+                _HANGUP_WATCH.pop(agent, None)
+    threading.Thread(target=run, daemon=True).start()
+    return True
