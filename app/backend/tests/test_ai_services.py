@@ -152,6 +152,30 @@ class AiServicesTests(unittest.TestCase):
         self.c.post("/api/ai/chat", json={"message": "cases?"})
         self.assertIn("no access to case data", [m for m in SEEN[-1] if m["role"] == "tool"][0]["content"])
 
+    def test_tools_forgiving_and_data_map(self):
+        from app import ai_tools
+        from app.routers.ai import _data_context, _CTX_CACHE
+        db = SessionLocal()
+        fos = db.get(models.User, self.ids["r@x.test"])
+        adm = db.get(models.User, self.ids["a@x.test"])
+        r = ai_tools.run_tool(db, fos, "search_cases", {"bank": "Axis Bank Ltd"})          # fuzzy bank name
+        self.assertEqual(r["total_matching"], 2)
+        r = ai_tools.run_tool(db, fos, "search_cases", {"bank": "HDFC"})
+        self.assertEqual(r["total_matching"], 0)
+        self.assertIn("AXIS", r["why_empty"]["banks_available"])                            # tells the AI what exists
+        self.assertEqual(ai_tools.run_tool(db, fos, "search_cases", {"status": "pending"})["total_matching"], 1)   # synonym
+        # month with no data yet → latest month with data, and it says so
+        db.add(models.Case(customer_name="Old", account_no="OLD1", bank="RBL", product="CC", period="2020-01", paid_status="UNPAID"))
+        db.commit()
+        r = ai_tools.run_tool(db, adm, "search_cases", {"month": "2020-01"})
+        self.assertEqual(r["total_matching"], 1)
+        _CTX_CACHE.clear()
+        ctx = _data_context(db, fos)
+        self.assertIn("AXIS / X", ctx); self.assertNotIn("ICICI", ctx)                     # only what the FOS can see
+        self.assertIn("Ravi", ctx)
+        ov = ai_tools.run_tool(db, adm, "data_overview", {})
+        self.assertTrue(any(m["month"] == "2020-01" for m in ov["months"]))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

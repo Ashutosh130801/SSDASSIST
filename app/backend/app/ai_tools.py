@@ -62,6 +62,90 @@ def _cases(db, user, bucket=None):
     return q
 
 
+ALL_MONTH_ROLES = ("admin", "headoffice", "techsupport", "it_support_view")
+
+
+def _cases_for(db, user, args) -> tuple:
+    """Scoped case query for a tool call + a note when the month had to be chosen automatically.
+    month=YYYY-MM picks one month; bucket=current|next|last|all; nothing → this month, or — if this
+    month has no data yet — the latest month that does (and says so)."""
+    import re as _re
+    from .routers.cases import _current_period, _last_period, _next_period
+    month = str(args.get("month") or "").strip()
+    bucket = (args.get("bucket") or "").strip().lower()
+    if month:
+        if not _re.fullmatch(r"\d{4}-\d{2}", month):
+            raise ToolError("month must be YYYY-MM")
+        if user.role in ALL_MONTH_ROLES:
+            return _cases(db, user, "all").filter(models.Case.period == month), None
+        if month == _last_period():
+            return _cases(db, user, "last"), None
+        if month in (_current_period(), _next_period()):
+            return _cases(db, user).filter(models.Case.period == month), None
+        raise ToolError(f"Your role can see {_last_period()}, {_current_period()} and {_next_period()} only.")
+    if bucket in ("current", "next", "last", "all"):
+        return _cases(db, user, bucket), None
+    q = _cases(db, user, "current")
+    if q.with_entities(models.Case.id).first():
+        return q, None
+    # nothing uploaded for this month yet → fall back to the latest month the user can see
+    if user.role in ALL_MONTH_ROLES:
+        latest = _cases(db, user, "all").with_entities(func.max(models.Case.period)).scalar()
+        if latest:
+            return _cases(db, user, "all").filter(models.Case.period == latest), \
+                f"No cases for {_current_period()} yet — showing {latest}, the latest month with data."
+    for b, label in (("next", _next_period()), ("last", _last_period())):
+        q2 = _cases(db, user, b)
+        if q2.with_entities(models.Case.id).first():
+            return q2, f"No cases for {_current_period()} yet — showing {label}."
+    return q, None
+
+
+def _bank_filter(q, bank):
+    """'Axis', 'AXIS BANK', 'axis bank ltd' all match AXIS."""
+    b = str(bank or "").upper().replace(" LTD", "").replace(" LIMITED", "").replace(" BANK", "").strip()
+    return q.filter(func.upper(models.Case.bank).like(f"%{b}%")) if b else q
+
+
+def overview(db, user, compact=False) -> dict:
+    """What data this user can see: months, banks/products with counts, buckets, branches, outcomes, staff."""
+    if user.role not in CASE_ROLES:
+        return {"cases": "no case access for this role"}
+    from .routers.cases import _current_period
+    base = _cases(db, user, "all" if user.role in ALL_MONTH_ROLES else None)
+    rows = (base.with_entities(models.Case.period, models.Case.bank, models.Case.product, func.count(models.Case.id),
+                               func.sum(func.cast(models.Case.paid_status == "PAID", models.Integer)),
+                               func.coalesce(func.sum(models.Case.pending_amount), 0))
+            .group_by(models.Case.period, models.Case.bank, models.Case.product).all())
+    months = {}
+    for per, bank, prod, n, paid, pend in rows:
+        m = months.setdefault(per or "no month", {"month": per or "no month", "cases": 0, "paid": 0, "pending": 0.0, "portfolios": []})
+        m["cases"] += int(n or 0); m["paid"] += int(paid or 0); m["pending"] += _f(pend)
+        m["portfolios"].append(f"{bank or '?'} / {prod or '?'} ({int(n or 0)})")
+    ms = sorted(months.values(), key=lambda m: m["month"], reverse=True)[:6]
+    for m in ms:
+        m["pending"] = round(m["pending"])
+        m["portfolios"] = m["portfolios"][:25]
+    def top(col, k=15):
+        return [v for (v,) in base.with_entities(col).filter(col.isnot(None), col != "").group_by(col)
+                .order_by(func.count(models.Case.id).desc()).limit(k).all()]
+    out = {"current_month": _current_period(), "months": ms,
+           "banks": top(models.Case.bank), "products": top(models.Case.product, 25), "buckets": top(models.Case.bucket),
+           "branches": top(models.Case.branch), "dispositions": top(models.Case.disposition, 20),
+           "paid_status_values": ["PAID", "PARTIAL", "UNPAID"]}
+    staff = visible_staff(db, user)
+    sq = db.query(models.User.name, models.User.role).filter(models.User.is_active.is_(True),
+                                                             models.User.role.in_(("fos", "telecaller", "teamlead", "manager")))
+    if staff is not None:
+        sq = sq.filter(models.User.id.in_(staff or [0]))
+    people = sq.order_by(models.User.role, models.User.name).limit(15 if compact else 80).all()
+    out["staff"] = [f"{n} ({r})" for n, r in people]
+    if compact:
+        for m in out["months"]:
+            m["portfolios"] = m["portfolios"][:8]
+    return out
+
+
 def _names(db, ids):
     ids = {i for i in ids if i}
     return {u.id: u.name for u in db.query(models.User.id, models.User.name).filter(models.User.id.in_(ids or {0}))}
@@ -109,9 +193,9 @@ def t_whoami(db, user, args):
 
 
 def t_portfolio_summary(db, user, args):
-    q = _cases(db, user, args.get("bucket") or "current")
+    q, note = _cases_for(db, user, args)
     if args.get("bank"):
-        q = q.filter(func.upper(models.Case.bank) == str(args["bank"]).upper())
+        q = _bank_filter(q, args["bank"])
     if args.get("product"):
         q = q.filter(models.Case.product.ilike(f"%{args['product']}%"))
     rows = (q.with_entities(models.Case.bank, models.Case.product, models.Case.period,
@@ -131,7 +215,12 @@ def t_portfolio_summary(db, user, args):
     out.sort(key=lambda r: (-r["cases"]))
     tot = {k: sum(r[k] for r in out) for k in ("cases", "paid", "partial", "unpaid", "received", "pending", "total_outstanding")}
     tot["paid_pct"] = round(100 * tot["paid"] / tot["cases"], 1) if tot["cases"] else 0
-    return {"rows": out, "totals": tot}
+    res = {"rows": out, "totals": tot}
+    if note:
+        res["note"] = note
+    if not out:
+        res["hint"] = "No cases matched. Call data_overview to see the months, banks and products that exist, then retry."
+    return res
 
 
 CASE_COLS = ["id", "customer", "account_no", "phone", "bank", "product", "month", "bucket", "status", "paid_status", "disposition",
@@ -148,17 +237,20 @@ def _case_row(c, names):
 
 
 def t_search_cases(db, user, args):
-    q = _cases(db, user, args.get("bucket") or "current")
+    q, note = _cases_for(db, user, args)
+    base_q = q
     text = (args.get("text") or "").strip()
     if text:
         like = f"%{text}%"
         q = q.filter(or_(models.Case.customer_name.ilike(like), models.Case.account_no.ilike(like), models.Case.card_no.ilike(like),
                          models.Case.phone.ilike(like), models.Case.vehicle_num.ilike(like)))
     if args.get("bank"):
-        q = q.filter(func.upper(models.Case.bank) == str(args["bank"]).upper())
+        q = _bank_filter(q, args["bank"])
     if args.get("product"):
         q = q.filter(models.Case.product.ilike(f"%{args['product']}%"))
     st = (args.get("status") or "any").lower()
+    st = {"pending": "unpaid", "not paid": "unpaid", "open": "unpaid", "settled": "paid", "closed": "paid",
+          "promise": "ptp", "promised": "ptp", "part": "partial", "partially paid": "partial"}.get(st, st)
     if st in ("paid", "unpaid", "partial"):
         q = q.filter(models.Case.paid_status == st.upper())
     elif st == "ptp":
@@ -180,7 +272,31 @@ def t_search_cases(db, user, args):
     lim = max(1, min(int(args.get("limit") or 50), int(args.get("_max", 200))))
     cs = q.order_by(order).limit(lim).all()
     names = _names(db, [c.assigned_fos_id for c in cs] + [c.assigned_caller_id for c in cs])
-    return {"total_matching": total, "returned": len(cs), "columns": CASE_COLS, "rows": [_case_row(c, names) for c in cs]}
+    res = {"total_matching": total, "returned": len(cs), "columns": CASE_COLS, "rows": [_case_row(c, names) for c in cs]}
+    if note:
+        res["note"] = note
+    if total == 0:
+        res["why_empty"] = _why_empty(db, user, base_q, args)
+    return res
+
+
+def _why_empty(db, user, base_q, args):
+    """Which filter emptied the result, and what values actually exist — so the AI can retry correctly."""
+    out = {"cases_in_scope_for_month": base_q.count()}
+    if args.get("bank"):
+        out["with_bank_only"] = _bank_filter(base_q, args["bank"]).count()
+        out["banks_available"] = [b for (b,) in base_q.with_entities(models.Case.bank).distinct().limit(20) if b]
+    if args.get("product"):
+        out["with_product_only"] = base_q.filter(models.Case.product.ilike(f"%{args['product']}%")).count()
+        out["products_available"] = [p for (p,) in base_q.with_entities(models.Case.product).distinct().limit(30) if p]
+    if args.get("disposition"):
+        out["dispositions_available"] = [d for (d,) in base_q.with_entities(models.Case.disposition).distinct().limit(25) if d]
+    if args.get("assigned_to"):
+        out["staff_matching_name"] = [n for (n,) in db.query(models.User.name).filter(models.User.name.ilike(f"%{args['assigned_to']}%")).limit(10)]
+    if args.get("text"):
+        out["note"] = "text matches customer name / account / card / phone / vehicle number only"
+    out["advice"] = "Retry with values from the lists above, drop the filter that emptied the result, or call data_overview."
+    return out
 
 
 def t_case_detail(db, user, args):
@@ -212,7 +328,8 @@ def t_case_detail(db, user, args):
 def t_ptp_list(db, user, args):
     seg = (args.get("segment") or "all").lower()
     from sqlalchemy import select
-    sub = _cases(db, user, args.get("bucket") or "current").with_entities(models.Case.id).subquery()
+    cq, note = _cases_for(db, user, args)
+    sub = cq.with_entities(models.Case.id).subquery()
     q = (db.query(models.CallLog).filter(models.CallLog.case_id.in_(select(sub.c.id)),
                                          models.CallLog.disposition.ilike("%PTP%"), models.CallLog.ptp_date.isnot(None)))
     t = _today()
@@ -239,7 +356,7 @@ def t_ptp_list(db, user, args):
                      "product": c.product, "ptp_date": l.ptp_date.strftime("%Y-%m-%d"), "ptp_amount": _f(l.ptp_amount),
                      "pending": _f(c.pending_amount), "promised_to": names.get(l.caller_id), "note": (l.note or "")[:120]})
     rows.sort(key=lambda r: r["ptp_date"])
-    return {"segment": seg, "count": len(rows), "promised_total": round(sum(r["ptp_amount"] for r in rows), 2),
+    return {"segment": seg, "count": len(rows), "promised_total": round(sum(r["ptp_amount"] for r in rows), 2), **({"note": note} if note else {}),
             "columns": ["case_id", "customer", "account_no", "phone", "bank", "product", "ptp_date", "ptp_amount", "pending", "promised_to", "note"],
             "rows": rows}
 
@@ -383,15 +500,22 @@ def t_my_salary(db, user, args):
             "note": "Only your own released payslips. Download PDFs from My Payslips."}
 
 
+def t_data_overview(db, user, args):
+    return overview(db, user)
+
+
 TOOLS = {
+    "data_overview": (t_data_overview, "What data this user can see: months (with case counts and portfolios), banks, products, buckets, "
+                      "branches, dispositions in use, and staff names. Call it when unsure of names/values, or after a search returns 0.", {}),
     "whoami": (t_whoami, "Who the user is, their role and what data they can see. Call first if unsure.", {}),
     "portfolio_summary": (t_portfolio_summary, "Portfolio totals by bank/product/month: cases, paid, partial, unpaid, paid %, outstanding, received, pending.",
-                          {"bank": "string", "product": "string", "bucket": "current|next|last|all"}),
-    "search_cases": (t_search_cases, "Find cases. Filters: text (name/account/phone/vehicle), bank, product, status (paid|unpaid|partial|ptp|follow_up_due|not_contacted|any), disposition, assigned_to (staff name), min_pending, sort (pending|outstanding|follow_up), limit, bucket.",
+                          {"bank": "string", "product": "string", "month": "YYYY-MM", "bucket": "current|next|last|all"}),
+    "search_cases": (t_search_cases, "Find cases. All filters optional — start broad. Filters: text (name/account/phone/vehicle), bank (partial ok, e.g. 'axis'), product, status (paid|unpaid|partial|ptp|follow_up_due|not_contacted|any), disposition, assigned_to (staff name), min_pending, sort (pending|outstanding|follow_up), limit, bucket.",
                      {"text": "string", "bank": "string", "product": "string", "status": "string", "disposition": "string",
-                      "assigned_to": "string", "min_pending": "number", "sort": "string", "limit": "integer", "bucket": "string"}),
+                      "assigned_to": "string", "min_pending": "number", "sort": "string", "limit": "integer",
+                      "month": "YYYY-MM", "bucket": "current|next|last|all"}),
     "case_detail": (t_case_detail, "Full detail of one case incl. last 5 calls and visits.", {"case_id": "integer", "account_no": "string"}),
-    "ptp_list": (t_ptp_list, "Promises to pay. segment = overdue|today|upcoming|all.", {"segment": "string", "limit": "integer", "bucket": "string"}),
+    "ptp_list": (t_ptp_list, "Promises to pay. segment = overdue|today|upcoming|all.", {"segment": "string", "limit": "integer", "month": "YYYY-MM", "bucket": "current|next|last|all"}),
     "team_performance": (t_team_performance, "Per FOS / caller: cases, paid %, visits, visit collections, calls, PTPs for a period.",
                          {"period": "string", "role": "fos|telecaller"}),
     "activity": (t_activity, "List visits or calls for a period (today, yesterday, this_week, this_month, last_month, last_7_days, YYYY-MM-DD..YYYY-MM-DD), optionally for one person.",

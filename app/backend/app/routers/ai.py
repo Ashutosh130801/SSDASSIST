@@ -23,7 +23,7 @@ from ..database import get_db
 from ..deps import get_current_user
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
-MAX_STEPS = 6
+MAX_STEPS = 8
 IST = timezone(timedelta(hours=5, minutes=30))
 
 META_TOOLS = {
@@ -44,7 +44,46 @@ def _conf(db):
     return {**svc.settings_of(db, "ai_assist"), **svc.secrets_of(db, "ai_assist")}
 
 
-def _system(user, conf):
+_CTX_CACHE: dict = {}
+
+
+def _data_context(db, user) -> str:
+    """Compact map of the data this user can see — so the model uses real bank / product / month / staff names
+    instead of guessing (guessed filters were the main cause of '0 results'). Cached 2 minutes per user."""
+    import time as _t
+    hit = _CTX_CACHE.get(user.id)
+    if hit and _t.time() - hit[0] < 120:
+        return hit[1]
+    try:
+        ov = ai_tools.overview(db, user, compact=True)
+        if "months" not in ov:
+            txt = "This role has no case data."
+        else:
+            lines = [f"Current month: {ov['current_month']}. Months with data (newest first):"]
+            for m in ov["months"]:
+                lines.append(f"- {m['month']}: {m['cases']} cases, {m['paid']} paid, ₹{m['pending']:,} pending · " + "; ".join(m["portfolios"]))
+            for k, label in (("banks", "Banks"), ("products", "Products"), ("buckets", "Buckets"), ("branches", "Branches"),
+                             ("dispositions", "Dispositions in use"), ("staff", "Staff you can see")):
+                if ov.get(k):
+                    lines.append(f"{label}: " + ", ".join(map(str, ov[k])))
+            txt = "\n".join(lines)
+    except Exception as e:
+        txt = f"(data map unavailable: {str(e)[:80]})"
+    txt = txt[:3500]
+    _CTX_CACHE[user.id] = (_t.time(), txt)
+    return txt
+
+
+APP_MAP = ("RecoverIQ screens: Dashboard · Accounts/Portfolios (bank→product→month uploads, allocation, case drawer) · Live Sheet · "
+           "Calling queue · PTP Tracker · Escalations · Litigation · Field Tracking (FOS visits, GPS, routes) · Activity · Audit Log · "
+           "Monthly Archive · Team/Manpower · MIS (live, cycle, pivot) · Bank Feedback · DPR upload · Leave · Attendance · Communication "
+           "templates · Devices · Connections (ViciDial) · Salary & Payslips · Security · ⚙️ Services · 🧩 Add-ons. "
+           "Key terms: PTP = promise to pay; RTP = refused to pay; RNR = rang no response; FOS = field officer; TOS = total outstanding; "
+           "NORM/STAB = bank target amounts (normalise / stabilise); bucket = days-past-due band (X, 1, 2, 3 BKT…); "
+           "DPR = bank's daily progress report; a 'month' is the allocation month (period YYYY-MM).")
+
+
+def _system(user, conf, db=None):
     lang = conf.get("language") or "auto"
     langline = "Reply in the same language as the user's question." if lang == "auto" else f"Always reply in {lang}."
     return (
@@ -62,7 +101,11 @@ def _system(user, conf):
         "pay or change data yourself.\n"
         "7. Phone and account numbers you see are masked (XXXX1234) — keep them masked.\n"
         "8. Collections must be lawful and respectful (RBI fair-practice rules): no threats, no calls before 8 am or after 7 pm.\n"
-        f"{langline}"
+        "9. Use the exact bank / product / month / staff names from the DATA MAP below. Start with broad searches (few filters). "
+        "If a tool returns 0 rows, read its why_empty / hint, fix or drop the filter and try again (or call data_overview) before "
+        "telling the user nothing was found. If a tool says it showed a different month, tell the user which month you used.\n"
+        "10. If the question is vague, answer with a useful overview (e.g. portfolio_summary) and offer 2–3 specific follow-ups.\n"
+        f"{langline}\n\n{APP_MAP}\n\nDATA MAP (what this user can see):\n" + (_data_context(db, user) if db is not None else "")
     )
 
 
@@ -189,9 +232,10 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
     specs = ai_llm.tool_specs(tools)
     out = {"files": [], "actions": [], "tools": []}
     reply = ""
+    system = _system(user, conf, db)
     try:
         for _ in range(MAX_STEPS):
-            res = ai_llm.call_llm(conf, _system(user, conf), messages, specs)
+            res = ai_llm.call_llm(conf, system, messages, specs)
             if not res["tool_calls"]:
                 reply = res["content"].strip()
                 break
