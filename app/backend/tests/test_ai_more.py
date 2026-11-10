@@ -87,9 +87,25 @@ class AiMoreTests(unittest.TestCase):
         self.assertEqual(len(r["steps"]), 3); self.assertTrue(all(s["ok"] for s in r["steps"]))
         first_user_msg = seen[0][1][-1]
         self.assertIn("SCREEN", first_user_msg); self.assertIn("XXXX3210", first_user_msg); self.assertNotIn("9876543210", first_user_msg)
-        self.assertIn("audit_log", seen[0][2]); self.assertIn("make_visual", seen[0][2])
+        self.assertIn("mis_breakdown", seen[0][2]); self.assertIn("make_visual", seen[0][2])
+        self.assertNotIn("legal_notices", seen[0][2])                               # fast mode: only the tools this question needs
+        self.assertEqual(r["timing"]["how"], "model"); self.assertEqual(r["timing"]["calls"], 2)
         conv = self.c.get(f"/api/ai/conversations/{r['conversation_id']}").json()
         self.assertEqual(len(conv["messages"][-1]["visuals"]), 3)                  # visuals kept in history
+
+    def test_instant_cache_and_speed(self):
+        as_user(self.adm)
+        calls = []
+        with patch("app.ai_llm.call_llm", side_effect=lambda *a, **k: (calls.append(1), self._reply("Done.\nMood: happy"))[1]):
+            r = self.c.post("/api/ai/chat", json={"message": "hi"}).json()
+            self.assertEqual((r["timing"]["how"], r["mood"]), ("instant", "happy")); self.assertEqual(calls, [])
+            self.assertEqual(self.c.post("/api/ai/chat", json={"message": "thanks!"}).json()["mood"], "love")
+            a = self.c.post("/api/ai/chat", json={"message": "how many legal cases are open?"}).json()
+            b = self.c.post("/api/ai/chat", json={"message": "How many legal cases are open?"}).json()
+        self.assertEqual(len(calls), 1)                                             # second time came from the 2-minute cache
+        self.assertEqual((a["timing"]["how"], b["timing"]["how"], b["reply"]), ("model", "cache", "Done."))
+        sp = self.c.get("/api/ai/status").json()["speed"]
+        self.assertGreaterEqual(sp["answers"], 1); self.assertGreaterEqual(sp["quick"], 3); self.assertIn("avg_s", sp)
 
     def test_mood_fallback(self):
         from app.routers.ai import _split_mood
@@ -108,7 +124,7 @@ class AiMoreTests(unittest.TestCase):
                                                                                      self._reply("ok"))[1]):
             self.c.post("/api/ai/chat", json={"message": "who changed what?"})
         self.assertNotIn("audit_log", specs_seen[0]); self.assertNotIn("dpr_uploads", specs_seen[0])
-        self.assertNotIn("make_visual", specs_seen[0]); self.assertIn("mis_breakdown", specs_seen[0])
+        self.assertNotIn("make_visual", specs_seen[0]); self.assertIn("data_overview", specs_seen[0])
         st = self.c.get("/api/ai/status").json()
         self.assertIn("audit_log", st["tools_off"]); self.assertEqual(st["bot_avatar"], "rivet"); self.assertTrue(st["bot_user_pick"])
         db = SessionLocal()

@@ -92,6 +92,8 @@ SERVICES: list[dict] = [
          {"key": "daily_limit", "label": "Questions per user per day", "type": "number", "default": 100},
          {"key": "allow_files", "label": "Allow Excel / PDF / Word generation", "type": "bool", "default": True},
          {"key": "allow_actions", "label": "Allow actions (with user confirmation)", "type": "bool", "default": True},
+         {"key": "fast_mode", "label": "⚡ Fast mode — send only the tools a question needs, slimmer prompts, short answers (recommended on CPU / small GPUs)", "type": "bool", "default": True},
+         {"key": "bot_model", "label": "Faster model for the floating bot (optional, same provider — e.g. qwen3:1.7b; blank = same as above)", "type": "text", "default": ""},
          {"key": "allow_visuals", "label": "Allow visual answers (charts, KPI dashboards, tables, flow diagrams)", "type": "bool", "default": True},
          # ── which parts of the app the AI may read (always limited to what each user can see) ──
          {"key": "data_audit", "label": "AI data access: Audit Log & DPR upload history", "type": "bool", "default": True},

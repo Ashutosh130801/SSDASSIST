@@ -5624,6 +5624,8 @@ function AiMessage({ m, onSend, onOpenCase, onConfirm, compact }) {
       {a.type === 'whatsapp' && <a className="btn ghost sm" href={waHref(a.phone, a.text)} target="_blank" rel="noreferrer">💬 {a.label}</a>}
     </div>)}
     {(m.suggestions || []).length > 0 && onSend && <div className="ai-sugg">{m.suggestions.map((s, k) => <div key={k} className="chip" onClick={() => onSend(s)}>↳ {s}</div>)}</div>}
+    {m.timing && <div className="ai-time" title={m.timing.how === 'model' ? `${m.timing.calls} model call(s) · model ${((m.timing.llm_ms || 0) / 1000).toFixed(1)}s · ${m.timing.tools_offered || '?'} tools offered` : ''}>
+      ⏱ {m.timing.how === 'instant' ? 'instant' : m.timing.how === 'cache' ? 'instant (repeat)' : ((m.timing.total_ms || 0) / 1000).toFixed(1) + 's'}</div>}
     {(m.steps || m.tools || []).length > 0 && <div className="muted" style={{ fontSize: 10.5, marginTop: 4 }}>
       <span style={{ cursor: 'pointer' }} onClick={() => setSteps(s => !s)}>{steps ? '▾' : '▸'} {m.steps ? `${m.steps.length} step${m.steps.length === 1 ? '' : 's'}` : 'sources'}: {[...new Set((m.steps || []).map(s => s.tool).concat(m.tools || []))].join(', ')}</span>
       {steps && m.steps && <div className="ai-steps">{m.steps.map((s, k) => <div key={k}>{s.ok ? '✓' : '✗'} <b>{s.tool}</b> <span className="mono">{JSON.stringify(s.args)}</span>
@@ -5645,7 +5647,7 @@ function AIAssist({ user }) {
     setMsgs(m => [...m, { role: 'user', content: t }]); setInput(''); setBusy(true);
     try { const r = await api('/api/ai/chat', { method: 'POST', body: { message: t, conversation_id: cid } });
       setCid(r.conversation_id); setMsgs(m => [...m, { role: 'assistant', content: r.reply, files: r.files, actions: r.actions, tools: r.tools,
-        visuals: r.visuals, steps: r.steps, suggestions: r.suggestions }]); loadConvs();
+        visuals: r.visuals, steps: r.steps, suggestions: r.suggestions, timing: r.timing }]); loadConvs();
       api('/api/ai/status').then(setSt).catch(() => {});
     } catch (e) { setMsgs(m => [...m, { role: 'assistant', content: '⚠️ ' + e.message }]); } finally { setBusy(false); }
   };
@@ -5663,7 +5665,7 @@ function AIAssist({ user }) {
         <span className="muted" onClick={e => { e.stopPropagation(); if (window.confirm('Delete this chat?')) api('/api/ai/conversations/' + c.id, { method: 'DELETE' }).then(() => { if (c.id === cid) { setCid(null); setMsgs([]); } loadConvs(); }); }}>✕</span></div>)}
     </div>
     <div className="glass card" style={{ display: 'flex', flexDirection: 'column', padding: 12, minWidth: 0, minHeight: 'calc(100vh - 170px)' }}>
-      <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>{st && !st.error ? <>✨ {st.local ? '🏢 ' + (st.provider_label || 'Local model') + ' (data stays on your server)' : '☁️ ' + (st.provider_label || st.provider)} · {st.model}{st.mask_pii ? ' · phone/account numbers masked' : ''} · {st.used_today}/{st.daily_limit} today
+      <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>{st && !st.error ? <>✨ {st.local ? '🏢 ' + (st.provider_label || 'Local model') + ' (data stays on your server)' : '☁️ ' + (st.provider_label || st.provider)} · {st.model}{st.mask_pii ? ' · phone/account numbers masked' : ''} · {st.used_today}/{st.daily_limit} today{st.speed && st.speed.avg_s ? ` · ⏱ avg ${st.speed.avg_s}s (last ${st.speed.answers})` : ''}
         {!st.configured && <b style={{ color: 'var(--bad)' }}> · not set up: {st.hint}</b>}</> : st && st.error}</div>
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
         {!msgs.length && <div className="muted" style={{ margin: 'auto', textAlign: 'center', maxWidth: 520 }}>Hi {user.name.split(' ')[0]} — ask about anything in RecoverIQ: cases, PTPs, MIS, team, visits, calls, Audit Log, DPR uploads, legal, settlements, attendance, leave or payslips. Ask for a <b>dashboard</b> or <b>chart</b> and I'll draw it. I only see what you can see.
@@ -6194,7 +6196,7 @@ function AiBot({ user, view, viewLabel }) {
       const r = await api('/api/ai/chat', { method: 'POST', body });
       setCid(r.conversation_id);
       const full = String(r.reply || '');
-      const msg = { role: 'assistant', content: '', typing: true, files: r.files, actions: r.actions, tools: r.tools, visuals: r.visuals, steps: r.steps, suggestions: r.suggestions };
+      const msg = { role: 'assistant', content: '', typing: true, files: r.files, actions: r.actions, tools: r.tools, visuals: r.visuals, steps: r.steps, suggestions: r.suggestions, timing: r.timing };
       setMsgs(m => [...m, msg]);
       const failed = full.startsWith('⚠️');
       const aiMood = ['celebrate', 'love', 'sorry', 'surprised', 'wink', 'happy'].includes(r.mood) ? r.mood : null;
@@ -6202,8 +6204,8 @@ function AiBot({ user, view, viewLabel }) {
       failed ? react('sad', 2600)
         : (r.visuals || []).length ? react('charting', 1600, 'talk')
         : (r.files || []).length ? react('file', 1600, 'talk')
-        : react('talk', Math.min(6000, 600 + full.length * 9), finale);
-      await new Promise(done => { let i = 0; const step = Math.max(2, Math.round(full.length / 220));
+        : react('talk', 900, finale);
+      await new Promise(done => { let i = 0; const step = Math.max(3, Math.ceil(full.length / 50));
         const t = setInterval(() => { i += step; msg.content = full.slice(0, i); setMsgs(m => [...m]);
           if (i >= full.length) { clearInterval(t); msg.content = full; msg.typing = false; setMsgs(m => [...m]); done(); } }, 16); });
       if ((r.visuals || []).length || (r.files || []).length) react(finale === 'sad' ? 'sad' : finale, 2200);

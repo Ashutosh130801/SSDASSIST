@@ -94,7 +94,7 @@ def tool_specs(tools: dict) -> list[dict]:
     return [{"name": n, "description": d, "parameters": _schema(p)} for n, (_, d, p) in tools.items()]
 
 
-def _openai(base, key, model, system, messages, tools, timeout, think=None):
+def _openai(base, key, model, system, messages, tools, timeout, think=None, max_tokens=None, local=False):
     if think is False and _is_qwen3(model):
         system = system + "\n/no_think"          # Qwen3 soft switch: answer directly, no long reasoning
     msgs = [{"role": "system", "content": system}]
@@ -108,6 +108,10 @@ def _openai(base, key, model, system, messages, tools, timeout, think=None):
         else:
             msgs.append({"role": m["role"], "content": m["content"]})
     body = {"model": model, "messages": msgs, "temperature": 0.2}
+    if max_tokens:
+        body["max_tokens"] = int(max_tokens)          # cap the answer length → bounded generation time
+    if local:
+        body["keep_alive"] = "30m"                     # Ollama: keep the model loaded between questions
     if tools:
         body["tools"] = [{"type": "function", "function": t} for t in tools]
     if think is False:
@@ -149,7 +153,7 @@ def _gemini(key, model, system, messages, tools, timeout):
                 resp = {"result": resp}
             contents.append({"role": "user", "parts": [{"functionResponse": {"name": m["name"], "response": resp}}]})
     body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents,
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048}}
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1200}}
     if tools:
         body["tools"] = [{"functionDeclarations": tools}]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -205,7 +209,8 @@ def _call_one(conf, st, system, messages, tools, timeout):
         return _gemini(key, st["model"], system, messages, tools, timeout)
     think = None if conf.get("local_thinking") else False
     return _openai(_base(conf, prov), key or None, st["model"], system, messages, tools, timeout,
-                   think=think if PROVIDERS[prov]["local"] or prov == "custom" else None)
+                   think=think if PROVIDERS[prov]["local"] or prov == "custom" else None,
+                   max_tokens=conf.get("_max_tokens"), local=bool(PROVIDERS[prov]["local"]))
 
 
 def _try(conf, st, system, messages, tools, timeout):

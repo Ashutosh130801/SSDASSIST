@@ -589,3 +589,4 @@ tr:hover td{background:#F7FAFD}
 .sticker-tray{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;padding:8px;background:#fff;border-top:1px solid #e5e7eb;max-height:150px;overflow:auto}
 .sticker-tray img{width:100%;aspect-ratio:1;object-fit:contain;cursor:pointer;border-radius:10px;transition:transform .15s,background .15s}
 .sticker-tray img:hover{transform:scale(1.08);background:#eff6ff}
+.ai-time{font-size:10.5px;color:#64748b;margin-top:4px}

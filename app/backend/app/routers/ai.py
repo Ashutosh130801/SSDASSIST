@@ -57,13 +57,13 @@ def _conf(db):
 _CTX_CACHE: dict = {}
 
 
-def _data_context(db, user) -> str:
+def _data_context(db, user, limit: int = 3500) -> str:
     """Compact map of the data this user can see — so the model uses real bank / product / month / staff names
     instead of guessing (guessed filters were the main cause of '0 results'). Cached 2 minutes per user."""
     import time as _t
     hit = _CTX_CACHE.get(user.id)
     if hit and _t.time() - hit[0] < 120:
-        return hit[1]
+        return hit[1][:limit]
     try:
         ov = ai_tools.overview(db, user, compact=True)
         if "months" not in ov:
@@ -81,7 +81,7 @@ def _data_context(db, user) -> str:
         txt = f"(data map unavailable: {str(e)[:80]})"
     txt = txt[:3500]
     _CTX_CACHE[user.id] = (_t.time(), txt)
-    return txt
+    return txt[:limit]
 
 
 APP_MAP = ("RecoverIQ screens: Dashboard · Accounts/Portfolios (bank→product→month uploads, allocation, case drawer) · Live Sheet · "
@@ -127,11 +127,77 @@ def _system(user, conf, db=None):
         "Suggestions: <short follow-up 1> | <short follow-up 2> | <short follow-up 3>\n"
         "Pick the mood that fits the answer: celebrate = good news (paid, target hit, big collection), love = the user thanked you, "
         "sorry = nothing found / an error / bad news, surprised = an unusual or surprising number, wink = a handy tip, happy = anything else.\n"
-        f"{langline}\n\n{APP_MAP}\n\nDATA MAP (what this user can see):\n" + (_data_context(db, user) if db is not None else "")
+        f"{langline}\n\n{APP_MAP}\n\nDATA MAP (what this user can see):\n" + (_data_context(db, user, 1500 if conf.get("fast_mode", True) else 3500) if db is not None else "")
     )
 
 
 import re as _re  # noqa: E402
+import hashlib as _hashlib  # noqa: E402
+import time as _time  # noqa: E402
+
+# ⚡ Fast mode: only offer the model the tools a question needs (the tool list is the biggest part of every prompt).
+_ROUTES = [
+    (r"case|customer|account|unpaid|paid|pending|outstanding|priorit|search|find|list|who owes|loan|card", ("search_cases", "case_detail", "portfolio_summary")),
+    (r"ptp|promise", ("ptp_list",)),
+    (r"team|perform|fos|caller|staff|agent|leaderboard|rank|best|worst", ("team_performance", "team_leads")),
+    (r"visit|call log|calls|activity|today did|field", ("activity",)),
+    (r"attend|late|check.?in|present|absent|hours", ("attendance",)),
+    (r"leave|holiday|off day", ("leave",)),
+    (r"salary|payslip|pay slip", ("my_salary",)),
+    (r"audit|log|who (changed|did|edited|moved)|changed|reassign|history of", ("audit_log",)),
+    (r"dpr|bank report|upload", ("dpr_uploads",)),
+    (r"mis|bucket|branch|break ?down|by bank|by product|cycle|portfolio|summary|overview|dashboard|resolution|paid ?%", ("mis_breakdown", "portfolio_summary")),
+    (r"collect|trend|daily|day.?wise|recovery|cash", ("collection_trend",)),
+    (r"legal|notice|court|hearing|sec ?138|sarfaesi|arbitration", ("legal_cases", "legal_notices")),
+    (r"settle|ots|waiver|one.?time", ("settlements",)),
+    (r"pay(ment)? link|paylink|upi link", ("payment_links",)),
+    (r"device|login approv|phone approv", ("devices",)),
+    (r"team lead|\btl\b|lead wise", ("team_leads",)),
+]
+_CORE = ("data_overview", "app_help", "whoami")
+_DEFAULT = ("portfolio_summary", "search_cases", "case_detail", "ptp_list", "team_performance", "mis_breakdown")
+
+
+def _route_tools(text: str, tools: dict, prev: list | None = None) -> dict:
+    q = (text or "").lower()
+    want = set(_CORE)
+    for pat, names in _ROUTES:
+        if _re.search(pat, q):
+            want.update(names)
+    if len(want) == len(_CORE):
+        want.update(_DEFAULT)
+    want.update(prev or [])                                   # keep what the conversation already used (follow-ups)
+    if _re.search(r"chart|graph|plot|dashboard|visual|trend|compare|pie|bar", q) or "make_visual" in (prev or []):
+        want.add("make_visual")
+    if _re.search(r"excel|xlsx|pdf|word|docx|file|download|export|report|sop|letter|document", q):
+        want.update(("make_file", "make_document"))
+    if _re.search(r"follow.?up|remind|whatsapp|open (the )?case|draft|message", q):
+        want.add("propose_action")
+    return {n: v for n, v in tools.items() if n in want}
+
+
+_GREET = _re.compile(r"^\s*(hi+|hello+|hey+|namaste|good (morning|afternoon|evening)|yo)\s*[!.👋]*\s*$", _re.I)
+_THANKS = _re.compile(r"^\s*(thanks?( you)?( so much)?|thank u|thx|ty|great|awesome|nice|cool|ok(ay)?|👍|🙏)\s*[!.👍🙏]*\s*$", _re.I)
+
+
+def _instant(text: str, user, origin: str):
+    """Small talk answered without the model (zero wait)."""
+    first = (user.name or "").split(" ")[0]
+    if _GREET.match(text or ""):
+        return {"reply": f"Hi {first}! 👋 Ask me about your cases, PTPs, team, MIS or this page.",
+                "mood": "happy", "suggestions": ["Explain this page", "Summarise my portfolio this month", "Overdue PTPs"] if origin == "bot"
+                else ["Summarise my portfolio this month", "Overdue PTPs", "My team performance"]}
+    if _THANKS.match(text or ""):
+        return {"reply": "Happy to help! 💙", "mood": "love", "suggestions": []}
+    return None
+
+
+_ANS_CACHE: dict = {}
+
+
+def _cache_key(user, text, page, case_context):
+    raw = f"{user.id}|{(text or '').strip().lower()}|{(page or {}).get('section')}|{_hashlib.md5(str((page or {}).get('text'))[:2500].encode()).hexdigest()}|{case_context or ''}"
+    return _hashlib.md5(raw.encode()).hexdigest()
 
 _SUGG_RE = _re.compile(r"\n*\s*\**suggestions?\**\s*[:：]\s*(.+?)\s*$", _re.I | _re.S)
 
@@ -183,7 +249,7 @@ def _page_block(page: dict | None, conf: dict) -> str:
         return ""
     sec = str(page.get("section") or "")[:60]
     title = str(page.get("title") or "")[:120]
-    text = str(page.get("text") or "")[:6000]
+    text = str(page.get("text") or "")[:(2500 if conf.get("fast_mode", True) else 6000)]
     if conf.get("mask_pii", True):
         text = _mask_page_text(text)
     return f"\n\nSCREEN (what the user is looking at now) — section: {sec or '?'}; title: {title or '?'}\n{text}"
@@ -204,11 +270,11 @@ def _tools_for(conf):
     return t
 
 
-def _shrink(obj, max_rows=40):
+def _shrink(obj, max_rows=40, max_chars=14000):
     if isinstance(obj, dict) and isinstance(obj.get("rows"), list) and len(obj["rows"]) > max_rows:
         obj = {**obj, "rows": obj["rows"][:max_rows], "rows_note": f"showing {max_rows} of {len(obj['rows'])} — use make_file for all"}
     s = json.dumps(obj, default=str)
-    return s if len(s) < 14000 else s[:14000] + '…"}'
+    return s if len(s) < max_chars else s[:max_chars] + '…"}'
 
 
 def _artifact(db, user, kind, name, path=None, payload=None, status="ready"):
@@ -390,15 +456,52 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
     db.add(models.AiMessage(conversation_id=conv.id, role="user", content=text))
     audit.record(db, user, "ai.ask", entity_type="ai", detail=text[:300])
     db.commit()
+    t_start = _time.time()
+    fast = conf.get("fast_mode", True)
+
+    def _finish(out, reply, how):
+        out["timing"] = {"total_ms": int((_time.time() - t_start) * 1000), "llm_ms": out.pop("_llm_ms", 0),
+                         "calls": out.pop("_calls", 0), "how": how, "tools_offered": out.pop("_offered", None)}
+        db.add(models.AiMessage(conversation_id=conv.id, role="assistant", content=reply,
+                                meta={k: out.get(k) for k in ("files", "actions", "tools", "visuals", "steps", "suggestions", "mood", "timing")}))
+        conv.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"conversation_id": conv.id, "reply": reply, **out}
+
+    # 1) small talk → instant, no model
+    inst = _instant(text, user, origin) if not case_context else None
+    if inst:
+        out = {"files": [], "actions": [], "tools": [], "visuals": [], "steps": [], "suggestions": inst["suggestions"], "mood": inst["mood"]}
+        return _finish(out, inst["reply"], "instant")
+    # 2) same question on the same screen in the last 2 minutes → cached answer
+    ck = _cache_key(user, text, page, case_context)
+    hit = _ANS_CACHE.get(ck)
+    if hit and _time.time() - hit[0] < 120:
+        out = json.loads(hit[1])
+        return _finish(out, out.pop("_reply"), "cache")
 
     tools = _tools_for(conf)
+    if fast:
+        prev = []
+        for m in hist:
+            prev += list((m.meta or {}).get("tools") or []) if m.role == "assistant" else []
+        tools = _route_tools(text, tools, prev[-6:])
     specs = ai_llm.tool_specs(tools)
-    out = {"files": [], "actions": [], "tools": [], "visuals": [], "steps": [], "suggestions": [], "mood": None}
+    out = {"files": [], "actions": [], "tools": [], "visuals": [], "steps": [], "suggestions": [], "mood": None,
+           "_llm_ms": 0, "_calls": 0, "_offered": len(specs)}
     reply = ""
     system = _system(user, conf, db)
+    run_conf = dict(conf)
+    if fast:
+        run_conf["_max_tokens"] = 900
+    if origin == "bot" and (conf.get("bot_model") or "").strip():
+        run_conf["model"] = conf["bot_model"].strip()
+    max_steps = (5 if origin == "bot" else MAX_STEPS) if fast else MAX_STEPS + 2
     try:
-        for _ in range(MAX_STEPS + 2):          # a dashboard needs a few extra make_visual calls
-            res = ai_llm.call_llm(conf, system, messages, specs)
+        for _ in range(max_steps):
+            t_call = _time.time()
+            res = ai_llm.call_llm(run_conf, system, messages, specs)
+            out["_llm_ms"] += int((_time.time() - t_call) * 1000); out["_calls"] += 1
             if not res["tool_calls"]:
                 reply = res["content"].strip()
                 break
@@ -427,7 +530,8 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
                     rows = len(rv) if isinstance(rv, list) else (rv if isinstance(rv, int) else None)
                 out["steps"].append({"tool": name, "args": {k: v for k, v in (args or {}).items() if not str(k).startswith("_")},
                                      "ok": ok, "rows": rows, "error": payload.get("error") if isinstance(payload, dict) else None})
-                messages.append({"role": "tool", "tool_call_id": call["id"], "name": name, "content": _shrink(payload)})
+                messages.append({"role": "tool", "tool_call_id": call["id"], "name": name,
+                                 "content": _shrink(payload, 15, 6000) if fast else _shrink(payload)})
         else:
             reply = reply or "I needed too many steps for that — please ask a narrower question."
     except ai_llm.LLMError as e:
@@ -436,11 +540,12 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
     reply, out["mood"] = _split_mood(reply, text)
     if not reply and (out["files"] or out["actions"] or out["visuals"]):
         reply = "Here you go 👇"
-    db.add(models.AiMessage(conversation_id=conv.id, role="assistant", content=reply,
-                            meta={k: out[k] for k in ("files", "actions", "tools", "visuals", "steps", "suggestions", "mood")}))
-    conv.updated_at = datetime.now(timezone.utc)
-    db.commit()
-    return {"conversation_id": conv.id, "reply": reply, **out}
+    if reply and not reply.startswith("⚠") and not out["actions"] and not out["files"]:
+        _ANS_CACHE[ck] = (_time.time(), json.dumps({**{k: v for k, v in out.items() if not k.startswith("_")}, "_reply": reply}, default=str))
+        if len(_ANS_CACHE) > 500:
+            for k in sorted(_ANS_CACHE, key=lambda k: _ANS_CACHE[k][0])[:100]:
+                _ANS_CACHE.pop(k, None)
+    return _finish(out, reply, "model")
 
 
 @router.get("/providers/models")
@@ -508,7 +613,25 @@ def status(db: Session = Depends(get_db), user: models.User = Depends(get_curren
             "data_areas": [{"key": g, "label": lbl, "on": cfg_key not in conf or conf.get(cfg_key) is not False}
                            for g, (cfg_key, lbl) in ai_tools_more.GROUPS.items()],
             "tools_off": sorted(off),
-            "used_today": _daily_count(db, user), "daily_limit": conf.get("daily_limit")}
+            "used_today": _daily_count(db, user), "daily_limit": conf.get("daily_limit"),
+            "speed": _speed(db, None if user.role == "admin" else user)}
+
+
+def _speed(db, user=None, n: int = 40) -> dict:
+    """Average answer time over the last n model answers (instant / cached replies counted separately)."""
+    q = db.query(models.AiMessage).filter(models.AiMessage.role == "assistant")
+    if user is not None:
+        q = q.join(models.AiConversation, models.AiConversation.id == models.AiMessage.conversation_id).filter(models.AiConversation.user_id == user.id)
+    rows = q.order_by(models.AiMessage.id.desc()).limit(n * 3).all()
+    model = [r.meta["timing"] for r in rows if isinstance(r.meta, dict) and isinstance(r.meta.get("timing"), dict)
+             and r.meta["timing"].get("how") == "model"][:n]
+    quick = sum(1 for r in rows if isinstance(r.meta, dict) and isinstance(r.meta.get("timing"), dict) and r.meta["timing"].get("how") in ("instant", "cache"))
+    if not model:
+        return {"answers": 0, "quick": quick}
+    tot = sorted(t["total_ms"] for t in model)
+    return {"answers": len(model), "avg_s": round(sum(tot) / len(tot) / 1000, 1), "median_s": round(tot[len(tot) // 2] / 1000, 1),
+            "fastest_s": round(tot[0] / 1000, 1), "slowest_s": round(tot[-1] / 1000, 1),
+            "avg_calls": round(sum(t.get("calls", 0) for t in model) / len(model), 1), "quick": quick}
 
 
 @router.post("/chat")
