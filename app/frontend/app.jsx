@@ -3738,6 +3738,7 @@ function TrustBadge({ level, reasons, review }) {
 /* ---- Flagged (possibly fake) visits report for TL / manager / HO / admin ---- */
 function FlaggedVisitsModal({ onClose }) {
   useBackClose(true, onClose);
+  const [full, setFull] = useState(false);
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');   // was missing → crashed on paid visits
   const today = new Date().toLocaleDateString('en-CA', { timeZone: IST_TZ });
   const [start, setStart] = useState(today.slice(0, 8) + '01'); const [end, setEnd] = useState(today);
@@ -3762,8 +3763,14 @@ function FlaggedVisitsModal({ onClose }) {
     catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
   const GEO_LBL = { field: 'Doorstep-confirmed', rooftop: 'Building', street: 'Street', locality: 'Area / locality', pincode: 'Pincode only', city: 'City only', none: 'Not found', not_tried: 'Not geotagged yet' };
-  return <div className="modal-bg" onClick={onClose}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 1100, width: '97%' }}>
-    <div className="section-h"><h3>🚩 Flagged visits — fake-visit check</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+  // ⛶ Full screen: the popup fills the whole window and the visit list uses all the height.
+  const boxStyle = full ? { maxWidth: 'none', width: '100vw', height: '100vh', maxHeight: '100vh', borderRadius: 0, margin: 0, display: 'flex', flexDirection: 'column' }
+    : { maxWidth: 1100, width: '97%' };
+  return <div className="modal-bg" onClick={onClose} style={full ? { padding: 0 } : undefined}><div className="modal glass" onClick={e => e.stopPropagation()} style={boxStyle}>
+    <div className="section-h"><h3>🚩 Flagged visits — fake-visit check</h3>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="btn ghost sm" onClick={() => setFull(f => !f)} title={full ? 'Exit full screen' : 'Full screen'}>{full ? '🗗 Exit full screen' : '⛶ Full screen'}</button>
+        <button className="btn ghost sm" onClick={onClose}>✕</button></div></div>
     <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
       <input className="input" type="date" value={start} onChange={e => setStart(e.target.value)} style={{ maxWidth: 160 }} />
       <span className="muted">to</span>
@@ -3785,14 +3792,14 @@ function FlaggedVisitsModal({ onClose }) {
       <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>Distance checks are strict for Doorstep/Building pins and loose for Pincode/City pins. Each verified paid visit turns that address into a Doorstep-confirmed pin.</div>
     </div>}
     {!d ? <Loader /> : <>
-      <div className="tablewrap" style={{ maxHeight: 220, overflow: 'auto', marginTop: 6 }}><table><thead><tr><th>FOS</th><th>Visits</th><th>✅</th><th>⚠️</th><th>🚩</th><th>Not scored</th><th>Flagged %</th></tr></thead>
+      <div className="tablewrap" style={{ maxHeight: full ? '28vh' : 220, overflow: 'auto', marginTop: 6 }}><table><thead><tr><th>FOS</th><th>Visits</th><th>✅</th><th>⚠️</th><th>🚩</th><th>Not scored</th><th>Flagged %</th></tr></thead>
         <tbody>{d.summary.map(x => <tr key={x.officer_id} style={{ cursor: 'pointer' }} onClick={() => setFos(String(x.officer_id))}>
           <td><b>{x.name}</b> <span className="muted">{x.emp_code}</span></td><td>{x.visits}</td>
           <td style={{ color: 'var(--good)' }}>{x.ok}</td><td style={{ color: 'var(--warn)' }}>{x.check}</td>
           <td style={{ color: 'var(--bad)', fontWeight: 700 }}>{x.suspicious}</td><td className="muted">{x.unscored}</td>
           <td style={{ fontWeight: 700, color: x.flagged_pct >= 30 ? 'var(--bad)' : x.flagged_pct >= 10 ? 'var(--warn)' : 'var(--good)' }}>{x.flagged_pct}%</td></tr>)}</tbody></table></div>
       {d.visits.length === 0 ? <div className="muted" style={{ padding: 16, textAlign: 'center' }}>No visits match.</div> :
-        <div className="tablewrap" style={{ maxHeight: 420, overflow: 'auto', marginTop: 10 }}><table><thead><tr><th>When</th><th>FOS</th><th>Customer</th><th>Visited</th><th>Result</th><th>Why flagged</th><th>Review</th></tr></thead>
+        <div className="tablewrap" style={{ maxHeight: full ? 'calc(100vh - 260px)' : 420, overflow: 'auto', marginTop: 10 }}><table><thead><tr><th>When</th><th>FOS</th><th>Customer</th><th>Visited</th><th>Result</th><th>Why flagged</th><th>Review</th></tr></thead>
           <tbody>{d.visits.map(v => <tr key={v.id}>
             <td style={{ whiteSpace: 'nowrap' }}>{v.at}</td><td>{v.officer}<div className="muted" style={{ fontSize: 11 }}>{v.emp_code}</div></td>
             <td><b>{v.customer || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{v.account} · {v.bank} {v.product}</div></td>
@@ -5524,17 +5531,20 @@ function AIAssist({ user }) {
   const confirm = async (a) => { try { await api(`/api/ai/actions/${a.token}/confirm`, { method: 'POST' }); toast('Done ✓'); a.done = true; setMsgs(m => [...m]); } catch (e) { alert(e.message); } };
   const quick = ['Summarise my portfolio this month', 'Which cases should I prioritise today?', 'Overdue PTPs — make an Excel', 'My team performance this month',
     'How do I upload a DPR file?', 'Write a polite WhatsApp payment reminder', 'Make a PDF of my visits this week', 'Write an SOP for field visits as a Word file'];
-  return <div style={{ display: 'grid', gridTemplateColumns: 'minmax(170px,220px) 1fr', gap: 10, height: 'calc(100vh - 170px)', minHeight: 460 }}>
-    <div className="glass card" style={{ padding: 8, overflowY: 'auto' }}>
+  // Fixed-height layout: the chat list (left) never moves — only the message area scrolls.
+  // (minHeight: 0 on the grid/flex children stops a long answer from stretching the page.)
+  return <div style={{ display: 'grid', gridTemplateColumns: 'minmax(170px,220px) 1fr', gridTemplateRows: 'minmax(0, 1fr)', gap: 10,
+    height: 'calc(100vh - 170px)', minHeight: 460, overflow: 'hidden' }}>
+    <div className="glass card" style={{ padding: 8, overflowY: 'auto', minHeight: 0 }}>
       <button className="btn gold sm" style={{ width: '100%', marginBottom: 6 }} onClick={() => { setCid(null); setMsgs([]); }}>＋ New chat</button>
       {convs.map(c => <div key={c.id} onClick={() => openConv(c.id)} style={{ padding: '6px 8px', borderRadius: 8, cursor: 'pointer', fontSize: 12.5, background: c.id === cid ? 'rgba(37,99,235,.1)' : 'transparent', display: 'flex', gap: 4 }}>
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title}</span>
         <span className="muted" onClick={e => { e.stopPropagation(); if (window.confirm('Delete this chat?')) api('/api/ai/conversations/' + c.id, { method: 'DELETE' }).then(() => { if (c.id === cid) { setCid(null); setMsgs([]); } loadConvs(); }); }}>✕</span></div>)}
     </div>
-    <div className="glass card" style={{ display: 'flex', flexDirection: 'column', padding: 12, minWidth: 0 }}>
+    <div className="glass card" style={{ display: 'flex', flexDirection: 'column', padding: 12, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
       <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>{st && !st.error ? <>✨ {st.local ? '🏢 ' + (st.provider_label || 'Local model') + ' (data stays on your server)' : '☁️ ' + (st.provider_label || st.provider)} · {st.model}{st.mask_pii ? ' · phone/account numbers masked' : ''} · {st.used_today}/{st.daily_limit} today
         {!st.configured && <b style={{ color: 'var(--bad)' }}> · not set up: {st.hint}</b>}</> : st && st.error}</div>
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', gap: 6 }}>
         {!msgs.length && <div className="muted" style={{ margin: 'auto', textAlign: 'center', maxWidth: 520 }}>Hi {user.name.split(' ')[0]} — ask about your cases, PTPs, team, visits, calls, attendance, leave or payslips, or how to do anything in RecoverIQ. I only see what you can see.
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 10 }}>{quick.map(qq => <div key={qq} className="chip" onClick={() => send(qq)}>{qq}</div>)}</div></div>}
         {msgs.map((m, i) => <div key={i} className={cx('ai-msg', m.role === 'user' ? 'me' : 'bot')} style={{ maxWidth: '88%', alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>

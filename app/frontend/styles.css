@@ -76,9 +76,12 @@ textarea.input{resize:vertical;min-height:70px}
 .app{display:flex;min-height:100vh}
 .sidebar{
   width:248px;flex-shrink:0;padding:22px 16px;display:flex;flex-direction:column;gap:6px;
-  border-right:1px solid var(--stroke-soft);position:sticky;top:0;height:100vh;
+  border-right:1px solid var(--stroke-soft);
+  /* Fixed to the window: the main menu never scrolls away, whatever the page does. */
+  position:fixed;top:0;left:0;bottom:0;height:100vh;z-index:60;
   background:#fff;
 }
+.sidebar~.main{margin-left:248px}
 .brand{display:flex;align-items:center;gap:11px;padding:6px 8px 18px;flex-shrink:0}
 /* Scrollable middle so long menus (admin) never hide the Sign out button. */
 .navscroll{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:6px;
@@ -265,6 +268,7 @@ tr:hover td{background:#F7FAFD}
   .tablewrap,.hscroll{max-height:calc(100vh - 190px)}
 
   .sidebar{display:none}
+  .sidebar~.main{margin-left:0}
   .main{padding:16px 14px 92px}
   .kpis{grid-template-columns:repeat(2,1fr)}
   /* Force single column on phones even when a component sets an inline grid-template-columns */
