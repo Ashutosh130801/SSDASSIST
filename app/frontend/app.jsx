@@ -2637,9 +2637,9 @@ function LiveMap({ config }) {
       {status === 'nokey' && <div className="glass card" style={{ marginBottom: 12, color: 'var(--warn)' }}>
         Map couldn't load — check the device's internet connection and reload.
       </div>}
-      <div className="grid2" style={{ gridTemplateColumns: '1fr 320px' }}>
-        <div className="glass" style={{ padding: 6 }}><div className="map tall" ref={mapEl}></div></div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="grid2 fmap-grid" style={{ gridTemplateColumns: '1fr 320px' }}>
+        <div className="glass fmap-map" style={{ padding: 6 }}><div className="map tall" ref={mapEl}></div></div>
+        <div className="fmap-list" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div className="glass card">
             <div className="section-h"><h3>Officers{branch ? ' · ' + branch : ''}</h3>
               <span style={{ fontSize: 12 }}>
@@ -10300,7 +10300,7 @@ function ConnectionsView({ user }) {
           <div className="field"><label>Branch (optional)</label><input className="input" value={vf.branch} onChange={e => setVf({ ...vf, branch: e.target.value })} placeholder="leave blank for all branches" /></div>
         </div>
         <div style={{ fontSize: 12.5, fontWeight: 600, margin: '10px 0 4px' }}>📣 Campaigns <span className="muted" style={{ fontWeight: 400 }}>(one row per ViciDial campaign — e.g. one per bank. Each needs its own List ID in ViciDial. You pick the campaign when sending cases.)</span></div>
-        <div style={{ overflowX: 'auto' }}>
+        <div className="hscroll" style={{ overflowX: 'auto' }}>
           <table className="tbl" style={{ fontSize: 13 }}>
             <thead><tr><th>Display name</th><th>Bank (auto-suggest)</th><th>ViciDial Campaign ID</th><th>List ID</th><th></th></tr></thead>
             <tbody>{(camps || []).map((c, i) => <tr key={i}>
@@ -11031,7 +11031,7 @@ function AttendanceView({ user }) {
       </div>
       {statF && <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Showing <b>{rows.length}</b> {statF === 'online' ? 'online' : statF} · <a style={{ cursor: 'pointer', color: 'var(--info)' }} onClick={() => setStatF('')}>clear filter</a></div>}
       {vici && vici.error && <div className="muted" style={{ fontSize: 12, marginBottom: 6, color: 'var(--warn)' }}>⚠ ViciDial live status unavailable — {vici.error}</div>}
-      <div className="glass card" style={{ overflowX: 'auto', padding: 0 }}>
+      <div className="glass card hscroll" style={{ overflowX: 'auto', padding: 0 }}>
         <table className="tbl" style={{ minWidth: 900 }}>
           <thead><tr><th>Name</th><th>Status</th><th>Presence</th>{showVici && <th title="Live ViciDial agent state">ViciDial</th>}<th>Check-in</th><th>Check-out</th><th>Worked</th><th>Idle</th><th>Calls</th><th>Visits</th><th>Collected</th></tr></thead>
           <tbody>
@@ -11056,7 +11056,7 @@ function AttendanceView({ user }) {
       </div>
     </>)}
 
-    {(tab === 'month' || tab === 'range') && (!mon ? <Loader /> : <div className="glass card" style={{ overflowX: 'auto', padding: 0 }}>
+    {(tab === 'month' || tab === 'range') && (!mon ? <Loader /> : <div className="glass card hscroll" style={{ overflowX: 'auto', padding: 0 }}>
       <table className="tbl" style={{ minWidth: 900, fontSize: 12 }}>
         <thead><tr><th style={{ position: 'sticky', left: 0, background: 'var(--glass-2)' }}>Name</th>
           {mon.days.map(d => <th key={d} style={{ padding: '6px 3px' }}>{tab === 'range' ? <>{d.slice(8)}<div style={{ fontSize: 9, opacity: .7 }}>{d.slice(5, 7)}</div></> : d.slice(8)}</th>)}

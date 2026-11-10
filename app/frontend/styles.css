@@ -24,9 +24,11 @@ h1,h2,h3,.brandfont{font-family:'Space Grotesk',sans-serif}
 a{color:var(--gold);text-decoration:none}
 button{font-family:inherit;cursor:pointer}
 input,select,textarea{font-family:inherit}
-::-webkit-scrollbar{width:9px;height:9px}
-::-webkit-scrollbar-thumb{background:rgba(37,99,235,.22);border-radius:8px}
-::-webkit-scrollbar-thumb:hover{background:rgba(37,99,235,.38)}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-track{background:rgba(15,23,42,.05);border-radius:8px}
+::-webkit-scrollbar-thumb{background:rgba(37,99,235,.38);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:rgba(37,99,235,.6);background-clip:padding-box}
+*{scrollbar-width:auto;scrollbar-color:rgba(37,99,235,.45) rgba(15,23,42,.05)}
 
 /* ---------- Card primitives ---------- */
 .glass{
@@ -96,7 +98,7 @@ textarea.input{resize:vertical;min-height:70px}
 .navitem.active{background:linear-gradient(135deg,rgba(37,99,235,.12),rgba(37,99,235,.05));
   color:var(--gold-deep);border-color:rgba(37,99,235,.22)}
 .navitem .ic{width:20px;text-align:center}
-.main{flex:1;min-width:0;padding:26px 30px 40px;overflow-x:hidden}
+.main{flex:1;min-width:0;padding:26px 30px 40px;overflow-x:hidden;overflow-x:clip}
 .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;gap:14px}
 .topbar h1{font-size:23px;margin:0}
 .usertag{display:flex;align-items:center;gap:10px}
@@ -157,7 +159,10 @@ textarea.input{resize:vertical;min-height:70px}
 .section-h h3{margin:0;font-size:16px;color:var(--ink)}
 
 /* ---------- Table ---------- */
-.tablewrap{overflow-x:auto;border-radius:12px}
+/* Wide / long tables scroll inside a box that fits the screen, so the left-right scrollbar is always
+   visible at the bottom of the screen (not hundreds of rows further down) and the header row stays put. */
+.tablewrap,.hscroll{overflow:auto;border-radius:12px;max-height:calc(100vh - 150px)}
+.tablewrap thead th,.hscroll thead th{position:sticky;top:0;z-index:2}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
 th{text-align:left;padding:11px 12px;color:var(--ink-dim);font-weight:700;font-size:11.5px;
   text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--stroke-soft);white-space:nowrap;
@@ -184,6 +189,10 @@ tr:hover td{background:#F7FAFD}
 /* ---------- Map ---------- */
 .map{width:100%;height:420px;border-radius:14px;overflow:hidden}
 .map.tall{height:calc(100vh - 190px);min-height:420px}
+/* Field Tracking: the map stays fixed while the officer list scrolls on its own */
+.fmap-grid{align-items:start}
+.fmap-grid>.fmap-map{position:sticky;top:12px;align-self:start}
+.fmap-grid>.fmap-list{max-height:calc(100vh - 150px);overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
 
 /* ---------- Login ---------- */
 .login{min-height:100vh;display:flex;align-items:stretch}
@@ -251,6 +260,10 @@ tr:hover td{background:#F7FAFD}
 /* ---------- Mobile bottom nav ---------- */
 .mobnav{display:none}
 @media(max-width:900px){
+  .fmap-grid>.fmap-map{position:static}
+  .fmap-grid>.fmap-list{max-height:none;overflow:visible}
+  .tablewrap,.hscroll{max-height:calc(100vh - 190px)}
+
   .sidebar{display:none}
   .main{padding:16px 14px 92px}
   .kpis{grid-template-columns:repeat(2,1fr)}
