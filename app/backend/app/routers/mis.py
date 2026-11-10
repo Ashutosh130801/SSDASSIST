@@ -15,7 +15,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import models, tl_scope
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_roles
@@ -564,11 +564,47 @@ def _activity(db, uid, is_fos, ids):
     return {"calls": len(rows), "contacted": len({r[0] for r in rows}), "collected": collected}
 
 
+def _split_rows(db, target, is_fos, rows, viewer=None, resolve=None):
+    """One person's cases in ONE portfolio, split by the team lead each case carries.
+    → [{lead, lead_id, is_me, count, paid, paid_pct, collected, visits, calls, ptps}], biggest first."""
+    resolve = resolve or tl_scope.lead_of(db)
+    groups: dict = {}
+    for c in rows:
+        u = resolve(c.team_lead)
+        key = u.id if u else ("?" + (c.team_lead or "").strip().upper())
+        g = groups.setdefault(key, {"lead_id": u.id if u else None,
+                                    "lead": (u.name if u else (c.team_lead or "").strip()) or "No team lead",
+                                    "rows": []})
+        g["rows"].append(c)
+    out = []
+    for g in groups.values():
+        a = _agg(g["rows"])
+        ids = [c.id for c in g["rows"]]
+        act = _activity(db, target.id, is_fos, ids)
+        nv = db.query(models.Visit.id).filter(models.Visit.officer_id == target.id,
+                                              models.Visit.case_id.in_(ids)).count() if ids else 0
+        nc = db.query(models.CallLog.id).filter(models.CallLog.caller_id == target.id,
+                                                models.CallLog.case_id.in_(ids)).count() if ids else 0
+        out.append({"lead_id": g["lead_id"], "lead": g["lead"],
+                    "is_me": bool(viewer is not None and g["lead_id"] == viewer.id),
+                    "count": a["count"], "paid": a["paid"],
+                    "paid_pct": round(a["paid"] * 100.0 / a["count"], 1) if a["count"] else 0.0,
+                    "enr": a["enr"], "paid_enr": a["paid_enr"], "achieved_pct": a["pct"],
+                    "collected": act.get("collected", 0.0), "visits": nv, "calls": nc,
+                    "ptps": sum(1 for c in g["rows"] if (c.disposition or "").upper() == "PTP")})
+    out.sort(key=lambda r: (not r["is_me"], -r["count"]))
+    return out
+
+
 def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | None,
                   bank_f: str | None = None, product_f: str | None = None,
-                  cycles: list | None = None):
+                  cycles: list | None = None, case_filter=None, viewer=None, with_split=True):
     """Per-portfolio scorecard + leaderboard for ONE person (their own, or one a manager opens).
-    Honors optional bank / product / cycle filters so the dashboard re-syncs to the selection."""
+    Honors optional bank / product / cycle filters so the dashboard re-syncs to the selection.
+
+    case_filter (team-lead views) narrows EVERYTHING — the scorecard, activity and the leaderboard —
+    to the cases of one lead. Each card still carries `split`: the person's whole portfolio broken
+    down by team lead, so a lead sees "60 total → 30 yours, 30 Lead B's"."""
     from sqlalchemy import func as _func
     id_col = models.Case.assigned_fos_id if is_fos else models.Case.assigned_caller_id
     id_attr = "assigned_fos_id" if is_fos else "assigned_caller_id"
@@ -576,18 +612,21 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
 
     # Escalated cases were pulled off this person → excluded from their scorecard (matches the
     # MIS per-person pivots, RTSB and the Team-section dashboard).
-    myq = db.query(models.Case).filter(id_col == target.id, models.Case.removed.isnot(True),
-                                       models.Case.escalated.isnot(True))
+    base = db.query(models.Case).filter(id_col == target.id, models.Case.removed.isnot(True),
+                                        models.Case.escalated.isnot(True))
     if period:
-        myq = myq.filter(models.Case.period == period)
+        base = base.filter(models.Case.period == period)
     if bank_f:
-        myq = myq.filter(models.Case.bank == bank_f)
+        base = base.filter(models.Case.bank == bank_f)
     if product_f:
-        myq = myq.filter(models.Case.product == product_f)
+        base = base.filter(models.Case.product == product_f)
     if cycles:
-        myq = myq.filter(_func.lower(_func.trim(_func.coalesce(models.Case.cycle, ""))).in_(
+        base = base.filter(_func.lower(_func.trim(_func.coalesce(models.Case.cycle, ""))).in_(
             [str(c).strip().lower() for c in cycles]))
+    myq = base.filter(case_filter) if case_filter is not None else base
     mine = myq.all()
+    all_mine = base.all() if (with_split and case_filter is not None) else mine
+    resolve = tl_scope.lead_of(db) if with_split else None
     user = target
 
     ppl = {u.id: (u.name, u.emp_code) for u in db.query(models.User).all()}
@@ -623,6 +662,8 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
         if cycles:
             pq = pq.filter(_func.lower(_func.trim(_func.coalesce(models.Case.cycle, ""))).in_(
                 [str(c).strip().lower() for c in cycles]))
+        if case_filter is not None:           # team-lead view: rank only within this lead's cases
+            pq = pq.filter(case_filter)
         byp: dict[int, list] = {}
         for c in pq.all():
             byp.setdefault(getattr(c, id_attr), []).append(c)
@@ -636,6 +677,13 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
         for i, r in enumerate(lb):
             r["rank"] = i + 1
         my_rank = next((r["rank"] for r in lb if r["you"]), None)
+
+        split = None
+        if with_split:
+            whole = [c for c in all_mine if (c.bank or "—", c.product or "—", c.branch or "") == (bank, product, branch)]
+            parts = _split_rows(db, target, is_fos, whole, viewer=viewer, resolve=resolve)
+            if len(parts) > 1:              # only worth showing when more than one lead shares this person
+                split = {"total": len(whole), "rows": parts}
 
         cards.append({
             "bank": bank, "product": product, "branch": branch,
@@ -651,6 +699,7 @@ def _perf_payload(db, target: models.User, is_fos: bool, month_bucket: str | Non
             "trends": collection_windows(db, [c.id for c in rows], overall_received=a["amount"]),
             "activity": _activity(db, user.id, is_fos, [c.id for c in rows]),
             "leaderboard": lb,
+            "split": split,
         })
     cards.sort(key=lambda x: x["enr"], reverse=True)
 
@@ -676,25 +725,87 @@ def my_performance(month_bucket: str | None = "current",
     """The signed-in caller's/FOS's OWN scorecard — per-portfolio achievement + leaderboard rank,
     each portfolio kept separate per month. Honors optional bank / product / cycle filters."""
     return _perf_payload(db, user, (user.role == "fos"), month_bucket,
-                         bank_f=bank or None, product_f=product or None, cycles=_csv_str(cycles))
+                         bank_f=bank or None, product_f=product or None, cycles=_csv_str(cycles),
+                         with_split=False)
+
+
+def _shared_portfolio_filter(db, lead, peer):
+    """SQL filter: cases in a (bank, product) portfolio that BOTH leads work."""
+    from sqlalchemy import and_, or_, false
+    from .cases import teamlead_case_filter
+    mine = {(b, p) for b, p in db.query(models.Case.bank, models.Case.product).filter(
+        models.Case.removed.isnot(True), teamlead_case_filter(lead)).distinct().all()}
+    theirs = {(b, p) for b, p in db.query(models.Case.bank, models.Case.product).filter(
+        models.Case.removed.isnot(True), teamlead_case_filter(peer)).distinct().all()}
+    both = mine & theirs
+    if not both:
+        return false()
+    return or_(*[and_(models.Case.bank == b, models.Case.product == p) for b, p in both])
+
+
+def tl_perf_scope(db, actor, target_id: int, peer_lead: int | None):
+    """For a team lead opening someone's performance → (case_filter, peer_user).
+    Own team: only their members, scored on the lead's own cases.
+    Peer (another lead in a shared portfolio): read-only, scored on that lead's cases there."""
+    from sqlalchemy import and_
+    from .cases import teamlead_case_filter
+    from .team import _teamlead_member_ids
+    if peer_lead and peer_lead != actor.id:
+        peer = db.query(models.User).filter(models.User.id == peer_lead).first()
+        if not peer:
+            raise HTTPException(status_code=404, detail="Team lead not found")
+        shared = _shared_portfolio_filter(db, actor, peer)
+        cf = and_(teamlead_case_filter(peer), shared)
+        hit = db.query(models.Case.id).filter(cf, models.Case.removed.isnot(True),
+                                              (models.Case.assigned_fos_id == target_id) |
+                                              (models.Case.assigned_caller_id == target_id)).first()
+        if not hit:
+            raise HTTPException(status_code=403, detail="Not on that team lead's cases in a portfolio you share")
+        return cf, peer
+    if target_id != actor.id and target_id not in set(_teamlead_member_ids(db, actor)):
+        raise HTTPException(status_code=403, detail="Not one of your team members")
+    return teamlead_case_filter(actor), None
 
 
 @router.get("/performance")
 def performance(emp_id: int, role: str | None = None, month_bucket: str | None = "current",
                 bank: str | None = None, product: str | None = None, cycles: str | None = None,
+                peer_lead: int | None = None,
                 db: Session = Depends(get_db),
                 actor: models.User = Depends(get_current_user)):
     """Any FOS/caller's performance screen — opened by clicking their name on a case, MIS row, or
     leaderboard. `role` = 'fos' or 'caller' picks which hat to score; defaults to the person's own
-    role. Viewable by the person themselves or by managers / HO / admin / team leads / HR / back-office."""
+    role. Viewable by the person themselves or by managers / HO / admin / team leads / HR / back-office.
+    A team lead sees only their own members, scored on their own cases (plus the split by lead);
+    with peer_lead= they see another lead's member read-only, scored on that lead's shared cases."""
     if actor.id != emp_id and actor.role not in ("admin", "manager", "headoffice", "teamlead", "hr", "backend"):
         raise HTTPException(status_code=403, detail="Not allowed")
     target = db.query(models.User).filter(models.User.id == emp_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     is_fos = (role == "fos") if role in ("fos", "caller") else (target.role == "fos")
-    return _perf_payload(db, target, is_fos, month_bucket,
-                         bank_f=bank or None, product_f=product or None, cycles=_csv_str(cycles))
+    cf, peer = (None, None)
+    if actor.role == "teamlead":
+        cf, peer = tl_perf_scope(db, actor, emp_id, peer_lead)
+        if actor.id == emp_id and not peer_lead:
+            cf = None                          # a lead looking at their own caller/FOS hat
+    out = _perf_payload(db, target, is_fos, month_bucket,
+                        bank_f=bank or None, product_f=product or None, cycles=_csv_str(cycles),
+                        case_filter=cf, viewer=actor if actor.role == "teamlead" else None)
+    if peer is not None:
+        out["read_only"] = True
+        out["peer_lead"] = {"id": peer.id, "name": peer.name}
+        try:
+            from .. import audit
+            audit.record(db, actor, "peer_view", entity_type="user", target_user_id=target.id,
+                         detail=f"Viewed {target.name}'s performance on {peer.name}'s cases (read-only)",
+                         meta={"peer_lead": peer.id})
+            db.commit()
+        except Exception:
+            db.rollback()
+    elif actor.role == "teamlead" and cf is not None:
+        out["scoped_to_lead"] = actor.name
+    return out
 
 
 @router.get("/employee-trends")
@@ -702,7 +813,7 @@ def employee_trends(user_id: int, db: Session = Depends(get_db),
                     actor: models.User = Depends(get_current_user)):
     """One person's achievement across FTD / MTD / LMTD / Overall — powers the trend strip on a
     FOS/caller's own profile and on the profile card managers / HO / admin / team leads open."""
-    from sqlalchemy import or_, func
+    from sqlalchemy import or_, and_, func
     # A person may view their own; managers / HO / admin / team leads / HR / back-office view others.
     if actor.id != user_id and actor.role not in ("admin", "manager", "headoffice", "teamlead", "hr", "backend"):
         raise HTTPException(status_code=403, detail="Not allowed")
@@ -710,6 +821,9 @@ def employee_trends(user_id: int, db: Session = Depends(get_db),
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     own = or_(models.Case.assigned_fos_id == user_id, models.Case.assigned_caller_id == user_id)
+    if actor.role == "teamlead" and actor.id != user_id:
+        cf, _peer = tl_perf_scope(db, actor, user_id, None)     # own members only, own cases only
+        own = and_(own, cf)
     ids = [r[0] for r in db.query(models.Case.id)
            .filter(models.Case.removed.isnot(True), own).all()]
     overall = db.query(func.coalesce(func.sum(models.Case.received_amount), 0)) \

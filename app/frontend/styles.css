@@ -323,3 +323,7 @@ tr:hover td{background:#F7FAFD}
 .tbl th,.tbl td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line)}
 .tbl thead th{background:var(--glass-2,#fff);font-weight:700;color:var(--ink-soft,#475569);font-size:12px;white-space:nowrap}
 .tbl tbody tr:hover{background:rgba(37,99,235,.04)}
+
+/* Peer view (another team lead's case / performance) — read-only banner */
+.ro-banner{position:sticky;top:0;z-index:3;padding:9px 12px;margin-bottom:10px;border-radius:10px;
+  background:#EEF2FF;border:1px solid #C7D2FE;color:#3730A3;font-size:13px;font-weight:600}

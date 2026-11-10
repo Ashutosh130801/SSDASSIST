@@ -674,6 +674,9 @@ def user_visits(uid: int, date: str | None = None, db: Session = Depends(get_db)
             .filter(models.Visit.officer_id == uid,
                     models.Visit.created_at >= start, models.Visit.created_at < end)
             .order_by(models.Visit.created_at.desc()).all())
+    if user.role == "teamlead" and user.id != uid:    # a lead sees only visits on their own cases
+        from .. import tl_scope
+        rows = [v for v in rows if tl_scope.owns(user, v.case)]
     out = []
     for v in rows:
         c = v.case
@@ -712,6 +715,9 @@ def user_calls(uid: int, date: str | None = None, db: Session = Depends(get_db),
             .filter(models.CallLog.caller_id == uid,
                     models.CallLog.created_at >= start, models.CallLog.created_at < end)
             .order_by(models.CallLog.created_at.desc()).all())
+    if user.role == "teamlead" and user.id != uid:    # a lead sees only calls on their own cases
+        from .. import tl_scope
+        rows = [cl for cl in rows if tl_scope.owns(user, cl.case)]
     out = []
     for cl in rows:
         c = cl.case

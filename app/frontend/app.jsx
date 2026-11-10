@@ -853,14 +853,14 @@ function PersonLink({ id, role, name, muted }) {
 }
 
 /* Individual performance screen (opened from any clickable FOS/caller name). */
-function PerfModal({ empId, role, name, onClose }) {
+function PerfModal({ empId, role, name, onClose, peerLead }) {
   const [mb, setMb] = useState('current');
   const [d, setD] = useState(null); const [err, setErr] = useState('');
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   useEffect(() => {
     setD(null); setErr('');
-    api(`/api/mis/performance?emp_id=${empId}&role=${role || ''}&month_bucket=${mb}`).then(setD).catch(e => setErr(e.message || 'Could not load'));
-  }, [empId, role, mb]);
+    api(`/api/mis/performance?emp_id=${empId}&role=${role || ''}&month_bucket=${mb}${peerLead ? '&peer_lead=' + peerLead : ''}`).then(setD).catch(e => setErr(e.message || 'Could not load'));
+  }, [empId, role, mb, peerLead]);
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 760, width: '94%', maxHeight: '90vh', overflow: 'auto' }}>
@@ -874,6 +874,8 @@ function PerfModal({ empId, role, name, onClose }) {
         </div>
         {err && <div className="glass card" style={{ color: 'var(--bad)', padding: 12 }}>{err}</div>}
         {!d && !err ? <Loader /> : d && <>
+          {d.read_only && d.peer_lead && <div className="ro-banner">👁 Read-only — {d.name}'s work on <b>{d.peer_lead.name}</b>'s cases (portfolios you both work). No changes allowed.</div>}
+          {d.scoped_to_lead && <div className="muted" style={{ fontSize: 12, margin: '0 2px 8px' }}>Figures count only your cases (team lead {d.scoped_to_lead}). Shared portfolios show the split by lead below.</div>}
           <div className="kpis" style={{ marginBottom: 8 }}>
             <StatCard icon="📁" label="Cases" value={d.totals.count} />
             <StatCard icon="✅" label="Collected" value={money(d.totals.collected)} valueColor="var(--good)" />
@@ -895,7 +897,8 @@ function PerfModal({ empId, role, name, onClose }) {
           <TrendStrip trends={d.trends} title="Cash collected — FTD / MTD / LMTD / Overall" />
           <div className="muted" style={{ fontSize: 11.5, margin: '10px 2px 2px' }}>Tap a portfolio to expand its cases &amp; analytics ↓</div>
           {(d.portfolios || []).map((p, i) => (
-            <PerfPortfolioCard key={i} p={p} empId={empId} asFos={d.as_fos} mb={mb} money={money} />
+            <PerfPortfolioCard key={i} p={p} empId={empId} asFos={d.as_fos} mb={mb} money={money}
+              readOnly={!!d.read_only} personName={d.name} role={role} />
           ))}
           {(!d.portfolios || d.portfolios.length === 0) && <div className="muted" style={{ padding: 12 }}>No cases in this period.</div>}
         </>}
@@ -906,7 +909,7 @@ function PerfModal({ empId, role, name, onClose }) {
 
 /* One portfolio row inside the performance screen — expands on click to show that person's cases
    in the portfolio, with paid/cycle/search filters and a live summary that re-syncs to the filter. */
-function PerfPortfolioCard({ p, empId, asFos, mb, money, hidePeers }) {
+function PerfPortfolioCard({ p, empId, asFos, mb, money, hidePeers, readOnly, personName, role }) {
   const [open, setOpen] = useState(false);
   const [all, setAll] = useState(null);
   const [paid, setPaid] = useState(''); const [cyclesSel, setCyclesSel] = useState([]); const [q, setQ] = useState('');
@@ -933,8 +936,9 @@ function PerfPortfolioCard({ p, empId, asFos, mb, money, hidePeers }) {
   }, { recv: 0, pend: 0, paid: 0 });
   return (
     <div className="glass card" style={{ padding: 12, marginTop: 10 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
-        <b>{open ? '▾' : '▸'} {p.label}</b><span className="badge allocated">{p.count}</span></div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: readOnly ? 'default' : 'pointer' }} onClick={() => !readOnly && setOpen(o => !o)}>
+        <b>{readOnly ? '' : (open ? '▾ ' : '▸ ')}{p.label}</b><span className="badge allocated">{p.count}</span></div>
+      {p.split && <PerfSplitTable split={p.split} money={money} empId={empId} role={role} personName={personName} />}
       <div style={{ display: 'flex', gap: 14, marginTop: 6, flexWrap: 'wrap', fontSize: 13 }}>
         <span>Paid <b>{p.paid}</b>/{p.count}</span>
         <span>ENR <b>{money(p.enr)}</b></span>
@@ -986,6 +990,35 @@ function PerfPortfolioCard({ p, empId, asFos, mb, money, hidePeers }) {
   );
 }
 
+/* One person's portfolio split by team lead: "Total 60 → your 30 · Lead B's 30 (👁 read-only)".
+   A team lead clicks another lead's row to open that part read-only (peer view). */
+function PerfSplitTable({ split, money, empId, role, personName }) {
+  const isLead = window.__ssdRole === 'teamlead';
+  const tot = split.rows.reduce((a, r) => ({ count: a.count + r.count, paid: a.paid + r.paid, collected: a.collected + (r.collected || 0),
+    visits: a.visits + r.visits, calls: a.calls + r.calls, ptps: a.ptps + r.ptps }), { count: 0, paid: 0, collected: 0, visits: 0, calls: 0, ptps: 0 });
+  const pct = (p, c) => c ? Math.round(p * 1000 / c) / 10 : 0;
+  const open = r => { if (isLead && !r.is_me && r.lead_id && window.__ssdOpenPerf) window.__ssdOpenPerf(empId, role, personName, r.lead_id); };
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div className="muted" style={{ fontSize: 11.5, marginBottom: 4 }}>This portfolio is shared between team leads — split by lead</div>
+      <div className="tablewrap"><table style={{ fontSize: 12.5 }}>
+        <thead><tr><th>Cases of</th><th>Cases</th><th>Paid</th><th>Paid %</th><th>Collected</th><th>Visits</th><th>Calls</th><th>PTPs</th></tr></thead>
+        <tbody>
+          <tr style={{ fontWeight: 700 }}><td>Total in portfolio</td><td>{split.total}</td><td>{tot.paid}</td><td>{pct(tot.paid, tot.count)}%</td>
+            <td className="mono">{money(tot.collected)}</td><td>{tot.visits}</td><td>{tot.calls}</td><td>{tot.ptps}</td></tr>
+          {split.rows.map((r, j) => {
+            const peer = isLead && !r.is_me;
+            return <tr key={j} onClick={() => open(r)} title={peer ? 'Open read-only' : ''}
+              style={{ cursor: peer && r.lead_id ? 'pointer' : 'default', background: r.is_me ? 'rgba(59,130,246,.10)' : null }}>
+              <td>↳ {r.is_me ? <b>Your cases ({r.lead})</b> : <>{r.lead}'s cases{peer && <span className="badge" style={{ marginLeft: 6 }}>👁 read-only</span>}</>}</td>
+              <td>{r.count}</td><td>{r.paid}</td><td>{r.paid_pct}%</td><td className="mono" style={{ color: 'var(--good)' }}>{money(r.collected)}</td>
+              <td>{r.visits}</td><td>{r.calls}</td><td>{r.ptps}</td></tr>;
+          })}
+        </tbody></table></div>
+    </div>
+  );
+}
+
 /* Bank & product-wise performance split for one employee — embeddable (used inside the employee's
    full performance page, above their case list). Each portfolio expands to its cases + peer board. */
 function PerfPortfolios({ empId, role }) {
@@ -1020,9 +1053,9 @@ function PerfPortfolios({ empId, role }) {
 /* Mounted once at the app root; lets any PersonLink open a performance modal via window.__ssdOpenPerf. */
 function PerfHost() {
   const [p, setP] = useState(null);
-  useEffect(() => { window.__ssdOpenPerf = (id, role, name) => setP({ id, role, name }); return () => { window.__ssdOpenPerf = null; }; }, []);
+  useEffect(() => { window.__ssdOpenPerf = (id, role, name, peerLead) => setP({ id, role, name, peerLead }); return () => { window.__ssdOpenPerf = null; }; }, []);
   if (!p) return null;
-  return <PerfModal empId={p.id} role={p.role} name={p.name} onClose={() => setP(null)} />;
+  return <PerfModal key={`${p.id}-${p.peerLead || ''}`} empId={p.id} role={p.role} name={p.name} peerLead={p.peerLead} onClose={() => setP(null)} />;
 }
 
 /* ============================== Dashboard ============================== */
@@ -4824,7 +4857,7 @@ const TL_ICON = { created: '🆕', allocated: '📌', visit: '📍', call: '📞
 const REVIEW_SWATCHES = [['red', '#EF4444'], ['amber', '#F59E0B'], ['green', '#22C55E'], ['blue', '#3B82F6'], ['purple', '#8B5CF6'], ['pink', '#EC4899'], ['grey', '#94A3B8']];
 const REVIEW_HEX = Object.fromEntries(REVIEW_SWATCHES);
 
-function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, focusOnOpen = false }) {
+function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, focusOnOpen = false, readOnly = false }) {
   useBackClose(manageBack, onClose);   // Predictive drawer stack owns a single Back handler.
   const drawerRef = React.useRef(null);
   useEffect(() => { if (focusOnOpen && drawerRef.current) drawerRef.current.focus(); }, [focusOnOpen]);
@@ -4989,6 +5022,9 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
     } catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
   };
   const meRole = (store.u || {}).role; const meId = (store.u || {}).id;
+  // Peer view: a team lead opening ANOTHER lead's case (shared portfolio) — look only, change nothing.
+  const ro = !!readOnly || !!cur.read_only;
+  useEffect(() => { if (ro && tab !== 'hist') setTab('hist'); }, [ro]);
   // Field officers may log a PHONE outcome (e.g. a PTP before visiting) but never book money on a
   // call — collections go through a field visit. So they get a PTP-only call tab and no payment tab.
   const ptpOnly = meRole === 'fos';
@@ -5020,7 +5056,8 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
     <div className="drawer-bg" onClick={onClose} style={notice ? { zIndex: 2600 } : undefined}>
       <div className="drawer glass" ref={drawerRef} tabIndex={-1} role="dialog" aria-label={'Case ' + c.id} onClick={e => e.stopPropagation()}>
         {notice && <div role="status" style={{ padding: '8px 12px', marginBottom: 10, background: 'rgba(37,99,235,.10)', color: 'var(--info)', borderRadius: 8 }}>{notice}</div>}
-        {liveCall && liveCall.phase === 'dialing' && <div role="status" style={{ position: 'sticky', top: 0, zIndex: 3, display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, borderRadius: 10, background: '#DBEAFE', border: '1px solid #93C5FD' }}>
+        {ro && <div className="ro-banner" role="status">👁 Read-only — {cur.read_only_lead || cur.team_lead || 'another team lead'}'s case. You can look, but no calls, payments, messages or changes.</div>}
+        {!ro && liveCall && liveCall.phase === 'dialing' && <div role="status" style={{ position: 'sticky', top: 0, zIndex: 3, display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, borderRadius: 10, background: '#DBEAFE', border: '1px solid #93C5FD' }}>
           <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#2563EB', boxShadow: '0 0 0 4px rgba(37,99,235,.2)' }} />
           <b style={{ color: '#1E3A8A' }}>📞 Dialing · {cur.customer_name || 'customer'} · {cur.phone || ''} · {mmss(Date.now() - liveCall.t0)}</b>
           <div style={{ flex: 1 }} />
@@ -5055,6 +5092,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
           <button className="btn ghost sm" onClick={onClose}>✕</button>
         </div>
         <div className="toolbar" style={{ margin: '12px 0' }}>
+          {!ro && <>
           {cur.phone && <CallMenu phone={cur.phone} label="Call customer" gold caseId={cur.id} />}
           {cur.phone && <a className="btn sm" href={'https://wa.me/' + String(cur.phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a>}
           {showCallFos && <a className="btn sm" href={'tel:' + cur.assigned_fos_phone} title={'Call the assigned field agent: ' + (cur.assigned_fos_name || '')}>🧑‍🔧 Call FOS</a>}
@@ -5062,11 +5100,12 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
           {window.__ssdRole === 'fos' && cur.assigned_caller_id && <button className="btn sm" title="Ping the assigned telecaller to call this customer" onClick={() => api('/api/chat/callback', { method: 'POST', body: { case_id: cur.id } }).then(() => toast('Callback requested — the caller has been notified')).catch(e => toast(e.message || 'Could not request callback', 'err'))}>📞 Request callback</button>}
           {canEscalate && <button className="btn sm" disabled={busy} onClick={escalate} title={cur.escalated ? 'Return to the FOS/caller pool' : 'Pull off the FOS/caller and own it (stays in MIS & feedback)'}>{cur.escalated ? '↩ Release' : '🚩 Escalate to me'}</button>}
           {canUndo && <button className="btn sm" disabled={busy} onClick={undoLast} title="Reverse the last payment, or restore the last edited field on this case">↶ Undo last</button>}
+          </>}
           <StatusBadge s={cur.status} /><PaidBadge s={cur.paid_status} /><PropBadge score={cur.propensity} />
           {cur.escalated && <span className="badge" style={{ background: 'rgba(220,38,38,.15)', color: 'var(--bad)' }}>Escalated</span>}
         </div>
         {/* Personal colour highlight — flag this case to review later (only you see your colours). */}
-        <div className="toolbar" style={{ margin: '0 0 12px', alignItems: 'center', gap: 6 }}>
+        {!ro && <div className="toolbar" style={{ margin: '0 0 12px', alignItems: 'center', gap: 6 }}>
           <span className="muted" style={{ fontSize: 12 }}>🔖 Highlight:</span>
           {REVIEW_SWATCHES.map(([col, hex]) => (
             <button key={col} title={col} onClick={() => setReviewColor(cur.review_color === col ? '' : col)}
@@ -5074,7 +5113,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
                 border: cur.review_color === col ? '3px solid var(--ink)' : '1px solid rgba(0,0,0,.2)' }} />
           ))}
           {cur.review_color && <button className="btn ghost sm" onClick={() => setReviewColor('')}>Clear</button>}
-        </div>
+        </div>}
         {(() => {
           // Funding-load sheets carry a FUNDING AMOUNT; CC & PL/BL sheets don't, so use Total
           // Outstanding (TOS) — then ENR — as the base, and derive Pending from it (never negative).
@@ -5141,13 +5180,13 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
           </div>
           {cur.new_phone && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span>📞 <b>{cur.new_phone}</b></span>
-            <CallMenu phone={cur.new_phone} label="Call" gold />
-            <a className="btn sm" href={'https://wa.me/' + String(cur.new_phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a></div>}
+            {!ro && <><CallMenu phone={cur.new_phone} label="Call" gold />
+            <a className="btn sm" href={'https://wa.me/' + String(cur.new_phone).replace(/[^0-9]/g, '')} target="_blank" rel="noreferrer">WhatsApp</a></>}</div>}
           {cur.new_address && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span>📍 {cur.new_address}</span>
             <a className="btn sm" href={'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(cur.new_address + ', India')} target="_blank" rel="noreferrer">🔍 Search in Maps</a></div>}
         </div>}
-        {canEditContact && (ncEdit ? <div className="glass card" style={{ margin: '10px 0' }}>
+        {!ro && canEditContact && (ncEdit ? <div className="glass card" style={{ margin: '10px 0' }}>
           <div className="section-h"><h3 style={{ fontSize: 14 }}>Update customer contact</h3></div>
           <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>Saving alerts the assigned field officer instantly.</p>
           <div className="field"><label>New phone</label><input className="input" value={ncPhone} onChange={e => setNcPhone(e.target.value)} placeholder="10-digit mobile" /></div>
@@ -5158,12 +5197,14 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
         {cur.closed && <div className="glass card" style={{ background: '#f3f4f6', color: '#374151', fontSize: 13, padding: '8px 12px', marginBottom: 8 }}>
           🔒 This case is <b>closed (cycle / month-end)</b>{cur.close_date ? ` on ${cur.close_date}` : ''} and locked — no visits, calls, payments, messages or changes for FOS &amp; callers. It stays visible for reference; an admin can still correct it.</div>}
         <div className="toolbar">
+          {!ro && <>
           <div className={cx('chip', tab === 'call' && 'on')} onClick={() => setTab('call')}>{ptpOnly ? '📞 Log phone outcome' : '📞 Log call'}</div>
           {!ptpOnly && <div className={cx('chip', tab === 'pay' && 'on')} onClick={() => setTab('pay')}>💰 Record payment</div>}
           <div className={cx('chip', tab === 'msg' && 'on')} onClick={() => setTab('msg')}>💬 Message</div>
+          </>}
           <div className={cx('chip', tab === 'hist' && 'on')} onClick={() => setTab('hist')}>🕘 History</div>
         </div>
-        {tab === 'call' && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
+        {!ro && tab === 'call' && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
           {ptpOnly && <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>Phone call before a visit — record a promise-to-pay. Collections are booked from a field visit.</div>}
           <div className="field"><label>Disposition</label>
             <select className="input" value={dispo} onChange={e => setDispo(e.target.value)}>{callDispos.map(d => <option key={d}>{d}</option>)}</select></div>
@@ -5178,7 +5219,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
           <div className="field"><label>Note</label><textarea className="input" value={callNote} onChange={e => setCallNote(e.target.value)} /></div>
           <button className="btn gold block" onClick={() => logCall(false)} disabled={busy || cur.closed}>Save call</button>
         </div>}
-        {tab === 'pay' && !ptpOnly && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
+        {!ro && tab === 'pay' && !ptpOnly && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
           <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr' }}>
             <div className="field"><label>Amount (₹)</label><input className="input" type="number" value={payAmt} onChange={e => setPayAmt(e.target.value)} placeholder="0.00" /></div>
             <div className="field"><label>Mode</label><select className="input" value={payMode} onChange={e => setPayMode(e.target.value)}>
@@ -5212,7 +5253,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
             </div>;
           })()}
         </div>}
-        {tab === 'msg' && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
+        {!ro && tab === 'msg' && <div className="glass card" style={{ background: 'rgba(0,0,0,.18)' }}>
           <div className="field"><label>Template</label>
             <select className="input" value={tplId} onChange={e => pickTpl(e.target.value)}>
               <option value="">— pick a template —</option>
@@ -10500,6 +10541,7 @@ function TLPortfoliosView({ user }) {
   const [team, setTeam] = useState(null); const [teamCases, setTeamCases] = useState(null);
   const [monthB, setMonthB] = useState('current'); const [tab, setTab] = useState('team');
   const [upload, setUpload] = useState(null);        // portfolio to upload cases into
+  const [peerCase, setPeerCase] = useState(null);    // case opened from a team's case list (read-only for peers)
   const qOf = (p) => 'bank=' + encodeURIComponent(p.bank) + '&product=' + encodeURIComponent(p.product) + '&branch=' + encodeURIComponent(p.branch || '');
   const loadPfs = () => { setErr(''); api('/api/team/portfolios').then(setPfs).catch(e => setErr(e.message || 'Could not load')); };
   useEffect(() => { loadPfs(); }, []);
@@ -10550,14 +10592,16 @@ function TLPortfoliosView({ user }) {
         </div>
         {tab === 'team' ? <div className="tablewrap" style={{ marginTop: 8 }}><table>
           <thead><tr><th>Member</th><th>Role</th><th>Assigned</th><th>Resolved</th><th>Recovered</th><th>Pending</th><th>Recovery %</th></tr></thead>
-          <tbody>{(team.members || []).map(m => <tr key={m.id}>
+          <tbody>{(team.members || []).map(m => <tr key={m.id} style={{ cursor: 'pointer' }} title={lead.is_me ? 'Open performance' : 'Open performance (read-only)'}
+            onClick={() => window.__ssdOpenPerf && window.__ssdOpenPerf(m.id, m.role === 'fos' ? 'fos' : 'caller', m.name, lead.is_me ? undefined : lead.id)}>
             <td><b>{m.name}</b> <span className="muted" style={{ fontSize: 11 }}>{m.emp_code}</span></td>
             <td>{m.role === 'fos' ? 'FOS' : 'Caller'}</td><td>{m.assigned}</td><td>{m.resolved}</td>
             <td style={{ color: 'var(--good)' }}>{INR(m.recovered)}</td><td>{INR(m.pending)}</td><td>{m.recovery_pct}%</td>
           </tr>)}{(team.members || []).length === 0 && <tr><td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 16 }}>No team members on this portfolio for the selected month.</td></tr>}</tbody>
         </table></div> : <div className="tablewrap" style={{ marginTop: 8, maxHeight: 460, overflow: 'auto' }}><table>
           <thead><tr><th>Account</th><th>Customer</th><th>FOS</th><th>Caller</th><th>Status</th><th>Recovered</th><th>Pending</th></tr></thead>
-          <tbody>{(teamCases || []).map(c => <tr key={c.id}>
+          <tbody>{(teamCases || []).map(c => <tr key={c.id} style={{ cursor: 'pointer' }} title={lead.is_me ? 'Open case' : 'Open case (read-only)'}
+            onClick={() => setPeerCase({ id: c.id, customer_name: c.customer, account_no: c.account_no, read_only: !lead.is_me, read_only_lead: lead.name })}>
             <td className="mono">{c.account_no || '—'}</td><td>{c.customer || '—'}</td>
             <td>{c.fos || '—'}</td><td>{c.caller || '—'}</td>
             <td><span className={cx('badge', (c.paid_status || '').toUpperCase() === 'PAID' ? 'allocated' : '')}>{c.paid_status || 'UNPAID'}</span>{c.disposition ? <span className="muted" style={{ fontSize: 11 }}> · {c.disposition}</span> : ''}</td>
@@ -10565,6 +10609,7 @@ function TLPortfoliosView({ user }) {
           </tr>)}{teamCases && teamCases.length === 0 && <tr><td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 16 }}>No cases for the selected month.</td></tr>}</tbody>
         </table></div>}
       </>}
+      {peerCase && <CaseDrawer c={peerCase} readOnly={!lead.is_me} onClose={() => setPeerCase(null)} />}
     </div>);
   }
 

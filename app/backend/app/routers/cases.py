@@ -396,7 +396,10 @@ def _ensure_open(case: models.Case, user: models.User):
     """Block field/calling operations on a case that has already closed for the month, or that
     has been escalated away from the FOS/caller (it stays visible in their list but locked).
     Applies to FOS & telecallers; admin / manager / head office keep the ability to make
-    corrections and post DPR payments."""
+    corrections and post DPR payments.
+    A team lead can never change another lead's case (peer cases are read-only)."""
+    from .. import tl_scope
+    tl_scope.guard_write(None, user, case)
     if user.role in ("fos", "telecaller"):
         if case.escalated:
             raise HTTPException(status_code=403,
@@ -1121,12 +1124,34 @@ def removed_cases(bank: str | None = None, product: str | None = None,
 
 @router.get("/{case_id}", response_model=schemas.CaseOut)
 def get_case(case_id: int, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    case = _scope(db.query(models.Case), user).filter(models.Case.id == case_id).first()
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
+    case, ro = _case_for_read(db, user, case_id, log=True)
     case.propensity = propensity(case)
     _mark_today(db, [case])            # set visited_today / contacted_today (never null)
+    case.read_only = ro
+    if ro:
+        case.read_only_lead = (case.team_lead or "").strip() or None
     return case
+
+
+def _case_for_read(db, user, case_id: int, log: bool = False):
+    """→ (case, read_only). In scope → editable. A team lead may also OPEN another lead's case in a
+    portfolio both of them work — read-only, and every such open is audit-logged."""
+    from .. import tl_scope
+    case = _scope(db.query(models.Case), user).filter(models.Case.id == case_id).first()
+    if case:
+        return case, False
+    if tl_scope.is_lead(user):
+        c = db.query(models.Case).filter(models.Case.id == case_id, models.Case.removed.isnot(True)).first()
+        if c and tl_scope.peer_can_read(db, user, c):
+            if log:
+                try:
+                    audit.record(db, user, "peer_view", c,
+                                 detail=f"Opened {c.team_lead}'s case read-only (shared portfolio)")
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            return c, True
+    raise HTTPException(status_code=404, detail="Case not found")
 
 
 @router.post("", response_model=schemas.CaseOut)
@@ -1821,9 +1846,7 @@ def timeline(case_id: int, db: Session = Depends(get_db),
              user: models.User = Depends(get_current_user)):
     """Full audit trail for a case: creation, field visits (photo/GPS/paid/location-correct/
     moved), calls, and payments — one merged, time-ordered list."""
-    case = _scope(db.query(models.Case), user).filter(models.Case.id == case_id).first()
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
+    case, _ro = _case_for_read(db, user, case_id)
     users = {u.id: u.name for u in db.query(models.User).all()}
     ev = []
 

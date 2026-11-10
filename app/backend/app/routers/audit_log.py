@@ -24,16 +24,72 @@ def _scope(q, viewer: models.User, db: Session = None):
     if viewer.role == "manager" and viewer.branch:
         q = q.filter(models.AuditLog.branch == viewer.branch)
     elif viewer.role == "teamlead" and db is not None:
-        from .cases import _scope_user_ids, teamlead_case_filter
+        # • anything done ON a case carrying this lead's name (by anyone)
+        # • their members' / own NON-case actions (login, check-in, leave…)
+        # • bulk / DPR summary lines only when they touched at least one of this lead's cases
+        # A shared member's work on ANOTHER lead's cases is not shown.
+        from sqlalchemy import and_
+        from .cases import _scope_user_ids
         member_ids = set(_scope_user_ids(db, viewer)) | {viewer.id}
-        case_ids = [cid for (cid,) in db.query(models.Case.id).filter(teamlead_case_filter(viewer)).all()]
-        conds = []
-        if member_ids:
-            conds.append(models.AuditLog.actor_id.in_(member_ids))
-        if case_ids:
-            conds.append(models.AuditLog.case_id.in_(case_ids))
-        q = q.filter(or_(*conds)) if conds else q.filter(models.AuditLog.id == -1)
+        own = _own_case_ids(db, viewer)
+        summ = _summary_ids_touching(db, own)
+        conds = [and_(models.AuditLog.case_id.is_(None), models.AuditLog.actor_id.in_(member_ids),
+                      models.AuditLog.action != "dpr_upload",
+                      or_(models.AuditLog.entity_type.is_(None), models.AuditLog.entity_type != "batch"))]
+        if own:
+            conds.append(models.AuditLog.case_id.in_(own))
+        if summ:
+            conds.append(models.AuditLog.id.in_(summ))
+        q = q.filter(or_(*conds))
     return q
+
+
+def _own_case_ids(db, lead) -> set:
+    from .cases import teamlead_case_filter
+    return {cid for (cid,) in db.query(models.Case.id).filter(teamlead_case_filter(lead)).all()}
+
+
+def _meta_case_ids(meta) -> set:
+    if not isinstance(meta, dict):
+        return set()
+    out = set()
+    for key in ("items", "changes"):
+        lst = meta.get(key)
+        for it in (lst if isinstance(lst, list) else []):
+            if isinstance(it, dict) and it.get("case_id") is not None:
+                try:
+                    out.add(int(it["case_id"]))
+                except (TypeError, ValueError):
+                    pass
+    return out
+
+
+def _summary_ids_touching(db, own: set) -> list:
+    """Ids of bulk / DPR summary lines that changed at least one of these cases."""
+    if not own:
+        return []
+    rows = db.query(models.AuditLog.id, models.AuditLog.meta).filter(
+        or_(models.AuditLog.action == "dpr_upload", models.AuditLog.entity_type == "batch")).all()
+    return [i for i, m in rows if _meta_case_ids(m) & own]
+
+
+def _trim_for(db, viewer, meta, own: set | None = None):
+    """A team lead opening a bulk / DPR line sees only the rows for their own cases."""
+    if viewer.role != "teamlead" or not isinstance(meta, dict):
+        return meta
+    own = own if own is not None else _own_case_ids(db, viewer)
+    m = dict(meta)
+    for key in ("items", "changes"):
+        if isinstance(m.get(key), list):
+            full = m[key]
+            m[key] = [it for it in full if isinstance(it, dict) and it.get("case_id") in own]
+            if len(m[key]) != len(full):
+                m["trimmed_note"] = f"Showing your {len(m[key])} of {len(full)} cases — the rest belong to other team leads."
+    if "not_paid" in m:
+        m["not_paid"] = []                      # unmatched DPR rows can't be tied to a lead
+    if m.get("bulk"):
+        m["cases"] = len(m.get("items") or [])
+    return m
 
 
 @router.get("/filters")
@@ -130,14 +186,19 @@ def audit_list(
         cnames = {cid: name for cid, name in db.query(
             models.Case.id, models.Case.customer_name).filter(models.Case.id.in_(cids)).all()}
 
+    own = _own_case_ids(db, viewer) if viewer.role == "teamlead" else None
     items = [{
         "id": r.id, "at": r.at, "actor_id": r.actor_id, "actor": r.actor_name,
         "role": r.actor_role, "action": r.action, "case_id": r.case_id,
         "customer": cnames.get(r.case_id), "branch": r.branch, "bank": r.bank,
         "product": r.product, "field": r.field, "old": r.old_value, "new": r.new_value,
-        "detail": r.detail, "meta": _light_meta(r.meta),
+        "detail": r.detail, "meta": _light_meta(_trim_for(db, viewer, r.meta, own) if _is_summary(r) else r.meta),
     } for r in rows]
     return {"total": total, "count": len(items), "offset": offset, "items": items}
+
+
+def _is_summary(r):
+    return r.action == "dpr_upload" or r.entity_type == "batch"
 
 
 def _light_meta(meta):
@@ -169,7 +230,8 @@ def audit_entry(entry_id: int, db: Session = Depends(get_db),
     r = _one(db, viewer, entry_id)
     return {"id": r.id, "at": r.at, "actor_id": r.actor_id, "actor": r.actor_name, "role": r.actor_role,
             "action": r.action, "case_id": r.case_id, "branch": r.branch, "bank": r.bank, "product": r.product,
-            "field": r.field, "old": r.old_value, "new": r.new_value, "detail": r.detail, "meta": r.meta}
+            "field": r.field, "old": r.old_value, "new": r.new_value, "detail": r.detail,
+            "meta": _trim_for(db, viewer, r.meta)}
 
 
 @router.get("/{entry_id}/dpr.xlsx")
@@ -182,7 +244,7 @@ def audit_dpr_xlsx(entry_id: int, db: Session = Depends(get_db),
     from .. import audit
     from .archive import _sheet_xlsx
     r = _one(db, viewer, entry_id)
-    m = r.meta or {}
+    m = _trim_for(db, viewer, r.meta or {})
     if not m.get("dpr"):
         raise HTTPException(400, "Not a DPR upload entry")
     ch = m.get("changes") or []
@@ -215,7 +277,7 @@ def audit_items_xlsx(entry_id: int, db: Session = Depends(get_db),
     from .. import audit
     from .archive import _sheet_xlsx
     r = _one(db, viewer, entry_id)
-    m = r.meta or {}
+    m = _trim_for(db, viewer, r.meta or {})
     if not m.get("bulk"):
         raise HTTPException(400, "Not a bulk action entry")
     rows = [[i.get("case_id"), i.get("account"), i.get("customer"), i.get("bank"), i.get("product"), i.get("action"),

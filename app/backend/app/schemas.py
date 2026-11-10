@@ -334,6 +334,9 @@ class CaseOut(CaseBase):
         # One such row made FastAPI reject the whole /api/cases response (500 → Live Sheet
         # "could not load"). Fall back to the model's own default so the field is always a string.
         return v if v is not None else "new"
+    # set only when a team lead opens ANOTHER lead's case in a shared portfolio (peer view)
+    read_only: Optional[bool] = None
+    read_only_lead: Optional[str] = None
     paid_status: Optional[str]
     disposition: Optional[str]
     remarks: Optional[str]

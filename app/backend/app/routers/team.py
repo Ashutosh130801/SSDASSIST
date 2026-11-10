@@ -837,7 +837,25 @@ def portfolio_lead_overview(uid: int, bank: str | None = None, product: str | No
         raise HTTPException(status_code=400, detail="That user is not a team lead")
     if not _lead_works_portfolio(db, target, bank, product, branch):
         raise HTTPException(status_code=403, detail="That team lead doesn't work this portfolio")
-    return _overview_payload(db, target, month_bucket, portfolio=(bank, product, branch))
+    _log_peer_view(db, lead, target, f"Viewed {target.name}'s team dashboard (read-only)", bank, product, branch)
+    out = _overview_payload(db, target, month_bucket, portfolio=(bank, product, branch))
+    if isinstance(out, dict) and target.id != lead.id:
+        out["read_only"] = True
+        for m in out.get("members") or []:          # another lead's people: work figures only, no personal details
+            if isinstance(m, dict):
+                m.pop("phone", None); m.pop("email", None)
+    return out
+
+
+def _log_peer_view(db, lead, target, what, bank, product, branch):
+    """Every peer (other team lead) view is recorded in the Audit Log."""
+    try:
+        audit.record(db, lead, "peer_view", entity_type="user", target_user_id=target.id,
+                     detail=f"{what} · {' '.join(x for x in (bank, product, branch) if x)}",
+                     meta={"peer_lead": target.id, "bank": bank, "product": product, "branch": branch})
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 @router.get("/portfolio/lead/{uid}/cases")
@@ -854,6 +872,7 @@ def portfolio_lead_cases(uid: int, bank: str | None = None, product: str | None 
         raise HTTPException(status_code=404, detail="Team lead not found")
     if not _lead_works_portfolio(db, target, bank, product, branch):
         raise HTTPException(status_code=403, detail="That team lead doesn't work this portfolio")
+    _log_peer_view(db, lead, target, f"Viewed {target.name}'s case list (read-only)", bank, product, branch)
     from .cases import teamlead_case_filter
     from .mis import _period_for
     period = _period_for(month_bucket)
