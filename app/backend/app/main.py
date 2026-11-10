@@ -207,6 +207,35 @@ def _ensure_columns():
 _ensure_columns()
 
 
+def _upgrade_old_dpr_audit():
+    """One-off, idempotent: DPR uploads logged before the single-line view were saved as action
+    'import' (with meta.dpr). Rename them to 'dpr_upload' and fill bank/product so they look and
+    filter exactly like new uploads in the Audit Log."""
+    from .database import SessionLocal
+    from . import models as _m
+    db = SessionLocal()
+    try:
+        n = 0
+        for r in db.query(_m.AuditLog).filter(_m.AuditLog.action == "import").all():
+            m = r.meta or {}
+            if isinstance(m, dict) and m.get("dpr"):
+                r.action = "dpr_upload"
+                r.bank = r.bank or m.get("bank")
+                r.product = r.product or m.get("product")
+                n += 1
+        if n:
+            db.commit()
+            print(f"[SSD] Audit log: {n} earlier DPR upload(s) moved to the single-line DPR view", flush=True)
+    except Exception as e:
+        db.rollback()
+        print(f"[SSD] DPR audit upgrade skipped: {e!r}", flush=True)
+    finally:
+        db.close()
+
+
+_upgrade_old_dpr_audit()
+
+
 def _recompute_pay_status():
     """Re-derive every case's PAID / PARTIAL / UNPAID + pending against the settlement (NORM/STAB)
     money rules, so historical rows match the single source of truth in app.paymath. Idempotent:

@@ -259,6 +259,10 @@ tr:hover td{background:#F7FAFD}
 .ai-msg{padding:12px 14px;border-radius:14px;margin-bottom:10px;font-size:14.5px;line-height:1.5;white-space:pre-wrap}
 .ai-msg.me{background:linear-gradient(135deg,rgba(37,99,235,.14),rgba(37,99,235,.06));align-self:flex-end;max-width:82%}
 .ai-msg.bot{background:#F1F5FB;max-width:92%}
+/* AI answers: wrap long text; tables show in full (page scrolls) and scroll sideways only if too wide */
+.ai-msg{min-width:0;overflow-wrap:anywhere}
+.ai-msg .tablewrap{max-height:none;overflow-x:auto;overflow-y:visible;background:#fff}
+.ai-msg td,.ai-msg th{white-space:normal;min-width:70px}
 
 /* ---------- Mobile bottom nav ---------- */
 .mobnav{display:none}

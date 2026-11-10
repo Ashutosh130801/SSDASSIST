@@ -92,6 +92,10 @@ def audit_list(
         query = query.filter(models.AuditLog.product == product)
     if case_id:
         query = query.filter(models.AuditLog.case_id == case_id)
+    elif action != "dpr_update":
+        # One DPR upload = ONE line (action 'dpr_upload'); its per-case rows stay in each case's
+        # History and are shown here only when you filter by that case or by 'dpr_update'.
+        query = query.filter(models.AuditLog.action != "dpr_update")
     if period:
         try:
             y, m = int(period[:4]), int(period[5:7])
@@ -128,6 +132,67 @@ def audit_list(
         "role": r.actor_role, "action": r.action, "case_id": r.case_id,
         "customer": cnames.get(r.case_id), "branch": r.branch, "bank": r.bank,
         "product": r.product, "field": r.field, "old": r.old_value, "new": r.new_value,
-        "detail": r.detail, "meta": r.meta,
+        "detail": r.detail, "meta": _light_meta(r.meta),
     } for r in rows]
     return {"total": total, "count": len(items), "offset": offset, "items": items}
+
+
+def _light_meta(meta):
+    """The list sends counts only — the full DPR change list (can be thousands of rows) loads when opened."""
+    if isinstance(meta, dict) and isinstance(meta.get("changes"), list):
+        m = {k: v for k, v in meta.items() if k not in ("changes", "not_paid")}
+        m["changes_count"] = len(meta["changes"])
+        m["not_paid_count"] = len(meta.get("not_paid") or [])
+        return m
+    return meta
+
+
+def _one(db, viewer, entry_id):
+    from fastapi import HTTPException
+    r = _scope(db.query(models.AuditLog), viewer, db).filter(models.AuditLog.id == entry_id).first()
+    if not r:
+        raise HTTPException(404, "Log entry not found")
+    return r
+
+
+@router.get("/{entry_id}")
+def audit_entry(entry_id: int, db: Session = Depends(get_db),
+                viewer: models.User = Depends(require_roles(*VIEW_ROLES))):
+    """One log entry with its full detail (e.g. every case a DPR upload changed)."""
+    r = _one(db, viewer, entry_id)
+    return {"id": r.id, "at": r.at, "actor_id": r.actor_id, "actor": r.actor_name, "role": r.actor_role,
+            "action": r.action, "case_id": r.case_id, "branch": r.branch, "bank": r.bank, "product": r.product,
+            "field": r.field, "old": r.old_value, "new": r.new_value, "detail": r.detail, "meta": r.meta}
+
+
+@router.get("/{entry_id}/dpr.xlsx")
+def audit_dpr_xlsx(entry_id: int, db: Session = Depends(get_db),
+                   viewer: models.User = Depends(require_roles(*VIEW_ROLES))):
+    """Excel of a DPR upload's full change list (same as the preview)."""
+    import io
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
+    from .. import audit
+    from .archive import _sheet_xlsx
+    r = _one(db, viewer, entry_id)
+    m = r.meta or {}
+    if not m.get("dpr"):
+        raise HTTPException(400, "Not a DPR upload entry")
+    ch = m.get("changes") or []
+    rows = [[c.get("case_id"), c.get("key"), c.get("customer"), c.get("action"), c.get("old_status"), c.get("new_status"),
+             c.get("delta"), c.get("new_received"), c.get("norm_stab"),
+             "; ".join(f"{k}={v}" for k, v in (c.get("fields") or {}).items())] for c in ch]
+    np_rows = [[x.get("account"), x.get("customer"), x.get("amount"), x.get("status"), x.get("reason")] for x in (m.get("not_paid") or [])]
+    summary = [["Uploaded by", r.actor_name], ["When", r.at], ["Bank", m.get("bank")], ["Product", m.get("product")],
+               ["File", m.get("file")], ["Month", m.get("month")]] + \
+              [[k.replace("_", " ").title(), m.get(k)] for k in ("rows_in_file", "paid", "extra", "reduce", "unpaid", "plbl",
+                                                                  "no_change", "unmatched", "field_updates", "collected")]
+    data = _sheet_xlsx([("Summary", ["Item", "Value"], summary),
+                        ("Changes", ["Case id", "Account / card", "Customer", "Action", "Before", "After", "Δ amount ₹",
+                                     "Collected now ₹", "NORM/STAB", "Fields updated"], rows),
+                        ("Not paid - unmatched", ["Account / card", "Customer", "Amount ₹", "Status", "Reason"], np_rows)])
+    audit.record(db, viewer, "download", None, entity_type="download", detail=f"DPR change list #{r.id} ({len(rows)} rows)")
+    db.commit()
+    name = f"DPR_{m.get('bank') or ''}_{m.get('product') or ''}_{r.at:%Y%m%d_%H%M}.xlsx".replace(" ", "_").replace("/", "-")
+    return StreamingResponse(io.BytesIO(data), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{name}"'})

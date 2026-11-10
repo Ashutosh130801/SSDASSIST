@@ -662,15 +662,21 @@ async def dpr_commit(file: UploadFile = File(...), default_bank: str = Form(...)
 
     # ONE audit entry per DPR upload — the full per-case change list lives in its meta so the
     # activity screen can open the same detail you saw in the preview.
-    audit.record(db, user, "import", None, entity_type="import",
-                 detail=f"DPR update {default_bank}/{product}: {paid_n} paid, {extra_n} extra, "
+    # The Audit Log shows ONLY this entry for the upload (the per-case 'dpr_update' rows above feed
+    # each case's History and are hidden from the main log); opening it shows the full DPR detail.
+    summary = audit.record(db, user, "dpr_upload", None, entity_type="import",
+                 detail=f"DPR {default_bank} / {product}: {len(changes)} cases updated — {paid_n} paid, {extra_n} extra, "
                         f"{reduce_n} reduced, {unpaid_n} reversed, {plbl_n} PL/BL, "
-                        f"{fields_n} field updates · net ₹{collected_total}",
-                 meta={"dpr": True, "bank": default_bank, "product": product,
+                        f"{fields_n} field updates, {unmatched_n} unmatched · net ₹{collected_total}",
+                 meta={"dpr": True, "bank": default_bank, "product": product, "file": file.filename,
+                       "month": month_bucket or "current", "rows_in_file": len(items),
                        "paid": paid_n, "extra": extra_n, "reduce": reduce_n, "unpaid": unpaid_n,
                        "plbl": plbl_n, "no_change": nochange_n, "unmatched": unmatched_n,
                        "field_updates": fields_n, "collected": float(collected_total),
-                       "changes": changes})
+                       "changes": changes, "not_paid": not_paid[:2000]})
+    summary.bank, summary.product = default_bank, product
+    if user.role == "manager":
+        summary.branch = user.branch            # managers see their own uploads in their branch view
     db.commit()
     for c in touched:
         db.refresh(c)

@@ -5531,20 +5531,19 @@ function AIAssist({ user }) {
   const confirm = async (a) => { try { await api(`/api/ai/actions/${a.token}/confirm`, { method: 'POST' }); toast('Done ✓'); a.done = true; setMsgs(m => [...m]); } catch (e) { alert(e.message); } };
   const quick = ['Summarise my portfolio this month', 'Which cases should I prioritise today?', 'Overdue PTPs — make an Excel', 'My team performance this month',
     'How do I upload a DPR file?', 'Write a polite WhatsApp payment reminder', 'Make a PDF of my visits this week', 'Write an SOP for field visits as a Word file'];
-  // Fixed-height layout: the chat list (left) never moves — only the message area scrolls.
-  // (minHeight: 0 on the grid/flex children stops a long answer from stretching the page.)
-  return <div style={{ display: 'grid', gridTemplateColumns: 'minmax(170px,220px) 1fr', gridTemplateRows: 'minmax(0, 1fr)', gap: 10,
-    height: 'calc(100vh - 170px)', minHeight: 460, overflow: 'hidden' }}>
-    <div className="glass card" style={{ padding: 8, overflowY: 'auto', minHeight: 0 }}>
+  // The conversation flows with the page (long answers and tables read naturally with the normal page
+  // scroll); the chat list on the left and the question box at the bottom stay in view while scrolling.
+  return <div style={{ display: 'grid', gridTemplateColumns: 'minmax(170px,220px) minmax(0,1fr)', gap: 10, alignItems: 'start', minHeight: 'calc(100vh - 170px)' }}>
+    <div className="glass card" style={{ padding: 8, overflowY: 'auto', position: 'sticky', top: 12, maxHeight: 'calc(100vh - 40px)' }}>
       <button className="btn gold sm" style={{ width: '100%', marginBottom: 6 }} onClick={() => { setCid(null); setMsgs([]); }}>＋ New chat</button>
       {convs.map(c => <div key={c.id} onClick={() => openConv(c.id)} style={{ padding: '6px 8px', borderRadius: 8, cursor: 'pointer', fontSize: 12.5, background: c.id === cid ? 'rgba(37,99,235,.1)' : 'transparent', display: 'flex', gap: 4 }}>
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title}</span>
         <span className="muted" onClick={e => { e.stopPropagation(); if (window.confirm('Delete this chat?')) api('/api/ai/conversations/' + c.id, { method: 'DELETE' }).then(() => { if (c.id === cid) { setCid(null); setMsgs([]); } loadConvs(); }); }}>✕</span></div>)}
     </div>
-    <div className="glass card" style={{ display: 'flex', flexDirection: 'column', padding: 12, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+    <div className="glass card" style={{ display: 'flex', flexDirection: 'column', padding: 12, minWidth: 0, minHeight: 'calc(100vh - 170px)' }}>
       <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>{st && !st.error ? <>✨ {st.local ? '🏢 ' + (st.provider_label || 'Local model') + ' (data stays on your server)' : '☁️ ' + (st.provider_label || st.provider)} · {st.model}{st.mask_pii ? ' · phone/account numbers masked' : ''} · {st.used_today}/{st.daily_limit} today
         {!st.configured && <b style={{ color: 'var(--bad)' }}> · not set up: {st.hint}</b>}</> : st && st.error}</div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
         {!msgs.length && <div className="muted" style={{ margin: 'auto', textAlign: 'center', maxWidth: 520 }}>Hi {user.name.split(' ')[0]} — ask about your cases, PTPs, team, visits, calls, attendance, leave or payslips, or how to do anything in RecoverIQ. I only see what you can see.
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 10 }}>{quick.map(qq => <div key={qq} className="chip" onClick={() => send(qq)}>{qq}</div>)}</div></div>}
         {msgs.map((m, i) => <div key={i} className={cx('ai-msg', m.role === 'user' ? 'me' : 'bot')} style={{ maxWidth: '88%', alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
@@ -5560,7 +5559,7 @@ function AIAssist({ user }) {
         {busy && <div className="ai-msg bot">…looking it up</div>}
         <div ref={end} />
       </div>
-      <div className="toolbar" style={{ marginTop: 8 }}>
+      <div className="toolbar" style={{ marginTop: 8, position: 'sticky', bottom: 0, background: '#fff', padding: '8px 0 4px', zIndex: 3, boxShadow: '0 -6px 12px -8px rgba(15,23,42,.18)' }}>
         <input className="input" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Ask anything — e.g. 'Excel of unpaid Axis X-bucket cases with PTP this week'" />
         <button className="btn gold" onClick={() => send()} disabled={busy}>Send</button></div>
     </div>
@@ -5759,6 +5758,7 @@ const AUDIT_ICON = {
   reassign: '🔀', deallocate: '➖', transfer: '🔁', edit: '✏️', cell_edit: '⌨️',
   paid: '✅', unpaid: '↩️', payment: '💰', visit: '📍', call: '📞',
   delete: '🗑️', restore: '♻️', escalate: '🚩', deescalate: '🏳️', import: '📥', login: '🔑',
+  dpr_upload: '🏦', dpr_update: '🏦',
 };
 function AuditLogView({ user }) {
   const [opts, setOpts] = useState({ branches: [], banks: [], products: [], actions: [], roles: [], employees: [] });
@@ -5814,7 +5814,8 @@ function AuditLogView({ user }) {
               <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{when(r.at)}</td>
               <td><b>{r.actor || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{r.role}</div></td>
               <td style={{ whiteSpace: 'nowrap' }}>{AUDIT_ICON[r.action] || '•'} {r.action}</td>
-              <td>{r.customer ? <span>{r.customer}<div className="muted" style={{ fontSize: 11 }}>#{r.case_id}</div></span> : (r.case_id ? '#' + r.case_id : '—')}</td>
+              <td>{r.meta && r.meta.dpr ? <span className="badge new" title="Click to see every case this DPR changed">{r.meta.changes_count ?? '—'} cases · view</span>
+                : r.customer ? <span>{r.customer}<div className="muted" style={{ fontSize: 11 }}>#{r.case_id}</div></span> : (r.case_id ? '#' + r.case_id : '—')}</td>
               <td className="muted" style={{ fontSize: 12 }}>{r.field || '—'}</td>
               <td style={{ fontSize: 12 }}>{(r.old || r.new) ? <span><span className="muted">{r.old ?? '∅'}</span> → <b>{r.new ?? '∅'}</b></span> : '—'}</td>
               <td style={{ fontSize: 12 }}>{r.detail || '—'}</td>
@@ -5828,9 +5829,76 @@ function AuditLogView({ user }) {
           </div>}
         </div>
       )}
-      {logSel && <AuditDetailModal row={logSel} onClose={() => setLogSel(null)} />}
+      {logSel && (logSel.meta && logSel.meta.dpr ? <DprLogModal row={logSel} onClose={() => setLogSel(null)} />
+        : <AuditDetailModal row={logSel} onClose={() => setLogSel(null)} />)}
     </div>
   );
+}
+
+/* 🏦 One DPR upload — the full change list (same as the preview), who uploaded it, and an Excel copy. */
+function DprLogModal({ row, onClose }) {
+  useBackClose(true, onClose);
+  const [full, setFull] = useState(false); const [d, setD] = useState(null); const [err, setErr] = useState('');
+  const [q, setQ] = useState(''); const [tab, setTab] = useState('changes'); const [only, setOnly] = useState('');
+  useEffect(() => { api('/api/audit/' + row.id).then(setD).catch(e => setErr(e.message)); }, [row.id]);
+  const money = v => v == null || v === '' ? '—' : '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+  const m = (d && d.meta) || row.meta || {};
+  const changes = (m.changes || []).filter(ch => {
+    if (only === 'paid' && (ch.new_status || '').toUpperCase() !== 'PAID') return false;
+    if (only === 'money' && !ch.delta) return false;
+    if (only === 'fields' && !ch.fields) return false;
+    if (only === 'reversed' && !((ch.delta || 0) < 0)) return false;
+    const t = q.trim().toLowerCase();
+    return !t || [ch.key, ch.customer, ch.case_id, ch.old_status, ch.new_status].some(x => String(x ?? '').toLowerCase().includes(t));
+  });
+  const notPaid = m.not_paid || [];
+  const box = full ? { maxWidth: 'none', width: '100vw', height: '100vh', maxHeight: '100vh', borderRadius: 0 } : { maxWidth: 1150, width: '97%' };
+  const stat = (label, v, c) => <div className="glass card" style={{ padding: '8px 12px' }}><div className="muted" style={{ fontSize: 11 }}>{label}</div><b style={{ fontSize: 18, color: c }}>{v}</b></div>;
+  return <div className="modal-bg" onClick={onClose} style={full ? { padding: 0 } : undefined}><div className="modal glass" onClick={e => e.stopPropagation()} style={box}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>🏦 DPR upload — {[m.bank, m.product].filter(Boolean).join(' · ')}</h3>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="btn ghost sm" onClick={() => download('/api/audit/' + row.id + '/dpr.xlsx', 'DPR_' + (m.bank || '') + '_' + (m.product || '') + '.xlsx')}>⬇ Excel</button>
+        <button className="btn ghost sm" onClick={() => setFull(f => !f)}>{full ? '🗗 Exit full screen' : '⛶ Full screen'}</button>
+        <button className="btn ghost sm" onClick={onClose}>✕</button></div></div>
+    <div style={{ fontSize: 13, marginBottom: 8 }}>Uploaded by <b>{row.actor || '—'}</b>{row.role ? ' (' + roleName(row.role) + ')' : ''} · {fmtDT(row.at)}
+      {m.file ? <> · file <b>{m.file}</b></> : null}{m.month ? <> · month: {m.month}</> : null}{m.rows_in_file != null ? <> · {m.rows_in_file} rows in file</> : null}</div>
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+      {stat('Cases changed', (m.changes || []).length || m.changes_count || 0)}
+      {stat('Paid', m.paid || 0, 'var(--good)')}{stat('Extra collection', m.extra || 0, 'var(--info)')}
+      {stat('Reduced', m.reduce || 0, 'var(--warn)')}{stat('Reversed', m.unpaid || 0, 'var(--bad)')}
+      {stat('PL/BL', m.plbl || 0)}{stat('Field updates', m.field_updates || 0)}{stat('No change', m.no_change || 0)}
+      {stat('Unmatched', m.unmatched || 0, 'var(--bad)')}{stat('Net cash', money(m.collected), 'var(--good)')}
+    </div>
+    {err ? <div style={{ color: 'var(--bad)' }}>{err}</div> : !d ? <Loader /> : <>
+      <div className="toolbar" style={{ gap: 6, flexWrap: 'wrap' }}>
+        {[['changes', `Changes (${(m.changes || []).length})`], ['notpaid', `Not paid / unmatched (${notPaid.length})`]].map(([k, l]) =>
+          <div key={k} className={cx('chip', tab === k && 'on')} onClick={() => setTab(k)}>{l}</div>)}
+        {tab === 'changes' && <>
+          <span style={{ width: 10 }} />
+          {[['', 'All'], ['paid', 'Now PAID'], ['money', 'Money moved'], ['reversed', 'Reversed'], ['fields', 'Field updates']].map(([k, l]) =>
+            <div key={k} className={cx('chip', only === k && 'on')} onClick={() => setOnly(k)}>{l}</div>)}
+          <input className="input" style={{ maxWidth: 230, marginLeft: 'auto' }} placeholder="Search account / customer / case" value={q} onChange={e => setQ(e.target.value)} /></>}
+      </div>
+      {tab === 'changes' ? <div className="tablewrap" style={{ maxHeight: full ? 'calc(100vh - 290px)' : 460, marginTop: 8 }}><table style={{ fontSize: 12.5 }}>
+        <thead><tr><th>Case</th><th>Account / card</th><th>Customer</th><th>Before → After</th><th>Δ Amount</th><th>Collected now</th><th>NORM/STAB</th><th>Fields updated</th></tr></thead>
+        <tbody>{changes.slice(0, 3000).map((ch, i) => <tr key={i}>
+          <td className="mono">#{ch.case_id}</td><td className="mono">{ch.key || '—'}</td><td>{ch.customer || '—'}</td>
+          <td style={{ whiteSpace: 'nowrap' }}>{ch.old_status || '—'} → <b>{ch.new_status || ch.old_status || '—'}</b>{ch.auto_debit ? ' · auto-debit' : ''}</td>
+          <td className="mono" style={{ color: (ch.delta || 0) >= 0 ? 'var(--good)' : 'var(--bad)' }}>{ch.delta ? ((ch.delta >= 0 ? '+' : '−') + money(Math.abs(ch.delta))) : '—'}</td>
+          <td className="mono">{ch.new_received != null ? money(ch.new_received) : '—'}</td>
+          <td>{ch.norm_stab || '—'}</td>
+          <td style={{ fontSize: 11.5, whiteSpace: 'normal', minWidth: 160 }}>{ch.fields ? Object.entries(ch.fields).map(([k, v]) => <div key={k}><span className="muted">{k}:</span> {String(v)}</div>) : '—'}</td>
+        </tr>)}</tbody></table>
+        {changes.length === 0 && <div className="muted" style={{ padding: 12 }}>{(m.changes || []).length ? 'No row matches the filter.' : 'This older entry has no saved change list.'}</div>}
+        {changes.length > 3000 && <div className="muted" style={{ padding: 8 }}>Showing 3,000 of {changes.length} — use ⬇ Excel for all.</div>}
+      </div>
+      : <div className="tablewrap" style={{ maxHeight: full ? 'calc(100vh - 290px)' : 460, marginTop: 8 }}><table style={{ fontSize: 12.5 }}>
+        <thead><tr><th>Account / card</th><th>Customer</th><th>Amount</th><th>Status</th><th>Reason</th></tr></thead>
+        <tbody>{notPaid.map((x, i) => <tr key={i}><td className="mono">{x.account || '—'}</td><td>{x.customer || '—'}</td><td className="mono">{money(x.amount)}</td>
+          <td>{x.status}</td><td style={{ whiteSpace: 'normal' }}>{x.reason}</td></tr>)}</tbody></table>
+        {!notPaid.length && <div className="muted" style={{ padding: 12 }}>Everything in this DPR was matched and paid.</div>}</div>}
+    </>}
+  </div></div>;
 }
 
 /* Popup for one audit entry — who did what & when, plus the linked case's details. */
