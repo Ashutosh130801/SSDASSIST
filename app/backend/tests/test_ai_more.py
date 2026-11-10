@@ -69,7 +69,7 @@ class AiMoreTests(unittest.TestCase):
                              ("make_visual", {"kind": "chart", "chart_type": "bar", "title": "By bank", "source_tool": "mis_breakdown",
                                               "source_args": '{"group_by":"bank","bucket":"all"}', "x": "bank", "y": "cases,paid"}),
                              ("make_visual", {"kind": "flow", "steps": "Open MIS > Pick bank > Download"})]),
-            self._reply("AXIS has most cases.\nSuggestions: Show HDFC only | Paid % by bucket | Make an Excel"),
+            self._reply("AXIS has most cases.\nMood: celebrate\nSuggestions: Show HDFC only | Paid % by bucket | Make an Excel"),
         ]
 
         def fake(conf, system, messages, specs, **kw):
@@ -83,13 +83,20 @@ class AiMoreTests(unittest.TestCase):
         chart = r["visuals"][1]
         self.assertEqual(chart["labels"], ["AXIS", "HDFC"]); self.assertEqual(chart["series"][0]["data"], [4, 2])
         self.assertEqual(r["suggestions"], ["Show HDFC only", "Paid % by bucket", "Make an Excel"])
-        self.assertNotIn("Suggestions", r["reply"])
+        self.assertNotIn("Suggestions", r["reply"]); self.assertNotIn("Mood", r["reply"]); self.assertEqual(r["mood"], "celebrate")
         self.assertEqual(len(r["steps"]), 3); self.assertTrue(all(s["ok"] for s in r["steps"]))
         first_user_msg = seen[0][1][-1]
         self.assertIn("SCREEN", first_user_msg); self.assertIn("XXXX3210", first_user_msg); self.assertNotIn("9876543210", first_user_msg)
         self.assertIn("audit_log", seen[0][2]); self.assertIn("make_visual", seen[0][2])
         conv = self.c.get(f"/api/ai/conversations/{r['conversation_id']}").json()
         self.assertEqual(len(conv["messages"][-1]["visuals"]), 3)                  # visuals kept in history
+
+    def test_mood_fallback(self):
+        from app.routers.ai import _split_mood
+        self.assertEqual(_split_mood("Glad to help!", "thanks a lot")[1], "love")
+        self.assertEqual(_split_mood("No cases found for that bank.", "axis cases")[1], "sorry")
+        self.assertEqual(_split_mood("Here it is.\nMood: wink", "tip?"), ("Here it is.", "wink"))
+        self.assertIsNone(_split_mood("Here are 5 cases.", "show cases")[1])
 
     def test_services_switch_off_data_area(self):
         db = SessionLocal()

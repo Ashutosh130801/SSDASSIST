@@ -459,3 +459,133 @@ tr:hover td{background:#F7FAFD}
 .pet-card b{font-size:13px;margin-top:4px}
 .pet-card .muted{font-size:10.5px;line-height:1.3}
 @media (prefers-reduced-motion:reduce){.pet-body,.pet-shadow,.pet-eye,.pet-leaf,.pet-flicker,.pet-shine,.pet-ring{animation:none!important}}
+
+/* ===================== Hologram companions + task actions ===================== */
+.pet-holo .pet-svg{filter:drop-shadow(0 0 6px rgba(34,211,238,.45)) drop-shadow(0 8px 10px rgba(30,41,59,.18))}
+.pet-aria .pet-svg{filter:drop-shadow(0 0 6px rgba(192,132,252,.5)) drop-shadow(0 8px 10px rgba(30,41,59,.18))}
+.pet-holo .pet-body{animation:holoFloat 3.6s ease-in-out infinite}
+@keyframes holoFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}
+.pet-holo .pet-shadow{display:none}
+.holo-head{transition:transform .15s ease-out;animation:holoFlicker 5s steps(1) infinite}
+@keyframes holoFlicker{0%,100%{opacity:1}91%{opacity:1}92%{opacity:.55}93%{opacity:1}96%{opacity:.8}97%{opacity:1}}
+.holo-scan{animation:holoScan 2.8s linear infinite}
+@keyframes holoScan{from{transform:translateY(0)}to{transform:translateY(74px)}}
+.holo-cone{animation:holoCone 2.2s ease-in-out infinite}
+@keyframes holoCone{50%{opacity:.55}}
+.holo-base{animation:holoBase 1.6s ease-in-out infinite}
+@keyframes holoBase{50%{opacity:.5}}
+.holo-hair{transform-box:fill-box;transform-origin:50% 0;animation:holoHair 4s ease-in-out infinite}
+@keyframes holoHair{50%{transform:skewX(1.5deg)}}
+.holo-twinkle{animation:petTwinkle 2.2s ease-in-out infinite}
+.holo-wave path{animation:holoWave .35s ease-in-out infinite alternate;transform-box:fill-box;transform-origin:50% 100%}
+@keyframes holoWave{from{transform:scaleY(.35)}to{transform:scaleY(1)}}
+.pet-holo.s-thinking .holo-scan{animation-duration:.9s}
+.pet-holo.s-reading .holo-scan{animation-duration:1.4s}
+.pet-holo.s-drag .holo-head{animation:holoGlitch .18s steps(2) infinite}
+@keyframes holoGlitch{0%{transform:translate(-1.5px,0) skewX(4deg)}50%{transform:translate(1.5px,0) skewX(-4deg)}}
+.pet-holo.s-sleep .holo-head{opacity:.55;animation:none}
+.pet-holo.s-thinking .pet-body{animation:holoPonder 2.4s ease-in-out infinite}
+@keyframes holoPonder{50%{transform:rotate(-3deg) translateY(-1px)}}
+/* task actions (all companions) */
+.pet-readscan{animation:petReadScan 1.1s ease-in-out infinite}
+@keyframes petReadScan{0%,100%{transform:translate(-2.6px,1.5px)}50%{transform:translate(2.6px,1.5px)}}
+.pet.s-reading .pet-body{animation:petLean 1.1s ease-in-out infinite}
+@keyframes petLean{50%{transform:rotate(2deg) translateY(-1px)}}
+.pet-task{animation:botPop .3s ease-out}
+.pet-docscan{animation:petDocScan 1s linear infinite}
+@keyframes petDocScan{from{transform:translateY(0)}to{transform:translateY(16px)}}
+.pet-bars rect{transform-box:fill-box;transform-origin:50% 100%;animation:petBars .7s ease-out infinite alternate}
+@keyframes petBars{from{transform:scaleY(.2)}to{transform:scaleY(1)}}
+.pet.s-charting .pet-body,.pet.s-file .pet-body{animation:petNod .45s ease-in-out infinite alternate}
+.pet-wave{transform-box:fill-box;transform-origin:20% 90%;animation:petWave .45s ease-in-out infinite alternate}
+@keyframes petWave{from{transform:rotate(-18deg)}to{transform:rotate(22deg)}}
+.pet.s-wave .pet-body{animation:petJump .6s ease-in-out infinite alternate}
+
+/* ===================== Sikka — 3D ₹1 coin ===================== */
+.pet-dom{perspective:520px}
+.pet-dom .pet-body{position:absolute;inset:6% 6% 10%;transform-style:preserve-3d}
+.pet-fx{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}
+.coin3d{position:absolute;inset:0;transform-style:preserve-3d;transition:transform .2s ease-out}
+.coin3d-spin{position:absolute;inset:0;transform-style:preserve-3d;animation:coinSpin 5.5s linear infinite}
+.coin-layer{position:absolute;inset:1%;border-radius:50%;background:linear-gradient(90deg,#64748b,#cbd5e1 35%,#f1f5f9 50%,#94a3b8 70%,#475569);
+  box-shadow:inset 0 0 0 1px rgba(15,23,42,.25)}
+.coin-face{position:absolute;inset:0;border-radius:50%;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+.coin-svg{width:100%;height:100%;display:block;filter:drop-shadow(0 0 1px rgba(15,23,42,.35))}
+.coin-glint{animation:coinGlint 2.75s ease-in-out infinite}
+@keyframes coinGlint{0%,100%{opacity:.15}50%{opacity:.5}}
+@keyframes coinSpin{from{transform:rotateY(0)}to{transform:rotateY(360deg)}}
+/* moods */
+.pet-sikka.s-thinking .coin3d-spin{animation-duration:1.6s}
+.pet-sikka.s-reading .coin3d-spin{animation:coinRead 1.8s ease-in-out infinite}
+@keyframes coinRead{0%,100%{transform:rotateY(-25deg)}50%{transform:rotateY(25deg)}}
+.pet-sikka.s-happy .coin3d-spin,.pet-sikka.s-wave .coin3d-spin{animation:coinToss 1.2s cubic-bezier(.3,.7,.4,1) infinite}
+@keyframes coinToss{0%{transform:translateY(0) rotateX(0)}45%{transform:translateY(-34%) rotateX(540deg)}80%{transform:translateY(0) rotateX(720deg)}100%{transform:translateY(0) rotateX(720deg)}}
+.pet-sikka.s-talk .coin3d-spin{animation:coinFlip .9s ease-in-out infinite}
+@keyframes coinFlip{0%{transform:rotateY(0)}50%{transform:rotateY(180deg)}100%{transform:rotateY(360deg)}}
+.pet-sikka.s-charting .coin3d-spin,.pet-sikka.s-file .coin3d-spin{animation:coinFlip 1.2s ease-in-out infinite}
+.pet-sikka.s-sad .coin3d-spin{animation:coinWobble 1.6s ease-in-out infinite}
+@keyframes coinWobble{0%,100%{transform:rotateX(55deg) rotateZ(-6deg) translateY(10%)}50%{transform:rotateX(62deg) rotateZ(6deg) translateY(10%)}}
+.pet-sikka.s-sleep .coin3d-spin{animation:coinRest 3.6s ease-in-out infinite}
+@keyframes coinRest{0%,100%{transform:rotateX(72deg) translateY(18%)}50%{transform:rotateX(68deg) translateY(16%)}}
+.pet-sikka.s-drag .coin3d-spin{animation-duration:.6s}
+.pet-sikka .pet-body{animation:petFloat 3.4s ease-in-out infinite}
+.pet-sikka.s-happy .pet-body,.pet-sikka.s-wave .pet-body{animation:none}
+
+/* ===================== Rui + companion profile card ===================== */
+.rui-tuft{transform-box:fill-box;transform-origin:50% 100%;animation:ruiTuft 3s ease-in-out infinite}
+.rui-tuft+.rui-tuft{animation-delay:.4s}
+@keyframes ruiTuft{50%{transform:rotate(8deg) scale(1.05)}}
+.rui-arm-l,.rui-arm-r{transform-box:fill-box;transform-origin:50% 10%}
+.pet-fluff.s-wave .rui-arm-r,.pet-fluff.s-happy .rui-arm-r{animation:ruiWave .35s ease-in-out infinite alternate}
+.pet-fluff.s-happy .rui-arm-l{animation:ruiWave .35s ease-in-out infinite alternate-reverse}
+@keyframes ruiWave{from{transform:rotate(-20deg)}to{transform:rotate(-70deg) translateY(-2px)}}
+.pet-fluff .pet-body{animation:ruiSquish 3.2s ease-in-out infinite}
+@keyframes ruiSquish{0%,100%{transform:scale(1,1)}50%{transform:scale(1.03,.97) translateY(1px)}}
+.pet-fluff.s-happy .pet-body{animation:petJump .55s ease-in-out infinite alternate}
+.pet-profile{display:flex;flex-direction:column;align-items:center;gap:3px;margin:4px 0 10px}
+.pet-profile-av{position:relative;width:112px;height:112px;border-radius:50%;display:grid;place-items:center;
+  background:radial-gradient(circle at 50% 40%,#1e293b,#0b1220 70%);box-shadow:0 10px 26px -10px rgba(15,23,42,.6),inset 0 0 0 3px rgba(255,255,255,.06)}
+.pet-profile-av .pet-shadow{display:none}
+.pet-profile-edit{position:absolute;right:2px;bottom:4px;width:30px;height:30px;border-radius:50%;border:2px solid #fff;background:#334155;color:#fff;
+  cursor:pointer;font-size:14px;display:grid;place-items:center;box-shadow:0 4px 10px rgba(15,23,42,.35)}
+.pet-profile-edit:hover{background:#2563eb}
+.pet-profile b{font-size:17px;margin-top:4px}
+.pet-profile-st{font-size:12.5px;font-weight:600}
+.pet-profile-st.ok{color:#16a34a}.pet-profile-st.bad{color:#dc2626}
+
+.fluff-ear-l,.fluff-ear-r{transform-box:fill-box;transform-origin:50% 100%;animation:fluffEar 3.4s ease-in-out infinite}
+.fluff-ear-r{animation-delay:.3s}
+@keyframes fluffEar{0%,100%{transform:rotate(0)}50%{transform:rotate(-7deg)}}
+.pet-fluff.s-reading .fluff-ear-l,.pet-fluff.s-reading .fluff-ear-r,.pet-fluff.s-thinking .fluff-ear-l{animation-duration:.9s}
+.pet-fluff.s-sad .fluff-ear-l,.pet-fluff.s-sad .fluff-ear-r,.pet-fluff.s-sleep .fluff-ear-l,.pet-fluff.s-sleep .fluff-ear-r{animation:none;transform:rotate(28deg)}
+.pet-fluff.s-sad .fluff-ear-l,.pet-fluff.s-sleep .fluff-ear-l{transform:rotate(-28deg)}
+
+/* ===================== Chick companions, new moods, stickers, typewriter ===================== */
+.chick-img{position:absolute;inset:0;transition:transform .2s ease-out}
+.chick-img img{width:100%;height:100%;object-fit:contain;display:block;user-select:none;-webkit-user-drag:none;filter:drop-shadow(0 6px 8px rgba(30,41,59,.2))}
+.pet-chick .pet-body,.pet-bluey .pet-body{position:absolute;inset:0;animation:chickBob 3.2s ease-in-out infinite}
+@keyframes chickBob{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-6%) rotate(2deg)}}
+.pet-chick.s-happy .pet-body,.pet-bluey.s-happy .pet-body,.pet-chick.s-celebrate .pet-body,.pet-bluey.s-celebrate .pet-body{animation:petJump .5s ease-in-out infinite alternate}
+.pet-chick.s-talk .pet-body,.pet-bluey.s-talk .pet-body{animation:petNod .45s ease-in-out infinite alternate}
+.pet-chick.s-drag .pet-body,.pet-bluey.s-drag .pet-body{animation:petWobble .3s ease-in-out infinite alternate}
+.pet-chick.s-sleep .pet-body,.pet-bluey.s-sleep .pet-body{animation:petBreathe 3.6s ease-in-out infinite}
+.pet-chick.s-sad .pet-body,.pet-bluey.s-sad .pet-body{animation:none;transform:translateY(3%) scale(1,.97)}
+.pet-chick .pet-shadow,.pet-bluey .pet-shadow{bottom:0}
+.pet-bang{transform-box:fill-box;transform-origin:50% 100%;animation:petBang .5s cubic-bezier(.3,1.7,.5,1)}
+@keyframes petBang{from{transform:scale(.2) rotate(-20deg);opacity:0}}
+.pet-hearts path{animation:petHeart 1.4s ease-in-out infinite}
+@keyframes petHeart{0%,100%{opacity:.5;translate:0 0}50%{opacity:1;translate:0 -3px}}
+.pet-confetti>*{transform-box:fill-box;transform-origin:center;animation:petConf 1s ease-in-out infinite alternate}
+@keyframes petConf{from{opacity:.4;translate:0 -2px}to{opacity:1;translate:0 3px}}
+.pet.s-celebrate .pet-body{animation:petJump .45s ease-in-out infinite alternate}
+.pet.s-love .pet-body{animation:petBreathe 1.2s ease-in-out infinite}
+.pet.s-surprised .pet-body{animation:petHop .6s cubic-bezier(.3,1.6,.5,1)}
+.pet.s-wink .pet-body{animation:petNod .6s ease-in-out 2 alternate}
+.pet-sikka.s-celebrate .coin3d-spin,.pet-sikka.s-love .coin3d-spin{animation:coinToss 1.2s cubic-bezier(.3,.7,.4,1) infinite}
+.pet-sikka.s-wink .coin3d-spin{animation:coinFlip .9s ease-in-out 1}
+.pet-sikka.s-surprised .coin3d-spin{animation-duration:.6s}
+.ai-caret{display:inline-block;width:7px;height:14px;margin-left:2px;vertical-align:-2px;background:#2563eb;border-radius:2px;animation:caret .8s steps(1) infinite}
+@keyframes caret{50%{opacity:0}}
+.sticker-tray{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;padding:8px;background:#fff;border-top:1px solid #e5e7eb;max-height:150px;overflow:auto}
+.sticker-tray img{width:100%;aspect-ratio:1;object-fit:contain;cursor:pointer;border-radius:10px;transition:transform .15s,background .15s}
+.sticker-tray img:hover{transform:scale(1.08);background:#eff6ff}

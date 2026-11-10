@@ -5613,6 +5613,7 @@ function AiVisuals({ list }) {
 function AiMessage({ m, onSend, onOpenCase, onConfirm, compact }) {
   const [steps, setSteps] = useState(false);
   if (m.role === 'user') return <div className="ai-msg me" style={{ alignSelf: 'flex-end', maxWidth: '88%' }}>{m.content}</div>;
+  if (m.typing) return <div className="ai-msg bot" style={{ alignSelf: 'flex-start', maxWidth: compact ? '100%' : '96%' }}><MiniMd text={m.content} /><span className="ai-caret" /></div>;
   return <div className="ai-msg bot" style={{ alignSelf: 'flex-start', maxWidth: compact ? '100%' : '96%', width: (m.visuals || []).length ? '100%' : undefined }}>
     <MiniMd text={m.content} />
     <AiVisuals list={m.visuals} />
@@ -5711,16 +5712,18 @@ function loadThree() {
 /* ---------- 🐾 Companions — original RecoverIQ characters (SVG, light, crisp at any size) ----------
    Shared face parts react to state: idle · thinking · talk · happy · sad · sleep · drag. Eyes follow the cursor. */
 function PetEyes({ x1, x2, y, rx = 5, ry = 6, look, state, fill = '#1e1b4b', glow }) {
-  const th = state === 'thinking';
-  const dx = th ? 2.6 : (look.x || 0) * 2.6, dy = th ? -2.6 : (look.y || 0) * 2;
-  if (state === 'happy' || state === 'sleep') {
-    const up = state === 'happy';
+  const th = state === 'thinking', rd = state === 'reading';
+  const dx = th ? 2.6 : rd ? 0 : (look.x || 0) * 2.6, dy = th ? -2.6 : rd ? 1.5 : (look.y || 0) * 2;
+  if (state === 'love') return <g>{[x1, x2].map(x => <path key={x} transform={`translate(${x} ${y}) scale(${rx / 5})`}
+      d="M0 4 C-6 0 -5 -6 -2 -5.5 C-1 -5.3 0 -4.4 0 -3.4 C0 -4.4 1 -5.3 2 -5.5 C5 -6 6 0 0 4Z" fill="#e8284a" stroke="#fff" strokeWidth=".8" />)}</g>;
+  if (state === 'happy' || state === 'sleep' || state === 'celebrate') {
+    const up = state !== 'sleep';
     return <g>{[x1, x2].map(x => <path key={x} d={up ? `M${x - rx} ${y + 1} Q${x} ${y - ry * 1.1} ${x + rx} ${y + 1}` : `M${x - rx} ${y} Q${x} ${y + ry * .8} ${x + rx} ${y}`}
       fill="none" stroke={fill} strokeWidth="2.6" strokeLinecap="round" style={glow ? { filter: `drop-shadow(0 0 2px ${fill})` } : null} />)}</g>;
   }
-  const wide = state === 'drag' ? 1.25 : 1;
-  return <g className={cx('pet-eyes', th && 'pet-dart')} style={{ transform: `translate(${dx}px,${dy}px)` }}>
-    {[x1, x2].map((x, i) => <g key={i}>
+  const wide = state === 'drag' || state === 'surprised' ? 1.25 : 1;
+  return <g className={cx('pet-eyes', th && 'pet-dart', rd && 'pet-readscan')} style={{ transform: `translate(${dx}px,${dy}px)` }}>
+    {[x1, x2].map((x, i) => state === 'wink' && i === 1 ? <path key={i} d={`M${x - rx} ${y + 1} Q${x} ${y - ry * 1.1} ${x + rx} ${y + 1}`} fill="none" stroke={fill} strokeWidth="2.6" strokeLinecap="round" /> : <g key={i}>
       <ellipse className="pet-eye" cx={x} cy={y} rx={rx * wide} ry={ry * wide} fill={fill} style={glow ? { filter: `drop-shadow(0 0 3px ${fill})` } : null} />
       <circle cx={x + rx * .35} cy={y - ry * .38} r={rx * .38} fill="#fff" opacity=".95" />
       {state === 'sad' && <path d={i ? `M${x - rx} ${y - ry - 4} L${x + rx} ${y - ry - 1}` : `M${x - rx} ${y - ry - 1} L${x + rx} ${y - ry - 4}`} stroke={fill} strokeWidth="2" strokeLinecap="round" />}
@@ -5730,15 +5733,102 @@ function PetEyes({ x1, x2, y, rx = 5, ry = 6, look, state, fill = '#1e1b4b', glo
 function PetMouth({ x, y, state, color = '#1e1b4b', w = 7 }) {
   if (state === 'talk') return <ellipse className="pet-talk" cx={x} cy={y + 1} rx={w * .45} ry="3" fill={color} />;
   if (state === 'thinking') return <circle cx={x + 2} cy={y + 1} r="2" fill={color} />;
-  if (state === 'happy') return <path d={`M${x - w * .7} ${y - 1} Q${x} ${y + w} ${x + w * .7} ${y - 1}Z`} fill={color} />;
+  if (state === 'happy' || state === 'wave' || state === 'charting' || state === 'file' || state === 'love' || state === 'celebrate') return <path d={`M${x - w * .7} ${y - 1} Q${x} ${y + w} ${x + w * .7} ${y - 1}Z`} fill={color} />;
   if (state === 'sad') return <path d={`M${x - w * .55} ${y + 3} Q${x} ${y - 2} ${x + w * .55} ${y + 3}`} fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" />;
   if (state === 'sleep') return <path d={`M${x - 2.5} ${y + 1} h5`} stroke={color} strokeWidth="2" strokeLinecap="round" />;
-  if (state === 'drag') return <ellipse cx={x} cy={y + 1} rx="2.6" ry="3.4" fill={color} />;
+  if (state === 'drag' || state === 'surprised') return <ellipse cx={x} cy={y + 1} rx="2.6" ry="3.4" fill={color} />;
   return <path d={`M${x - w * .5} ${y} Q${x} ${y + w * .55} ${x + w * .5} ${y}`} fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" />;
 }
 const PetBlush = ({ x1, x2, y, c = '#fb7185' }) => <g opacity=".45">{[x1, x2].map(x => <ellipse key={x} cx={x} cy={y} rx="5" ry="2.8" fill={c} />)}</g>;
 
+
+/* Holographic human face (original design) — projector base, light cone, wireframe contours and a scan line.
+   her = soft violet/pink with long hair; him = cyan/teal with short hair and stronger brows. */
+function HoloFace({ s, l, id, her }) {
+  const c = her ? '#f0abfc' : '#67e8f9', c2 = her ? '#a78bfa' : '#22d3ee', deep = her ? '#581c87' : '#0e7490';
+  const face = 'M50 16 C68 16 75 30 75 44 C75 61 65 76 50 80 C35 76 25 61 25 44 C25 30 32 16 50 16Z';
+  const tx = (l.x || 0) * 2.2, ty = (l.y || 0) * 1.4;
+  return <>
+    <defs>
+      <radialGradient id={id + 'hg'} cx=".5" cy=".38" r=".7"><stop offset="0" stopColor={c} stopOpacity=".55" /><stop offset=".7" stopColor={c2} stopOpacity=".22" /><stop offset="1" stopColor={deep} stopOpacity=".08" /></radialGradient>
+      <linearGradient id={id + 'hb'} x1="0" y1="1" x2="0" y2="0"><stop offset="0" stopColor={c2} stopOpacity=".55" /><stop offset="1" stopColor={c2} stopOpacity="0" /></linearGradient>
+      <clipPath id={id + 'hk'}><path d={face} /></clipPath>
+    </defs>
+    {/* projector + light cone */}
+    <path d="M30 92 L40 70 L60 70 L70 92Z" fill={`url(#${id}hb)`} className="holo-cone" />
+    <ellipse cx="50" cy="93" rx="22" ry="4.5" fill={deep} opacity=".85" />
+    <ellipse className="holo-base" cx="50" cy="91.5" rx="18" ry="3" fill={c2} />
+    <g className="holo-head" style={{ transform: `translate(${tx}px,${ty}px)` }}>
+      {her && <path className="holo-hair" d="M50 11 C30 11 20 26 21 46 C22 62 18 74 26 84 C30 74 28 62 30 50 C32 34 40 24 50 22 C60 24 68 34 70 50 C72 62 70 74 74 84 C82 74 78 62 79 46 C80 26 70 11 50 11Z"
+        fill={c2} fillOpacity=".28" stroke={c} strokeWidth="1" strokeOpacity=".8" />}
+      <path d={face} fill={`url(#${id}hg)`} stroke={c} strokeWidth="1.4" style={{ filter: `drop-shadow(0 0 3px ${c2})` }} />
+      <g clipPath={`url(#${id}hk)`} stroke={c} strokeOpacity=".22" strokeWidth=".7" fill="none">
+        {[24, 30, 36, 42, 48, 54, 60, 66, 72, 78].map(y => <path key={y} d={`M20 ${y} Q50 ${y + 4} 80 ${y}`} />)}
+        <path d="M50 14 V82 M38 16 Q34 48 40 80 M62 16 Q66 48 60 80" />
+        <rect className="holo-scan" x="20" y="10" width="60" height="6" fill={c} fillOpacity=".35" stroke="none" />
+      </g>
+      {!her && <path d="M28 34 C30 18 44 13 52 14 C64 14 73 22 72 35 C66 26 58 23 50 24 C41 24 33 28 28 34Z" fill={c2} fillOpacity=".35" stroke={c} strokeWidth="1" />}
+      {her && <path d="M28 36 C32 22 42 17 50 17 C60 17 68 22 72 36 C64 28 58 25 50 26 C42 26 34 30 28 36Z" fill={c2} fillOpacity=".3" stroke={c} strokeWidth=".8" />}
+      {/* brows */}
+      {s !== 'sleep' && <g stroke={c} strokeWidth={her ? 1.2 : 2} strokeLinecap="round" fill="none" opacity=".9">
+        <path d={s === 'sad' ? 'M35 37 Q40 34 45 36' : s === 'thinking' ? 'M35 35 Q40 32 45 35' : 'M35 38 Q40 35 45 38'} />
+        <path d={s === 'sad' ? 'M55 36 Q60 34 65 37' : s === 'thinking' ? 'M55 33 Q60 31 65 34' : 'M55 38 Q60 35 65 38'} /></g>}
+      <PetEyes x1={40} x2={60} y={44} rx={3.3} ry={her ? 3.9 : 3.5} look={l} state={s} fill="#ecfeff" glow />
+      {her && s !== 'sleep' && s !== 'happy' && <g stroke={c} strokeWidth=".9" strokeLinecap="round"><path d="M36 40.5 l-2 -2 M44 40.5 l1.5 -2 M56 40.5 l-1.5 -2 M64 40.5 l2 -2" /></g>}
+      <path d="M50 46 Q48.5 54 50.5 56 L52 56" fill="none" stroke={c} strokeWidth="1" strokeOpacity=".8" />
+      <PetMouth x={50} y={64} state={s} color={c} w={her ? 7 : 8} />
+      {her && <circle cx="25.5" cy="56" r="1.6" fill={c} className="holo-twinkle" />}
+      {!her && <path d="M38 70 Q50 77 62 70" fill="none" stroke={c} strokeOpacity=".35" strokeWidth="1" strokeDasharray="1.2 1.6" />}
+      {s === 'talk' && <g className="holo-wave" stroke={c} strokeWidth="1.4" strokeLinecap="round">
+        {[0, 1, 2, 3, 4].map(i => <path key={i} d={`M${80 + i * 3.2} 62 v-${[3, 7, 10, 6, 3][i]}`} style={{ animationDelay: i * .08 + 's' }} />)}</g>}
+    </g>
+    {[[18, 30], [84, 24], [14, 62], [86, 70]].map(([x, y], i) => <circle key={i} className="holo-twinkle" cx={x} cy={y} r=".9" fill={c} style={{ animationDelay: i * .5 + 's' }} />)}
+  </>;
+}
+
+
+/* Fluffy plush companions (Rui, Lumi, Toffee) — one body, different colours and ears. Fur edge via an SVG noise filter. */
+function FluffBall({ s, l, id, c0, c1, c2, limb, feet, ears = 'tufts', eye = '#3b2f2f', blush = '#fda4af', muzzle }) {
+  const fur = `url(#${id}rf)`;
+  return <>
+    <defs>
+      <radialGradient id={id + 'rf'} cx=".42" cy=".34" r=".75"><stop offset="0" stopColor={c0} /><stop offset=".6" stopColor={c1} /><stop offset="1" stopColor={c2} /></radialGradient>
+      <filter id={id + 'fz'} x="-20%" y="-20%" width="140%" height="140%">
+        <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" seed="7" result="n" />
+        <feDisplacementMap in="SourceGraphic" in2="n" scale="5.5" xChannelSelector="R" yChannelSelector="G" />
+      </filter>
+    </defs>
+    <g filter={`url(#${id}fz)`}>
+      {ears === 'tufts' && <><circle className="rui-tuft" cx="35" cy="24" r="8" fill={fur} /><circle className="rui-tuft" cx="65" cy="24" r="8" fill={fur} /></>}
+      {ears === 'bunny' && <><g className="fluff-ear-l"><ellipse cx="37" cy="16" rx="7" ry="17" fill={fur} transform="rotate(-12 37 16)" /></g>
+        <g className="fluff-ear-r"><ellipse cx="63" cy="16" rx="7" ry="17" fill={fur} transform="rotate(12 63 16)" /></g></>}
+      {ears === 'bear' && <><circle className="rui-tuft" cx="28" cy="30" r="10" fill={fur} /><circle className="rui-tuft" cx="72" cy="30" r="10" fill={fur} /></>}
+      <ellipse cx="50" cy="56" rx="33" ry="31" fill={fur} />
+      <ellipse cx="36" cy="86" rx="8" ry="5" fill={feet} /><ellipse cx="64" cy="86" rx="8" ry="5" fill={feet} />
+      <ellipse className="rui-arm-l" cx="19" cy="62" rx="6" ry="9" fill={limb} /><ellipse className="rui-arm-r" cx="81" cy="62" rx="6" ry="9" fill={limb} />
+    </g>
+    {ears === 'bunny' && <g opacity=".55"><ellipse cx="37" cy="17" rx="3" ry="11" fill="#fbcfe8" transform="rotate(-12 37 17)" /><ellipse cx="63" cy="17" rx="3" ry="11" fill="#fbcfe8" transform="rotate(12 63 17)" /></g>}
+    {ears === 'bear' && <g opacity=".6"><circle cx="28" cy="30" r="4.5" fill={c2} /><circle cx="72" cy="30" r="4.5" fill={c2} /></g>}
+    {Array.from({ length: 26 }, (_, i) => { const a = i / 26 * Math.PI * 2; const x = 50 + Math.cos(a) * 31, y = 56 + Math.sin(a) * 29;
+      return <path key={i} d={`M${x} ${y} l${Math.cos(a) * 3.5} ${Math.sin(a) * 3.5}`} stroke={c0} strokeWidth="1.2" strokeLinecap="round" opacity=".7" />; })}
+    <ellipse cx="50" cy="58" rx="19" ry="15" fill={muzzle ? '#fef3e2' : '#ffffff'} opacity={muzzle ? .9 : .5} />
+    <PetEyes x1={43} x2={57} y={55} rx={2.6} ry={3.1} look={l} state={s} fill={eye} />
+    {muzzle && <ellipse cx="50" cy="60" rx="3" ry="2.2" fill="#3f2a1d" />}
+    <PetBlush x1={36} x2={64} y={62} c={blush} />
+    <PetMouth x={50} y={muzzle ? 66 : 63} state={s} color={muzzle ? '#3f2a1d' : '#7c2d12'} w={5} /></>;
+}
+
 const PETS = {
+  aria: { name: 'Aria', tag: 'Her — a holographic guide. Reads, explains, walks you through.', holo: true, draw: (s, l, id) => <HoloFace s={s} l={l} id={id} her />, },
+  kabir: { name: 'Kabir', tag: 'Him — a holographic guide. Calm, sharp, straight to the point.', holo: true, draw: (s, l, id) => <HoloFace s={s} l={l} id={id} />, },
+  chick: { name: 'Chick', tag: 'The sunny yellow chick. Cheerful, quick, never gives up.', ownFx: true, dom: (s, l, id) => <ChickPet s={s} l={l} id={id} /> },
+  bluey: { name: 'Bluey', tag: 'The chick in RecoverIQ blue. Same cheer, office colours.', ownFx: true, dom: (s, l, id) => <ChickPet s={s} l={l} id={id} blue /> },
+  rui: { name: 'Rui', tag: 'A soft cotton puffball. Cosy, patient, always happy to help.', fluff: true,
+    draw: (s, l, id) => <FluffBall s={s} l={l} id={id} c0="#fffaf3" c1="#f5e6d3" c2="#d9bfa0" limb="#efdcc4" feet="#e8d3b9" ears="tufts" /> },
+  lumi: { name: 'Lumi', tag: 'A lavender fluff-bunny. Gentle, curious, hears everything.', fluff: true,
+    draw: (s, l, id) => <FluffBall s={s} l={l} id={id} c0="#faf5ff" c1="#e9d5ff" c2="#b794e0" limb="#dcc4f5" feet="#cdb2ef" ears="bunny" eye="#3b0764" blush="#f9a8d4" /> },
+  toffee: { name: 'Toffee', tag: 'A caramel fluff-bear. Warm hugs, sharp numbers.', fluff: true,
+    draw: (s, l, id) => <FluffBall s={s} l={l} id={id} c0="#fde7c8" c1="#e0a96d" c2="#a8693a" limb="#c98a52" feet="#b9773f" ears="bear" eye="#2b1a12" blush="#fb7185" muzzle /> },
   rivet: { name: 'Rivet', tag: 'The helper robot. Precise, polite, always on duty.', draw: (s, l, id) => <>
     <defs><linearGradient id={id + 'h'} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fff" /><stop offset="1" stopColor="#cbd5e1" /></linearGradient>
       <linearGradient id={id + 'v'} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#1e3a8a" /><stop offset="1" stopColor="#020617" /></linearGradient></defs>
@@ -5768,6 +5858,7 @@ const PETS = {
     <PetEyes x1={41} x2={59} y={51} rx={4} ry={5} look={l} state={s} fill="#78350f" />
     <PetBlush x1={33} x2={67} y={60} c="#f97316" />
     <PetMouth x={50} y={63} state={s} color="#78350f" /></> },
+  sikka: { name: 'Sikka', tag: 'A real 3D ₹1 coin — spins, tosses and flips heads & tails.', dom: (s, l, id, size) => <Coin3D state={s} look={l} id={id} size={size} /> },
   mochi: { name: 'Mochi', tag: 'Soft cat-blob. Small paws, big help.', draw: (s, l, id) => <>
     <defs><linearGradient id={id + 'p'} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fdf2f8" /><stop offset="1" stopColor="#f9a8d4" /></linearGradient></defs>
     <path className="pet-ear-l" d="M25 50 L27 22 L45 38Z" fill="#f9a8d4" /><path className="pet-ear-r" d="M75 50 L73 22 L55 38Z" fill="#f9a8d4" />
@@ -5815,19 +5906,145 @@ const PETS = {
 };
 const PET_KEYS = Object.keys(PETS);
 
+/* Task / mood effects drawn around any companion (shared by SVG and 3D companions). */
+function PetFx({ state }) {
+  return <>
+    {state === 'thinking' && <g className="pet-think">{[[80, 26, 2.4], [87, 17, 3.2], [92, 7, 4]].map(([x, y, r], i) => <circle key={i} cx={x} cy={y} r={r} fill="#94a3b8" style={{ animationDelay: i * .18 + 's' }} />)}</g>}
+    {state === 'happy' && <g className="pet-sparks">{[[12, 20], [88, 18], [8, 70], [92, 66]].map(([x, y], i) =>
+      <path key={i} d={`M${x} ${y - 6} L${x + 1.6} ${y - 1.6} L${x + 6} ${y} L${x + 1.6} ${y + 1.6} L${x} ${y + 6} L${x - 1.6} ${y + 1.6} L${x - 6} ${y} L${x - 1.6} ${y - 1.6}Z`} fill={['#fbbf24', '#60a5fa', '#f472b6', '#34d399'][i]} style={{ animationDelay: i * .15 + 's' }} />)}</g>}
+    {state === 'sleep' && <g className="pet-zzz" fill="#64748b" fontWeight="800"><text x="76" y="24" fontSize="10">z</text><text x="84" y="13" fontSize="13">z</text></g>}
+    {state === 'sad' && <path d="M76 30 q-4 6 0 8 q4 -2 0 -8Z" fill="#60a5fa" />}
+    {state === 'reading' && <g className="pet-task pet-doc"><rect x="80" y="30" width="16" height="20" rx="2.5" fill="#fff" stroke="#94a3b8" />
+      {[35, 39, 43].map(y => <path key={y} d={`M83 ${y} h10`} stroke="#cbd5e1" strokeWidth="1.4" />)}<rect className="pet-docscan" x="81" y="31" width="14" height="2" fill="#3b82f6" opacity=".7" /></g>}
+    {state === 'charting' && <g className="pet-task pet-bars">{[[80, 10, '#2563eb'], [86, 16, '#0ea5e9'], [92, 7, '#16a34a']].map(([x, h, c], i) =>
+      <rect key={i} x={x} y={50 - h} width="4.5" height={h} rx="1" fill={c} style={{ animationDelay: i * .12 + 's' }} />)}<path d="M78 50.5 h20" stroke="#94a3b8" /></g>}
+    {state === 'file' && <g className="pet-task pet-doc"><path d="M81 28 h10 l5 5 v17 h-15Z" fill="#fff" stroke="#16a34a" /><path d="M88 35 v9 M84.5 40.5 l3.5 3.5 3.5 -3.5" stroke="#16a34a" strokeWidth="1.6" fill="none" strokeLinecap="round" /></g>}
+    {state === 'wave' && <text className="pet-wave" x="78" y="40" fontSize="15">👋</text>}
+    {state === 'wink' && <g className="pet-sparks">{[[84, 30, 5], [92, 44, 3.2], [88, 18, 2.6]].map(([x, y, r], i) =>
+      <path key={i} d={`M${x} ${y - r} Q${x + r * .2} ${y - r * .2} ${x + r} ${y} Q${x + r * .2} ${y + r * .2} ${x} ${y + r} Q${x - r * .2} ${y + r * .2} ${x - r} ${y} Q${x - r * .2} ${y - r * .2} ${x} ${y - r}Z`} fill="#fbbf24" style={{ animationDelay: i * .15 + 's' }} />)}</g>}
+    {state === 'surprised' && <text className="pet-bang" x="82" y="34" fontSize="22" fontWeight="900" fill="#2563eb" stroke="#fff" strokeWidth="1.5" paintOrder="stroke">!</text>}
+    {state === 'love' && <g className="pet-hearts">{[[84, 26, 1.1], [92, 12, .8], [12, 22, .9]].map(([x, y, k], i) =>
+      <path key={i} transform={`translate(${x} ${y}) scale(${k})`} d="M0 4 C-6 0 -5 -6 -2 -5.5 C-1 -5.3 0 -4.4 0 -3.4 C0 -4.4 1 -5.3 2 -5.5 C5 -6 6 0 0 4Z" fill="#f0465f" style={{ animationDelay: i * .25 + 's' }} />)}</g>}
+    {state === 'celebrate' && <g className="pet-confetti">{[[10, 18, '#2563eb'], [24, 4, '#f472b6'], [78, 6, '#16a34a'], [92, 26, '#f59e0b'], [6, 52, '#8b5cf6'], [94, 52, '#0ea5e9'], [50, -4, '#ef4444'], [66, -2, '#2563eb']].map(([x, y, c], i) =>
+      i % 3 === 0 ? <path key={i} d={`M${x} ${y - 4} L${x + 1.2} ${y - 1.2} L${x + 4} ${y} L${x + 1.2} ${y + 1.2} L${x} ${y + 4} L${x - 1.2} ${y + 1.2} L${x - 4} ${y} L${x - 1.2} ${y - 1.2}Z`} fill={c} style={{ animationDelay: i * .1 + 's' }} />
+        : <rect key={i} x={x - 3.5} y={y - 1.4} width="7" height="2.8" rx="1.4" fill={c} transform={`rotate(${i * 47} ${x} ${y})`} style={{ animationDelay: i * .1 + 's' }} />)}</g>}
+  </>;
+}
+
+/* ₹1 coin faces (SVG). Heads: भारत · INDIA + year around a decorative star rosette (the State Emblem is deliberately
+   not reproduced — its use is legally restricted). Tails: big ₹1 with रुपया · RUPEE and grain stalks. */
+function CoinFace({ id, side }) {
+  const yr = new Date().getFullYear();
+  const beads = Array.from({ length: 48 }, (_, i) => { const a = i / 48 * Math.PI * 2; return [50 + Math.cos(a) * 44.5, 50 + Math.sin(a) * 44.5]; });
+  const stalk = (flip) => <g transform={(flip ? 'translate(100 0) scale(-1 1) ' : '') + 'translate(-5 4) scale(.92)'} fill="none" stroke={`url(#${id}t)`} strokeWidth="1.6" strokeLinecap="round">
+    <path d="M30 76 Q20 58 26 34" />
+    {[38, 45, 52, 59, 66].map((y, i) => <g key={i}><path d={`M${24.5 - i * .3} ${y} q-5 -2 -6 -7`} /><path d={`M${25.5 - i * .3} ${y} q4 -3 5 -8`} /></g>)}
+  </g>;
+  return <svg viewBox="0 0 100 100" className="coin-svg">
+    <defs>
+      <radialGradient id={id + 'm'} cx=".35" cy=".3" r=".85"><stop offset="0" stopColor="#ffffff" /><stop offset=".35" stopColor="#e2e8f0" /><stop offset=".75" stopColor="#94a3b8" /><stop offset="1" stopColor="#64748b" /></radialGradient>
+      <linearGradient id={id + 't'} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#475569" /><stop offset=".5" stopColor="#1e293b" /><stop offset="1" stopColor="#64748b" /></linearGradient>
+      <path id={id + 'top'} d="M18 50 A32 32 0 0 1 82 50" /><path id={id + 'bot'} d="M16 50 A34 34 0 0 0 84 50" />
+    </defs>
+    <circle cx="50" cy="50" r="49" fill={`url(#${id}m)`} />
+    <circle cx="50" cy="50" r="47" fill="none" stroke="#475569" strokeWidth="1.2" opacity=".6" />
+    {beads.map(([x, y], i) => <circle key={i} cx={x} cy={y} r=".9" fill="#64748b" opacity=".75" />)}
+    <circle cx="50" cy="50" r="41" fill="none" stroke="#cbd5e1" strokeWidth=".8" />
+    {side === 'heads' ? <g fill={`url(#${id}t)`}>
+      <text fontSize="9" fontWeight="800" letterSpacing="1"><textPath href={`#${id}top`} startOffset="50%" textAnchor="middle">भारत</textPath></text>
+      <text fontSize="8" fontWeight="800" letterSpacing="2"><textPath href={`#${id}bot`} startOffset="50%" textAnchor="middle" dominantBaseline="hanging">INDIA</textPath></text>
+      <g transform="translate(50 49)" stroke={`url(#${id}t)`} strokeWidth="1.3" fill="none">
+        {Array.from({ length: 8 }, (_, i) => <path key={i} transform={`rotate(${i * 45})`} d="M0 -3 C3 -7 3 -12 0 -16 C-3 -12 -3 -7 0 -3Z" />)}
+        <circle r="3.2" fill={`url(#${id}t)`} /><circle r="19" strokeWidth=".7" strokeDasharray="1.5 2" />
+      </g>
+      <text x="50" y="74" textAnchor="middle" fontSize="6" fontWeight="700" letterSpacing=".5">{yr}</text>
+    </g> : <g fill={`url(#${id}t)`}>
+      {stalk(false)}{stalk(true)}
+      <text x="51" y="61" textAnchor="middle" fontSize="28" fontWeight="900" fontFamily="'Space Grotesk',sans-serif" letterSpacing="-1">₹1</text>
+      <text fontSize="7.5" fontWeight="800" letterSpacing="1"><textPath href={`#${id}top`} startOffset="50%" textAnchor="middle">रुपया</textPath></text>
+      <text fontSize="7" fontWeight="800" letterSpacing="2"><textPath href={`#${id}bot`} startOffset="50%" textAnchor="middle" dominantBaseline="hanging">RUPEE</textPath></text>
+    </g>}
+    <ellipse className="coin-glint" cx="34" cy="28" rx="16" ry="7" fill="#fff" opacity=".35" transform="rotate(-35 34 28)" />
+  </svg>;
+}
+
+/* A real 3D coin: two faces + a stack of edge layers, CSS 3D transforms. It spins, tosses and flips. */
+function Coin3D({ state, look, id, size }) {
+  const t = Math.max(2.5, size / 18);             // half thickness in px
+  const layers = 12;
+  return <div className="coin3d" style={{ transform: `rotateX(${-(look.y || 0) * 14}deg)` }}>
+    <div className="coin3d-spin">
+      {Array.from({ length: layers }, (_, i) => <div key={i} className="coin-layer" style={{ transform: `translateZ(${-t + (2 * t) * i / (layers - 1)}px)` }} />)}
+      <div className="coin-face front" style={{ transform: `translateZ(${t + .3}px)` }}><CoinFace id={id + 'H'} side="heads" /></div>
+      <div className="coin-face back" style={{ transform: `rotateY(180deg) translateZ(${t + .3}px)` }}><CoinFace id={id + 'T'} side="tails" /></div>
+    </div>
+  </div>;
+}
+
+
+/* 🐥 Chick companions — your kit's rendered 3D images (yellow original + app-blue recolour) with blink frames;
+   a vector chick is drawn instead if an image can't load. */
+const PET_TASK_FX = ['reading', 'charting', 'file', 'wave'];
+const CHICK_MOOD = { idle: 'hello', wave: 'hello', reading: 'thinking', thinking: 'thinking', talk: 'talking', happy: 'happy', charting: 'happy',
+  file: 'happy', sad: 'sorry', sleep: 'sleepy', drag: 'surprised', wink: 'wink', surprised: 'surprised', love: 'love', celebrate: 'celebrate' };
+function ChickVector({ s, l, id, blue }) {
+  const c0 = blue ? '#bfe0ff' : '#fff38a', c1 = blue ? '#5aa9f5' : '#ffdf1f', c2 = blue ? '#2f7fd6' : '#f2b705';
+  return <svg viewBox="0 0 100 100" className="pet-svg"><defs>
+      <radialGradient id={id + 'cb'} cx=".4" cy=".3" r=".75"><stop offset="0" stopColor={c0} /><stop offset=".45" stopColor={c1} /><stop offset="1" stopColor={c2} /></radialGradient></defs>
+    <g className="pet-body">
+      <path d="M46 18 C43 10 45 5 48 7 C48.5 3 52 2 52.5 7 C55 3 59 5 56 12 C60 10 61 14 56 18Z" fill={`url(#${id}cb)`} />
+      <ellipse cx="50" cy="55" rx="38" ry="38" fill={`url(#${id}cb)`} />
+      <ellipse cx="17" cy="66" rx="6" ry="13" transform="rotate(16 17 66)" fill={c1} /><ellipse cx="83" cy="66" rx="6" ry="13" transform="rotate(-16 83 66)" fill={c1} />
+      <path d="M38 92 l-3 5 M42 92 v6 M58 92 v6 M62 92 l3 5" stroke="#f38a1c" strokeWidth="2.6" strokeLinecap="round" />
+      <PetEyes x1={36} x2={64} y={50} rx={5.5} ry={6.2} look={l} state={s} fill="#3d1d07" />
+      <PetBlush x1={25} x2={75} y={62} c="#ff8a8a" />
+      <path d="M50 56 C55 56 58 61 57.5 64 C57 67 54 68 50 68 C46 68 43 67 42.5 64 C42 61 45 56 50 56Z" fill="#f38a1c" />
+      {s === 'talk' && <ellipse className="pet-talk" cx="50" cy="69" rx="3.5" ry="2" fill="#5a160a" />}
+    </g>{!PET_TASK_FX.includes(s) && <PetFx state={s} />}</svg>;
+}
+function ChickPet({ s, l, id, blue }) {
+  const [broken, setBroken] = useState(false); const [blink, setBlink] = useState(false);
+  const mood = CHICK_MOOD[s] || 'hello';
+  useEffect(() => { if (!['hello', 'talking', 'thinking'].includes(mood)) return;
+    const t = setInterval(() => { setBlink(true); setTimeout(() => setBlink(false), 140); }, 4200 + Math.random() * 900);
+    return () => clearInterval(t); }, [mood]);
+  if (broken) return <ChickVector s={s} l={l} id={id} blue={blue} />;
+  const dir = blue ? 'blue' : 'yellow';
+  return <div className="chick-img" style={{ transform: `rotateY(${(l.x || 0) * 10}deg) rotateX(${-(l.y || 0) * 6}deg)` }}>
+    <img alt="" draggable="false" src={`assets/chick/${dir}/chick_${blink ? 'blink' : mood}.webp`} onError={() => setBroken(true)} />
+  </div>;
+}
+
 function Pet({ kind, state = 'idle', look = { x: 0, y: 0 }, size = 76 }) {
   const P = PETS[kind] || PETS.rivet;
   const id = 'pt' + String(React.useId ? React.useId() : Math.random()).replace(/[^a-zA-Z0-9]/g, '');
-  return <div className={cx('pet', 'pet-' + (PETS[kind] ? kind : 'rivet'), 's-' + state)} style={{ width: size, height: size }}>
+  const k = PETS[kind] ? kind : 'rivet';
+  if (P.dom) return <div className={cx('pet', 'pet-' + k, 'pet-dom', 's-' + state)} style={{ width: size, height: size }}>
+    <div className="pet-body">{P.dom(state, look, id, size)}</div>
+    {(!P.ownFx || PET_TASK_FX.includes(state)) && <svg viewBox="0 0 100 100" className="pet-fx"><PetFx state={state} /></svg>}
+    <div className="pet-shadow" />
+  </div>;
+  return <div className={cx('pet', 'pet-' + k, P.holo && 'pet-holo', P.fluff && 'pet-fluff', 's-' + state)} style={{ width: size, height: size }}>
     <svg viewBox="0 0 100 100" className="pet-svg" style={{ transform: `rotateY(${look.x * 14}deg) rotateX(${-look.y * 10}deg)` }}>
       <g className="pet-body">{P.draw(state, look, id)}</g>
-      {state === 'thinking' && <g className="pet-think">{[[80, 26, 2.4], [87, 17, 3.2], [92, 7, 4]].map(([x, y, r], i) => <circle key={i} cx={x} cy={y} r={r} fill="#94a3b8" style={{ animationDelay: i * .18 + 's' }} />)}</g>}
-      {state === 'happy' && <g className="pet-sparks">{[[12, 20], [88, 18], [8, 70], [92, 66]].map(([x, y], i) =>
-        <path key={i} d={`M${x} ${y - 6} L${x + 1.6} ${y - 1.6} L${x + 6} ${y} L${x + 1.6} ${y + 1.6} L${x} ${y + 6} L${x - 1.6} ${y + 1.6} L${x - 6} ${y} L${x - 1.6} ${y - 1.6}Z`} fill={['#fbbf24', '#60a5fa', '#f472b6', '#34d399'][i]} style={{ animationDelay: i * .15 + 's' }} />)}</g>}
-      {state === 'sleep' && <g className="pet-zzz" fill="#64748b" fontWeight="800"><text x="76" y="24" fontSize="10">z</text><text x="84" y="13" fontSize="13">z</text></g>}
-      {state === 'sad' && <path d="M76 30 q-4 6 0 8 q4 -2 0 -8Z" fill="#60a5fa" />}
+      <PetFx state={state} />
     </svg>
     <div className="pet-shadow" />
+  </div>;
+}
+
+
+/* Profile card for the chosen companion: big round avatar, name, connection status and a pencil to change it. */
+function CompanionCard({ kind, state, look, status, onEdit }) {
+  const P = PETS[kind] || PETS.rivet;
+  const ok = status && status.configured !== false && !status.off;
+  return <div className="pet-profile">
+    <div className="pet-profile-av">
+      <Pet kind={kind === 'rivet3d' ? 'rivet' : kind} size={96} state={state} look={look} />
+      {onEdit && <button className="pet-profile-edit" title="Change companion" onClick={onEdit}>✎</button>}
+    </div>
+    <b>{P.name}</b>
+    <div className={cx('pet-profile-st', ok ? 'ok' : 'bad')}>{ok ? '⚡ Connected' : '⚠ AI not set up'}</div>
   </div>;
 }
 
@@ -5903,7 +6120,7 @@ function AiBot({ user, view, viewLabel }) {
   const [msgs, setMsgs] = useState([]); const [input, setInput] = useState('');
   const [cid, setCid] = useState(() => { try { return Number(sessionStorage.getItem('riq_bot_cid')) || null; } catch (e) { return null; } });
   const [readOn, setReadOn] = useState(true); const [bubble, setBubble] = useState(''); const [openCase, setOpenCase] = useState(null);
-  const [picking, setPicking] = useState(false);
+  const [picking, setPicking] = useState(false); const [task, setTask] = useState(null); const taskT = useRef(0);
   const petKey = 'riq_pet_' + user.id;
   const [myPet, setMyPet] = useState(() => { try { return localStorage.getItem(petKey) || ''; } catch (e) { return ''; } });
   const drag = useRef(null); const end = useRef(null); const lastAct = useRef(Date.now()); const moodT = useRef(0); const lookHold = useRef(0); const bubbleT = useRef(0);
@@ -5916,7 +6133,7 @@ function AiBot({ user, view, viewLabel }) {
   useEffect(() => { if (!st || st.off || !st.bot_enabled) return;
     try { if (!sessionStorage.getItem('riq_bot_hi')) { sessionStorage.setItem('riq_bot_hi', '1');
       const h = new Date().getHours(); const part = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
-      setTimeout(() => { react('happy', 1600); say(`${part}, ${user.name.split(' ')[0]}! 👋 Click me for help with this page.`, 6000); }, 900); } } catch (e) {} }, [st]);
+      setTimeout(() => { react('wave', 2200); say(`${part}, ${user.name.split(' ')[0]}! 👋 Click me for help with this page.`, 6000); }, 900); } } catch (e) {} }, [st]);
   useEffect(() => { if (open && cid && !msgs.length) api('/api/ai/conversations/' + cid).then(c => setMsgs(c.messages || [])).catch(() => setCid(null)); }, [open]);
   useEffect(() => { try { cid ? sessionStorage.setItem('riq_bot_cid', String(cid)) : sessionStorage.removeItem('riq_bot_cid'); } catch (e) {} }, [cid]);
   useEffect(() => { end.current && end.current.scrollIntoView && end.current.scrollIntoView({ block: 'end' }); }, [msgs, busy, open]);
@@ -5952,7 +6169,7 @@ function AiBot({ user, view, viewLabel }) {
   const canRead = st.bot_read_page !== false;
   const allowPick = st.bot_user_pick !== false;
   const kind = (allowPick && myPet) || st.bot_avatar || 'rivet';
-  const state = dragging ? 'drag' : busy ? 'thinking' : mood === 'hop' ? 'idle' : mood || (sleepy ? 'sleep' : 'idle');
+  const state = dragging ? 'drag' : busy ? (task || 'thinking') : mood === 'hop' ? 'idle' : mood || (open && input.trim() ? 'thinking' : (sleepy ? 'sleep' : 'idle'));
   const useThree = kind === 'rivet3d' && !threeFailed;
   const petName = (PETS[kind] || PETS.rivet).name;
   const pickPet = (k) => { setMyPet(k); try { localStorage.setItem(petKey, k); } catch (e) {} react('happy', 1500); say(`Hi, I'm ${(PETS[k] || PETS.rivet).name}! ✨`, 2500); };
@@ -5963,22 +6180,35 @@ function AiBot({ user, view, viewLabel }) {
     const dx = e.clientX - d.x, dy = e.clientY - d.y; if (!d.moved && Math.abs(dx) + Math.abs(dy) > 5) { d.moved = true; setDragging(true); }
     if (d.moved) setPos({ r: Math.min(Math.max(4, d.r - dx), window.innerWidth - BOT - 4), b: Math.min(Math.max(4, d.b - dy), window.innerHeight - BOT - 4) }); };
   const onUp = () => { const d = drag.current; drag.current = null; setDragging(false); if (!d) return; lastAct.current = Date.now(); setSleepy(false);
-    if (!d.moved) { setOpen(o => !o); setBubble(''); react('hop', 600); }
+    if (!d.moved) { setOpen(o => { react(o ? 'happy' : 'wink', o ? 1100 : 1500); return !o; }); setBubble(''); }
     else { try { localStorage.setItem('riq_bot_pos', JSON.stringify(pos)); } catch (e) {} react('happy', 700); } };
 
   const send = async (text) => {
     const t = (text ?? input).trim(); if (!t || busy) return;
     setMsgs(m => [...m, { role: 'user', content: t }]); setInput(''); setBusy(true); setPicking(false); lastAct.current = Date.now();
+    const reading = canRead && readOn; setTask(reading ? 'reading' : 'thinking'); clearTimeout(taskT.current);
+    if (reading) taskT.current = setTimeout(() => setTask('thinking'), 1800);
     try {
       const body = { message: t, conversation_id: cid, origin: 'bot' };
       if (canRead && readOn) body.page_context = readPageContext(view, viewLabel);
       const r = await api('/api/ai/chat', { method: 'POST', body });
       setCid(r.conversation_id);
-      setMsgs(m => [...m, { role: 'assistant', content: r.reply, files: r.files, actions: r.actions, tools: r.tools, visuals: r.visuals, steps: r.steps, suggestions: r.suggestions }]);
-      const failed = String(r.reply || '').startsWith('⚠️');
-      failed ? react('sad', 2600) : react('happy', 1500, 'talk');
+      const full = String(r.reply || '');
+      const msg = { role: 'assistant', content: '', typing: true, files: r.files, actions: r.actions, tools: r.tools, visuals: r.visuals, steps: r.steps, suggestions: r.suggestions };
+      setMsgs(m => [...m, msg]);
+      const failed = full.startsWith('⚠️');
+      const aiMood = ['celebrate', 'love', 'sorry', 'surprised', 'wink', 'happy'].includes(r.mood) ? r.mood : null;
+      const finale = failed || aiMood === 'sorry' ? 'sad' : (aiMood || 'happy');
+      failed ? react('sad', 2600)
+        : (r.visuals || []).length ? react('charting', 1600, 'talk')
+        : (r.files || []).length ? react('file', 1600, 'talk')
+        : react('talk', Math.min(6000, 600 + full.length * 9), finale);
+      await new Promise(done => { let i = 0; const step = Math.max(2, Math.round(full.length / 220));
+        const t = setInterval(() => { i += step; msg.content = full.slice(0, i); setMsgs(m => [...m]);
+          if (i >= full.length) { clearInterval(t); msg.content = full; msg.typing = false; setMsgs(m => [...m]); done(); } }, 16); });
+      if ((r.visuals || []).length || (r.files || []).length) react(finale === 'sad' ? 'sad' : finale, 2200);
       if (!open) say(failed ? 'Hmm, that didn\'t work 😕' : 'Your answer is ready ✨', 3000);
-    } catch (e) { setMsgs(m => [...m, { role: 'assistant', content: '⚠️ ' + e.message }]); react('sad', 2600); } finally { setBusy(false); }
+    } catch (e) { setMsgs(m => [...m, { role: 'assistant', content: '⚠️ ' + e.message }]); react('sad', 2600); } finally { setBusy(false); clearTimeout(taskT.current); setTask(null); }
   };
   const confirm = async (a) => { try { await api(`/api/ai/actions/${a.token}/confirm`, { method: 'POST' }); toast('Done ✓'); a.done = true; setMsgs(m => [...m]); react('happy'); } catch (e) { toast(e.message, 'err'); react('sad'); } };
 
@@ -5995,18 +6225,19 @@ function AiBot({ user, view, viewLabel }) {
 
   return <>
     <div data-ai-skip="1" className={cx('aibot', open && 'is-open', mood === 'hop' && 'hop', dragging && 'dragging')} style={{ right: pos.r, bottom: pos.b, width: BOT, height: BOT }}
-      onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} title={`${petName} — click to chat, drag to move`}>
+      onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerEnter={() => { if (!busy && !open && !mood && !drag.current) react('happy', 1300); }} title={`${petName} — click to chat, drag to move`}>
       {avatar(BOT, look, state)}
       {bubble && !open && <div className={cx('aibot-hello', !bubbleLeft && 'right')}>{bubble}</div>}
-      {busy && !open && <div className={cx('aibot-hello', !bubbleLeft && 'right')}>{readOn && canRead ? 'Reading the page…' : 'Thinking…'}</div>}
+      {busy && !open && <div className={cx('aibot-hello', !bubbleLeft && 'right')}>{task === 'reading' ? 'Reading the page…' : 'Thinking…'}</div>}
     </div>
     {open && <div data-ai-skip="1" className="aibot-panel glass" style={panelStyle}>
       <div className="aibot-head">
         <div className="aibot-mini" title="Change companion" onClick={() => allowPick && setPicking(p => !p)} style={{ cursor: allowPick ? 'pointer' : 'default' }}>
           <Pet kind={kind === 'rivet3d' ? 'rivet' : kind} size={42} state={state === 'drag' ? 'idle' : state} look={{ x: 0, y: 0 }} /></div>
-        <div style={{ flex: 1, minWidth: 0 }}><b>{petName}</b> <span className="muted" style={{ fontSize: 11 }}>· RecoverIQ helper</span>
+        <div style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 15 }}>{petName}</b>
           <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {busy ? (readOn && canRead ? '👁 Reading the page & thinking…' : '💭 Thinking…') :
+            {busy ? (task === 'reading' ? '👁 Reading the page…' : '💭 Thinking…') :
+              mood === 'charting' ? '📊 Drawing your chart…' : mood === 'file' ? '📎 Preparing your file…' :
               canRead ? (readOn ? <>👁 Reading: <b>{viewLabel || view || 'this page'}</b></> : '👁 Page reading paused') : 'Page reading off (admin setting)'}</div></div>
         {allowPick && <button className={cx('btn ghost sm', picking && 'on')} title="Choose your companion" onClick={() => setPicking(p => !p)}>🎭</button>}
         {canRead && <button className="btn ghost sm" title={readOn ? 'Stop reading the page' : 'Read the open page'} onClick={() => setReadOn(r => !r)}>{readOn ? '👁' : '🚫'}</button>}
@@ -6015,14 +6246,15 @@ function AiBot({ user, view, viewLabel }) {
       </div>
       <div className="aibot-body">
         {picking ? <div>
+          <CompanionCard kind={kind} state="happy" look={{ x: 0, y: 0 }} status={st} />
           <div style={{ fontWeight: 700, margin: '2px 2px 4px' }}>Choose your companion</div>
           <div className="muted" style={{ fontSize: 12, margin: '0 2px 8px' }}>It floats on every page and reacts while it works: it thinks, talks, celebrates when an answer lands, and naps when you're away.</div>
           <PetPicker value={kind} onPick={k => { pickPet(k); }} allow3d />
           <button className="btn gold sm" style={{ marginTop: 10, width: '100%' }} onClick={() => setPicking(false)}>Done</button>
         </div> : <>
           {!msgs.length && <div className="aibot-empty">
-            <Pet kind={kind === 'rivet3d' ? 'rivet' : kind} size={92} state={state === 'drag' ? 'idle' : state} look={look} />
-            <div style={{ fontWeight: 700, marginTop: 4 }}>Hi {user.name.split(' ')[0]}, I'm {petName}.</div>
+            <CompanionCard kind={kind} state={state === 'drag' ? 'idle' : state} look={look} status={st} onEdit={allowPick ? () => setPicking(true) : null} />
+            <div style={{ fontWeight: 700, marginTop: 2 }}>Hi {user.name.split(' ')[0]}, I'm {petName}.</div>
             <div className="muted" style={{ fontSize: 12.5, maxWidth: 300 }}>I can see the page you're on{canRead && readOn ? '' : ' (when reading is on)'}, explain it, answer questions about your data, draw charts and guide you step by step.</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 10 }}>{quick.map(q => <div key={q} className="chip" onClick={() => send(q)}>{q}</div>)}</div></div>}
           {msgs.map((m, i) => <AiMessage key={i} m={m} compact onSend={i === msgs.length - 1 ? send : null} onOpenCase={setOpenCase} onConfirm={confirm} />)}
@@ -12130,6 +12362,8 @@ function VoiceCall({ user }) {
   );
 }
 
+const STICKERS = ['chick_hello', 'chick_happy', 'chick_wink', 'chick_love', 'chick_celebrate', 'chick_thinking', 'chick_talking', 'chick_surprised', 'chick_sorry', 'chick_sleepy'];
+const stickerOf = (t) => { const m = /^\[sticker:(chick_[a-z]+)\]$/.exec(String(t || '').trim()); return m && STICKERS.includes(m[1]) ? m[1] : null; };
 function ChatWidget({ user }) {
   const [open, setOpen] = useState(false); const [unread, setUnread] = useState(0);
   const [contacts, setContacts] = useState(null);
@@ -12149,6 +12383,10 @@ function ChatWidget({ user }) {
   useEffect(() => { if (!active) return; loadThread(); const t = setInterval(loadThread, 8000); return () => clearInterval(t); }, [active]);
   const [bcast, setBcast] = useState(false); const [bsel, setBsel] = useState([]); const [btext, setBtext] = useState(''); const [bq, setBq] = useState('');
   const openThread = (a) => { setActive(a); setPicker(false); setBcast(false); setMsgs([]); };
+  const [stickers, setStickers] = useState(false);
+  const sendSticker = (k) => { setStickers(false); const b = `[sticker:${k}]`;
+    const body = active === 'office' ? { office: true, body: b } : { to_id: active.id, body: b };
+    api('/api/chat/send', { method: 'POST', body }).then(() => { loadThread(); loadContacts(); }).catch(e => toast(e.message || 'Could not send', 'err')); };
   const send = () => { const b = text.trim(); if (!b) return; setText('');
     const body = active === 'office' ? { office: true, body: b } : { to_id: active.id, body: b };
     api('/api/chat/send', { method: 'POST', body }).then(() => { loadThread(); loadContacts(); }).catch(e => toast(e.message || 'Could not send', 'err')); };
@@ -12189,7 +12427,7 @@ function ChatWidget({ user }) {
           {at && <span style={{ fontSize: 11, color: un ? WA.header : '#667781', flex: '0 0 auto', fontWeight: un ? 700 : 400 }}>{chatWhen(at)}</span>}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, alignItems: 'center' }}>
-          <span style={{ fontSize: 12.5, color: '#667781', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{last || sub}</span>
+          <span style={{ fontSize: 12.5, color: '#667781', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(stickerOf(last) ? '🐥 Sticker' : last) || sub}</span>
           {un > 0 && <span style={{ background: WA.green, color: '#fff', borderRadius: 11, fontSize: 11, fontWeight: 700, minWidth: 20, height: 20, lineHeight: '20px', textAlign: 'center', flex: '0 0 auto', padding: '0 6px' }}>{un}</span>}
         </div>
       </div>
@@ -12217,12 +12455,14 @@ function ChatWidget({ user }) {
             {msgs.length === 0 ? <div style={{ fontSize: 12, textAlign: 'center', marginTop: 20, color: '#667781', background: '#fff', alignSelf: 'center', padding: '5px 12px', borderRadius: 8 }}>No messages yet. Say hello 👋</div> :
               msgs.map(m => <div key={m.id} style={{ alignSelf: m.mine ? 'flex-end' : 'flex-start', maxWidth: '82%', background: m.mine ? WA.out : WA.inBub, color: '#111B21', padding: '5px 9px 4px', borderRadius: 8, fontSize: 13, boxShadow: '0 1px 0 rgba(0,0,0,.08)', position: 'relative' }}>
                 {!m.mine && active === 'office' && <div style={{ fontSize: 10.5, fontWeight: 700, color: WA.header }}>{m.from}</div>}
-                {m.kind === 'callback' ? <b>{m.body}</b> : m.body}
+                {m.kind === 'callback' ? <b>{m.body}</b> : stickerOf(m.body) ? <img src={`assets/stickers/${stickerOf(m.body)}.webp`} alt="sticker" style={{ width: 120, height: 120, display: 'block' }} /> : m.body}
                 <span style={{ fontSize: 9.5, color: '#667781', float: 'right', margin: '3px 0 0 8px' }}>{fmtTime(m.at)}
                   {m.mine && <span style={{ color: m.read ? WA.tick : '#8696a0', fontWeight: 700 }}> ✓✓</span>}</span></div>)}
             <div ref={endRef} />
           </div>
+          {stickers && <div className="sticker-tray">{STICKERS.map(k => <img key={k} src={`assets/stickers/${k}.webp`} alt={k.replace('chick_', '')} title={k.replace('chick_', '')} onClick={() => sendSticker(k)} />)}</div>}
           <div style={{ display: 'flex', gap: 6, padding: 8, background: '#F0F2F5', alignItems: 'center' }}>
+            <span title="Stickers" onClick={() => setStickers(v => !v)} style={{ cursor: 'pointer', fontSize: 22, padding: '0 2px' }}>🐥</span>
             <input style={{ flex: 1, border: 'none', borderRadius: 20, padding: '9px 14px', fontSize: 13, outline: 'none' }} value={text} placeholder="Type a message" onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') send(); }} />
             <button onClick={send} style={{ width: 40, height: 40, borderRadius: '50%', border: 'none', background: WA.header, color: '#fff', fontSize: 17, cursor: 'pointer', flex: '0 0 40px' }}>➤</button>
           </div>

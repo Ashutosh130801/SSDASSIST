@@ -105,7 +105,7 @@ SERVICES: list[dict] = [
          {"key": "bot_read_page", "label": "Bot may read the open page (text only, same masking)", "type": "bool", "default": True},
          {"key": "bot_avatar", "label": "Default companion (users can pick their own)", "type": "select", "default": "rivet",
           "aliases": {"css3d": "rivet", "threejs": "rivet3d"},
-          "options": {"rivet": "🤖 Rivet — the helper robot", "nova": "🪐 Nova — a tiny planet of light", "penny": "🪙 Penny — the lucky rupee coin",
+          "options": {"chick": "🐥 Chick — the sunny yellow chick (3D)", "bluey": "🐦 Bluey — the chick in RecoverIQ blue (3D)", "rui": "🧸 Rui — a soft cotton puffball", "lumi": "🐰 Lumi — a lavender fluff-bunny", "toffee": "🐻 Toffee — a caramel fluff-bear", "aria": "👩 Aria — holographic guide (her)", "kabir": "👨 Kabir — holographic guide (him)", "rivet": "🤖 Rivet — the helper robot", "nova": "🪐 Nova — a tiny planet of light", "penny": "🪙 Penny — the lucky rupee coin", "sikka": "🪙 Sikka — a real 3D ₹1 coin that spins & flips",
                       "mochi": "🐱 Mochi — soft cat-blob", "sprout": "🌱 Sprout — grows with every answer", "owlie": "🦉 Owlie — the wise night-shift owl",
                       "puff": "☁️ Puff — a calm little cloud", "ember": "🔥 Ember — a warm spark", "rivet3d": "🤖 Rivet in full 3D (three.js — heavier on low-end PCs)"}},
          {"key": "bot_user_pick", "label": "Let each user choose their own companion", "type": "bool", "default": True},

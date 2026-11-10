@@ -123,7 +123,10 @@ def _system(user, conf, db=None):
         "settlements, payment_links, team_leads, devices — use them when the question is about those areas.\n"
         "13. If the message includes SCREEN context, the user is looking at that page: explain what it shows, answer about it and "
         "guide them on that screen (exact button names). Use tools for anything not visible on the page.\n"
-        "14. End EVERY reply with one last line exactly like: Suggestions: <short follow-up 1> | <short follow-up 2> | <short follow-up 3>\n"
+        "14. End EVERY reply with two last lines exactly like:\nMood: <one of happy, celebrate, love, sorry, surprised, wink>\n"
+        "Suggestions: <short follow-up 1> | <short follow-up 2> | <short follow-up 3>\n"
+        "Pick the mood that fits the answer: celebrate = good news (paid, target hit, big collection), love = the user thanked you, "
+        "sorry = nothing found / an error / bad news, surprised = an unusual or surprising number, wink = a handy tip, happy = anything else.\n"
         f"{langline}\n\n{APP_MAP}\n\nDATA MAP (what this user can see):\n" + (_data_context(db, user) if db is not None else "")
     )
 
@@ -140,6 +143,28 @@ def _split_suggestions(reply: str):
         return reply, []
     sugg = [s.strip(" -•*`\"'") for s in m.group(1).split("|")]
     return reply[:m.start()].rstrip(), [s[:90] for s in sugg if 2 < len(s) <= 120][:4]
+
+
+MOODS = ("happy", "celebrate", "love", "sorry", "surprised", "wink")
+_MOOD_RE = _re.compile(r"\n?\s*\**mood\**\s*[:：]\s*([a-z]+)\s*\.?\s*$", _re.I)
+
+
+def _split_mood(reply: str, question: str = ""):
+    """Pull the trailing 'Mood: x' line off the reply; fall back to simple cues when the model didn't give one."""
+    mood = None
+    m = _MOOD_RE.search(reply or "")
+    if m:
+        reply = reply[:m.start()].rstrip()
+        mood = m.group(1).lower() if m.group(1).lower() in MOODS else None
+    if not mood:
+        q, r = (question or "").lower(), (reply or "").lower()
+        if _re.search(r"\b(thank|thanks|thx|great job|awesome|nice)\b", q):
+            mood = "love"
+        elif r.startswith("⚠") or _re.search(r"\b(no (cases|records|data|results)|couldn'?t|could not|not found|nothing found|error)\b", r):
+            mood = "sorry"
+        elif _re.search(r"\b(target (hit|achieved|met)|fully paid|congrat|well done|record high)\b", r):
+            mood = "celebrate"
+    return reply, mood
 
 
 _DIGITS_RE = _re.compile(r"(?<![\d])(\+?\d[\d -]{8,20}\d)(?![\d])")
@@ -368,7 +393,7 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
 
     tools = _tools_for(conf)
     specs = ai_llm.tool_specs(tools)
-    out = {"files": [], "actions": [], "tools": [], "visuals": [], "steps": [], "suggestions": []}
+    out = {"files": [], "actions": [], "tools": [], "visuals": [], "steps": [], "suggestions": [], "mood": None}
     reply = ""
     system = _system(user, conf, db)
     try:
@@ -408,10 +433,11 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
     except ai_llm.LLMError as e:
         reply = f"⚠️ {e}"
     reply, out["suggestions"] = _split_suggestions(reply)
+    reply, out["mood"] = _split_mood(reply, text)
     if not reply and (out["files"] or out["actions"] or out["visuals"]):
         reply = "Here you go 👇"
     db.add(models.AiMessage(conversation_id=conv.id, role="assistant", content=reply,
-                            meta={k: out[k] for k in ("files", "actions", "tools", "visuals", "steps", "suggestions")}))
+                            meta={k: out[k] for k in ("files", "actions", "tools", "visuals", "steps", "suggestions", "mood")}))
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     return {"conversation_id": conv.id, "reply": reply, **out}
