@@ -526,6 +526,10 @@ TOOLS = {
 }
 
 
+from . import ai_tools_more as _more   # noqa: E402  (Audit Log, MIS, legal, settlements, payment links, team leads, devices)
+_more.register(TOOLS)
+
+
 def run_tool(db, user, name: str, args: dict) -> dict:
     fn = TOOLS.get(name)
     if not fn:

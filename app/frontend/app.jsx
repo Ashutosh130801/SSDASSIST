@@ -5553,6 +5553,84 @@ function MiniMd({ text }) {
   return <div>{out}</div>;
 }
 
+/* ---------- AI visual answers: KPI cards · charts · tables · step flows (built server-side from real data) ---------- */
+const AI_MONEY_RE = /(pending|received|collected|outstanding|enr|amount|total|offer|paid_total|via_)/i;
+const aiFmt = (k, v, short) => {
+  const money = typeof v === 'number' && AI_MONEY_RE.test(k || '') && !/pct|count|cases|payments/i.test(k || '');
+  if (money && short && Math.abs(v) >= 1e5) return '₹' + (Math.abs(v) >= 1e7 ? (v / 1e7).toFixed(2) + ' Cr' : (v / 1e5).toFixed(2) + ' L');
+  return money ? '₹' + Math.round(v).toLocaleString('en-IN') : (typeof v === 'number' ? v.toLocaleString('en-IN') : (v == null ? '—' : String(v)));
+};
+
+function aiVisualToSheet(v) {
+  if (v.kind === 'table') return [v.columns, ...v.rows.map(r => v.columns.map(c => r[c]))];
+  if (v.kind === 'chart') return [[v.x || 'label', ...v.series.map(s => s.name)], ...v.labels.map((l, i) => [l, ...v.series.map(s => s.data[i])])];
+  if (v.kind === 'kpis') return [['Metric', 'Value'], ...v.items.map(it => [it.label, it.value])];
+  return [['Step'], ...(v.steps || []).map(s => [s])];
+}
+
+function AiVisual({ v, big }) {
+  const box = useRef(null); const fbox = useRef(null); const [full, setFull] = useState(false);
+  const title = v.title || (v.kind === 'kpis' ? 'Key numbers' : v.kind === 'flow' ? 'Steps' : '');
+  const png = () => { const host = (full && fbox.current) || box.current; const cv = host && host.querySelector('canvas'); if (!cv) return;
+    const a = document.createElement('a'); a.href = cv.toDataURL('image/png'); a.download = (title || 'chart') + '.png'; a.click(); };
+  const xlsx = () => { if (!window.XLSX) return toast('Excel library not loaded', 'err');
+    const wb = window.XLSX.utils.book_new(); window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.aoa_to_sheet(aiVisualToSheet(v)), 'Data');
+    window.XLSX.writeFile(wb, (title || 'ai-data').replace(/[\\/:*?"<>|]/g, '') + '.xlsx'); };
+  const body = (h) => {
+    if (v.kind === 'kpis') return <div className="ai-kpis">{v.items.map((it, i) => <div key={i} className="ai-kpi" style={{ '--c': PALETTE[i % PALETTE.length] }}>
+      <div className="l">{it.label}</div><div className="v" title={aiFmt(it.key || it.label, it.value)}>{aiFmt(it.key || it.label, it.value, true)}</div></div>)}</div>;
+    if (v.kind === 'flow') return <div className="ai-flow">{v.steps.map((s, i) => <React.Fragment key={i}>
+      <div className="ai-step"><span>{i + 1}</span>{s}</div>{i < v.steps.length - 1 && <div className="ai-arrow">➜</div>}</React.Fragment>)}</div>;
+    if (v.kind === 'table') return <div className="tablewrap" style={{ maxHeight: h ? 'none' : 320 }}><table style={{ fontSize: 12.5 }}>
+      <thead><tr>{v.columns.map(c => <th key={c}>{c.replace(/_/g, ' ')}</th>)}</tr></thead>
+      <tbody>{v.rows.map((r, i) => <tr key={i}>{v.columns.map(c => <td key={c} className={typeof r[c] === 'number' ? 'mono' : ''}>{aiFmt(c, r[c])}</td>)}</tr>)}</tbody></table></div>;
+    const ct = v.chart_type; const pie = ct === 'pie' || ct === 'doughnut';
+    const data = { labels: v.labels, datasets: v.series.map((s, i) => pie
+      ? { label: s.name, data: s.data, backgroundColor: v.labels.map((_, k) => PALETTE[k % PALETTE.length]), borderWidth: 0 }
+      : { label: s.name, data: s.data, backgroundColor: PALETTE[i % PALETTE.length] + (ct === 'area' ? '33' : 'cc'), borderColor: PALETTE[i % PALETTE.length],
+          borderRadius: 6, fill: ct === 'area', tension: .35, pointRadius: ct === 'line' || ct === 'area' ? 2 : 0 }) };
+    return <ChartBox type={pie ? ct : (ct === 'hbar' ? 'bar' : (ct === 'area' ? 'line' : ct))} data={data} height={h || (pie ? 240 : 260)}
+      options={ct === 'hbar' ? { indexAxis: 'y' } : (pie ? { plugins: { legend: { position: 'right' } } } : {})} />;
+  };
+  const head = <div className="ai-vis-h"><b>{title}</b><div style={{ flex: 1 }} />
+    {v.kind === 'chart' && <button className="btn ghost sm" title="Download PNG" onClick={png}>🖼</button>}
+    {v.kind !== 'flow' && <button className="btn ghost sm" title="Download Excel" onClick={xlsx}>⬇</button>}
+    <button className="btn ghost sm" title={full ? 'Close' : 'Full screen'} onClick={() => setFull(f => !f)}>{full ? '✕' : '⛶'}</button></div>;
+  return <>
+    <div ref={box} className={cx('ai-vis', 'k-' + v.kind, big && 'big')}>{head}{body()}</div>
+    {full && <div className="modal-bg" onClick={() => setFull(false)} style={{ zIndex: 4000 }}>
+      <div className="modal glass" ref={fbox} onClick={e => e.stopPropagation()} style={{ width: '94vw', maxWidth: 1200, maxHeight: '92vh', overflow: 'auto' }}>
+        {head}{body(v.kind === 'chart' ? Math.round(window.innerHeight * .7) : null)}</div></div>}
+  </>;
+}
+
+function AiVisuals({ list }) {
+  if (!list || !list.length) return null;
+  return <div className="ai-visuals">{list.map((v, i) => <AiVisual key={i} v={v} />)}</div>;
+}
+
+/* One assistant/user message — shared by AI Assist and the floating helper bot. */
+function AiMessage({ m, onSend, onOpenCase, onConfirm, compact }) {
+  const [steps, setSteps] = useState(false);
+  if (m.role === 'user') return <div className="ai-msg me" style={{ alignSelf: 'flex-end', maxWidth: '88%' }}>{m.content}</div>;
+  return <div className="ai-msg bot" style={{ alignSelf: 'flex-start', maxWidth: compact ? '100%' : '96%', width: (m.visuals || []).length ? '100%' : undefined }}>
+    <MiniMd text={m.content} />
+    <AiVisuals list={m.visuals} />
+    {(m.files || []).map(f => <div key={f.token} style={{ marginTop: 6 }}><button className="btn gold sm" onClick={() => download('/api/ai/files/' + f.token, f.name)}>📎 {f.name}{f.rows != null ? ` (${f.rows} rows)` : ''}</button></div>)}
+    {(m.actions || []).map((a, k) => <div key={k} style={{ marginTop: 6 }}>
+      {a.type === 'follow_up' && (a.done ? <Pill c="#16a34a">✓ {a.label}</Pill> : <button className="btn sm" onClick={() => onConfirm && onConfirm(a)}>✔ Confirm: {a.label}</button>)}
+      {a.type === 'open_case' && <button className="btn ghost sm" onClick={() => onOpenCase && onOpenCase(a.case_id)}>📂 {a.label}</button>}
+      {a.type === 'whatsapp' && <a className="btn ghost sm" href={waHref(a.phone, a.text)} target="_blank" rel="noreferrer">💬 {a.label}</a>}
+    </div>)}
+    {(m.suggestions || []).length > 0 && onSend && <div className="ai-sugg">{m.suggestions.map((s, k) => <div key={k} className="chip" onClick={() => onSend(s)}>↳ {s}</div>)}</div>}
+    {(m.steps || m.tools || []).length > 0 && <div className="muted" style={{ fontSize: 10.5, marginTop: 4 }}>
+      <span style={{ cursor: 'pointer' }} onClick={() => setSteps(s => !s)}>{steps ? '▾' : '▸'} {m.steps ? `${m.steps.length} step${m.steps.length === 1 ? '' : 's'}` : 'sources'}: {[...new Set((m.steps || []).map(s => s.tool).concat(m.tools || []))].join(', ')}</span>
+      {steps && m.steps && <div className="ai-steps">{m.steps.map((s, k) => <div key={k}>{s.ok ? '✓' : '✗'} <b>{s.tool}</b> <span className="mono">{JSON.stringify(s.args)}</span>
+        {s.rows != null ? ` → ${s.rows} row(s)` : ''}{s.error ? <span style={{ color: 'var(--bad)' }}> — {s.error}</span> : ''}</div>)}</div>}
+    </div>}
+  </div>;
+}
+
 function AIAssist({ user }) {
   const [convs, setConvs] = useState([]); const [cid, setCid] = useState(null);
   const [msgs, setMsgs] = useState([]); const [input, setInput] = useState(''); const [busy, setBusy] = useState(false);
@@ -5565,13 +5643,15 @@ function AIAssist({ user }) {
     const t = (text ?? input).trim(); if (!t || busy) return;
     setMsgs(m => [...m, { role: 'user', content: t }]); setInput(''); setBusy(true);
     try { const r = await api('/api/ai/chat', { method: 'POST', body: { message: t, conversation_id: cid } });
-      setCid(r.conversation_id); setMsgs(m => [...m, { role: 'assistant', content: r.reply, files: r.files, actions: r.actions, tools: r.tools }]); loadConvs();
+      setCid(r.conversation_id); setMsgs(m => [...m, { role: 'assistant', content: r.reply, files: r.files, actions: r.actions, tools: r.tools,
+        visuals: r.visuals, steps: r.steps, suggestions: r.suggestions }]); loadConvs();
       api('/api/ai/status').then(setSt).catch(() => {});
     } catch (e) { setMsgs(m => [...m, { role: 'assistant', content: '⚠️ ' + e.message }]); } finally { setBusy(false); }
   };
   const confirm = async (a) => { try { await api(`/api/ai/actions/${a.token}/confirm`, { method: 'POST' }); toast('Done ✓'); a.done = true; setMsgs(m => [...m]); } catch (e) { alert(e.message); } };
-  const quick = ['Summarise my portfolio this month', 'Which cases should I prioritise today?', 'Overdue PTPs — make an Excel', 'My team performance this month',
-    'How do I upload a DPR file?', 'Write a polite WhatsApp payment reminder', 'Make a PDF of my visits this week', 'Write an SOP for field visits as a Word file'];
+  const quick = ['Dashboard of my portfolio this month', 'Chart: paid % by bank and bucket', 'Daily collection trend this month', 'Which cases should I prioritise today?',
+    'Overdue PTPs — make an Excel', 'Who changed what in the Audit Log today?', 'My team performance this month — chart', 'How do I upload a DPR file?',
+    'Write a polite WhatsApp payment reminder', 'Write an SOP for field visits as a Word file'];
   // The conversation flows with the page (long answers and tables read naturally with the normal page
   // scroll); the chat list on the left and the question box at the bottom stay in view while scrolling.
   return <div style={{ display: 'grid', gridTemplateColumns: 'minmax(170px,220px) minmax(0,1fr)', gap: 10, alignItems: 'start', minHeight: 'calc(100vh - 170px)' }}>
@@ -5585,18 +5665,9 @@ function AIAssist({ user }) {
       <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>{st && !st.error ? <>✨ {st.local ? '🏢 ' + (st.provider_label || 'Local model') + ' (data stays on your server)' : '☁️ ' + (st.provider_label || st.provider)} · {st.model}{st.mask_pii ? ' · phone/account numbers masked' : ''} · {st.used_today}/{st.daily_limit} today
         {!st.configured && <b style={{ color: 'var(--bad)' }}> · not set up: {st.hint}</b>}</> : st && st.error}</div>
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {!msgs.length && <div className="muted" style={{ margin: 'auto', textAlign: 'center', maxWidth: 520 }}>Hi {user.name.split(' ')[0]} — ask about your cases, PTPs, team, visits, calls, attendance, leave or payslips, or how to do anything in RecoverIQ. I only see what you can see.
+        {!msgs.length && <div className="muted" style={{ margin: 'auto', textAlign: 'center', maxWidth: 520 }}>Hi {user.name.split(' ')[0]} — ask about anything in RecoverIQ: cases, PTPs, MIS, team, visits, calls, Audit Log, DPR uploads, legal, settlements, attendance, leave or payslips. Ask for a <b>dashboard</b> or <b>chart</b> and I'll draw it. I only see what you can see.
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 10 }}>{quick.map(qq => <div key={qq} className="chip" onClick={() => send(qq)}>{qq}</div>)}</div></div>}
-        {msgs.map((m, i) => <div key={i} className={cx('ai-msg', m.role === 'user' ? 'me' : 'bot')} style={{ maxWidth: '88%', alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-          {m.role === 'user' ? m.content : <MiniMd text={m.content} />}
-          {(m.files || []).map(f => <div key={f.token} style={{ marginTop: 6 }}><button className="btn gold sm" onClick={() => download('/api/ai/files/' + f.token, f.name)}>📎 {f.name}{f.rows != null ? ` (${f.rows} rows)` : ''}</button></div>)}
-          {(m.actions || []).map((a, k) => <div key={k} style={{ marginTop: 6 }}>
-            {a.type === 'follow_up' && (a.done ? <Pill c="#16a34a">✓ {a.label}</Pill> : <button className="btn sm" onClick={() => confirm(a)}>✔ Confirm: {a.label}</button>)}
-            {a.type === 'open_case' && <button className="btn ghost sm" onClick={() => setOpenCase(a.case_id)}>📂 {a.label}</button>}
-            {a.type === 'whatsapp' && <a className="btn ghost sm" href={waHref(a.phone, a.text)} target="_blank" rel="noreferrer">💬 {a.label}</a>}
-          </div>)}
-          {m.tools && m.tools.length > 0 && <div className="muted" style={{ fontSize: 10.5, marginTop: 4 }}>sources: {[...new Set(m.tools)].join(', ')}</div>}
-        </div>)}
+        {msgs.map((m, i) => <AiMessage key={i} m={m} onSend={i === msgs.length - 1 ? send : null} onOpenCase={setOpenCase} onConfirm={confirm} />)}
         {busy && <div className="ai-msg bot">…looking it up</div>}
         <div ref={end} />
       </div>
@@ -5608,6 +5679,365 @@ function AIAssist({ user }) {
   </div>;
 }
 
+
+/* ============================== 🤖 Floating AI helper bot ==============================
+   An original RecoverIQ robot that floats (bottom-right by default), can be dragged anywhere (position remembered),
+   reads the open page as TEXT (same role scope + masking as AI Assist) and answers / explains / guides in its window.
+   Avatar: CSS 3D (default, light) or full three.js 3D — chosen in ⚙️ Services → AI Assist. */
+function readPageContext(view, viewLabel) {
+  const clean = s => String(s || '').replace(/[ \t ]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+  const vis = el => el && !el.closest('[data-ai-skip]') && (el.offsetParent !== null || getComputedStyle(el).position === 'fixed');
+  const overlays = Array.from(document.querySelectorAll('.drawer, .modal')).filter(vis);
+  const main = document.querySelector('main.main') || document.querySelector('main') || document.getElementById('root');
+  const parts = [];
+  if (overlays.length) parts.push('[Open window]\n' + overlays.map(o => clean(o.innerText)).join('\n---\n'));
+  if (main) parts.push((overlays.length ? '[Page behind]\n' : '') + clean(main.innerText));
+  const top = overlays[overlays.length - 1] || main;
+  const h = top && top.querySelector('h2, h3, .brandfont');
+  return { section: view || String(location.hash || '').replace(/^#\/?/, ''), title: (viewLabel || '') + (h ? ' › ' + clean(h.innerText).slice(0, 80) : ''),
+    text: parts.join('\n\n').slice(0, 6000) };
+}
+
+function loadThree() {
+  if (window.THREE) return Promise.resolve(window.THREE);
+  if (!window.__riqThreeP) window.__riqThreeP = new Promise((res, rej) => {
+    const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+    s.onload = () => res(window.THREE); s.onerror = () => { window.__riqThreeP = null; rej(new Error('three.js failed to load')); };
+    document.head.appendChild(s);
+  });
+  return window.__riqThreeP;
+}
+
+/* ---------- 🐾 Companions — original RecoverIQ characters (SVG, light, crisp at any size) ----------
+   Shared face parts react to state: idle · thinking · talk · happy · sad · sleep · drag. Eyes follow the cursor. */
+function PetEyes({ x1, x2, y, rx = 5, ry = 6, look, state, fill = '#1e1b4b', glow }) {
+  const th = state === 'thinking';
+  const dx = th ? 2.6 : (look.x || 0) * 2.6, dy = th ? -2.6 : (look.y || 0) * 2;
+  if (state === 'happy' || state === 'sleep') {
+    const up = state === 'happy';
+    return <g>{[x1, x2].map(x => <path key={x} d={up ? `M${x - rx} ${y + 1} Q${x} ${y - ry * 1.1} ${x + rx} ${y + 1}` : `M${x - rx} ${y} Q${x} ${y + ry * .8} ${x + rx} ${y}`}
+      fill="none" stroke={fill} strokeWidth="2.6" strokeLinecap="round" style={glow ? { filter: `drop-shadow(0 0 2px ${fill})` } : null} />)}</g>;
+  }
+  const wide = state === 'drag' ? 1.25 : 1;
+  return <g className={cx('pet-eyes', th && 'pet-dart')} style={{ transform: `translate(${dx}px,${dy}px)` }}>
+    {[x1, x2].map((x, i) => <g key={i}>
+      <ellipse className="pet-eye" cx={x} cy={y} rx={rx * wide} ry={ry * wide} fill={fill} style={glow ? { filter: `drop-shadow(0 0 3px ${fill})` } : null} />
+      <circle cx={x + rx * .35} cy={y - ry * .38} r={rx * .38} fill="#fff" opacity=".95" />
+      {state === 'sad' && <path d={i ? `M${x - rx} ${y - ry - 4} L${x + rx} ${y - ry - 1}` : `M${x - rx} ${y - ry - 1} L${x + rx} ${y - ry - 4}`} stroke={fill} strokeWidth="2" strokeLinecap="round" />}
+    </g>)}
+  </g>;
+}
+function PetMouth({ x, y, state, color = '#1e1b4b', w = 7 }) {
+  if (state === 'talk') return <ellipse className="pet-talk" cx={x} cy={y + 1} rx={w * .45} ry="3" fill={color} />;
+  if (state === 'thinking') return <circle cx={x + 2} cy={y + 1} r="2" fill={color} />;
+  if (state === 'happy') return <path d={`M${x - w * .7} ${y - 1} Q${x} ${y + w} ${x + w * .7} ${y - 1}Z`} fill={color} />;
+  if (state === 'sad') return <path d={`M${x - w * .55} ${y + 3} Q${x} ${y - 2} ${x + w * .55} ${y + 3}`} fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" />;
+  if (state === 'sleep') return <path d={`M${x - 2.5} ${y + 1} h5`} stroke={color} strokeWidth="2" strokeLinecap="round" />;
+  if (state === 'drag') return <ellipse cx={x} cy={y + 1} rx="2.6" ry="3.4" fill={color} />;
+  return <path d={`M${x - w * .5} ${y} Q${x} ${y + w * .55} ${x + w * .5} ${y}`} fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" />;
+}
+const PetBlush = ({ x1, x2, y, c = '#fb7185' }) => <g opacity=".45">{[x1, x2].map(x => <ellipse key={x} cx={x} cy={y} rx="5" ry="2.8" fill={c} />)}</g>;
+
+const PETS = {
+  rivet: { name: 'Rivet', tag: 'The helper robot. Precise, polite, always on duty.', draw: (s, l, id) => <>
+    <defs><linearGradient id={id + 'h'} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fff" /><stop offset="1" stopColor="#cbd5e1" /></linearGradient>
+      <linearGradient id={id + 'v'} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#1e3a8a" /><stop offset="1" stopColor="#020617" /></linearGradient></defs>
+    <line x1="50" y1="24" x2="50" y2="12" stroke="#94a3b8" strokeWidth="3" strokeLinecap="round" />
+    <circle className="pet-bulb" cx="50" cy="10" r="5" fill={s === 'thinking' ? '#f59e0b' : '#60a5fa'} />
+    <rect x="13" y="42" width="9" height="18" rx="4.5" fill="#2563eb" /><rect x="78" y="42" width="9" height="18" rx="4.5" fill="#2563eb" />
+    <rect x="19" y="22" width="62" height="54" rx="22" fill={`url(#${id}h)`} stroke="#94a3b8" strokeWidth="1.2" />
+    <rect x="26" y="32" width="48" height="30" rx="14" fill={`url(#${id}v)`} />
+    <PetEyes x1={40} x2={60} y={46} rx={4.6} ry={5.6} look={l} state={s} fill={s === 'thinking' ? '#fbbf24' : '#67e8f9'} glow />
+    <PetMouth x={50} y={68} state={s} color="#2563eb" />
+    <rect x="35" y="76" width="30" height="9" rx="4.5" fill="#1d4ed8" /></> },
+  nova: { name: 'Nova', tag: 'A tiny planet of light. Sees patterns in everything.', draw: (s, l, id) => <>
+    <defs><radialGradient id={id + 'o'} cx=".36" cy=".3" r=".8"><stop offset="0" stopColor="#a5f3fc" /><stop offset=".5" stopColor="#6366f1" /><stop offset="1" stopColor="#1e1b4b" /></radialGradient></defs>
+    <g transform="rotate(-16 50 54)"><ellipse cx="50" cy="54" rx="45" ry="11" fill="none" stroke="#c4b5fd" strokeWidth="2.5" opacity=".45" /></g>
+    <circle cx="50" cy="52" r="30" fill={`url(#${id}o)`} />
+    {[[36, 36, 1.2], [64, 40, 1], [58, 70, 1.3], [33, 64, .9], [70, 58, .8], [46, 30, .7]].map(([x, y, r], i) => <circle key={i} className="pet-twinkle" style={{ animationDelay: i * .4 + 's' }} cx={x} cy={y} r={r} fill="#fff" />)}
+    <PetEyes x1={41} x2={59} y={50} rx={4.2} ry={5.2} look={l} state={s} fill="#ecfeff" glow />
+    <PetMouth x={50} y={62} state={s} color="#ecfeff" />
+    <g transform="rotate(-16 50 54)"><path className="pet-ring" d="M5 54 A45 11 0 0 0 95 54" fill="none" stroke="#ddd6fe" strokeWidth="2.8" strokeLinecap="round" /></g></> },
+  penny: { name: 'Penny', tag: 'The lucky rupee coin. Counts every collection.', draw: (s, l, id) => <>
+    <defs><linearGradient id={id + 'g'} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#fef08a" /><stop offset=".5" stopColor="#f59e0b" /><stop offset="1" stopColor="#b45309" /></linearGradient>
+      <clipPath id={id + 'c'}><circle cx="50" cy="52" r="32" /></clipPath></defs>
+    <circle cx="50" cy="52" r="32" fill={`url(#${id}g)`} stroke="#92400e" strokeWidth="1.2" />
+    <circle cx="50" cy="52" r="26.5" fill="none" stroke="#fef3c7" strokeWidth="1.6" strokeDasharray="2 3" opacity=".8" />
+    <g clipPath={`url(#${id}c)`}><rect className="pet-shine" x="10" y="0" width="12" height="110" fill="#fff" opacity=".35" transform="rotate(25 50 52)" /></g>
+    <text x="50" y="37" textAnchor="middle" fontSize="11" fontWeight="800" fill="#92400e">₹</text>
+    <PetEyes x1={41} x2={59} y={51} rx={4} ry={5} look={l} state={s} fill="#78350f" />
+    <PetBlush x1={33} x2={67} y={60} c="#f97316" />
+    <PetMouth x={50} y={63} state={s} color="#78350f" /></> },
+  mochi: { name: 'Mochi', tag: 'Soft cat-blob. Small paws, big help.', draw: (s, l, id) => <>
+    <defs><linearGradient id={id + 'p'} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fdf2f8" /><stop offset="1" stopColor="#f9a8d4" /></linearGradient></defs>
+    <path className="pet-ear-l" d="M25 50 L27 22 L45 38Z" fill="#f9a8d4" /><path className="pet-ear-r" d="M75 50 L73 22 L55 38Z" fill="#f9a8d4" />
+    <path d="M29 44 L30 30 L39 38Z" fill="#fbcfe8" /><path d="M71 44 L70 30 L61 38Z" fill="#fbcfe8" />
+    <path d="M18 70 Q16 34 50 33 Q84 34 82 70 Q82 86 50 86 Q18 86 18 70Z" fill={`url(#${id}p)`} stroke="#f472b6" strokeWidth="1" />
+    <PetEyes x1={40} x2={60} y={58} rx={4} ry={5} look={l} state={s} fill="#4c1d95" />
+    <PetBlush x1={31} x2={69} y={66} />
+    <g stroke="#db2777" strokeWidth="1" opacity=".5" strokeLinecap="round"><path d="M22 64 h-9 M22 68 l-8 3 M78 64 h9 M78 68 l8 3" /></g>
+    <PetMouth x={50} y={69} state={s} color="#9d174d" w={6} /></> },
+  sprout: { name: 'Sprout', tag: 'Grows a little with every answer.', draw: (s, l, id) => <>
+    <defs><linearGradient id={id + 'b'} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#bbf7d0" /><stop offset="1" stopColor="#16a34a" /></linearGradient></defs>
+    <g className="pet-leaf"><path d="M50 30 Q50 22 50 17" stroke="#15803d" strokeWidth="2.5" fill="none" strokeLinecap="round" />
+      <path d="M50 19 Q38 8 28 16 Q38 26 50 19Z" fill="#4ade80" /><path d="M50 19 Q62 6 74 13 Q64 25 50 19Z" fill="#22c55e" /></g>
+    <path d="M28 52 Q28 30 50 30 Q72 30 72 52 L72 68 Q72 86 50 86 Q28 86 28 68Z" fill={`url(#${id}b)`} />
+    <PetEyes x1={42} x2={58} y={55} rx={3.8} ry={4.8} look={l} state={s} fill="#052e16" />
+    <PetBlush x1={35} x2={65} y={63} c="#f472b6" />
+    <PetMouth x={50} y={66} state={s} color="#052e16" w={6} /></> },
+  owlie: { name: 'Owlie', tag: 'The wise night-shift owl. Never misses a PTP.', draw: (s, l, id) => <>
+    <defs><linearGradient id={id + 'w'} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#2dd4bf" /><stop offset="1" stopColor="#115e59" /></linearGradient></defs>
+    <path d="M24 34 L22 18 L36 28Z M76 34 L78 18 L64 28Z" fill="#0f766e" />
+    <ellipse cx="50" cy="56" rx="31" ry="31" fill={`url(#${id}w)`} />
+    <ellipse cx="50" cy="68" rx="18" ry="15" fill="#ccfbf1" />
+    {[36, 52, 64].map((y, i) => <path key={i} d={`M${44 - i} ${y + 8} q3 3 6 0 M${50 + i} ${y + 8} q3 3 6 0`} stroke="#5eead4" strokeWidth="1" fill="none" opacity=".7" />)}
+    <circle cx="38" cy="47" r="11" fill="#fff" stroke="#f59e0b" strokeWidth="2" /><circle cx="62" cy="47" r="11" fill="#fff" stroke="#f59e0b" strokeWidth="2" />
+    <PetEyes x1={38} x2={62} y={47} rx={4.6} ry={4.6} look={l} state={s} fill="#0f172a" />
+    <path className="pet-beak" d={s === 'talk' || s === 'happy' ? 'M45 56 L55 56 L50 64Z' : 'M46 56 L54 56 L50 62Z'} fill="#f59e0b" />
+    <path d="M40 86 v4 M44 86 v4 M56 86 v4 M60 86 v4" stroke="#f59e0b" strokeWidth="2.4" strokeLinecap="round" /></> },
+  puff: { name: 'Puff', tag: 'A calm little cloud. Clears up any doubt.', draw: (s, l, id) => <>
+    <defs><linearGradient id={id + 'c'} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fff" /><stop offset="1" stopColor="#bfdbfe" /></linearGradient></defs>
+    {s === 'happy' && <g fill="none" strokeWidth="3" strokeLinecap="round" opacity=".85">
+      {['#f87171', '#fbbf24', '#34d399', '#60a5fa'].map((c, i) => <path key={c} d={`M${18 + i * 4} 48 A${32 - i * 4} ${30 - i * 4} 0 0 1 ${82 - i * 4} 48`} stroke={c} />)}</g>}
+    <g fill={`url(#${id}c)`} style={{ filter: 'drop-shadow(0 2px 2px rgba(59,130,246,.25))' }}>
+      <circle cx="32" cy="60" r="16" /><circle cx="50" cy="48" r="21" /><circle cx="69" cy="58" r="17" /><rect x="22" y="58" width="58" height="22" rx="11" /></g>
+    <PetEyes x1={42} x2={58} y={58} rx={3.6} ry={4.6} look={l} state={s} fill="#1e3a8a" />
+    <PetBlush x1={34} x2={66} y={66} c="#93c5fd" />
+    <PetMouth x={50} y={68} state={s} color="#1e3a8a" w={6} />
+    {s === 'thinking' && <path className="pet-drop" d="M50 84 q-3 5 0 7 q3 -2 0 -7Z" fill="#60a5fa" />}</> },
+  ember: { name: 'Ember', tag: 'A warm spark. Fast answers, never burns out.', draw: (s, l, id) => <>
+    <defs><linearGradient id={id + 'f'} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fde047" /><stop offset=".55" stopColor="#fb923c" /><stop offset="1" stopColor="#dc2626" /></linearGradient></defs>
+    <g className="pet-flicker">
+      <path d="M50 12 C63 30 79 40 75 62 C72 80 61 88 50 88 C39 88 28 80 25 62 C22 46 37 38 40 25 C44 33 47 35 50 12Z" fill={`url(#${id}f)`} />
+      <path d="M50 44 C57 52 63 58 61 69 C59 78 55 82 50 82 C45 82 40 78 39 69 C38 60 45 56 50 44Z" fill="#fef3c7" opacity=".55" /></g>
+    <PetEyes x1={42} x2={58} y={62} rx={3.8} ry={4.8} look={l} state={s} fill="#7c2d12" />
+    <PetMouth x={50} y={73} state={s} color="#7c2d12" w={6} /></> },
+};
+const PET_KEYS = Object.keys(PETS);
+
+function Pet({ kind, state = 'idle', look = { x: 0, y: 0 }, size = 76 }) {
+  const P = PETS[kind] || PETS.rivet;
+  const id = 'pt' + String(React.useId ? React.useId() : Math.random()).replace(/[^a-zA-Z0-9]/g, '');
+  return <div className={cx('pet', 'pet-' + (PETS[kind] ? kind : 'rivet'), 's-' + state)} style={{ width: size, height: size }}>
+    <svg viewBox="0 0 100 100" className="pet-svg" style={{ transform: `rotateY(${look.x * 14}deg) rotateX(${-look.y * 10}deg)` }}>
+      <g className="pet-body">{P.draw(state, look, id)}</g>
+      {state === 'thinking' && <g className="pet-think">{[[80, 26, 2.4], [87, 17, 3.2], [92, 7, 4]].map(([x, y, r], i) => <circle key={i} cx={x} cy={y} r={r} fill="#94a3b8" style={{ animationDelay: i * .18 + 's' }} />)}</g>}
+      {state === 'happy' && <g className="pet-sparks">{[[12, 20], [88, 18], [8, 70], [92, 66]].map(([x, y], i) =>
+        <path key={i} d={`M${x} ${y - 6} L${x + 1.6} ${y - 1.6} L${x + 6} ${y} L${x + 1.6} ${y + 1.6} L${x} ${y + 6} L${x - 1.6} ${y + 1.6} L${x - 6} ${y} L${x - 1.6} ${y - 1.6}Z`} fill={['#fbbf24', '#60a5fa', '#f472b6', '#34d399'][i]} style={{ animationDelay: i * .15 + 's' }} />)}</g>}
+      {state === 'sleep' && <g className="pet-zzz" fill="#64748b" fontWeight="800"><text x="76" y="24" fontSize="10">z</text><text x="84" y="13" fontSize="13">z</text></g>}
+      {state === 'sad' && <path d="M76 30 q-4 6 0 8 q4 -2 0 -8Z" fill="#60a5fa" />}
+    </svg>
+    <div className="pet-shadow" />
+  </div>;
+}
+
+function PetPicker({ value, onPick, allow3d }) {
+  const [hov, setHov] = useState(null);
+  return <div className="pet-grid">
+    {PET_KEYS.map(k => <div key={k} className={cx('pet-card', value === k && 'on')} onClick={() => onPick(k)} onMouseEnter={() => setHov(k)} onMouseLeave={() => setHov(null)}>
+      <Pet kind={k} size={64} state={hov === k ? 'happy' : (value === k ? 'talk' : 'idle')} />
+      <b>{PETS[k].name}</b><div className="muted">{PETS[k].tag}</div></div>)}
+    {allow3d && <div className={cx('pet-card', value === 'rivet3d' && 'on')} onClick={() => onPick('rivet3d')}>
+      <div style={{ fontSize: 40, height: 64, display: 'grid', placeItems: 'center' }}>🧊</div><b>Rivet 3D</b><div className="muted">Full 3D robot (heavier on low-end PCs).</div></div>}
+  </div>;
+}
+
+function BotThree({ state, look, onFail }) {
+  const host = useRef(null); const lookRef = useRef(look); const stRef = useRef(state);
+  lookRef.current = look; stRef.current = state;
+  useEffect(() => {
+    let stop = false, raf = 0, renderer = null;
+    loadThree().then(THREE => {
+      if (stop || !host.current) return;
+      const S = 84, scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
+      cam.position.set(0, 0.15, 7);
+      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); renderer.setSize(S, S);
+      host.current.appendChild(renderer.domElement);
+      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+      const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(2, 3, 4); scene.add(key);
+      const rim = new THREE.PointLight(0x60a5fa, 1.1, 12); rim.position.set(-3, 1.5, 2); scene.add(rim);
+      const mat = (c, o = {}) => new THREE.MeshStandardMaterial({ color: c, metalness: 0.3, roughness: 0.35, ...o });
+      const bot = new THREE.Group(); scene.add(bot);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(1.05, 48, 48), mat(0xf8fafc)); head.scale.set(1.12, 0.96, 1); bot.add(head);
+      const visor = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 48), mat(0x0b234f, { metalness: 0.7, roughness: 0.15 }));
+      visor.scale.set(0.9, 0.52, 0.42); visor.position.set(0, 0.02, 0.72); bot.add(visor);
+      const eyeMat = new THREE.MeshStandardMaterial({ color: 0x67e8f9, emissive: 0x22d3ee, emissiveIntensity: 1.2 });
+      const eyes = [-0.32, 0.32].map(x => { const e = new THREE.Mesh(new THREE.SphereGeometry(0.13, 24, 24), eyeMat); e.position.set(x, 0.06, 1.12); bot.add(e); return e; });
+      [-1, 1].forEach(s => { const ear = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.22, 32), mat(0x2563eb));
+        ear.rotation.z = Math.PI / 2; ear.position.set(s * 1.18, 0, 0); bot.add(ear); });
+      const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.45, 12), mat(0x94a3b8)); stalk.position.set(0, 1.12, 0); bot.add(stalk);
+      const tipMat = new THREE.MeshStandardMaterial({ color: 0x93c5fd, emissive: 0x3b82f6, emissiveIntensity: 1 });
+      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.13, 20, 20), tipMat); tip.position.set(0, 1.4, 0); bot.add(tip);
+      const collar = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.12, 16, 48), mat(0x2563eb)); collar.rotation.x = Math.PI / 2; collar.position.y = -1.0; bot.add(collar);
+      const t0 = performance.now();
+      const tick = () => {
+        if (stop) return;
+        const t = (performance.now() - t0) / 1000, lk = lookRef.current || { x: 0, y: 0 }, st = stRef.current;
+        bot.position.y = Math.sin(t * 2) * 0.08;
+        bot.rotation.y += ((lk.x * 0.6) - bot.rotation.y) * 0.12;
+        bot.rotation.x += ((lk.y * 0.35) - bot.rotation.x) * 0.12;
+        const blink = (t % 4) < 0.12 ? 0.15 : 1;
+        eyes.forEach(e => { e.scale.y = st === 'thinking' ? 0.6 + Math.abs(Math.sin(t * 6)) * 0.5 : blink; });
+        eyeMat.emissive.setHex(st === 'thinking' ? 0xf59e0b : 0x22d3ee);
+        tipMat.emissiveIntensity = st === 'thinking' ? 0.6 + Math.abs(Math.sin(t * 8)) * 1.6 : 0.8 + Math.sin(t * 2) * 0.3;
+        if (st === 'talk') bot.rotation.z = Math.sin(t * 10) * 0.05; else bot.rotation.z *= 0.9;
+        renderer.render(scene, cam); raf = requestAnimationFrame(tick);
+      };
+      tick();
+    }).catch(() => onFail && onFail());
+    return () => { stop = true; cancelAnimationFrame(raf);
+      try { if (renderer) { renderer.dispose(); renderer.domElement.remove(); } } catch (e) {} };
+  }, []);
+  return <div ref={host} className="bot3d-three" />;
+}
+
+function AiBot({ user, view, viewLabel }) {
+  const [st, setSt] = useState(null);
+  const BOT = 80;
+  const [pos, setPos] = useState(() => { try { const p = JSON.parse(localStorage.getItem('riq_bot_pos') || 'null'); if (p && p.r >= 0) return p; } catch (e) {} return { r: 14, b: 136 }; });
+  const [open, setOpen] = useState(false); const [busy, setBusy] = useState(false);
+  const [mood, setMood] = useState(null);            // short reactions: happy · talk · sad · hop
+  const [sleepy, setSleepy] = useState(false); const [dragging, setDragging] = useState(false);
+  const [look, setLook] = useState({ x: 0, y: 0 }); const [threeFailed, setThreeFailed] = useState(false);
+  const [msgs, setMsgs] = useState([]); const [input, setInput] = useState('');
+  const [cid, setCid] = useState(() => { try { return Number(sessionStorage.getItem('riq_bot_cid')) || null; } catch (e) { return null; } });
+  const [readOn, setReadOn] = useState(true); const [bubble, setBubble] = useState(''); const [openCase, setOpenCase] = useState(null);
+  const [picking, setPicking] = useState(false);
+  const petKey = 'riq_pet_' + user.id;
+  const [myPet, setMyPet] = useState(() => { try { return localStorage.getItem(petKey) || ''; } catch (e) { return ''; } });
+  const drag = useRef(null); const end = useRef(null); const lastAct = useRef(Date.now()); const moodT = useRef(0); const lookHold = useRef(0); const bubbleT = useRef(0);
+
+  const react = (m, ms = 1800, after) => { clearTimeout(moodT.current); setMood(m);
+    moodT.current = setTimeout(() => { setMood(after || null); if (after) moodT.current = setTimeout(() => setMood(null), 2200); }, ms); };
+  const say = (t, ms = 3500) => { setBubble(t); clearTimeout(bubbleT.current); bubbleT.current = setTimeout(() => setBubble(''), ms); };
+
+  useEffect(() => { api('/api/ai/status').then(s => setSt(s)).catch(() => setSt({ off: true })); }, []);
+  useEffect(() => { if (!st || st.off || !st.bot_enabled) return;
+    try { if (!sessionStorage.getItem('riq_bot_hi')) { sessionStorage.setItem('riq_bot_hi', '1');
+      const h = new Date().getHours(); const part = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+      setTimeout(() => { react('happy', 1600); say(`${part}, ${user.name.split(' ')[0]}! 👋 Click me for help with this page.`, 6000); }, 900); } } catch (e) {} }, [st]);
+  useEffect(() => { if (open && cid && !msgs.length) api('/api/ai/conversations/' + cid).then(c => setMsgs(c.messages || [])).catch(() => setCid(null)); }, [open]);
+  useEffect(() => { try { cid ? sessionStorage.setItem('riq_bot_cid', String(cid)) : sessionStorage.removeItem('riq_bot_cid'); } catch (e) {} }, [cid]);
+  useEffect(() => { end.current && end.current.scrollIntoView && end.current.scrollIntoView({ block: 'end' }); }, [msgs, busy, open]);
+  // eyes follow the cursor; any movement wakes it up
+  useEffect(() => {
+    let raf = 0;
+    const mv = (e) => { lastAct.current = Date.now();
+      setSleepy(s => { if (s) { react('happy', 900); } return false; });
+      if (raf || Date.now() < lookHold.current) return; raf = requestAnimationFrame(() => { raf = 0;
+      const cx0 = window.innerWidth - pos.r - BOT / 2, cy0 = window.innerHeight - pos.b - BOT / 2;
+      const dx = (e.clientX - cx0) / (window.innerWidth / 2), dy = (e.clientY - cy0) / (window.innerHeight / 2);
+      setLook({ x: Math.max(-1, Math.min(1, dx)), y: Math.max(-1, Math.min(1, dy)) }); }); };
+    window.addEventListener('pointermove', mv); window.addEventListener('keydown', mv);
+    return () => { window.removeEventListener('pointermove', mv); window.removeEventListener('keydown', mv); cancelAnimationFrame(raf); };
+  }, [pos.r, pos.b]);
+  // life: dozes off after a quiet minute; now and then looks around or hops
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (busy || drag.current) return;
+      const quiet = Date.now() - lastAct.current;
+      if (quiet > 60000 && !open) { setSleepy(true); return; }
+      if (Math.random() < .35) { const act = Math.random();
+        if (act < .5) { lookHold.current = Date.now() + 1400; setLook({ x: Math.random() * 2 - 1, y: Math.random() - .6 }); }
+        else if (act < .8) react('hop', 700);
+        else react('happy', 900); }
+    }, 7000);
+    return () => clearInterval(t);
+  }, [busy, open]);
+  useEffect(() => { const fit = () => setPos(p => ({ r: Math.min(Math.max(4, p.r), window.innerWidth - BOT - 4), b: Math.min(Math.max(4, p.b), window.innerHeight - BOT - 4) }));
+    fit(); window.addEventListener('resize', fit); return () => window.removeEventListener('resize', fit); }, []);
+
+  if (!st || st.off || !st.bot_enabled) return null;
+  const canRead = st.bot_read_page !== false;
+  const allowPick = st.bot_user_pick !== false;
+  const kind = (allowPick && myPet) || st.bot_avatar || 'rivet';
+  const state = dragging ? 'drag' : busy ? 'thinking' : mood === 'hop' ? 'idle' : mood || (sleepy ? 'sleep' : 'idle');
+  const useThree = kind === 'rivet3d' && !threeFailed;
+  const petName = (PETS[kind] || PETS.rivet).name;
+  const pickPet = (k) => { setMyPet(k); try { localStorage.setItem(petKey, k); } catch (e) {} react('happy', 1500); say(`Hi, I'm ${(PETS[k] || PETS.rivet).name}! ✨`, 2500); };
+
+  const onDown = (e) => { e.preventDefault(); drag.current = { x: e.clientX, y: e.clientY, r: pos.r, b: pos.b, moved: false };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {} };
+  const onMove = (e) => { const d = drag.current; if (!d) return;
+    const dx = e.clientX - d.x, dy = e.clientY - d.y; if (!d.moved && Math.abs(dx) + Math.abs(dy) > 5) { d.moved = true; setDragging(true); }
+    if (d.moved) setPos({ r: Math.min(Math.max(4, d.r - dx), window.innerWidth - BOT - 4), b: Math.min(Math.max(4, d.b - dy), window.innerHeight - BOT - 4) }); };
+  const onUp = () => { const d = drag.current; drag.current = null; setDragging(false); if (!d) return; lastAct.current = Date.now(); setSleepy(false);
+    if (!d.moved) { setOpen(o => !o); setBubble(''); react('hop', 600); }
+    else { try { localStorage.setItem('riq_bot_pos', JSON.stringify(pos)); } catch (e) {} react('happy', 700); } };
+
+  const send = async (text) => {
+    const t = (text ?? input).trim(); if (!t || busy) return;
+    setMsgs(m => [...m, { role: 'user', content: t }]); setInput(''); setBusy(true); setPicking(false); lastAct.current = Date.now();
+    try {
+      const body = { message: t, conversation_id: cid, origin: 'bot' };
+      if (canRead && readOn) body.page_context = readPageContext(view, viewLabel);
+      const r = await api('/api/ai/chat', { method: 'POST', body });
+      setCid(r.conversation_id);
+      setMsgs(m => [...m, { role: 'assistant', content: r.reply, files: r.files, actions: r.actions, tools: r.tools, visuals: r.visuals, steps: r.steps, suggestions: r.suggestions }]);
+      const failed = String(r.reply || '').startsWith('⚠️');
+      failed ? react('sad', 2600) : react('happy', 1500, 'talk');
+      if (!open) say(failed ? 'Hmm, that didn\'t work 😕' : 'Your answer is ready ✨', 3000);
+    } catch (e) { setMsgs(m => [...m, { role: 'assistant', content: '⚠️ ' + e.message }]); react('sad', 2600); } finally { setBusy(false); }
+  };
+  const confirm = async (a) => { try { await api(`/api/ai/actions/${a.token}/confirm`, { method: 'POST' }); toast('Done ✓'); a.done = true; setMsgs(m => [...m]); react('happy'); } catch (e) { toast(e.message, 'err'); react('sad'); } };
+
+  // window placement: next to the companion, inside the screen
+  const mobile = window.innerWidth < 640;
+  const W = Math.min(410, window.innerWidth - 16), H = Math.min(580, window.innerHeight - 24);
+  const botLeft = window.innerWidth - pos.r - BOT, botTop = window.innerHeight - pos.b - BOT;
+  let left = botLeft + BOT - W; if (left < 8) left = Math.min(botLeft, window.innerWidth - W - 8);
+  let top = botTop - H - 8; if (top < 8) top = Math.min(botTop + BOT + 8, window.innerHeight - H - 8); if (top < 8) top = 8;
+  const panelStyle = mobile ? { left: 6, right: 6, bottom: 6, height: '74vh' } : { left: Math.max(8, left), top, width: W, height: H };
+  const bubbleLeft = botLeft > window.innerWidth / 2;
+  const quick = ['Explain this page', 'What should I do next here?', 'Summarise what I\'m seeing', 'Show this as a chart', 'How do I use this screen?'];
+  const avatar = (sz, lk, s) => useThree && sz >= 70 ? <BotThree state={s} look={lk} onFail={() => setThreeFailed(true)} /> : <Pet kind={kind === 'rivet3d' ? 'rivet' : kind} size={sz} state={s} look={lk} />;
+
+  return <>
+    <div data-ai-skip="1" className={cx('aibot', open && 'is-open', mood === 'hop' && 'hop', dragging && 'dragging')} style={{ right: pos.r, bottom: pos.b, width: BOT, height: BOT }}
+      onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} title={`${petName} — click to chat, drag to move`}>
+      {avatar(BOT, look, state)}
+      {bubble && !open && <div className={cx('aibot-hello', !bubbleLeft && 'right')}>{bubble}</div>}
+      {busy && !open && <div className={cx('aibot-hello', !bubbleLeft && 'right')}>{readOn && canRead ? 'Reading the page…' : 'Thinking…'}</div>}
+    </div>
+    {open && <div data-ai-skip="1" className="aibot-panel glass" style={panelStyle}>
+      <div className="aibot-head">
+        <div className="aibot-mini" title="Change companion" onClick={() => allowPick && setPicking(p => !p)} style={{ cursor: allowPick ? 'pointer' : 'default' }}>
+          <Pet kind={kind === 'rivet3d' ? 'rivet' : kind} size={42} state={state === 'drag' ? 'idle' : state} look={{ x: 0, y: 0 }} /></div>
+        <div style={{ flex: 1, minWidth: 0 }}><b>{petName}</b> <span className="muted" style={{ fontSize: 11 }}>· RecoverIQ helper</span>
+          <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {busy ? (readOn && canRead ? '👁 Reading the page & thinking…' : '💭 Thinking…') :
+              canRead ? (readOn ? <>👁 Reading: <b>{viewLabel || view || 'this page'}</b></> : '👁 Page reading paused') : 'Page reading off (admin setting)'}</div></div>
+        {allowPick && <button className={cx('btn ghost sm', picking && 'on')} title="Choose your companion" onClick={() => setPicking(p => !p)}>🎭</button>}
+        {canRead && <button className="btn ghost sm" title={readOn ? 'Stop reading the page' : 'Read the open page'} onClick={() => setReadOn(r => !r)}>{readOn ? '👁' : '🚫'}</button>}
+        <button className="btn ghost sm" title="New chat" onClick={() => { setMsgs([]); setCid(null); setPicking(false); }}>＋</button>
+        <button className="btn ghost sm" title="Close" onClick={() => setOpen(false)}>✕</button>
+      </div>
+      <div className="aibot-body">
+        {picking ? <div>
+          <div style={{ fontWeight: 700, margin: '2px 2px 4px' }}>Choose your companion</div>
+          <div className="muted" style={{ fontSize: 12, margin: '0 2px 8px' }}>It floats on every page and reacts while it works: it thinks, talks, celebrates when an answer lands, and naps when you're away.</div>
+          <PetPicker value={kind} onPick={k => { pickPet(k); }} allow3d />
+          <button className="btn gold sm" style={{ marginTop: 10, width: '100%' }} onClick={() => setPicking(false)}>Done</button>
+        </div> : <>
+          {!msgs.length && <div className="aibot-empty">
+            <Pet kind={kind === 'rivet3d' ? 'rivet' : kind} size={92} state={state === 'drag' ? 'idle' : state} look={look} />
+            <div style={{ fontWeight: 700, marginTop: 4 }}>Hi {user.name.split(' ')[0]}, I'm {petName}.</div>
+            <div className="muted" style={{ fontSize: 12.5, maxWidth: 300 }}>I can see the page you're on{canRead && readOn ? '' : ' (when reading is on)'}, explain it, answer questions about your data, draw charts and guide you step by step.</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 10 }}>{quick.map(q => <div key={q} className="chip" onClick={() => send(q)}>{q}</div>)}</div></div>}
+          {msgs.map((m, i) => <AiMessage key={i} m={m} compact onSend={i === msgs.length - 1 ? send : null} onOpenCase={setOpenCase} onConfirm={confirm} />)}
+          {busy && <div className="ai-msg bot aibot-typing"><span /><span /><span /></div>}
+          <div ref={end} />
+        </>}
+      </div>
+      {!picking && <div className="aibot-input">
+        <input className="input" value={input} autoFocus onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder={`Ask ${petName} about this page or anything…`} />
+        <button className="btn gold" disabled={busy} onClick={() => send()}>➤</button>
+      </div>}
+    </div>}
+    {openCase && <CaseDrawer c={{ id: openCase }} onClose={() => setOpenCase(null)} onChanged={() => {}} />}
+  </>;
+}
 
 /* ============================== PTP Tracker ============================== */
 function PTPTracker() {
@@ -12594,6 +13024,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       <BroadcastPopup />
       <VoiceCall user={user} />
       <PerfHost />
+      <AiBot user={user} view={view} viewLabel={(nav.find(n => n[0] === view) || [])[2]} />
     </div>
   );
 }

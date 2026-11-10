@@ -36,7 +36,17 @@ META_TOOLS = {
     "propose_action": (None, "Suggest an action the user confirms with one click. type = follow_up (needs case_id, date YYYY-MM-DD, note) | "
                              "open_case (case_id) | whatsapp_draft (case_id, text).",
                        {"type": "follow_up|open_case|whatsapp_draft", "case_id": "integer", "date": "string", "note": "string", "text": "string"}),
+    "make_visual": (None, "Show a visual in the chat built from REAL data. kind = chart | kpis | table | flow. "
+                          "chart/kpis/table need source_tool (a data tool) + source_args (JSON object of its arguments); "
+                          "chart: chart_type = bar|hbar|line|area|pie|doughnut, x = label column, y = comma-separated number columns. "
+                          "kpis: optional fields = comma-separated numeric fields from the tool's totals. "
+                          "table: optional columns. flow: steps = 'Step one > Step two > Step three' (for how-to / process diagrams). "
+                          "Call it several times for a dashboard (e.g. kpis + 2 charts + table).",
+                    {"kind": "chart|kpis|table|flow", "title": "string", "chart_type": "string", "source_tool": "string",
+                     "source_args": "string", "x": "string", "y": "string", "fields": "string", "columns": "string", "steps": "string"}),
 }
+
+VISUAL_MAX_ROWS = 200
 
 
 def _conf(db):
@@ -104,14 +114,63 @@ def _system(user, conf, db=None):
         "9. Use the exact bank / product / month / staff names from the DATA MAP below. Start with broad searches (few filters). "
         "If a tool returns 0 rows, read its why_empty / hint, fix or drop the filter and try again (or call data_overview) before "
         "telling the user nothing was found. If a tool says it showed a different month, tell the user which month you used.\n"
-        "10. If the question is vague, answer with a useful overview (e.g. portfolio_summary) and offer 2–3 specific follow-ups.\n"
+        "10. If the question is vague, answer with a useful overview (e.g. portfolio_summary) and offer specific follow-ups.\n"
+        "11. VISUALS: when numbers compare, trend or break down (by bank, bucket, person, day…), call make_visual — kpis for "
+        "headline totals, chart for comparisons/trends (line/area for days, bar/hbar for categories, doughnut for shares of a whole), "
+        "table for lists. For 'dashboard' requests build 3–5 visuals (kpis first). For how-to answers add a flow visual of the steps. "
+        "After visuals, give a 1–3 line insight (what stands out, what to do next) — don't repeat every number.\n"
+        "12. Other data: audit_log (who did what), dpr_uploads, mis_breakdown, collection_trend, legal_cases, legal_notices, "
+        "settlements, payment_links, team_leads, devices — use them when the question is about those areas.\n"
+        "13. If the message includes SCREEN context, the user is looking at that page: explain what it shows, answer about it and "
+        "guide them on that screen (exact button names). Use tools for anything not visible on the page.\n"
+        "14. End EVERY reply with one last line exactly like: Suggestions: <short follow-up 1> | <short follow-up 2> | <short follow-up 3>\n"
         f"{langline}\n\n{APP_MAP}\n\nDATA MAP (what this user can see):\n" + (_data_context(db, user) if db is not None else "")
     )
 
 
+import re as _re  # noqa: E402
+
+_SUGG_RE = _re.compile(r"\n*\s*\**suggestions?\**\s*[:：]\s*(.+?)\s*$", _re.I | _re.S)
+
+
+def _split_suggestions(reply: str):
+    """Pull the trailing 'Suggestions: a | b | c' line off the reply → (clean reply, [a, b, c])."""
+    m = _SUGG_RE.search(reply or "")
+    if not m or "\n" in m.group(1).strip():
+        return reply, []
+    sugg = [s.strip(" -•*`\"'") for s in m.group(1).split("|")]
+    return reply[:m.start()].rstrip(), [s[:90] for s in sugg if 2 < len(s) <= 120][:4]
+
+
+_DIGITS_RE = _re.compile(r"(?<![\d])(\+?\d[\d -]{8,20}\d)(?![\d])")
+
+
+def _mask_page_text(t: str) -> str:
+    """Phone / account / card numbers on the screen → XXXX1234 before the text goes to the AI."""
+    def rep(m):
+        d = _re.sub(r"\D", "", m.group(1))
+        return ("XXXX" + d[-4:]) if len(d) >= 9 else m.group(1)
+    return _DIGITS_RE.sub(rep, t or "")
+
+
+def _page_block(page: dict | None, conf: dict) -> str:
+    if not page or not conf.get("bot_read_page", True):
+        return ""
+    sec = str(page.get("section") or "")[:60]
+    title = str(page.get("title") or "")[:120]
+    text = str(page.get("text") or "")[:6000]
+    if conf.get("mask_pii", True):
+        text = _mask_page_text(text)
+    return f"\n\nSCREEN (what the user is looking at now) — section: {sec or '?'}; title: {title or '?'}\n{text}"
+
+
 def _tools_for(conf):
-    t = {n: v for n, v in ai_tools.TOOLS.items()}
+    from .. import ai_tools_more
+    off = ai_tools_more.disabled_tools(conf)
+    t = {n: v for n, v in ai_tools.TOOLS.items() if n not in off}
     t["app_help"] = META_TOOLS["app_help"]
+    if conf.get("allow_visuals", True):
+        t["make_visual"] = META_TOOLS["make_visual"]
     if conf.get("allow_files", True):
         t["make_file"] = META_TOOLS["make_file"]
         t["make_document"] = META_TOOLS["make_document"]
@@ -133,16 +192,93 @@ def _artifact(db, user, kind, name, path=None, payload=None, status="ready"):
     return a
 
 
-def _run_meta(db, user, conf, name, args, out):
+def _json_arg(v, default):
+    if isinstance(v, (dict, list)):
+        return v
+    try:
+        return json.loads(v) if v else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _is_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _make_visual(db, user, conf, args, allowed_tools):
+    """Builds a chart / KPI / table / flow spec from a real tool result (never from numbers the model typed)."""
+    kind = (args.get("kind") or "chart").lower().strip()
+    title = str(args.get("title") or "").strip()[:120]
+    if kind == "flow":
+        steps = args.get("steps") or ""
+        steps = _json_arg(steps, None) if str(steps).strip().startswith("[") else [s.strip() for s in str(steps).replace("→", ">").split(">")]
+        steps = [str(s)[:120] for s in (steps or []) if str(s).strip()][:12]
+        if len(steps) < 2:
+            raise ai_tools.ToolError("flow needs at least 2 steps, e.g. 'Open Accounts > Pick bank > Upload file'")
+        return {"kind": "flow", "title": title or "Steps", "steps": steps}
+    if kind not in ("chart", "kpis", "table"):
+        raise ai_tools.ToolError("kind must be chart, kpis, table or flow")
+    src = args.get("source_tool")
+    if src not in ai_tools.TOOLS or src not in allowed_tools:
+        raise ai_tools.ToolError(f"source_tool must be one of {', '.join(n for n in ai_tools.TOOLS if n in allowed_tools)}")
+    sargs = {**_json_arg(args.get("source_args"), {}), "limit": VISUAL_MAX_ROWS, "_max": VISUAL_MAX_ROWS}
+    data = ai_tools.run_tool(db, user, src, sargs)
+    rows = (data.get("rows") if isinstance(data, dict) else None) or []
+    if conf.get("mask_pii", True):
+        rows = ai_tools.mask(rows)
+    if kind == "kpis":
+        base = (data.get("totals") if isinstance(data, dict) else None) or {}
+        if not base:
+            base = {k: v for k, v in (data.items() if isinstance(data, dict) else []) if _is_num(v)}
+        if not base and rows:
+            base = rows[0]
+        want = [f.strip() for f in (args.get("fields") or "").split(",") if f.strip()]
+        items = [{"label": k.replace("_", " ").title(), "value": base[k], "key": k}
+                 for k in (want or list(base.keys())) if k in base and _is_num(base[k])][:8]
+        if not items:
+            raise ai_tools.ToolError("no numeric totals in that tool's result for KPIs — try kind=table or chart")
+        return {"kind": "kpis", "title": title, "items": items, "source": src}
+    if not rows:
+        raise ai_tools.ToolError("that tool returned no rows — nothing to draw")
+    cols = list(rows[0].keys())
+    if kind == "table":
+        want = [c.strip() for c in (args.get("columns") or "").split(",") if c.strip() in cols]
+        cols = want or (data.get("columns") if isinstance(data, dict) and data.get("columns") else cols)
+        return {"kind": "table", "title": title, "columns": cols[:14], "rows": [{c: r.get(c) for c in cols[:14]} for r in rows],
+                "source": src}
+    x = args.get("x") if args.get("x") in cols else next((c for c in cols if not _is_num(rows[0].get(c))), cols[0])
+    ys = [c.strip() for c in (args.get("y") or "").split(",") if c.strip() in cols and _is_num(rows[0].get(c.strip()))]
+    if not ys:
+        ys = [c for c in cols if c != x and _is_num(rows[0].get(c)) and c not in ("id", "case_id")][:2]
+    if not ys:
+        raise ai_tools.ToolError("no numeric column to plot — pass y=")
+    ct = (args.get("chart_type") or "bar").lower()
+    if ct not in ("bar", "hbar", "line", "area", "pie", "doughnut"):
+        ct = "bar"
+    if ct in ("pie", "doughnut"):
+        ys = ys[:1]
+    rows = rows[:60]
+    return {"kind": "chart", "title": title, "chart_type": ct, "labels": [str(r.get(x) if r.get(x) is not None else "—") for r in rows],
+            "series": [{"name": y.replace("_", " ").title(), "data": [r.get(y) or 0 for r in rows]} for y in ys],
+            "x": x, "source": src}
+
+
+def _run_meta(db, user, conf, name, args, out, allowed_tools=None):
     if name == "app_help":
         return app_help(args.get("topic"))
+    if name == "make_visual":
+        v = _make_visual(db, user, conf, args, allowed_tools or ai_tools.TOOLS)
+        out["visuals"].append(v)
+        n = len(v.get("rows") or v.get("labels") or v.get("items") or v.get("steps") or [])
+        return {"visual_shown": v["kind"], "title": v.get("title"), "points": n,
+                "note": "The user now sees this visual — don't repeat its numbers in a table; summarise the key insight in 1–3 lines."}
     if name == "make_file":
         fmt = (args.get("format") or "xlsx").lower()
         if fmt not in ("xlsx", "pdf", "docx"):
             raise ai_tools.ToolError("format must be xlsx, pdf or docx")
         src = args.get("source_tool")
-        if src not in ai_tools.TOOLS:
-            raise ai_tools.ToolError(f"source_tool must be one of {', '.join(ai_tools.TOOLS)}")
+        if src not in ai_tools.TOOLS or (allowed_tools is not None and src not in allowed_tools):
+            raise ai_tools.ToolError(f"source_tool must be one of {', '.join(n for n in ai_tools.TOOLS if allowed_tools is None or n in allowed_tools)}")
         sargs = args.get("source_args") or {}
         if isinstance(sargs, str):
             try:
@@ -212,17 +348,19 @@ def _daily_count(db, user):
             .filter(models.AiConversation.user_id == user.id, models.AiMessage.role == "user", models.AiMessage.created_at >= start).count())
 
 
-def converse(db, user, text: str, conv: models.AiConversation | None, case_context: str | None = None) -> dict:
+def converse(db, user, text: str, conv: models.AiConversation | None, case_context: str | None = None,
+             page: dict | None = None, origin: str = "assist") -> dict:
     conf = _conf(db)
     limit = int(conf.get("daily_limit") or 100)
     if _daily_count(db, user) >= limit:
         raise HTTPException(429, f"Daily AI question limit ({limit}) reached. Try again tomorrow.")
     if not conv:
-        conv = models.AiConversation(user_id=user.id, title=text[:80]); db.add(conv); db.flush()
+        conv = models.AiConversation(user_id=user.id, title=(("🤖 " if origin == "bot" else "") + text)[:80]); db.add(conv); db.flush()
     hist = (db.query(models.AiMessage).filter(models.AiMessage.conversation_id == conv.id)
             .order_by(models.AiMessage.id.desc()).limit(12).all())[::-1]
     messages = [{"role": m.role, "content": m.content or ""} for m in hist]
     prompt = text if not case_context else f"{text}\n\n(Open case context: {case_context[:1500]})"
+    prompt += _page_block(page, conf)
     messages.append({"role": "user", "content": prompt})
     db.add(models.AiMessage(conversation_id=conv.id, role="user", content=text))
     audit.record(db, user, "ai.ask", entity_type="ai", detail=text[:300])
@@ -230,11 +368,11 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
 
     tools = _tools_for(conf)
     specs = ai_llm.tool_specs(tools)
-    out = {"files": [], "actions": [], "tools": []}
+    out = {"files": [], "actions": [], "tools": [], "visuals": [], "steps": [], "suggestions": []}
     reply = ""
     system = _system(user, conf, db)
     try:
-        for _ in range(MAX_STEPS):
+        for _ in range(MAX_STEPS + 2):          # a dashboard needs a few extra make_visual calls
             res = ai_llm.call_llm(conf, system, messages, specs)
             if not res["tool_calls"]:
                 reply = res["content"].strip()
@@ -242,29 +380,38 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
             messages.append({"role": "assistant", "content": res["content"], "tool_calls": res["tool_calls"]})
             for call in res["tool_calls"]:
                 name, args = call["name"], call.get("args") or {}
+                ok = True
                 try:
-                    if name in ai_tools.TOOLS:
+                    if name in ai_tools.TOOLS and name in tools:
                         data = ai_tools.run_tool(db, user, name, args)
                         payload = ai_tools.mask(data) if conf.get("mask_pii", True) else data
                     elif name in tools:
-                        payload = _run_meta(db, user, conf, name, args, out)
+                        payload = _run_meta(db, user, conf, name, args, out, allowed_tools=tools)
                         db.commit()
                     else:
-                        payload = {"error": "tool not available"}
+                        payload = {"error": "tool not available (it may be switched off in ⚙️ Services → AI Assist)"}
+                        ok = False
                 except ai_tools.ToolError as e:
-                    payload = {"error": str(e)}
+                    payload, ok = {"error": str(e)}, False
                 except Exception as e:
-                    payload = {"error": f"tool failed: {str(e)[:150]}"}
+                    payload, ok = {"error": f"tool failed: {str(e)[:150]}"}, False
                 out["tools"].append(name)
+                rows = None
+                if isinstance(payload, dict):
+                    rv = payload.get("count", payload.get("total_matching", payload.get("rows", payload.get("points"))))
+                    rows = len(rv) if isinstance(rv, list) else (rv if isinstance(rv, int) else None)
+                out["steps"].append({"tool": name, "args": {k: v for k, v in (args or {}).items() if not str(k).startswith("_")},
+                                     "ok": ok, "rows": rows, "error": payload.get("error") if isinstance(payload, dict) else None})
                 messages.append({"role": "tool", "tool_call_id": call["id"], "name": name, "content": _shrink(payload)})
         else:
             reply = reply or "I needed too many steps for that — please ask a narrower question."
     except ai_llm.LLMError as e:
         reply = f"⚠️ {e}"
-    if not reply and (out["files"] or out["actions"]):
-        reply = "Done — see below."
+    reply, out["suggestions"] = _split_suggestions(reply)
+    if not reply and (out["files"] or out["actions"] or out["visuals"]):
+        reply = "Here you go 👇"
     db.add(models.AiMessage(conversation_id=conv.id, role="assistant", content=reply,
-                            meta={"files": out["files"], "actions": out["actions"], "tools": out["tools"]}))
+                            meta={k: out[k] for k in ("files", "actions", "tools", "visuals", "steps", "suggestions")}))
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     return {"conversation_id": conv.id, "reply": reply, **out}
@@ -325,8 +472,17 @@ def provider_test(body: dict = Body(default={}), db: Session = Depends(get_db), 
 @router.get("/status")
 def status(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     conf = _conf(db)
+    from .. import ai_tools_more
+    off = ai_tools_more.disabled_tools(conf)
     return {**ai_llm.provider_status(conf), "mask_pii": conf.get("mask_pii", True), "allow_files": conf.get("allow_files", True),
-            "allow_actions": conf.get("allow_actions", True), "used_today": _daily_count(db, user), "daily_limit": conf.get("daily_limit")}
+            "allow_actions": conf.get("allow_actions", True), "allow_visuals": conf.get("allow_visuals", True),
+            "bot_enabled": conf.get("bot_enabled", True), "bot_read_page": conf.get("bot_read_page", True),
+            "bot_avatar": {"css3d": "rivet", "threejs": "rivet3d"}.get(conf.get("bot_avatar"), conf.get("bot_avatar") or "rivet"),
+            "bot_user_pick": conf.get("bot_user_pick", True) is not False,
+            "data_areas": [{"key": g, "label": lbl, "on": cfg_key not in conf or conf.get(cfg_key) is not False}
+                           for g, (cfg_key, lbl) in ai_tools_more.GROUPS.items()],
+            "tools_off": sorted(off),
+            "used_today": _daily_count(db, user), "daily_limit": conf.get("daily_limit")}
 
 
 @router.post("/chat")
@@ -339,7 +495,9 @@ def chat(body: dict = Body(...), db: Session = Depends(get_db), user: models.Use
         conv = db.get(models.AiConversation, int(body["conversation_id"]))
         if not conv or conv.user_id != user.id:
             raise HTTPException(404, "Conversation not found")
-    return converse(db, user, text[:4000], conv, body.get("case_context"))
+    page = body.get("page_context") if isinstance(body.get("page_context"), dict) else None
+    return converse(db, user, text[:4000], conv, body.get("case_context"), page=page,
+                    origin="bot" if body.get("origin") == "bot" else "assist")
 
 
 @router.get("/conversations")

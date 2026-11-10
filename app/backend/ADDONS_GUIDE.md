@@ -25,6 +25,15 @@ It answers questions in plain words, using only the data the user is allowed to 
 | Mask PII | Phone and account numbers reach the AI as `XXXXXX1234`. Files made for the user still contain the full numbers. |
 | Daily limit | Questions per user per day |
 
+**Data areas.** AI Assist can also read the Audit Log and DPR upload history, MIS breakdowns and the daily collection trend, litigation and legal notices, settlements and payment links, team leads, and devices. Each user only gets what their role shows on screen. Each area has its own **AI data access** switch in ⚙️ Services → AI Assist.
+
+**Visual answers.** Ask for a *dashboard* or a *chart* and the answer comes back as KPI cards, bar, line or doughnut charts, tables and step diagrams. They are drawn from the real tool results, not from numbers the model typed. Each visual has full-screen, PNG and Excel buttons. Every answer also ends with follow-up suggestions, plus a "steps" toggle that shows which data was read. To turn visuals off, untick **Allow visual answers**.
+
+**Floating helper bot.** A small robot sits bottom-right on every page. You can drag it anywhere, and it remembers where you put it. Click it to open the chat. It reads the open page as text (with the same masking), so it can explain the screen, answer about it and guide you. In Services you can:
+- turn the bot off
+- stop it reading pages
+- pick its look: **CSS 3D** (default, light) or **Full 3D (three.js)** (richer, heavier on low-end PCs)
+
 ### Running an open-weight model on the server PC (no data leaves the office)
 1. Install **Ollama** from https://ollama.com (Windows installer).
 2. Download a model that can call tools. Pick one by how much memory you have:
