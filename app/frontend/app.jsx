@@ -5758,7 +5758,8 @@ const AUDIT_ICON = {
   reassign: '🔀', deallocate: '➖', transfer: '🔁', edit: '✏️', cell_edit: '⌨️',
   paid: '✅', unpaid: '↩️', payment: '💰', visit: '📍', call: '📞',
   delete: '🗑️', restore: '♻️', escalate: '🚩', deescalate: '🏳️', import: '📥', login: '🔑',
-  dpr_upload: '🏦', dpr_update: '🏦',
+  dpr_upload: '🏦', dpr_update: '🏦', bulk_reassign: '🔀', bulk_transfer: '🔁', bulk_delete: '🗑️', bulk_restore: '♻️',
+  bulk_joint_allocate: '🤝', bulk_joint_unallocate: '➖',
 };
 function AuditLogView({ user }) {
   const [opts, setOpts] = useState({ branches: [], banks: [], products: [], actions: [], roles: [], employees: [] });
@@ -5815,6 +5816,7 @@ function AuditLogView({ user }) {
               <td><b>{r.actor || '—'}</b><div className="muted" style={{ fontSize: 11 }}>{r.role}</div></td>
               <td style={{ whiteSpace: 'nowrap' }}>{AUDIT_ICON[r.action] || '•'} {r.action}</td>
               <td>{r.meta && r.meta.dpr ? <span className="badge new" title="Click to see every case this DPR changed">{r.meta.changes_count ?? '—'} cases · view</span>
+                : r.meta && r.meta.bulk ? <span className="badge new" title="Click to see every case in this action">{r.meta.cases ?? r.meta.items_count ?? '—'} cases · view</span>
                 : r.customer ? <span>{r.customer}<div className="muted" style={{ fontSize: 11 }}>#{r.case_id}</div></span> : (r.case_id ? '#' + r.case_id : '—')}</td>
               <td className="muted" style={{ fontSize: 12 }}>{r.field || '—'}</td>
               <td style={{ fontSize: 12 }}>{(r.old || r.new) ? <span><span className="muted">{r.old ?? '∅'}</span> → <b>{r.new ?? '∅'}</b></span> : '—'}</td>
@@ -5830,9 +5832,46 @@ function AuditLogView({ user }) {
         </div>
       )}
       {logSel && (logSel.meta && logSel.meta.dpr ? <DprLogModal row={logSel} onClose={() => setLogSel(null)} />
+        : logSel.meta && logSel.meta.bulk ? <BulkLogModal row={logSel} onClose={() => setLogSel(null)} />
         : <AuditDetailModal row={logSel} onClose={() => setLogSel(null)} />)}
     </div>
   );
+}
+
+/* 🔀 One bulk action (re-allocation, transfer, remove, restore, joint allocation) — every case it touched. */
+function BulkLogModal({ row, onClose }) {
+  useBackClose(true, onClose);
+  const [full, setFull] = useState(false); const [d, setD] = useState(null); const [err, setErr] = useState(''); const [q, setQ] = useState('');
+  useEffect(() => { api('/api/audit/' + row.id).then(setD).catch(e => setErr(e.message)); }, [row.id]);
+  const m = (d && d.meta) || row.meta || {};
+  const items = (m.items || []).filter(i => { const t = q.trim().toLowerCase();
+    return !t || [i.case_id, i.account, i.customer, i.old, i.new, i.bank, i.product].some(x => String(x ?? '').toLowerCase().includes(t)); });
+  const label = f => ({ assigned_fos_id: 'FOS', assigned_caller_id: 'Caller', team_lead: 'Team lead' }[f] || f || '—');
+  const box = full ? { maxWidth: 'none', width: '100vw', height: '100vh', maxHeight: '100vh', borderRadius: 0 } : { maxWidth: 1050, width: '97%' };
+  return <div className="modal-bg" onClick={onClose} style={full ? { padding: 0 } : undefined}><div className="modal glass" onClick={e => e.stopPropagation()} style={box}>
+    <div className="section-h"><h3 style={{ margin: 0 }}>{AUDIT_ICON[row.action] || '•'} {m.label || row.action}</h3>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="btn ghost sm" onClick={() => download('/api/audit/' + row.id + '/items.xlsx', (m.kind || 'bulk') + '_' + row.id + '.xlsx')}>⬇ Excel</button>
+        <button className="btn ghost sm" onClick={() => setFull(f => !f)}>{full ? '🗗 Exit full screen' : '⛶ Full screen'}</button>
+        <button className="btn ghost sm" onClick={onClose}>✕</button></div></div>
+    <div style={{ fontSize: 13, marginBottom: 6 }}>Done by <b>{row.actor || '—'}</b>{row.role ? ' (' + roleName(row.role) + ')' : ''} · {fmtDT(row.at)}
+      · <b>{m.cases ?? m.items_count ?? '—'}</b> cases{m.changes && m.changes !== m.cases ? ` · ${m.changes} changes` : ''}{(row.bank || row.product) ? ' · ' + [row.bank, row.product].filter(Boolean).join(' / ') : ''}</div>
+    <div className="glass card" style={{ padding: 10, marginBottom: 8, fontSize: 13 }}>{row.detail}
+      {m.grouped_later && <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>Grouped from the earlier one-line-per-case log.</div>}</div>
+    {err ? <div style={{ color: 'var(--bad)' }}>{err}</div> : !d ? <Loader /> : <>
+      <input className="input" style={{ maxWidth: 280 }} placeholder="Search case / account / customer / name" value={q} onChange={e => setQ(e.target.value)} />
+      <div className="tablewrap" style={{ maxHeight: full ? 'calc(100vh - 250px)' : 460, marginTop: 8 }}><table style={{ fontSize: 12.5 }}>
+        <thead><tr><th>Case</th><th>Account / card</th><th>Customer</th><th>Portfolio</th><th>What</th><th>Before → After</th></tr></thead>
+        <tbody>{items.slice(0, 3000).map((i, k) => <tr key={k}>
+          <td className="mono">#{i.case_id}</td><td className="mono">{i.account || '—'}</td><td>{i.customer || '—'}</td>
+          <td className="muted" style={{ fontSize: 11.5 }}>{[i.bank, i.product].filter(Boolean).join(' / ') || '—'}</td>
+          <td>{i.field ? label(i.field) : (i.detail || i.action)}</td>
+          <td style={{ whiteSpace: 'nowrap' }}>{(i.old || i.new) ? <><span className="muted">{i.old || '—'}</span> → <b>{i.new || '—'}</b></> : (i.detail || '—')}</td>
+        </tr>)}</tbody></table>
+        {!items.length && <div className="muted" style={{ padding: 12 }}>No case matches.</div>}
+        {items.length > 3000 && <div className="muted" style={{ padding: 8 }}>Showing 3,000 of {items.length} — use ⬇ Excel for all.</div>}</div>
+    </>}
+  </div></div>;
 }
 
 /* 🏦 One DPR upload — the full change list (same as the preview), who uploaded it, and an Excel copy. */

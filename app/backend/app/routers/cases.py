@@ -1257,6 +1257,7 @@ def bulk_reassign(body: BulkReassign, db: Session = Depends(get_db),
                 raise HTTPException(status_code=403, detail="Can only assign to your own team")
 
     changed = 0
+    batch = audit.Batch(db, user, "reassign", "Bulk re-allocation")
     for case in cases:
         touched = False
         for key in ("assigned_fos_id", "assigned_caller_id"):
@@ -1268,7 +1269,7 @@ def bulk_reassign(body: BulkReassign, db: Session = Depends(get_db),
             if old == new:
                 continue
             setattr(case, key, new)
-            audit.record(db, user, "deallocate" if new is None else "reassign", case,
+            batch.record("deallocate" if new is None else "reassign", case,
                          field=key, old=_uname(old) or old, new=_uname(new) or new,
                          detail=f"{key.replace('_id','')} → {_uname(new) or 'unassigned'}",
                          target_user_id=new)
@@ -1278,13 +1279,21 @@ def bulk_reassign(body: BulkReassign, db: Session = Depends(get_db),
             new_tl = (tl_target or None)
             if (old_tl or None) != new_tl:
                 case.team_lead = new_tl
-                audit.record(db, user, "reassign" if new_tl else "deallocate", case,
+                batch.record("reassign" if new_tl else "deallocate", case,
                              field="team_lead", old=old_tl, new=new_tl,
                              detail=f"team lead → {new_tl or 'cleared'}")
                 touched = True
         if touched:
             audit.stamp_case(case, user)
             changed += 1
+    parts = []
+    if body.assigned_fos_id != "keep":
+        parts.append("FOS → " + (_uname(int(body.assigned_fos_id)) if body.assigned_fos_id else "unassigned"))
+    if body.assigned_caller_id != "keep":
+        parts.append("caller → " + (_uname(int(body.assigned_caller_id)) if body.assigned_caller_id else "unassigned"))
+    if tl_target != "keep":
+        parts.append("team lead → " + (tl_target or "cleared"))
+    batch.close(", ".join(parts) or "updated", {"requested": len(body.case_ids), "changed": changed})
     db.commit()
     return {"updated": changed, "requested": len(body.case_ids)}
 
@@ -1337,6 +1346,7 @@ def joint_allocate(body: JointAllocateIn, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="No matching cases in your scope")
     now = datetime.now(_IST_TZ)
     changed = 0
+    batch = audit.Batch(db, user, "joint_allocate", "Joint allocation")
     for case in cases:
         if case.assigned_fos_id == fos.id:
             continue                                   # already the primary — nothing to joint
@@ -1345,12 +1355,13 @@ def joint_allocate(body: JointAllocateIn, db: Session = Depends(get_db),
         case.joint_assigned_by = user.id
         case.joint_collected_at = None                 # fresh joint — not yet collected by them
         case.joint_note = (body.note or "").strip()[:200] or None
-        audit.record(db, user, "joint_allocate", case,
+        batch.record("joint_allocate", case, new=fos.name,
                      detail=f"Joint FOS → {fos.name} ({fos.emp_code or ''})"
                             + (f" · {body.note}" if (body.note or '').strip() else ""),
                      target_user_id=fos.id)
         audit.stamp_case(case, user)
         changed += 1
+    batch.close(f"joint FOS → {fos.name}" + (f" · {body.note}" if (body.note or '').strip() else ""))
     db.commit()
     return {"joint_allocated": changed, "fos": fos.name, "fos_id": fos.id}
 
@@ -1364,6 +1375,7 @@ def joint_unallocate(body: dict = Body(...), db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="No cases selected")
     cases = _scope(db.query(models.Case), user).filter(models.Case.id.in_(ids)).all()
     changed = 0
+    batch = audit.Batch(db, user, "joint_unallocate", "Joint FOS removed")
     for case in cases:
         if not case.joint_fos_id:
             continue
@@ -1372,9 +1384,10 @@ def joint_unallocate(body: dict = Body(...), db: Session = Depends(get_db),
         case.joint_assigned_by = None
         case.joint_note = None
         # keep joint_collected_at history as-is (a past collection credit stays recorded)
-        audit.record(db, user, "joint_unallocate", case, detail="Joint FOS removed")
+        batch.record("joint_unallocate", case, detail="Joint FOS removed")
         audit.stamp_case(case, user)
         changed += 1
+    batch.close("joint FOS removed")
     db.commit()
     return {"joint_unallocated": changed}
 
@@ -1738,15 +1751,17 @@ def remove_cases(body: IdsIn, db: Session = Depends(get_db),
     rows = db.query(models.Case).filter(models.Case.id.in_(body.ids)).all()
     now = datetime.now(timezone.utc)
     banks = set()
+    batch = audit.Batch(db, actor, "delete", "Cases removed")
     for c in rows:
         c.removed = True
         c.removed_at = now
         c.removed_by = actor.id
         if body.reason:
             c.allocation_reason = f"Removed: {body.reason}"
-        audit.record(db, actor, "delete", c, detail="Removed" + (f": {body.reason}" if body.reason else ""))
+        batch.record("delete", c, detail="Removed" + (f": {body.reason}" if body.reason else ""))
         audit.stamp_case(c, actor)
         banks.add((c.bank, c.product))
+    batch.close("moved to the Removed bin" + (f" · reason: {body.reason}" if body.reason else ""))
     db.commit()
     from .realtime import notify_data_changed
     for bank, product in banks:
@@ -1763,13 +1778,15 @@ def restore_cases(body: IdsIn, db: Session = Depends(get_db),
     rows = db.query(models.Case).filter(models.Case.id.in_(body.ids),
                                         models.Case.removed.is_(True)).all()
     banks = set()
+    batch = audit.Batch(db, actor, "restore", "Cases restored")
     for c in rows:
         c.removed = False
         c.removed_at = None
         c.removed_by = None
-        audit.record(db, actor, "restore", c, detail="Restored from Removed bin")
+        batch.record("restore", c, detail="Restored from Removed bin")
         audit.stamp_case(c, actor)
         banks.add((c.bank, c.product))
+    batch.close("restored from the Removed bin")
     db.commit()
     from .realtime import notify_data_changed
     for bank, product in banks:

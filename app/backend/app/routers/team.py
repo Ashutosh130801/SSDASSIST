@@ -536,18 +536,21 @@ def transfer_cases(body: dict = Body(...), db: Session = Depends(get_db),
     a_cases = _cases_for(col, a_val)
     b_cases = _cases_for(col, b_val) if swap else []
 
+    batch = audit.Batch(db, actor, "transfer", f"{'Swap' if swap else 'Transfer'} {role} caseload")
     for c in a_cases:
         setattr(c, attr, b_val)
-        audit.record(db, actor, "transfer", c, field=attr, old=a.name, new=b.name,
+        batch.record("transfer", c, field=attr, old=a.name, new=b.name,
                      detail=f"{role} caseload: {a.name} → {b.name}", target_user_id=b.id if role != "teamlead" else None)
         audit.stamp_case(c, actor)
         moved += 1
     for c in b_cases:
         setattr(c, attr, a_val)
-        audit.record(db, actor, "transfer", c, field=attr, old=b.name, new=a.name,
+        batch.record("transfer", c, field=attr, old=b.name, new=a.name,
                      detail=f"{role} caseload (swap): {b.name} → {a.name}", target_user_id=a.id if role != "teamlead" else None)
         audit.stamp_case(c, actor)
         moved += 1
+    batch.close(f"{a.name} → {b.name}" + (f" and {b.name} → {a.name}" if swap else ""),
+                {"from": a.name, "to": b.name, "swap": swap, "role": role})
     db.commit()
     return {"moved": moved, "from": a.name, "to": b.name, "swap": swap, "role": role}
 

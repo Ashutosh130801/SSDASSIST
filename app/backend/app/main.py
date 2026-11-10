@@ -236,6 +236,73 @@ def _upgrade_old_dpr_audit():
 _upgrade_old_dpr_audit()
 
 
+def _group_old_bulk_audit():
+    """One-off: bulk actions done before single-line logging left one row per case. Group runs of the
+    same person doing the same bulk action (re-allocate, transfer, remove, restore, joint allocate)
+    within seconds of each other into one summary line; the per-case rows stay for case History."""
+    from datetime import timedelta as _td
+    from .database import SessionLocal
+    from . import models as _m
+    db = SessionLocal()
+    try:
+        if db.get(_m.AppSetting, "audit_bulk_grouped"):
+            return
+        kinds = {"reassign": ("reassign", "Bulk re-allocation"), "deallocate": ("reassign", "Bulk re-allocation"),
+                 "transfer": ("transfer", "Caseload transfer"), "delete": ("delete", "Cases removed"),
+                 "restore": ("restore", "Cases restored"), "joint_allocate": ("joint_allocate", "Joint allocation"),
+                 "joint_unallocate": ("joint_unallocate", "Joint FOS removed")}
+        rows = (db.query(_m.AuditLog).filter(_m.AuditLog.action.in_(list(kinds)), _m.AuditLog.case_id.isnot(None),
+                                             _m.AuditLog.entity_type == "case")
+                .order_by(_m.AuditLog.actor_id, _m.AuditLog.at, _m.AuditLog.id).all())
+        groups, cur = [], []
+        for r in rows:
+            if cur and (r.actor_id == cur[-1].actor_id and kinds[r.action][0] == kinds[cur[-1].action][0]
+                        and r.at and cur[-1].at and (r.at - cur[-1].at) <= _td(seconds=3)):
+                cur.append(r)
+            else:
+                if cur:
+                    groups.append(cur)
+                cur = [r]
+        if cur:
+            groups.append(cur)
+        made = 0
+        for g in groups:
+            if len({r.case_id for r in g}) < 2:
+                continue
+            kind, label = kinds[g[0].action]
+            names = {c.id: (c.account_no, c.customer_name) for c in db.query(_m.Case.id, _m.Case.account_no, _m.Case.customer_name)
+                     .filter(_m.Case.id.in_([r.case_id for r in g]))}
+            items = [{"case_id": r.case_id, "account": names.get(r.case_id, (None, None))[0], "customer": names.get(r.case_id, (None, None))[1],
+                      "bank": r.bank, "product": r.product, "action": r.action, "field": r.field, "old": r.old_value,
+                      "new": r.new_value, "detail": r.detail} for r in g]
+            ports, branches = {(r.bank, r.product) for r in g}, {r.branch for r in g}
+            first = g[0]
+            sumrow = _m.AuditLog(at=first.at, actor_id=first.actor_id, actor_name=first.actor_name, actor_role=first.actor_role,
+                                 action=f"bulk_{kind}", entity_type="batch",
+                                 bank=next(iter(ports))[0] if len(ports) == 1 else None,
+                                 product=next(iter(ports))[1] if len(ports) == 1 else None,
+                                 branch=next(iter(branches)) if len(branches) == 1 else None,
+                                 detail=f"{label}: {len({r.case_id for r in g})} cases — {g[0].detail or ''}"[:500],
+                                 meta={"bulk": True, "kind": kind, "label": label, "cases": len({r.case_id for r in g}),
+                                       "changes": len(g), "grouped_later": True, "items": items})
+            db.add(sumrow)
+            for r in g:
+                r.entity_type = "batch_item"
+            made += 1
+        db.add(_m.AppSetting(key="audit_bulk_grouped", value=str(made)))
+        db.commit()
+        if made:
+            print(f"[SSD] Audit log: grouped {made} earlier bulk action(s) into single lines", flush=True)
+    except Exception as e:
+        db.rollback()
+        print(f"[SSD] Bulk audit grouping skipped: {e!r}", flush=True)
+    finally:
+        db.close()
+
+
+_group_old_bulk_audit()
+
+
 def _recompute_pay_status():
     """Re-derive every case's PAID / PARTIAL / UNPAID + pending against the settlement (NORM/STAB)
     money rules, so historical rows match the single source of truth in app.paymath. Idempotent:

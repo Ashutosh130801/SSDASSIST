@@ -92,7 +92,10 @@ def audit_list(
         query = query.filter(models.AuditLog.product == product)
     if case_id:
         query = query.filter(models.AuditLog.case_id == case_id)
-    elif action != "dpr_update":
+    else:
+        # Bulk actions: ONE summary line each; their per-case rows live in each case's History.
+        query = query.filter(or_(models.AuditLog.entity_type.is_(None), models.AuditLog.entity_type != "batch_item"))
+    if not case_id and action != "dpr_update":
         # One DPR upload = ONE line (action 'dpr_upload'); its per-case rows stay in each case's
         # History and are shown here only when you filter by that case or by 'dpr_update'.
         query = query.filter(models.AuditLog.action != "dpr_update")
@@ -139,6 +142,10 @@ def audit_list(
 
 def _light_meta(meta):
     """The list sends counts only — the full DPR change list (can be thousands of rows) loads when opened."""
+    if isinstance(meta, dict) and isinstance(meta.get("items"), list):
+        m = {k: v for k, v in meta.items() if k != "items"}
+        m["items_count"] = len(meta["items"])
+        return m
     if isinstance(meta, dict) and isinstance(meta.get("changes"), list):
         m = {k: v for k, v in meta.items() if k not in ("changes", "not_paid")}
         m["changes_count"] = len(meta["changes"])
@@ -194,5 +201,30 @@ def audit_dpr_xlsx(entry_id: int, db: Session = Depends(get_db),
     audit.record(db, viewer, "download", None, entity_type="download", detail=f"DPR change list #{r.id} ({len(rows)} rows)")
     db.commit()
     name = f"DPR_{m.get('bank') or ''}_{m.get('product') or ''}_{r.at:%Y%m%d_%H%M}.xlsx".replace(" ", "_").replace("/", "-")
+    return StreamingResponse(io.BytesIO(data), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.get("/{entry_id}/items.xlsx")
+def audit_items_xlsx(entry_id: int, db: Session = Depends(get_db),
+                     viewer: models.User = Depends(require_roles(*VIEW_ROLES))):
+    """Excel of a bulk action's full case list (re-allocation, transfer, remove, joint allocation…)."""
+    import io
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
+    from .. import audit
+    from .archive import _sheet_xlsx
+    r = _one(db, viewer, entry_id)
+    m = r.meta or {}
+    if not m.get("bulk"):
+        raise HTTPException(400, "Not a bulk action entry")
+    rows = [[i.get("case_id"), i.get("account"), i.get("customer"), i.get("bank"), i.get("product"), i.get("action"),
+             i.get("field"), i.get("old"), i.get("new"), i.get("detail")] for i in (m.get("items") or [])]
+    data = _sheet_xlsx([("Summary", ["Item", "Value"], [["Action", m.get("label")], ["Done by", r.actor_name], ["When", r.at],
+                                                        ["Cases", m.get("cases")], ["Detail", r.detail]]),
+                        ("Cases", ["Case id", "Account / card", "Customer", "Bank", "Product", "Action", "Field", "Before", "After", "Detail"], rows)])
+    audit.record(db, viewer, "download", None, entity_type="download", detail=f"Bulk action list #{r.id} ({len(rows)} rows)")
+    db.commit()
+    name = f"{(m.get('kind') or 'bulk')}_{r.at:%Y%m%d_%H%M}.xlsx"
     return StreamingResponse(io.BytesIO(data), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              headers={"Content-Disposition": f'attachment; filename="{name}"'})
