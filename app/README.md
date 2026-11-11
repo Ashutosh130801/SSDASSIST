@@ -75,7 +75,7 @@ SECRET_KEY=<long-random-string>          # sign JWTs — required for production
 GOOGLE_MAPS_API_KEY=<your key>           # enables the live map + FO map views
 GOOGLE_CLIENT_ID=<oauth web client id>   # optional: enables Google Sign-In button
 GEMINI_API_KEY=<AI Studio key>           # enables AI assist (graceful fallback if empty)
-GEMINI_MODEL=gemini-2.5-flash            # your account's Flash model id
+GEMINI_MODEL=gemini-3.8-flash            # your account's Flash model id
 LOCATION_PING_SECONDS=60                  # FO live-location cadence
 ```
 

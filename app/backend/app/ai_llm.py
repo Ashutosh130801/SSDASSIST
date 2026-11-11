@@ -32,7 +32,7 @@ PROVIDERS = {
     "custom":     {"label": "Custom OpenAI-compatible server (vLLM, LocalAI, …)", "base": "", "local": None,
                    "default": "", "key": "custom_api_key", "url_setting": True},
     "gemini":     {"label": "Google Gemini", "base": "https://generativelanguage.googleapis.com/v1beta", "local": False,
-                   "default": "gemini-2.5-flash", "key": "gemini_api_key", "native": "gemini"},
+                   "default": "gemini-3.8-flash", "key": "gemini_api_key", "native": "gemini"},
     "openai":     {"label": "OpenAI", "base": "https://api.openai.com/v1", "local": False, "default": "gpt-4o-mini", "key": "openai_api_key"},
     "anthropic":  {"label": "Anthropic (Claude)", "base": "https://api.anthropic.com/v1", "local": False, "default": "", "key": "anthropic_api_key"},
     "openrouter": {"label": "OpenRouter (hundreds of models, one key)", "base": "https://openrouter.ai/api/v1", "local": False,
@@ -68,7 +68,7 @@ def _base(conf, prov):
     return p["base"]
 
 
-_GEMINI_RETIRED = ("gemini-1.0", "gemini-1.5", "gemini-2.0", "gemini-pro")
+_GEMINI_RETIRED = ("gemini-1.0", "gemini-1.5", "gemini-2.0", "gemini-2.5-flash", "gemini-pro")
 # Model ids the provider has shut down → use the provider's current default instead of failing.
 _RETIRED = {"groq": ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-", "mixtral-8x7b", "gemma2-9b", "gemma-7b")}
 
@@ -196,6 +196,9 @@ def _gemini(key, model, system, messages, tools, timeout):
             contents.append({"role": "user", "parts": [{"functionResponse": {"name": m["name"], "response": resp}}]})
     body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents,
             "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096}}
+    if (model or "").lower().startswith("gemini-3"):
+        # Gemini 3.x: keep Google's default temperature, think lightly (faster), and leave room for thought tokens.
+        body["generationConfig"] = {"maxOutputTokens": 8192, "thinkingConfig": {"thinkingLevel": "low"}}
     if tools:
         body["tools"] = [{"functionDeclarations": tools}]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
