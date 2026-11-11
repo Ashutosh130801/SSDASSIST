@@ -76,7 +76,8 @@ SERVICES: list[dict] = [
              "openrouter": "☁️ OpenRouter — data leaves your server (masked)",
              "groq": "☁️ Groq — data leaves your server (masked)",
              "deepseek": "☁️ DeepSeek — data leaves your server (masked)",
-             "mistral": "☁️ Mistral — data leaves your server (masked)"}},
+             "mistral": "☁️ Mistral — data leaves your server (masked)",
+             "ovh": "☁️ OVHcloud AI Endpoints — free, no key (rate-limited) · data leaves your server (masked)"}},
          {"key": "model", "label": "Model (blank = provider default · ⟳ Load models to pick)", "type": "text", "default": ""},
          {"key": "local_url", "label": "Ollama / LM Studio server URL", "type": "text", "default": "http://127.0.0.1:11434/v1", "for": ["ollama", "lmstudio"]},
          {"key": "custom_url", "label": "Custom server URL (…/v1)", "type": "text", "default": "", "for": ["custom"]},
@@ -84,7 +85,8 @@ SERVICES: list[dict] = [
          {"key": "fallback_provider", "label": "Backup provider (used if the main one fails)", "type": "select", "default": "none",
           "options": {"none": "No backup", "ollama": "Ollama (local)", "lmstudio": "LM Studio (local)", "custom": "Custom server",
                       "gemini": "Google Gemini", "openai": "OpenAI", "anthropic": "Anthropic Claude", "openrouter": "OpenRouter",
-                      "groq": "Groq", "deepseek": "DeepSeek", "mistral": "Mistral"}},
+                      "groq": "Groq", "deepseek": "DeepSeek", "mistral": "Mistral",
+                      "ovh": "OVHcloud (free, no key)"}},
          {"key": "fallback_model", "label": "Backup model (blank = provider default)", "type": "text", "default": ""},
          {"key": "mask_pii", "label": "Mask phone & account numbers sent to the AI", "type": "bool", "default": True},
          {"key": "language", "label": "Answer language", "type": "select", "default": "auto",
@@ -118,6 +120,7 @@ SERVICES: list[dict] = [
          {"key": "groq_api_key", "label": "Groq API key", "type": "secret", "for": ["groq"]},
          {"key": "deepseek_api_key", "label": "DeepSeek API key", "type": "secret", "for": ["deepseek"]},
          {"key": "mistral_api_key", "label": "Mistral API key", "type": "secret", "for": ["mistral"]},
+         {"key": "ovh_api_key", "label": "OVHcloud AI Endpoints key (optional — leave blank for free anonymous use)", "type": "secret", "for": ["ovh"]},
          {"key": "custom_api_key", "label": "Custom server API key (if it needs one)", "type": "secret", "for": ["custom"]},
      ]},
     {"key": "compliance", "name": "Compliance guardrails", "group": "addon", "icon": "🛡️",
@@ -273,6 +276,19 @@ def save(db: Session, key: str, enabled: bool | None, settings: dict | None,
             else:
                 v = str(v)[:500]
             clean[k] = v
+        if key == "ai_assist":
+            # Remember the model per provider: switching provider brings back the model last used with it
+            # (instead of sending e.g. a Groq model name to Gemini). A model typed in the same save wins.
+            old = cur.get("_prev_settings") or {}
+            mem = dict(cur.get("model_mem") or {})
+            for pk, mk in (("provider", "model"), ("fallback_provider", "fallback_model")):
+                op, np_ = old.get(pk), clean.get(pk)
+                if op and old.get(mk):
+                    mem[op] = old.get(mk)
+                if np_ and np_ != op and clean.get(mk, "") == old.get(mk, ""):
+                    clean[mk] = mem.get(np_, "")
+            cur["model_mem"] = mem
+            cur["_prev_settings"] = {k: clean.get(k) for k in ("provider", "model", "fallback_provider", "fallback_model")}
         cur["settings"] = clean
     sec_fields = {f["key"] for f in s.get("settings") or [] if f["type"] == "secret"}
     if secrets or clear:

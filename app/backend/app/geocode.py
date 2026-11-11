@@ -161,7 +161,7 @@ def _llm_call(prompt: str) -> str | None:
     if settings.gemini_api_key:
         try:
             url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                   f"{settings.gemini_model}:generateContent?key={settings.gemini_api_key}")
+                   f"{__import__('app.ai_llm', fromlist=['x']).gemini_model_ok(settings.gemini_model)}:generateContent?key={settings.gemini_api_key}")
             r = httpx.post(url, json={"contents": [{"parts": [{"text": prompt}]}],
                                       "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096}},
                            timeout=15)

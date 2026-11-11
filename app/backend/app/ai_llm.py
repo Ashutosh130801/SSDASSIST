@@ -32,13 +32,15 @@ PROVIDERS = {
     "custom":     {"label": "Custom OpenAI-compatible server (vLLM, LocalAI, …)", "base": "", "local": None,
                    "default": "", "key": "custom_api_key", "url_setting": True},
     "gemini":     {"label": "Google Gemini", "base": "https://generativelanguage.googleapis.com/v1beta", "local": False,
-                   "default": "gemini-2.0-flash", "key": "gemini_api_key", "native": "gemini"},
+                   "default": "gemini-2.5-flash", "key": "gemini_api_key", "native": "gemini"},
     "openai":     {"label": "OpenAI", "base": "https://api.openai.com/v1", "local": False, "default": "gpt-4o-mini", "key": "openai_api_key"},
     "anthropic":  {"label": "Anthropic (Claude)", "base": "https://api.anthropic.com/v1", "local": False, "default": "", "key": "anthropic_api_key"},
     "openrouter": {"label": "OpenRouter (hundreds of models, one key)", "base": "https://openrouter.ai/api/v1", "local": False,
                    "default": "openai/gpt-4o-mini", "key": "openrouter_api_key"},
     "groq":       {"label": "Groq (very fast)", "base": "https://api.groq.com/openai/v1", "local": False,
-                   "default": "llama-3.3-70b-versatile", "key": "groq_api_key"},
+                   "default": "openai/gpt-oss-120b", "key": "groq_api_key"},
+    "ovh":        {"label": "OVHcloud AI Endpoints (free, no key needed)", "base": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+                   "local": False, "default": "gpt-oss-120b", "key": "ovh_api_key", "key_optional": True},
     "deepseek":   {"label": "DeepSeek", "base": "https://api.deepseek.com/v1", "local": False, "default": "deepseek-chat", "key": "deepseek_api_key"},
     "mistral":    {"label": "Mistral", "base": "https://api.mistral.ai/v1", "local": False, "default": "mistral-small-latest", "key": "mistral_api_key"},
 }
@@ -66,8 +68,25 @@ def _base(conf, prov):
     return p["base"]
 
 
+_GEMINI_RETIRED = ("gemini-1.0", "gemini-1.5", "gemini-2.0", "gemini-pro")
+# Model ids the provider has shut down → use the provider's current default instead of failing.
+_RETIRED = {"groq": ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-", "mixtral-8x7b", "gemma2-9b", "gemma-7b")}
+
+
+def gemini_model_ok(m):
+    """Google shut down the 1.x / 2.0 models — swap any saved old id for the current Flash."""
+    m = (m or "").strip()
+    if not m or m.lower().startswith(_GEMINI_RETIRED):
+        return PROVIDERS["gemini"]["default"]
+    return m
+
+
 def _model(conf, prov, fallback=False):
     m = conf.get("fallback_model" if fallback else "model") or ""
+    if prov == "gemini":
+        return gemini_model_ok(m or get_settings().gemini_model)
+    if m and m.lower().startswith(_RETIRED.get(prov, ())):
+        m = ""
     if m:
         return m
     s = get_settings()
@@ -149,6 +168,9 @@ def _openai(base, key, model, system, messages, tools, timeout, think=None, max_
             args = json.loads(c["function"].get("arguments") or "{}")
         except ValueError:
             args = {}
+        if not isinstance(args, dict):
+            args = {}
+        args = {k: v for k, v in args.items() if k}          # gpt-oss sometimes sends {"": {}} for no-arg tools
         calls.append({"id": c.get("id") or uuid.uuid4().hex[:12], "name": c["function"]["name"], "args": args})
     import re as _re
     text = _re.sub(r"<think>.*?</think>", "", msg.get("content") or "", flags=_re.S).strip()
@@ -193,7 +215,7 @@ def _gemini(key, model, system, messages, tools, timeout):
 def provider_status(conf: dict, fallback=False) -> dict:
     prov = _prov(conf.get("fallback_provider") if fallback else conf.get("provider"))
     p = PROVIDERS[prov]
-    need_key = bool(p.get("key")) and prov != "custom"
+    need_key = bool(p.get("key")) and prov != "custom" and not p.get("key_optional")
     ok = (not need_key or bool(_key(conf, prov))) and bool(_base(conf, prov))
     hint = None
     if not ok:
