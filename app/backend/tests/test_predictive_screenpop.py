@@ -202,17 +202,18 @@ class ScreenPopTests(unittest.TestCase):
 
     def test_upstream_uses_post_and_verified_tls(self):
         reply = httpx.Response(200, text=wire(), request=httpx.Request("POST", "https://dialer.example.test"))
-        with patch("app.vicidial_live.httpx.Client") as client:
-            client.return_value.__enter__.return_value.post.return_value = reply
+        with patch("app.vicidial_live._http") as http:
+            http.return_value.post.return_value = reply
             self.assertEqual(read_agent_status(self.conn, "8001")["status"], "INCALL")
-            self.assertNotEqual(client.call_args.kwargs.get("verify"), False)
-            args = client.return_value.__enter__.return_value.post.call_args
+            self.assertIs(http.call_args.args[0], True)                    # verified TLS for the reporting API
+            args = http.return_value.post.call_args
             self.assertNotIn("pass=", args.args[0])
             self.assertEqual(args.kwargs["data"]["function"], "agent_status")
             self.assertEqual(args.kwargs["data"]["agent_user"], "8001")
 
     def test_upstream_failure_is_sanitized_and_retryable(self):
-        with patch("app.vicidial_live.httpx.Client", side_effect=httpx.ConnectError("secret-address")):
+        with patch("app.vicidial_live._http") as http:
+            http.return_value.post.side_effect = httpx.ConnectError("secret-address")
             result = self.client.get("/api/integration/vicidial/my-live-call").json()
         self.assertEqual(result["state"], "error")
         self.assertEqual(result["poll_after_ms"], 15000)

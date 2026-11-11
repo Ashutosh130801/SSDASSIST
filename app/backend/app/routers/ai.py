@@ -492,8 +492,6 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
     reply = ""
     system = _system(user, conf, db)
     run_conf = dict(conf)
-    if fast:
-        run_conf["_max_tokens"] = 900
     if origin == "bot" and (conf.get("bot_model") or "").strip():
         run_conf["model"] = conf["bot_model"].strip()
     max_steps = (5 if origin == "bot" else MAX_STEPS) if fast else MAX_STEPS + 2
@@ -503,7 +501,20 @@ def converse(db, user, text: str, conv: models.AiConversation | None, case_conte
             res = ai_llm.call_llm(run_conf, system, messages, specs)
             out["_llm_ms"] += int((_time.time() - t_call) * 1000); out["_calls"] += 1
             if not res["tool_calls"]:
-                reply = res["content"].strip()
+                reply = (res["content"] or "").strip()
+                if not reply:
+                    # Empty answer (model spent its turn "thinking", or returned nothing) → one retry that must write text.
+                    t_call = _time.time()
+                    try:
+                        res2 = ai_llm.call_llm(run_conf, system, messages + [{"role": "user", "content":
+                                               "Write your answer to my question now, in plain words, using the data above. /no_think"}], [])
+                        reply = (res2.get("content") or "").strip()
+                    except ai_llm.LLMError:
+                        reply = ""
+                    out["_llm_ms"] += int((_time.time() - t_call) * 1000); out["_calls"] += 1
+                if not reply and not (out["visuals"] or out["files"] or out["actions"]):
+                    reply = ("⚠️ I fetched the data (see steps) but the AI model returned an empty answer. Please ask again — "
+                             "if it keeps happening, check ⚙️ Services → AI Assist (model / 'think' setting).")
                 break
             messages.append({"role": "assistant", "content": res["content"], "tool_calls": res["tool_calls"]})
             for call in res["tool_calls"]:

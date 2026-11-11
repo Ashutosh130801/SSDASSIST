@@ -68,7 +68,7 @@ class HangupTests(unittest.TestCase):
     def test_ringing_call_ignored_without_ami_is_reported_not_faked(self):
         r = self.run_hangup([st()]).json()               # stays INCALL with the same call id
         self.assertIs(r["ended"], False)
-        self.assertIn("Save & end", r["warning"]); self.assertTrue(r["watching"])
+        self.assertTrue(r["pending"]); self.assertTrue(r["watching"]); self.assertNotIn("warning", r)   # no scary error, keeps hanging up
 
     def dispo(self, statuses, **body):
         seq = list(statuses)
@@ -84,9 +84,9 @@ class HangupTests(unittest.TestCase):
         self.assertTrue(r["ok"]); self.assertNotIn("warning", r)
         self.assertEqual(sent[0], ("external_status", "NI"))
 
-    def test_save_and_end_reports_when_vicidial_ignores_it(self):
-        r, _ = self.dispo([st()], was_live=True, call_id="M1109000000000012345")
-        self.assertIn("still shows you on the call", r["warning"])
+    def test_save_and_end_returns_at_once_and_keeps_hanging_up(self):
+        r, sent = self.dispo([st()], was_live=True, call_id="M1109000000000012345")
+        self.assertTrue(r["ok"]); self.assertTrue(r["watching"]); self.assertEqual(len(sent), 1)    # one ViciDial call, no waiting loop
 
     def test_keep_hanging_up_resends_until_call_gone(self):
         from app import vicidial_live

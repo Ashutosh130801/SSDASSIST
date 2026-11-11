@@ -105,6 +105,20 @@ def _parse_agent_rows(text):
     return row
 
 
+_HTTP: dict = {}
+
+
+def _http(verify: bool = True) -> httpx.Client:
+    """One pooled keep-alive client per TLS mode — every ViciDial call re-uses the open connection
+    instead of a fresh TLS handshake (that alone was ~0.3–1 s per call)."""
+    c = _HTTP.get(verify)
+    if c is None or c.is_closed:
+        c = httpx.Client(verify=verify, follow_redirects=False, timeout=6.0,
+                         limits=httpx.Limits(max_connections=50, max_keepalive_connections=20, keepalive_expiry=60))
+        _HTTP[verify] = c
+    return c
+
+
 def read_agent_status(conn, agent):
     caps = conn.capabilities or {}
     if not caps.get("vici_user") or not caps.get("vici_pass"):
@@ -115,9 +129,8 @@ def read_agent_status(conn, agent):
     try:
         # POST keeps credentials out of query strings/access logs. Verify HTTPS certificates;
         # install a trusted certificate on the dialer instead of disabling verification.
-        with httpx.Client(timeout=4.0, follow_redirects=False) as client:
-            response = client.post(conn.base_url.rstrip("/") + "/vicidial/non_agent_api.php", data=params)
-            response.raise_for_status()
+        response = _http(True).post(conn.base_url.rstrip("/") + "/vicidial/non_agent_api.php", data=params, timeout=4.0)
+        response.raise_for_status()
         return parse_agent_status(response.text)
     except httpx.HTTPError:
         raise LiveCallError("Cannot reach ViciDial securely. Check the server URL, network/VPN and TLS certificate. Retrying automatically.") from None
@@ -230,10 +243,9 @@ def _vici_post(conn, params, timeout=6.0):
     caps = conn.capabilities or {}
     base = {"source": str(caps.get("source") or "recoveriq")[:20],
             "user": caps.get("vici_user") or "", "pass": caps.get("vici_pass") or ""}
-    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-        r = client.post(conn.base_url.rstrip("/") + "/vicidial/non_agent_api.php", data={**base, **params})
-        r.raise_for_status()
-        return (r.text or "").strip().lstrip("﻿")
+    r = _http(True).post(conn.base_url.rstrip("/") + "/vicidial/non_agent_api.php", data={**base, **params}, timeout=timeout)
+    r.raise_for_status()
+    return (r.text or "").strip().lstrip("﻿")
 
 
 def agents_live(conn, agents):
@@ -321,8 +333,7 @@ def agent_api(conn, agent: str, function: str, value: str, timeout: float = 6.0,
     params = {"source": str(caps.get("source") or "recoveriq")[:20], "user": caps["vici_user"],
               "pass": caps["vici_pass"], "agent_user": agent, "function": function, "value": value, **(extra or {})}
     try:
-        with httpx.Client(timeout=timeout, verify=False, follow_redirects=False) as client:
-            r = client.get(conn.base_url.rstrip("/") + "/agc/api.php", params=params)
+        r = _http(False).get(conn.base_url.rstrip("/") + "/agc/api.php", params=params, timeout=timeout)
         txt = (r.text or "").strip()
     except httpx.HTTPError:
         raise LiveCallError("Cannot reach ViciDial. Check the server URL / network and try again.") from None
@@ -364,7 +375,7 @@ def resume_ready_later(conn, agent, attempts=(1.5, 2.5, 4.0)):
 _HANGUP_WATCH: dict = {}          # agent -> call_id being watched
 
 
-def keep_hanging_up(conn, agent, call_id, every=2.0, for_s=90.0):
+def keep_hanging_up(conn, agent, call_id, every=1.5, for_s=60.0):
     """ViciDial's API can't end a manual dial that is still RINGING (its screen only obeys hang-up once
     the customer is live). Without AMI access, keep re-sending external_hangup in the background until
     the call is gone — so the moment the customer answers, the call is cut. Never blocks; one per agent."""

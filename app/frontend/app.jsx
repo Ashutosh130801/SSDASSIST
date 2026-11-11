@@ -61,7 +61,14 @@ async function api(path, { method, body, form, auth = true, signal } = {}) {
   if (signal) opts.signal = signal;   // lets a caller abort a long in-flight request (e.g. Stop)
   if (form) { opts.body = form; }
   else if (body) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-  const res = await fetch(path, opts);
+  let res = await fetch(path, opts);
+  if ([502, 503, 504, 520, 521, 522, 523, 524].includes(res.status) && httpMethod === 'GET') {
+    await new Promise(r => setTimeout(r, 1200)); res = await fetch(path, opts);           // one quiet retry (safe for reads)
+  }
+  if ([502, 503, 504, 520, 521, 522, 523, 524].includes(res.status)) {
+    const e = new Error('RecoverIQ server didn\'t answer (HTTP ' + res.status + ' from Cloudflare) — it may be restarting or busy. Wait a few seconds and try again.');
+    e.status = res.status; throw e;
+  }
   if (res.status === 401) { store.t = null; store.u = null; location.reload(); throw new Error('unauthorized'); }
   const ct = res.headers.get('content-type') || '';
   if (!res.ok) {
@@ -4882,6 +4889,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
       setLiveCall(prev => {
         // Hang-up wasn't confirmed: keep the "Save & end" panel while ViciDial still reports this same call.
         if (prev && prev.stillOn && (!st.call_id || st.call_id === prev.callId) && ['dialing', 'connected'].includes(st.state)) return prev;
+        if (prev && prev.stillOn && prev.phase === 'ended') return { ...prev, stillOn: false };     // ViciDial has dropped it
         if (st.state === 'dialing' && mine) {
           if (prev && prev.phase === 'live') return prev;
           return { phase: 'dialing', callId: st.call_id, t0: (prev && prev.phase === 'dialing' && prev.t0) || Date.now(), seen: true };
@@ -4919,7 +4927,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
   useEffect(() => { if (!liveCall || !['live', 'dialing'].includes(liveCall.phase)) return; const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, [liveCall && liveCall.phase]);
   // While a call is live on this case (or right after dialing it), check ViciDial every 2 s so the
   // bar flips to the disposition step the moment the customer hangs up. Idle otherwise.
-  const polling = isCaller && ((liveCall && ['live', 'dialing'].includes(liveCall.phase)) || watchUntil > Date.now());
+  const polling = isCaller && ((liveCall && (['live', 'dialing'].includes(liveCall.phase) || liveCall.stillOn)) || watchUntil > Date.now());
   useEffect(() => {
     if (!polling) return;
     let alive = true;
@@ -4933,8 +4941,9 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
   const hangUp = async () => {
     setHanging(true);
     try { const r = await api('/api/integration/vicidial/my-hangup', { method: 'POST', body: { case_id: c.id } });
-      if (r && r.ended === false) { toast(r.warning || 'ViciDial has not dropped the call — pick the outcome and press Save & end.', 'err');
+      if (r && r.ended !== true) {
         try { window.__riqDialing = null; } catch (e) {}
+        if (liveCall && liveCall.phase === 'dialing') setDispo('RNR');
         setLiveCall(lc => lc ? { ...lc, phase: 'ended', stillOn: true, callId: r.call_id || lc.callId, answered: lc.phase === 'live', t1: Date.now() } : lc); setTab('call'); return; }
       if (r && r.warning) toast(r.warning, 'err');
       if (liveCall && liveCall.phase === 'dialing') setDispo('RNR');
@@ -4999,16 +5008,15 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
       // ViciDial (status + back to Ready) — no second disposition anywhere.
       const log = await api('/api/calls', { method: 'POST', body });
       if (viaVici === true) {
-        try {
-          const r = await api('/api/integration/vicidial/my-dispo', { method: 'POST',
-            body: { case_id: c.id, disposition: dispo, call_log_id: log && log.id, ready: true,
-                    was_live: !!(liveCall && liveCall.stillOn), call_id: (liveCall && liveCall.callId) || null,
-                    ptp_date: isPTP ? (ptpDate || null) : null, ptp_amount: isPTP ? (amt || null) : null } });
-          if (r.ok && r.warning) toast(r.warning, 'err');
-          else if (r.ok) toast(`Saved · ViciDial ${r.status}${liveCall && liveCall.stillOn ? ' · call ended' : ''} · back to Ready`);
-          else toast(r.warning || 'Saved in RecoverIQ — finish the disposition on the ViciDial screen.', 'err');
-        } catch (e) { toast('Saved in RecoverIQ — ViciDial: ' + (e.message || 'not reachable') + '. Disposition it on the ViciDial screen.', 'err'); }
-        setLiveCall(null);
+        const wasLive = !!(liveCall && liveCall.stillOn), callId = (liveCall && liveCall.callId) || null;
+        setLiveCall(null); toast('Saved ✓ — sending to ViciDial…');
+        api('/api/integration/vicidial/my-dispo', { method: 'POST',
+            body: { case_id: c.id, disposition: dispo, call_log_id: log && log.id, ready: true, was_live: wasLive, call_id: callId,
+                    ptp_date: isPTP ? (ptpDate || null) : null, ptp_amount: isPTP ? (amt || null) : null } })
+          .then(r => { if (r.ok && r.warning) toast(r.warning, 'err');
+            else if (r.ok) toast(`ViciDial ${r.status} · back to Ready`);
+            else toast(r.warning || 'Saved in RecoverIQ — finish the disposition on the ViciDial screen.', 'err'); })
+          .catch(e => toast('Saved in RecoverIQ — ViciDial: ' + (e.message || 'not reachable') + '. Disposition it on the ViciDial screen.', 'err'));
       } else toast('Call logged.');
       setCallNote(''); setAmt(''); setPtpDate(''); setFollowDate('');
       await refresh(); onChanged && onChanged();
@@ -5071,7 +5079,7 @@ function CaseDrawer({ c, onClose, onChanged, manageBack = true, notice = null, f
         </div>}
         {liveCall && liveCall.phase === 'ended' && <div style={{ position: 'sticky', top: 0, zIndex: 3, padding: '10px 12px', marginBottom: 10, borderRadius: 10, background: '#FEF3C7', border: '1px solid #FCD34D' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <b style={{ color: '#92400E' }}>{liveCall.stillOn ? '⚠️ ViciDial hasn\'t dropped the call — choose the outcome and press Save & end' : (liveCall.answered ? 'Call ended' : 'Not answered')}{!liveCall.stillOn && liveCall.t1 ? ' · ' + mmss(liveCall.t1 - liveCall.t0) : ''}{liveCall.stillOn ? '' : ' — disposition'}</b>
+            <b style={{ color: '#92400E' }}>{liveCall.stillOn ? '📴 Ending the call in ViciDial… choose the outcome and press Save' : (liveCall.answered ? 'Call ended' : 'Not answered')}{!liveCall.stillOn && liveCall.t1 ? ' · ' + mmss(liveCall.t1 - liveCall.t0) : ''}{liveCall.stillOn ? '' : ' — disposition'}</b>
             <div style={{ flex: 1 }} />
             <button className="btn ghost sm" title="Dismiss — disposition it on the ViciDial screen instead" onClick={() => setLiveCall(null)}>✕</button>
           </div>

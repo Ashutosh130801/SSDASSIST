@@ -1013,8 +1013,8 @@ def vicidial_my_hangup(body: dict = Body(default={}), db: Session = Depends(get_
             ok, api_txt = False, str(exc)
         ended, method = None, "api"
         if ok:
-            for _ in range(6):                       # ≈3.6 s — the ViciDial screen refreshes every second
-                sleep(0.6)
+            for wait in (0.5, 0.8):                  # quick look (~1.5 s); RecoverIQ keeps watching in the background
+                sleep(wait)
                 ended = _call_ended(status(), call_id)
                 if ended:
                     break
@@ -1038,14 +1038,14 @@ def vicidial_my_hangup(body: dict = Body(default={}), db: Session = Depends(get_
                         + (f" · ViciDial: {api_txt[:80]}" if api_txt else ""))
     db.commit()
     out = {"ok": True, "ended": ended, "method": method, "call_id": call_id or None}
-    if ended is False:
+    if ended is not True:
+        # ViciDial applies agent commands on its own screen refresh, so the call usually drops a few
+        # seconds later. Don't make the caller wait: go straight to the disposition step while RecoverIQ
+        # keeps re-sending the hang-up in the background until ViciDial reports the call gone.
         from ..vicidial_live import keep_hanging_up
-        watching = keep_hanging_up(conn, agent, call_id) if _hangup_sleep is None else bool(call_id)
-        out["watching"] = watching
-        out["warning"] = ("ViciDial hasn't dropped the call yet. Pick the outcome below and press ✓ Save & end — that "
-                          "hangs up and dispositions the call in ViciDial in one step. RecoverIQ also keeps re-trying the hang-up.")
-    elif ended is None:
-        out["warning"] = "Hang-up sent to ViciDial, but RecoverIQ couldn't confirm it ended — check the ViciDial screen."
+        out["watching"] = keep_hanging_up(conn, agent, call_id) if _hangup_sleep is None else bool(call_id)
+        out["pending"] = True
+        out["info"] = "Ending the call in ViciDial… pick the outcome and press ✓ Save — RecoverIQ keeps hanging up in the background."
     return out
 
 
@@ -1092,27 +1092,13 @@ def vicidial_my_dispo(body: dict = Body(...), db: Session = Depends(get_db),
                            "campaign or map it in Connections → Disposition map."}
     if body.get("ready", True):
         resume_ready_later(conn, agent)
-    still_on = False
-    if body.get("was_live"):
-        # The caller ended a call ViciDial hadn't dropped: external_status hangs up a live call and
-        # dispositions it. Confirm it really ended, otherwise say so.
-        import time as _t
-        from ..vicidial_live import read_agent_status
-        sleep = _hangup_sleep or _t.sleep
-        for _ in range(5):
-            sleep(0.7)
-            try:
-                st = read_agent_status(conn, agent)
-            except LiveCallError:
-                st = None
-            if _call_ended(st, (body.get("call_id") or "").strip() or None) is not False:
-                break
-        else:
-            still_on = True
     out = {"ok": True, "status": status, "ready": bool(body.get("ready", True))}
-    if still_on:
-        out["warning"] = ("Saved, but ViciDial still shows you on the call — press Hang up on the ViciDial screen. "
-                          "(Tell the admin: ViciDial ignored both external_hangup and external_status for this agent.)")
+    cid = (body.get("call_id") or "").strip()
+    if body.get("was_live") and cid:
+        # external_status already hangs up a live call; if ViciDial is slow to drop it, keep re-sending the
+        # hang-up in the background instead of making the caller wait.
+        from ..vicidial_live import keep_hanging_up
+        out["watching"] = keep_hanging_up(conn, agent, cid) if _hangup_sleep is None else True
     return out
 
 

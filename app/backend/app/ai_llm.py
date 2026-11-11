@@ -94,6 +94,26 @@ def tool_specs(tools: dict) -> list[dict]:
     return [{"name": n, "description": d, "parameters": _schema(p)} for n, (_, d, p) in tools.items()]
 
 
+def _friendly_error(base: str, model: str, code: int, body: str) -> str:
+    """Plain-language provider errors (free-tier limits, empty credits) instead of raw JSON."""
+    who = "OpenRouter" if "openrouter" in (base or "") else "The AI provider"
+    low = (body or "").lower()
+    if code == 429 and "openrouter" in (base or ""):
+        return ("OpenRouter's free-model limit was reached (free ':free' models allow 20 requests/minute and 50/day; "
+                "1000/day once $10 of credits has ever been bought). Wait and retry, add credits, set a backup provider, "
+                "or switch to your local model in ⚙️ Services → AI Assist.")
+    if code == 429:
+        return f"{who} is busy or rate-limiting ({model}). Please retry in a minute, or set a backup provider in ⚙️ Services."
+    if code == 402 or "credit" in low or "insufficient" in low:
+        return (f"{who} has no credits left for {model}. Add credits on the provider's website, pick a free model, "
+                "or switch to the local model / backup provider in ⚙️ Services → AI Assist.")
+    if code in (401, 403):
+        return f"{who} rejected the API key ({code}). Re-enter the key in ⚙️ Services → AI Assist."
+    if code == 404:
+        return f"{who} doesn't know the model '{model}'. Pick another with ⟳ Load models in ⚙️ Services."
+    return f"AI provider error {code}: {body[:200]}"
+
+
 def _openai(base, key, model, system, messages, tools, timeout, think=None, max_tokens=None, local=False):
     if think is False and _is_qwen3(model):
         system = system + "\n/no_think"          # Qwen3 soft switch: answer directly, no long reasoning
@@ -121,7 +141,7 @@ def _openai(base, key, model, system, messages, tools, timeout, think=None, max_
         headers["Authorization"] = f"Bearer {key}"
     r = httpx.post(base.rstrip("/") + "/chat/completions", json=body, headers=headers, timeout=timeout)
     if r.status_code >= 400:
-        raise LLMError(f"AI provider error {r.status_code}: {r.text[:200]}")
+        raise LLMError(_friendly_error(base, model, r.status_code, r.text))
     msg = r.json()["choices"][0]["message"]
     calls = []
     for c in msg.get("tool_calls") or []:
@@ -153,7 +173,7 @@ def _gemini(key, model, system, messages, tools, timeout):
                 resp = {"result": resp}
             contents.append({"role": "user", "parts": [{"functionResponse": {"name": m["name"], "response": resp}}]})
     body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents,
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1200}}
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096}}
     if tools:
         body["tools"] = [{"functionDeclarations": tools}]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"

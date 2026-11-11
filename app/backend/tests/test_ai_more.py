@@ -107,6 +107,16 @@ class AiMoreTests(unittest.TestCase):
         sp = self.c.get("/api/ai/status").json()["speed"]
         self.assertGreaterEqual(sp["answers"], 1); self.assertGreaterEqual(sp["quick"], 3); self.assertIn("avg_s", sp)
 
+    def test_empty_answer_is_retried(self):
+        as_user(self.adm)
+        replies = [self._reply("", [("mis_breakdown", {"group_by": "bank", "bucket": "all"})]), self._reply(""), self._reply("AXIS leads with 4 cases.\nMood: happy")]
+        with patch("app.ai_llm.call_llm", side_effect=lambda *a, **k: replies.pop(0)):
+            r = self.c.post("/api/ai/chat", json={"message": "cases by bank breakdown please"}).json()
+        self.assertEqual(r["reply"], "AXIS leads with 4 cases."); self.assertEqual(r["timing"]["calls"], 3)
+        with patch("app.ai_llm.call_llm", side_effect=lambda *a, **k: self._reply("")):
+            r = self.c.post("/api/ai/chat", json={"message": "anything about devices pending?"}).json()
+        self.assertTrue(r["reply"].startswith("⚠️"))                                # never an empty bubble
+
     def test_mood_fallback(self):
         from app.routers.ai import _split_mood
         self.assertEqual(_split_mood("Glad to help!", "thanks a lot")[1], "love")
