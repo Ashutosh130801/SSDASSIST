@@ -178,13 +178,22 @@ def _openai(base, key, model, system, messages, tools, timeout, think=None, max_
 
 
 def _gemini(key, model, system, messages, tools, timeout):
+    gem3 = (model or "").lower().startswith("gemini-3")
     contents = []
     for m in messages:
         if m["role"] == "user":
             contents.append({"role": "user", "parts": [{"text": m["content"]}]})
         elif m["role"] == "assistant":
             parts = [{"text": m["content"]}] if m.get("content") else []
-            parts += [{"functionCall": {"name": c["name"], "args": c["args"]}} for c in m.get("tool_calls") or []]
+            for i, c in enumerate(m.get("tool_calls") or []):
+                fc = {"functionCall": {"name": c["name"], "args": c["args"]}}
+                if gem3 and i == 0:
+                    # Gemini 3 needs the thought signature it sent back with its function call; history from
+                    # another provider has none, so use Google's documented "skip" value.
+                    fc["thoughtSignature"] = c.get("sig") or "skip_thought_signature_validator"
+                elif c.get("sig"):
+                    fc["thoughtSignature"] = c["sig"]
+                parts.append(fc)
             contents.append({"role": "model", "parts": parts or [{"text": ""}]})
         elif m["role"] == "tool":
             try:
@@ -208,10 +217,13 @@ def _gemini(key, model, system, messages, tools, timeout):
     cand = (r.json().get("candidates") or [{}])[0]
     text, calls = "", []
     for p in (cand.get("content") or {}).get("parts") or []:
-        if "text" in p:
+        if "text" in p and not p.get("thought"):
             text += p["text"]
         if "functionCall" in p:
-            calls.append({"id": uuid.uuid4().hex[:12], "name": p["functionCall"]["name"], "args": p["functionCall"].get("args") or {}})
+            call = {"id": uuid.uuid4().hex[:12], "name": p["functionCall"]["name"], "args": p["functionCall"].get("args") or {}}
+            if p.get("thoughtSignature"):
+                call["sig"] = p["thoughtSignature"]
+            calls.append(call)
     return {"content": text, "tool_calls": calls}
 
 
