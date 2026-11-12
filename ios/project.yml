@@ -1,0 +1,37 @@
+# XcodeGen spec for the RecoverIQ iPhone app (hybrid: native shell + native GPS/camera/files,
+# the RecoverIQ web app for screens). Generated into RecoverIQ.xcodeproj on the macOS CI runner:
+#   brew install xcodegen && cd ios && xcodegen generate
+# Built UNSIGNED (no Apple account needed) — SideStore / AltStore re-sign it on the phone.
+name: RecoverIQ
+options:
+  bundleIdPrefix: in.recoveriq
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Live server the app opens (overridden by the CI workflow from the APP_URL secret).
+    RIQ_BASE_URL: "https://recoveriq.ssdenterprises.org.in/"
+targets:
+  RecoverIQ:
+    type: application
+    platform: iOS
+    sources:
+      - path: RecoverIQ
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: in.recoveriq.app
+        PRODUCT_NAME: RecoverIQ
+        INFOPLIST_FILE: RecoverIQ/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_BITCODE: NO
+        # Unsigned build — the sideloading app signs it with the user's own Apple ID.
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        DEVELOPMENT_TEAM: ""

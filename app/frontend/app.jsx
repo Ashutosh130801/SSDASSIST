@@ -7,7 +7,12 @@ const { useState, useEffect, useRef, useCallback } = React;
 // and restore them on launch. In a normal browser window.pywebview is absent, so these are no-ops
 // and ordinary localStorage is the single source of truth.
 const nativeApi = () => { try { return (window.pywebview && window.pywebview.api) || null; } catch { return null; } };
-const nativeSaveAuth = () => { const a = nativeApi(); if (!a || !a.auth_set) return; try {
+// iPhone app (native shell around this page): window.RIQNative is injected before the page runs.
+// It owns background GPS tracking, file saving and native location — see ios/RecoverIQ/*.swift.
+const iosNative = () => { try { return !!(window.RIQNative && window.RIQNative.platform === 'ios'); } catch { return false; } };
+const nativeSaveAuth = () => {
+  if (iosNative()) { try { window.RIQNative.post({ cmd: 'auth', token: localStorage.getItem('ssd_token') || '', device: localStorage.getItem('ssd_device') || '', user: localStorage.getItem('ssd_user') || '' }); } catch {} }
+  const a = nativeApi(); if (!a || !a.auth_set) return; try {
   a.auth_set(localStorage.getItem('ssd_token') || '', localStorage.getItem('ssd_device') || '', localStorage.getItem('ssd_user') || '');
 } catch {} };
 // Resolve the pywebview API if present (it may attach a moment after load, signalled by
@@ -89,6 +94,14 @@ async function api(path, { method, body, form, auth = true, signal } = {}) {
 // hand the bytes to the native shell (window.pywebview.api.save_file), which pops an OS Save-As
 // dialog and writes the file. Used by every download in the app so they work everywhere.
 async function saveBlob(filename, blob) {
+  if (iosNative()) {          // iPhone app: hand the file to iOS (Save to Files / share / open in Excel)
+    try {
+      const b64 = await new Promise((res, rej) => { const r = new FileReader();
+        r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(new Error('read failed')); r.readAsDataURL(blob); });
+      await window.RIQNative.call('saveFile', { name: filename, b64 });
+      return;
+    } catch (e) { /* fall through */ }
+  }
   const api = (typeof window !== 'undefined') && window.pywebview && window.pywebview.api;
   if (api && api.save_file) {
     try {
@@ -636,6 +649,7 @@ const roleName = (r) => ROLE_LABEL[r] || r;
 function AndroidDownloadButton({ block, style, compact }) {
   const [ver, setVer] = useState(null);
   useEffect(() => {
+    if (iosNative()) return;
     fetch('/downloads/version.json', { cache: 'no-store' })
       .then(r => (r.ok ? r.json() : null)).then(setVer).catch(() => setVer(null));
   }, []);
@@ -650,11 +664,53 @@ function AndroidDownloadButton({ block, style, compact }) {
   );
 }
 
+/* Shows a "Download iPhone app" button once an iOS build is published (/downloads/ios.json). The .ipa
+   is unsigned: staff install it with SideStore / AltStore using their own free Apple ID — the button
+   opens a short step-by-step guide. Hidden inside the iPhone app itself. */
+function IosDownloadButton({ block, style, compact }) {
+  const [ver, setVer] = useState(null); const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (iosNative()) return;
+    fetch('/downloads/ios.json', { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null)).then(setVer).catch(() => setVer(null));
+  }, []);
+  if (!ver) return null;
+  const label = compact ? '🍎 iPhone app' : '🍎 Download iPhone app';
+  return (<>
+    <a className={cx('btn', block && 'block')} href="#" onClick={e => { e.preventDefault(); setOpen(true); }}
+      style={{ marginTop: compact ? 0 : 10, ...style }}
+      title={'Install on an iPhone' + (ver.version_name ? ' (v' + ver.version_name + ')' : '')}>
+      {label}{ver.version_name && !compact ? ' · v' + ver.version_name : ''}
+    </a>
+    {open && <IosInstallGuide ver={ver} onClose={() => setOpen(false)} />}
+  </>);
+}
+function IosInstallGuide({ ver, onClose }) {
+  const origin = (window.location.origin || '');
+  const ipa = origin + '/downloads/' + (ver.file || 'RecoverIQ.ipa');
+  const source = origin + '/downloads/ios-source.json';
+  const copy = (t) => { try { navigator.clipboard.writeText(t); toast('Copied'); } catch (e) {} };
+  const step = (n, body) => <div style={{ display: 'flex', gap: 10, margin: '10px 0' }}>
+    <b style={{ minWidth: 22, height: 22, borderRadius: 11, background: 'var(--info)', color: '#fff', fontSize: 12, display: 'grid', placeItems: 'center' }}>{n}</b>
+    <div style={{ fontSize: 13, lineHeight: 1.55 }}>{body}</div></div>;
+  return (<div className="modal-bg" onClick={onClose}><div className="modal glass" style={{ maxWidth: 520, textAlign: 'left' }} onClick={e => e.stopPropagation()}>
+    <div className="section-h"><b>🍎 Install RecoverIQ on iPhone</b><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div className="muted" style={{ fontSize: 12.5 }}>v{ver.version_name} · iOS {ver.min_ios || '15'}+ · installed with <b>SideStore</b> (or AltStore) using your own free Apple ID.</div>
+    {step(1, <>Install <b>SideStore</b> on the iPhone (one time, needs a computer for ~15 min): <a href="https://sidestore.io" target="_blank" rel="noreferrer">sidestore.io</a>. Already have AltStore? That works too.</>)}
+    {step(2, <>On the iPhone, open this page in Safari and tap <a className="btn sm" href={'sidestore://source?url=' + encodeURIComponent(source)}>➕ Add RecoverIQ to SideStore</a> — then install RecoverIQ from the source. You'll get updates there too.
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>Or add the source manually: <span className="mono" style={{ wordBreak: 'break-all' }}>{source}</span> <a href="#" onClick={e => { e.preventDefault(); copy(source); }}>copy</a></div></>)}
+    {step(3, <>Or download the file directly: <a className="btn sm" href={ipa} download>⬇ RecoverIQ.ipa</a> → in SideStore tap <b>My Apps → +</b> and choose it.</>)}
+    {step(4, <>Open RecoverIQ and sign in. Field agents: when asked for location choose <b>Allow While Using</b>, then <b>Change to Always Allow</b> — that keeps route tracking on when the phone is locked.</>)}
+    {step(5, <>With a free Apple ID the app must be refreshed every <b>7 days</b>: open SideStore and tap <b>Refresh All</b> (it reminds you). Don't swipe RecoverIQ away during duty — that pauses tracking.</>)}
+  </div></div>);
+}
+
 /* Shows a "Download Windows app" button, but only once a desktop build has been published to the
    server (/downloads/desktop.json exists). Serves the .exe straight from this domain. */
 function DesktopDownloadButton({ block, style, compact }) {
   const [ver, setVer] = useState(null);
   useEffect(() => {
+    if (iosNative()) return;
     fetch('/downloads/desktop.json', { cache: 'no-store' })
       .then(r => (r.ok ? r.json() : null)).then(setVer).catch(() => setVer(null));
   }, []);
@@ -739,6 +795,7 @@ function Login({ onLogin, config }) {
           {config && config.google_client_id ?
             <div id="gbtn" style={{ marginTop: 14, display: 'flex', justifyContent: 'center' }}></div> : null}
           <AndroidDownloadButton block />
+          <IosDownloadButton block />
           <DesktopDownloadButton block />
           <div className="divider"></div>
           <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.6 }}>
@@ -4731,6 +4788,11 @@ function FOCases({ config }) {
 function useLocationPing(user, config) {
   useEffect(() => {
     if (!user || user.role !== 'fos') return;
+    // ---- iPhone app: native Core Location tracking (keeps running in background / when locked) ----
+    if (iosNative()) {
+      try { window.RIQNative.post({ cmd: 'trackStart', token: store.t || '', device_id: getDeviceId() }); } catch (e) {}
+      return () => { try { window.RIQNative.post({ cmd: 'trackStop' }); } catch (e) {} };
+    }
     // ---- Native Android (Capacitor): true background tracking via a foreground service ----
     const Cap = window.Capacitor;
     if (Cap && (Cap.isNativePlatform ? Cap.isNativePlatform() : Cap.isNative) && Cap.registerPlugin) {
@@ -11585,7 +11647,7 @@ function getGeo() {
       () => res(null), { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 });
   });
 }
-const platformTag = () => { try { const c = window.Capacitor; return (c && (c.isNativePlatform ? c.isNativePlatform() : c.isNative)) ? 'android' : 'web'; } catch (e) { return 'web'; } };
+const platformTag = () => { try { if (iosNative()) return 'ios'; const c = window.Capacitor; return (c && (c.isNativePlatform ? c.isNativePlatform() : c.isNative)) ? 'android' : 'web'; } catch (e) { return 'web'; } };
 // Phone/tablet detection — used to hide the PWA "Install" button on mobile (where it would install a
 // misleading Chrome shortcut instead of the real native app). Desktop keeps the install button.
 const isMobileDevice = () => { try { return /android|iphone|ipad|ipod|mobile|windows phone/i.test(navigator.userAgent || '') || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || '')); } catch (e) { return false; } };
@@ -11615,7 +11677,7 @@ function ViciPill({ v, campaign = true }) {
 function PresenceBadge({ p }) {
   if (!p) return null;
   const c = { active: '#16A34A', idle: '#D97706', offline: '#94A3B8' }[p.state] || '#94A3B8';
-  const plat = p.platform === 'android' ? 'mobile' : 'web';
+  const plat = p.platform === 'android' ? 'mobile' : p.platform === 'ios' ? 'iPhone' : 'web';
   const label = p.state === 'active' ? ('Active on ' + plat)
     : p.state === 'idle' ? ('Idle' + (p.idle_seconds > 60 ? ' ' + fmtDur(p.idle_seconds) : ''))
       : 'Offline';
@@ -13247,6 +13309,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
             <span className="ic">{ic}</span>{label}</div>)}
         </div>
         <AndroidDownloadButton compact block style={{ margin: '4px 0' }} />
+        <IosDownloadButton compact block style={{ margin: '4px 0' }} />
         <div className="navitem signout" onClick={onLogout}><span className="ic">⎋</span>Sign out</div>
       </aside>
       <main className="main">

@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>RecoverIQ</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>RIQBaseURL</key>
+	<string>$(RIQ_BASE_URL)</string>
+
+	<!-- Background location: keeps FOS tracking alive when the app is in the background or the phone is locked. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>fetch</string>
+	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>RecoverIQ uses your location to GPS-stamp visits and check-ins.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>RecoverIQ tracks your route during duty hours, even when the phone is locked, so your field visits and distance are recorded. Choose "Always Allow".</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>RecoverIQ tracks your route during duty hours, even when the phone is locked.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>RecoverIQ uses the camera for visit photos and check-in selfies.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>RecoverIQ uses the microphone for voice calls in team chat.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>RecoverIQ lets you attach photos and documents from your library.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>RecoverIQ can save downloaded reports and images to your library.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>RecoverIQ can use Face ID for passkey sign-in.</string>
+
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>whatsapp</string>
+		<string>tel</string>
+		<string>comgooglemaps</string>
+		<string>sidestore</string>
+		<string>altstore</string>
+	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>Default Configuration</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIStatusBarStyle</key>
+	<string>UIStatusBarStyleDarkContent</string>
+</dict>
+</plist>

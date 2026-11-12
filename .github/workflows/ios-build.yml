@@ -1,0 +1,157 @@
+name: Build iOS App (unsigned IPA)
+
+# Builds the RecoverIQ iPhone app in ios/ on a GitHub macOS runner and produces an UNSIGNED .ipa
+# (no Apple Developer account or certificates needed). Staff install it with SideStore / AltStore,
+# which re-sign it with their own free Apple ID on the phone.
+#
+# Publishes to app/frontend/downloads/ (served by RecoverIQ → "iPhone app" button on the login page):
+#   RecoverIQ.ipa      – the app
+#   ios.json           – version marker (login button + in-app update check)
+#   ios-source.json    – SideStore / AltStore "source" for one-tap updates
+#
+# Backend URL: manual input > APP_URL repo secret > default in ios/project.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: "Live RecoverIQ URL (e.g. https://recoveriq.example.com)"
+        required: false
+        default: ""
+  push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+
+jobs:
+  build:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use the latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Resolve backend URL + version
+        id: cfg
+        run: |
+          URL="${{ github.event.inputs.app_url }}"
+          if [ -z "$URL" ]; then URL="${{ secrets.APP_URL }}"; fi
+          if [ -z "$URL" ]; then URL="https://recoveriq.ssdenterprises.org.in/"; fi
+          case "$URL" in */) ;; *) URL="$URL/";; esac
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "Backend: $URL · version 1.0.${{ github.run_number }}"
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build (unsigned, device)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project RecoverIQ.xcodeproj \
+            -scheme RecoverIQ \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" CODE_SIGN_ENTITLEMENTS="" \
+            MARKETING_VERSION="${{ steps.cfg.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.cfg.outputs.build }}" \
+            RIQ_BASE_URL="${{ steps.cfg.outputs.url }}" \
+            build | tee xcodebuild.log | grep -E "error:|warning: .*Swift|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/Build/Products/Release-iphoneos/RecoverIQ.app || { echo "::error::Build failed — see the xcodebuild-log artifact"; tail -80 xcodebuild.log; exit 1; }
+
+      - name: Check the built app
+        working-directory: ios
+        run: |
+          APP=build/Build/Products/Release-iphoneos/RecoverIQ.app
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :RIQBaseURL" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$APP/Info.plist"
+          file "$APP/RecoverIQ"
+
+      - name: Package unsigned .ipa
+        run: |
+          rm -rf Payload && mkdir Payload
+          cp -R ios/build/Build/Products/Release-iphoneos/RecoverIQ.app Payload/
+          # strip any leftover signature so the sideloading app signs a clean bundle
+          rm -rf Payload/RecoverIQ.app/_CodeSignature
+          zip -qry RecoverIQ.ipa Payload
+          ls -lh RecoverIQ.ipa
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ios/xcodebuild.log
+          if-no-files-found: ignore
+
+      - name: Upload IPA (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: recoveriq-ios-ipa
+          path: RecoverIQ.ipa
+          if-no-files-found: error
+
+      - name: Publish IPA + version + SideStore source to the served folder
+        env:
+          BASE: ${{ steps.cfg.outputs.url }}
+          VERSION: ${{ steps.cfg.outputs.version }}
+          BUILD: ${{ steps.cfg.outputs.build }}
+        run: |
+          mkdir -p app/frontend/downloads
+          cp RecoverIQ.ipa app/frontend/downloads/RecoverIQ.ipa
+          SIZE=$(stat -f%z RecoverIQ.ipa)
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          python3 - <<PY
+          import json, os
+          base, ver, build, size, date = os.environ["BASE"], os.environ["VERSION"], int(os.environ["BUILD"]), int("$SIZE"), "$DATE"
+          ipa = base + "downloads/RecoverIQ.ipa"
+          json.dump({"version_code": build, "version_name": ver, "file": "RecoverIQ.ipa", "size": size,
+                     "min_ios": "15.0", "date": date, "notes": "Latest improvements and fixes."},
+                    open("app/frontend/downloads/ios.json", "w"), indent=2)
+          desc = ("RecoverIQ for iPhone — collections, field visits and route tracking. "
+                  "Allow location 'Always' so your route keeps recording when the phone is locked.")
+          app = {"name": "RecoverIQ", "bundleIdentifier": "in.recoveriq.app", "developerName": "SSD Enterprises",
+                 "subtitle": "Collections & field recovery", "localizedDescription": desc,
+                 "iconURL": base + "assets/logo.png", "tintColor": "2563EB", "category": "productivity",
+                 "version": ver, "versionDate": date, "downloadURL": ipa, "size": size,
+                 "versions": [{"version": ver, "buildVersion": str(build), "date": date, "downloadURL": ipa,
+                               "size": size, "minOSVersion": "15.0", "localizedDescription": "Latest improvements and fixes."}],
+                 "appPermissions": {"entitlements": [], "privacy": {
+                     "NSLocationAlwaysAndWhenInUseUsageDescription": "Route tracking during duty hours, also when locked.",
+                     "NSLocationWhenInUseUsageDescription": "GPS-stamp visits and check-ins.",
+                     "NSCameraUsageDescription": "Visit photos and check-in selfies.",
+                     "NSMicrophoneUsageDescription": "Voice calls in team chat."}}}
+          json.dump({"name": "RecoverIQ", "identifier": "in.recoveriq.source", "sourceURL": base + "downloads/ios-source.json",
+                     "iconURL": base + "assets/logo.png", "tintColor": "2563EB", "apps": [app], "news": []},
+                    open("app/frontend/downloads/ios-source.json", "w"), indent=2)
+          PY
+          cat app/frontend/downloads/ios.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app/frontend/downloads/RecoverIQ.ipa app/frontend/downloads/ios.json app/frontend/downloads/ios-source.json
+          git commit -m "Publish iOS build #${BUILD}" || echo "nothing to commit"
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done
+
+      - name: Publish to Releases (direct .ipa download)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-latest
+          name: RecoverIQ iPhone (latest unsigned build)
+          body: "Unsigned IPA. Install with SideStore or AltStore (they sign it with your Apple ID). Free Apple ID: refresh every 7 days in SideStore."
+          files: RecoverIQ.ipa
