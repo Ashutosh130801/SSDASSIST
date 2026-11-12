@@ -1,0 +1,44 @@
+{
+  "name": "RecoverIQ",
+  "identifier": "in.recoveriq.source",
+  "sourceURL": "https://recoveriq.ssdenterprises.org.in/downloads/ios-source.json",
+  "iconURL": "https://recoveriq.ssdenterprises.org.in/assets/logo.png",
+  "tintColor": "2563EB",
+  "apps": [
+    {
+      "name": "RecoverIQ",
+      "bundleIdentifier": "in.recoveriq.app",
+      "developerName": "SSD Enterprises",
+      "subtitle": "Collections & field recovery",
+      "localizedDescription": "RecoverIQ for iPhone \u2014 collections, field visits and route tracking. Allow location 'Always' so your route keeps recording when the phone is locked.",
+      "iconURL": "https://recoveriq.ssdenterprises.org.in/assets/logo.png",
+      "tintColor": "2563EB",
+      "category": "productivity",
+      "version": "1.0.1",
+      "versionDate": "2026-11-12T10:35:16Z",
+      "downloadURL": "https://recoveriq.ssdenterprises.org.in/downloads/RecoverIQ.ipa",
+      "size": 1337240,
+      "versions": [
+        {
+          "version": "1.0.1",
+          "buildVersion": "1",
+          "date": "2026-11-12T10:35:16Z",
+          "downloadURL": "https://recoveriq.ssdenterprises.org.in/downloads/RecoverIQ.ipa",
+          "size": 1337240,
+          "minOSVersion": "15.0",
+          "localizedDescription": "Latest improvements and fixes."
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {
+          "NSLocationAlwaysAndWhenInUseUsageDescription": "Route tracking during duty hours, also when locked.",
+          "NSLocationWhenInUseUsageDescription": "GPS-stamp visits and check-ins.",
+          "NSCameraUsageDescription": "Visit photos and check-in selfies.",
+          "NSMicrophoneUsageDescription": "Voice calls in team chat."
+        }
+      }
+    }
+  ],
+  "news": []
+}
