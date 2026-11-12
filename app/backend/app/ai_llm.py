@@ -270,9 +270,21 @@ def _call_one(conf, st, system, messages, tools, timeout):
                    max_tokens=conf.get("_max_tokens"), local=bool(PROVIDERS[prov]["local"]))
 
 
+def _left(conf):
+    """Seconds left in this request's time budget (Cloudflare drops requests after 100 s → HTTP 524)."""
+    dl = conf.get("_deadline")
+    return None if not dl else dl - time.time()
+
+
 def _try(conf, st, system, messages, tools, timeout):
     last = None
     for attempt in range(3):
+        left = _left(conf)
+        if left is not None:
+            if left < 4:
+                raise last or LLMError(f"{st['provider_label']} is too slow right now (no answer in time). Try again, "
+                                       "or pick a faster model / provider in ⚙️ Services → AI Assist.")
+            timeout = min(timeout, left)
         try:
             return _call_one(conf, st, system, messages, tools, timeout)
         except (httpx.TimeoutException, httpx.ConnectError) as e:
@@ -281,6 +293,9 @@ def _try(conf, st, system, messages, tools, timeout):
             last = e
             if not any(c in str(e) for c in ("429", "500", "502", "503")):
                 break
+        left = _left(conf)
+        if left is not None and left < 6:
+            break
         time.sleep(1.2 * (attempt + 1))
     raise last or LLMError("AI provider failed")
 
@@ -297,7 +312,7 @@ def call_llm(conf: dict, system: str, messages: list, tools: list, timeout: floa
         except LLMError as e:
             err = e
     fb = st.get("fallback")
-    if fb and fb["configured"]:
+    if fb and fb["configured"] and not (_left(conf) is not None and _left(conf) < 6):
         fst = provider_status(conf, fallback=True)
         res = _try(conf, fst, system, messages, tools, timeout)
         res["provider_used"] = fst["provider"]
