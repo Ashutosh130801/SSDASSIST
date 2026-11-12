@@ -1021,9 +1021,13 @@ def sheet_options(month_bucket: str | None = None, db: Session = Depends(get_db)
 
 @router.get("/filter-options")
 def filter_options(bank: str | None = None, product: str | None = None, branch: str | None = None,
+                   peer_lead: int | None = None,
                    db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     """Distinct cycles + the FOS and callers actually present in a portfolio, so the case-list and
     MIS filter dropdowns only offer values that exist. Names resolve to full name + emp code."""
+    if peer_lead and bank and product and getattr(user, "role", None) == "teamlead":
+        from .mis import mis_viewer          # MIS opened for another lead on a shared portfolio
+        user, _ = mis_viewer(db, user, bank, product, peer_lead)
     q = _scope(db.query(
         models.Case.cycle, models.Case.assigned_fos_id, models.Case.assigned_caller_id,
         models.Case.vehicle_type, models.Case.brand, models.Case.old_new, models.Case.team_lead), user)

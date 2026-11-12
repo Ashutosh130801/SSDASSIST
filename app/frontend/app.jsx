@@ -7809,6 +7809,10 @@ function MISView({ user }) {
   const [area, setArea] = useState(''); const [areas, setAreas] = useState([]);   // area-wise MIS
   const [cyclesSel, setCyclesSel] = useState([]); const [fosSel, setFosSel] = useState([]); const [callerSel, setCallerSel] = useState([]);
   const [tlSel, setTlSel] = useState([]);   // team-lead-wise filter (values are team-lead names/codes)
+  // Team lead: pick ONE lead of this portfolio (yourself by default, or a peer — read-only). No "All".
+  const isTL = user.role === 'teamlead';
+  const [tlOpts, setTlOpts] = useState([]); const [peerLead, setPeerLead] = useState(null);
+  const viewingPeer = isTL && peerLead && peerLead !== user.id;
   const [branchSel, setBranchSel] = useState([]);   // multi-select branches → combined MIS
   const [filterOpts, setFilterOpts] = useState({ cycles: [], fos: [], callers: [], team_leads: [] });
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
@@ -7833,18 +7837,26 @@ function MISView({ user }) {
     }).catch(() => setProds([]));
   }, [monthB]);
   useEffect(() => { api('/api/mis/overview').then(setOv).catch(() => {}); }, []);
-  const fq = (cyclesSel.length ? `&cycles=${cyclesSel.join(',')}` : '') + (fosSel.length ? `&fos_ids=${fosSel.join(',')}` : '') + (callerSel.length ? `&caller_ids=${callerSel.join(',')}` : '') + (tlSel.length ? `&team_leads=${tlSel.map(encodeURIComponent).join(',')}` : '');
+  const fq = (cyclesSel.length ? `&cycles=${cyclesSel.join(',')}` : '') + (fosSel.length ? `&fos_ids=${fosSel.join(',')}` : '') + (callerSel.length ? `&caller_ids=${callerSel.join(',')}` : '') + (!isTL && tlSel.length ? `&team_leads=${tlSel.map(encodeURIComponent).join(',')}` : '') + (viewingPeer ? `&peer_lead=${peerLead}` : '');
   const mbq = (monthB ? `&month_bucket=${monthB}` : '') + (area ? `&area=${encodeURIComponent(area)}` : '') + (branchSel.length ? `&branch=${branchSel.map(encodeURIComponent).join(',')}` : '') + fq;
   const load = () => { if (!sel) { setD(null); return; } api(`/api/mis?bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${mbq}`).then(setD).catch(e => setErr(e.message || 'Could not load MIS')); };
-  useEffect(() => { setErr(''); setD(null); load(); }, [sel, monthB, area, cyclesSel, fosSel, callerSel, tlSel, branchSel]);
+  useEffect(() => { setErr(''); setD(null); load(); }, [sel, monthB, area, cyclesSel, fosSel, callerSel, tlSel, branchSel, peerLead]);
   // Area list + filter options for the selected portfolio (reset when switching portfolio).
   useEffect(() => {
     setArea(''); setCyclesSel([]); setFosSel([]); setCallerSel([]); setTlSel([]); setBranchSel([]);
     if (!sel) { setAreas([]); setFilterOpts({ cycles: [], fos: [], callers: [], team_leads: [] }); return; }
     const bq = `bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${(sel.branch ? '&branch=' + encodeURIComponent(sel.branch) : '')}`;
     api('/api/cases/areas?' + bq).then(a => setAreas(a || [])).catch(() => setAreas([]));
-    api('/api/cases/filter-options?' + bq).then(o => setFilterOpts(o || { cycles: [], fos: [], callers: [], team_leads: [] })).catch(() => setFilterOpts({ cycles: [], fos: [], callers: [], team_leads: [] }));
+    setPeerLead(isTL ? user.id : null);
+    if (isTL) api('/api/mis/tl-options?bank=' + encodeURIComponent(sel.bank) + '&product=' + encodeURIComponent(sel.product)).then(o => setTlOpts(o || [])).catch(() => setTlOpts([]));
   }, [sel]);
+  // FOS / caller / cycle options follow the lead being viewed (a peer's MIS shows that lead's people).
+  useEffect(() => {
+    if (!sel) return;
+    setCyclesSel([]); setFosSel([]); setCallerSel([]);
+    const bq = `bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${(sel.branch ? '&branch=' + encodeURIComponent(sel.branch) : '')}${viewingPeer ? '&peer_lead=' + peerLead : ''}`;
+    api('/api/cases/filter-options?' + bq).then(o => setFilterOpts(o || { cycles: [], fos: [], callers: [], team_leads: [] })).catch(() => setFilterOpts({ cycles: [], fos: [], callers: [], team_leads: [] }));
+  }, [sel, peerLead]);
   // Real-time: recompute the MIS instantly whenever any log/payment/edit lands.
   useDataChanged(m => { if (!sel) return; if (m && m.product && m.product !== sel.product) return; load(); api('/api/mis/overview').then(setOv).catch(() => {}); });
   const saveTarget = (e) => {          // ONE product-wide target for every FOS & caller
@@ -7952,8 +7964,8 @@ function MISView({ user }) {
         {[['current', '📅 This month'], ['next', '🔜 Next month'], ['last', '🗄️ Last month'], ['', 'All months']].map(([v, lbl]) =>
           <div key={v} className={cx('chip', monthB === v && 'on')} onClick={() => setMonthB(v)}>{lbl}</div>)}
         {/* Cycle-wise MIS — every portfolio broken down by billing cycle. */}
-        <div className={cx('chip', cycleView && 'on')} onClick={() => setCycleView(v => !v)} title="MIS analytics for each portfolio, per billing cycle">🔄 Cycle-wise MIS</div>
-        {sel && <button className="btn sm gold" onClick={() => setPivotOpen(true)} title="The team's MIS pivot sheet for this portfolio — view, filter, print or download as Excel">📊 MIS Pivot</button>}
+        {!viewingPeer && <div className={cx('chip', cycleView && 'on')} onClick={() => setCycleView(v => !v)} title="MIS analytics for each portfolio, per billing cycle">🔄 Cycle-wise MIS</div>}
+        {sel && !viewingPeer && <button className="btn sm gold" onClick={() => setPivotOpen(true)} title="The team's MIS pivot sheet for this portfolio — view, filter, print or download as Excel">📊 MIS Pivot</button>}
         {pivotOpen && sel && <MisPivotViewer bank={sel.bank} product={sel.product} monthB={monthB} branch={branchSel.join(',')} onClose={() => setPivotOpen(false)} />}
         {/* Multi-select filters — the whole dashboard (tables + charts + %) recomputes on the filtered set. */}
         <MultiSelect label="Cycle" icon="🔄" width={150} selected={cyclesSel} onChange={setCyclesSel}
@@ -7962,9 +7974,14 @@ function MISView({ user }) {
           options={(filterOpts.fos || []).map(f => ({ value: f.id, label: f.name + (f.code ? ` (${f.code})` : '') }))} />
         <MultiSelect label="Caller" icon="📞" width={220} selected={callerSel} onChange={setCallerSel}
           options={(filterOpts.callers || []).map(f => ({ value: f.id, label: f.name + (f.code ? ` (${f.code})` : '') }))} />
-        {(filterOpts.team_leads || []).length > 0 && <MultiSelect label="Team Lead" icon="👥" width={220} selected={tlSel} onChange={setTlSel}
+        {isTL ? (tlOpts.length > 0 && <select className="input" style={{ maxWidth: 240 }} value={peerLead || user.id}
+            onChange={e => { setCycleView(false); setPeerLead(Number(e.target.value)); }}
+            title="Team leads working this portfolio — another lead's MIS opens read-only">
+            {tlOpts.map(t => <option key={t.id} value={t.id}>👥 {t.name}{t.emp_code ? ` (${t.emp_code})` : ''}{t.is_me ? ' — you' : ''}</option>)}
+          </select>)
+          : (filterOpts.team_leads || []).length > 0 && <MultiSelect label="Team Lead" icon="👥" width={220} selected={tlSel} onChange={setTlSel}
           options={(filterOpts.team_leads || []).map(t => ({ value: t, label: t }))} />}
-        {(cyclesSel.length + fosSel.length + callerSel.length + tlSel.length > 0) && <div className="chip" onClick={() => { setCyclesSel([]); setFosSel([]); setCallerSel([]); setTlSel([]); }} title="Clear filters" style={{ color: 'var(--bad)' }}>✕ Clear</div>}
+        {(cyclesSel.length + fosSel.length + callerSel.length + (isTL ? 0 : tlSel.length) > 0) && <div className="chip" onClick={() => { setCyclesSel([]); setFosSel([]); setCallerSel([]); setTlSel([]); }} title="Clear filters" style={{ color: 'var(--bad)' }}>✕ Clear</div>}
         {/* Area-wise — full MIS for one AREA only. */}
         {areas.length > 0 && <select className="input" style={{ maxWidth: 160 }} value={area} onChange={e => setArea(e.target.value)} title="Full MIS for one area">
           <option value="">📍 All areas</option>{areas.map(a => <option key={a} value={a}>{a}</option>)}</select>}
@@ -7977,6 +7994,7 @@ function MISView({ user }) {
         {d && <button className="btn gold" onClick={() => dl(Object.keys(d.table_names || {}).join(','))}>⬇ Download all MIS</button>}
       </div>
       {err && <div className="glass card" style={{ color: 'var(--bad)' }}>{err}</div>}
+      {viewingPeer && d && d.viewing_lead && <div className="ro-banner">👁 Read-only — <b>{d.viewing_lead.name}</b>'s MIS on {sel.bank} · {sel.product}. Switch back to yourself in the team-lead dropdown.</div>}
       {cycleView && (sel ? <CycleMIS bank={sel.bank} product={sel.product} monthBucket={monthB} /> : <div className="glass card muted" style={{ padding: 20 }}>Pick a portfolio to see its cycle-wise MIS.</div>)}
       {d && d.base_label === 'TOS' && !cycleView && <div className="muted" style={{ fontSize: 12, margin: '2px 2px 8px' }}>PL/BL recovery base: <b>TOS</b> (total outstanding) · % = paid TOS ÷ total TOS · pivoted by caller &amp; FOS{d.segment ? ` · ${d.segment}` : ''}</div>}
       {cycleView ? null : !d ? <Loader /> : <>
@@ -11215,14 +11233,17 @@ function TLPortfoliosView({ user }) {
   const [upload, setUpload] = useState(null);        // portfolio to upload cases into
   const [peerCase, setPeerCase] = useState(null);    // case opened from a team's case list (read-only for peers)
   const qOf = (p) => 'bank=' + encodeURIComponent(p.bank) + '&product=' + encodeURIComponent(p.product) + '&branch=' + encodeURIComponent(p.branch || '');
-  const loadPfs = () => { setErr(''); api('/api/team/portfolios').then(setPfs).catch(e => setErr(e.message || 'Could not load')); };
-  useEffect(() => { loadPfs(); }, []);
+  const [pfMonth, setPfMonth] = useState('');       // portfolio list month filter: '' = all months (grouped)
+  const loadPfs = () => { setErr(''); setPfs(null); api('/api/team/portfolios' + (pfMonth ? '?month_bucket=' + pfMonth : '')).then(setPfs).catch(e => setErr(e.message || 'Could not load')); };
+  useEffect(() => { loadPfs(); }, [pfMonth]);
   const openPortfolio = (p) => {
     setSel(p); setLead(null); setTeam(null); setTeamCases(null); setLeads(null); setLeadErr('');
-    api('/api/team/portfolio/leads?' + qOf(p)).then(setLeads).catch(e => setLeadErr(e.message || 'Could not load'));
+    api('/api/team/portfolio/leads?' + qOf(p) + (p.period ? '&month_bucket=' + p.period : '')).then(setLeads).catch(e => setLeadErr(e.message || 'Could not load'));
   };
   const autoMonth = React.useRef(false);   // per opened team: jump to a month that actually has cases
-  const openLead = (l) => { autoMonth.current = false; setMonthB('current'); setLead(l); setTab('team'); };
+  // Opened from a month's portfolio card → stay on that month; otherwise find a month with cases.
+  const openLead = (l) => { autoMonth.current = !!(sel && sel.period); setMonthB((sel && sel.period) || 'current'); setLead(l); setTab('team'); };
+  const monthName = (per) => { if (!per) return 'No month'; const [y, m] = per.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' }); };
   useEffect(() => {
     if (!sel || !lead) return;
     setTeam(null); setTeamCases(null);
@@ -11249,7 +11270,7 @@ function TLPortfoliosView({ user }) {
         <b>{lead.name}{lead.is_me ? ' (you)' : ''}</b>
         <span className="muted" style={{ fontSize: 12 }}>· {pfLabel(sel)} · read-only</span>
         <div style={{ flex: 1 }} />
-        {['current', 'next', 'last', 'all'].map(m => <div key={m} className={cx('chip', monthB === m && 'on')} onClick={() => { autoMonth.current = true; setMonthB(m); }}>{m === 'current' ? 'This month' : m === 'next' ? 'Next month' : m === 'last' ? 'Last month' : 'All'}</div>)}
+        {[...(/^\d{4}-\d{2}$/.test(monthB) ? [monthB] : []), 'current', 'next', 'last', 'all'].map(m => <div key={m} className={cx('chip', monthB === m && 'on')} onClick={() => { autoMonth.current = true; setMonthB(m); }}>{m === 'current' ? 'This month' : m === 'next' ? 'Next month' : m === 'last' ? 'Last month' : m === 'all' ? 'All' : '📅 ' + monthName(m)}</div>)}
       </div>
       {!team ? <div className="muted" style={{ padding: 16 }}>Loading…</div> : <>
         <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginTop: 8 }}>
@@ -11290,7 +11311,7 @@ function TLPortfoliosView({ user }) {
     return (<div>
       <div className="toolbar" style={{ gap: 8, flexWrap: 'wrap' }}>
         <button className="btn ghost sm" onClick={() => setSel(null)}>← Portfolios</button>
-        <b>{pfLabel(sel)}</b><span className="muted" style={{ fontSize: 12 }}>· team leads working this portfolio</span>
+        <b>{pfLabel(sel)}</b>{sel.period && <span className="chip on" style={{ cursor: 'default' }}>📅 {monthName(sel.period)}</span>}<span className="muted" style={{ fontSize: 12 }}>· team leads working this portfolio</span>
       </div>
       {leadErr && <div style={{ color: 'var(--bad)', padding: 12 }}>{leadErr}</div>}
       {!leads ? <div className="muted" style={{ padding: 16 }}>Loading…</div> :
@@ -11311,10 +11332,17 @@ function TLPortfoliosView({ user }) {
   return (<div>
     <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>The portfolios you work on. Open one to see every team lead working it and drill into their team (read-only). Use <b>Upload cases</b> to load a portfolio file — only rows carrying your team-lead ID will import.</p>
     {err && <div style={{ color: 'var(--bad)', padding: 12 }}>{err}</div>}
+    <div className="toolbar" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+      {[['', '🗓️ All months'], ['current', '📅 This month'], ['next', '🔜 Next month'], ['last', '🗄️ Last month']].map(([v, lbl]) =>
+        <div key={v || 'all'} className={cx('chip', pfMonth === v && 'on')} onClick={() => setPfMonth(v)}>{lbl}</div>)}
+    </div>
     {!pfs ? <div className="muted" style={{ padding: 16 }}>Loading…</div> :
-      pfs.length === 0 ? <div className="glass card muted">No portfolios yet. Once cases tagged with your team-lead ID are uploaded, they'll appear here.</div> :
+      pfs.length === 0 ? <div className="glass card muted">{pfMonth ? 'No portfolios for this month.' : "No portfolios yet. Once cases tagged with your team-lead ID are uploaded, they'll appear here."}</div> :
+        [...new Set(pfs.map(p => p.period || ''))].map(per => <div key={per || 'none'} style={{ marginBottom: 16 }}>
+        <div className="section-h" style={{ margin: '4px 0 8px' }}><b>📅 {monthName(per)}</b>
+          <span className="muted" style={{ fontSize: 12 }}>{pfs.filter(p => (p.period || '') === per).length} portfolio(s)</span></div>
         <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 12 }}>
-          {pfs.map((p, i) => <div key={i} className="glass card">
+          {pfs.filter(p => (p.period || '') === per).map((p, i) => <div key={i} className="glass card">
             <div className="section-h" style={{ marginBottom: 4 }}><b>{p.bank} · {p.product}</b></div>
             {p.branch && <div className="muted" style={{ fontSize: 12 }}>📍 {p.branch}</div>}
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{p.count} case(s) · {p.paid} paid · {p.unpaid} unpaid</div>
@@ -11324,7 +11352,7 @@ function TLPortfoliosView({ user }) {
               <button className="btn ghost sm" onClick={() => setUpload(p)}>⬆ Upload cases</button>
             </div>
           </div>)}
-        </div>}
+        </div></div>)}
     {upload && <UploadModal initial={upload} onClose={() => setUpload(null)} onDone={(close) => { if (close !== false) setUpload(null); loadPfs(); }} />}
   </div>);
 }

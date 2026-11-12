@@ -749,7 +749,7 @@ def _tl_resolver(db: Session):
 
 
 @router.get("/portfolios")
-def my_portfolios(db: Session = Depends(get_db),
+def my_portfolios(month_bucket: str | None = None, db: Session = Depends(get_db),
                   lead: models.User = Depends(require_roles("teamlead"))):
     """Portfolios (bank + product + branch) the signed-in team lead works on, with quick totals —
     the entry list for the team lead's Portfolios section."""
@@ -758,19 +758,26 @@ def my_portfolios(db: Session = Depends(get_db),
         models.Case.bank, models.Case.product, models.Case.branch,
         models.Case.funding_amount, models.Case.total_outstanding, models.Case.enr,
         models.Case.principal_outstanding, models.Case.received_amount, models.Case.paid_status,
-    ).filter(models.Case.removed.isnot(True), teamlead_case_filter(lead)).all()
+        models.Case.period,
+    ).filter(models.Case.removed.isnot(True), teamlead_case_filter(lead))
+    from .mis import _period_for
+    period = _period_for(month_bucket)
+    if period:
+        rows = rows.filter(models.Case.period == period)
+    rows = rows.all()
     agg: dict = {}
-    for b, p, br, fund, tos, enr, pos, recv, pstat in rows:
+    for b, p, br, fund, tos, enr, pos, recv, pstat, per in rows:
         base = float(fund or 0) or float(tos or 0) or float(enr or 0) or float(pos or 0)
         rc = float(recv or 0)
-        key = (b or "—", p or "—", (br or "").strip())
-        d = agg.setdefault(key, {"bank": key[0], "product": key[1], "branch": key[2],
+        key = (b or "—", p or "—", (br or "").strip(), per or "")
+        d = agg.setdefault(key, {"bank": key[0], "product": key[1], "branch": key[2], "period": key[3],
                                  "count": 0, "received": 0.0, "pending": 0.0, "paid": 0, "unpaid": 0})
         d["count"] += 1
         d["received"] += rc
         d["pending"] += max(0.0, base - rc)
         d["paid" if (pstat or "").upper() == "PAID" else "unpaid"] += 1
-    out = sorted(agg.values(), key=lambda x: (x["bank"], x["product"], x["branch"]))
+    out = sorted(agg.values(), key=lambda x: (x["bank"], x["product"], x["branch"]))   # A→Z within a month,
+    out.sort(key=lambda x: x["period"] or "0000", reverse=True)                        # newest month first
     for d in out:
         d["received"] = round(d["received"], 2)
         d["pending"] = round(d["pending"], 2)
@@ -779,7 +786,7 @@ def my_portfolios(db: Session = Depends(get_db),
 
 @router.get("/portfolio/leads")
 def portfolio_leads(bank: str | None = None, product: str | None = None, branch: str | None = None,
-                    db: Session = Depends(get_db),
+                    month_bucket: str | None = None, db: Session = Depends(get_db),
                     lead: models.User = Depends(require_roles("teamlead"))):
     """Every team lead working the given portfolio, with quick per-team totals. Authorized only if
     the requesting lead works this portfolio too (same-portfolio rule)."""
@@ -792,6 +799,10 @@ def portfolio_leads(bank: str | None = None, product: str | None = None, branch:
         models.Case.principal_outstanding, models.Case.received_amount, models.Case.paid_status,
     ).filter(models.Case.removed.isnot(True), models.Case.escalated.isnot(True))
     q = _pf_filter(q, bank, product, branch)
+    from .mis import _period_for
+    _per = _period_for(month_bucket)
+    if _per:
+        q = q.filter(models.Case.period == _per)
     agg: dict = {}
     for tl_val, fos_id, caller_id, fund, tos, enr, pos, recv, pstat in q.all():
         tlu = resolve(tl_val)

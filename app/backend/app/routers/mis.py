@@ -8,6 +8,7 @@ Reproduces the agency's MIS pivots exactly:
   * Employee performance: TARGET % is manager-entered; everything else auto-calculates.
 """
 import io
+import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 
@@ -511,6 +512,8 @@ def _period_for(month_bucket: str | None) -> str | None:
         return _next_period()
     if month_bucket == "last":
         return _last_period()
+    if month_bucket and re.fullmatch(r"\d{4}-\d{2}", str(month_bucket).strip()):
+        return str(month_bucket).strip()          # an exact month ('2026-10') — month-wise portfolio views
     return None
 
 
@@ -522,20 +525,82 @@ def _csv_int(v):
     return [int(x) for x in (v or "").split(",") if x.strip().isdigit()]
 
 
+def _as_lead(u):
+    """A stand-in 'viewer' that scopes exactly like team lead `u` (also for dual-role leads)."""
+    from types import SimpleNamespace
+    return SimpleNamespace(id=u.id, role="teamlead", name=u.name, emp_code=u.emp_code,
+                           tl_emp_code=getattr(u, "tl_emp_code", None), branch=u.branch, also_team_lead=True)
+
+
+def portfolio_leads_for(db, bank, product):
+    """Every team lead with live cases in this bank + product portfolio."""
+    resolve = tl_scope.lead_of(db)
+    seen = {}
+    for (tl,) in db.query(models.Case.team_lead).filter(
+            models.Case.removed.isnot(True), models.Case.bank == bank, models.Case.product == product,
+            models.Case.team_lead.isnot(None)).distinct().all():
+        u = resolve(tl)
+        if u and u.id not in seen:
+            seen[u.id] = u
+    return list(seen.values())
+
+
+def mis_viewer(db, user, bank, product, peer_lead):
+    """Who the MIS is computed for. A team lead normally sees their own cases; picking ANOTHER team
+    lead who works the same portfolio shows that lead's MIS read-only (audited). Nothing else opens up."""
+    if user.role != "teamlead" or not peer_lead or int(peer_lead) == user.id:
+        return user, None
+    peer = db.query(models.User).filter(models.User.id == int(peer_lead)).first()
+    if not peer or not (peer.role == "teamlead" or getattr(peer, "also_team_lead", False)):
+        raise HTTPException(status_code=404, detail="Team lead not found")
+    if not tl_scope.works_portfolio(db, user, bank, product):
+        raise HTTPException(status_code=403, detail="This portfolio is not in your scope")
+    if not tl_scope.works_portfolio(db, peer, bank, product):
+        raise HTTPException(status_code=403, detail="That team lead doesn't work this portfolio")
+    try:
+        from .. import audit
+        audit.record(db, user, "peer_view", entity_type="user", target_user_id=peer.id,
+                     detail=f"Viewed {peer.name}'s MIS (read-only) · {bank} {product}",
+                     meta={"peer_lead": peer.id, "bank": bank, "product": product})
+        db.commit()
+    except Exception:
+        db.rollback()
+    return _as_lead(peer), peer
+
+
+@router.get("/tl-options")
+def tl_options(bank: str = Query(...), product: str = Query(...), db: Session = Depends(get_db),
+               user: models.User = Depends(require_roles("teamlead"))):
+    """Team-lead picker for the MIS: the signed-in lead first, then every other lead on this portfolio.
+    Individual leads only — there is no 'All' for a team lead."""
+    me = {"id": user.id, "name": user.name, "emp_code": getattr(user, "tl_emp_code", None) or user.emp_code, "is_me": True}
+    if not tl_scope.works_portfolio(db, user, bank, product):
+        return [me]
+    others = [{"id": u.id, "name": u.name, "emp_code": getattr(u, "tl_emp_code", None) or u.emp_code, "is_me": False}
+              for u in portfolio_leads_for(db, bank, product) if u.id != user.id]
+    return [me] + sorted(others, key=lambda x: (x["name"] or "").lower())
+
+
 @router.get("")
 def mis(bank: str = Query(...), product: str = Query(...), month_bucket: str | None = None,
         area: str | None = None, branch: str | None = None,
         cycles: str | None = None, fos_ids: str | None = None, caller_ids: str | None = None,
-        team_leads: str | None = None, paid: str | None = None,
+        team_leads: str | None = None, paid: str | None = None, peer_lead: int | None = None,
         db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     if not bank or not product:
         raise HTTPException(status_code=400, detail="bank and product are required")
-    out = compute_mis(db, user, bank, product, period=_period_for(month_bucket),
+    viewer, peer = mis_viewer(db, user, bank, product, peer_lead)
+    if peer is not None:
+        team_leads = None                     # the picked lead IS the filter
+    out = compute_mis(db, viewer, bank, product, period=_period_for(month_bucket),
                       area=area or None, branch=_csv_str(branch),
                       cycles=_csv_str(cycles), fos_ids=_csv_int(fos_ids),
                       caller_ids=_csv_int(caller_ids), team_leads=_csv_str(team_leads),
                       paid=paid or None)
     out["table_names"] = TABLE_NAMES
+    if peer is not None:
+        out["read_only"] = True
+        out["viewing_lead"] = {"id": peer.id, "name": peer.name}
     out["month_bucket"] = month_bucket or "all"
     out["area"] = area or ""
     out["branch"] = branch or ""
@@ -1038,9 +1103,12 @@ def download(bank: str = Query(...), product: str = Query(...),
              tables: str = Query(",".join(TABLE_NAMES.keys())), month_bucket: str | None = None,
              area: str | None = None, branch: str | None = None,
              cycles: str | None = None, fos_ids: str | None = None, caller_ids: str | None = None,
-             team_leads: str | None = None, paid: str | None = None,
+             team_leads: str | None = None, paid: str | None = None, peer_lead: int | None = None,
              db: Session = Depends(get_db), user: models.User = Depends(require_roles(*MIS_ROLES))):
     import openpyxl
+    user, _peer = mis_viewer(db, user, bank, product, peer_lead)
+    if _peer is not None:
+        team_leads = None
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     HEAD = PatternFill("solid", fgColor="1D4ED8")
     HEADF = Font(bold=True, color="FFFFFF", size=11)
