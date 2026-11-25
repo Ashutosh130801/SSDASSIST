@@ -102,7 +102,10 @@ private struct TeamLeadMemberCard: View {
     @State private var trends: Trends? = nil
 
     private var subLine: String {
-        return teamRoleLabel(m.role) + (m.empCode.map { " · \($0)" } ?? "") + (m.phone.map { " · \($0)" } ?? "")
+        var s: String = teamRoleLabel(m.role)
+        if let code = m.empCode { s += " · " + code }
+        if let ph = m.phone { s += " · " + ph }
+        return s
     }
 
     private var firstName: String {

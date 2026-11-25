@@ -90,6 +90,12 @@ struct DetailUpiSheet: View {
         return s
     }
 
+    private var payLabel: String {
+        var s: String = "Pay to " + vpa
+        if let p = payee, !p.isEmpty { s += " (" + p + ")" }
+        return s
+    }
+
     private var link: String {
         return Actions.upiLink(vpa: vpa, payee: payee, amount: amount > 0 ? amount : nil, note: note)
     }
@@ -102,7 +108,7 @@ struct DetailUpiSheet: View {
                     QrImage(content: link, size: 220)
                         .padding(8)
                         .background(RoundedRectangle(cornerRadius: 12).fill(Color.white))
-                    Text("Pay to " + vpa + (payee.map { " (" + $0 + ")" } ?? ""))
+                    Text(payLabel)
                         .font(.bodySmall).foregroundColor(.Muted)
                         .multilineTextAlignment(.center)
                     DetailAmountField(label: "Amount (₹)", text: $amountText)
