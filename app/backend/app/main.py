@@ -17,7 +17,8 @@ from .routers import (auth, users, cases, imports, visits, calls, tracking, anal
                       devices, leaves, templates, legal, twofa, webauthn_auth, sheet, realtime,
                       team, mis, feedback, reminders, audit_log, archive, catalog, manpower,
                       notifications, dpr, support, attendance, collab, integrations, payouts, payroll_extra, payroll, services_api,
-                      compliance, paylinks, outreach, settlements, smart, notices, insights, billing, skiptrace, open_api)
+                      compliance, paylinks, outreach, settlements, smart, notices, insights, billing, skiptrace, open_api,
+                      fos_reports)
 
 settings = get_settings()
 
@@ -704,7 +705,8 @@ for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, d
           leaves, templates, legal, twofa, webauthn_auth, sheet, realtime, team, mis, feedback,
           reminders, audit_log, archive, catalog, manpower, notifications, dpr, support,
           attendance, collab, integrations, payouts, payroll_extra, payroll, services_api,
-          compliance, paylinks, outreach, settlements, smart, notices, insights, billing, skiptrace, open_api):
+          compliance, paylinks, outreach, settlements, smart, notices, insights, billing, skiptrace, open_api,
+          fos_reports):
     app.include_router(r.router)
 app.include_router(paylinks.public)          # /pay/<token> customer page (gated by the Payments add-on)
 app.include_router(open_api.admin_router)    # /api/apikeys

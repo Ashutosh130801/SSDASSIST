@@ -11808,6 +11808,60 @@ function AttendanceGate({ user, onLogout }) {
 
 /* The Attendance dashboard (top-bar icon opens this). Everyone sees their own; HR / admin /
    head-office see all; managers see their branch; team leads see their team. */
+/* FOS visit reports (Attendance section) — both generated from RecoverIQ data:
+   • Daily FOS visit report: one sheet per day (start time, visits per time slot, productive/paid visits,
+     present status, remarks) + a Summary sheet — the team's "TODAY FIELD VISIT REPORT".
+   • Monthly FOS visit & attendance sheet: the salary-cycle (21st → 20th) visit-count grid with Sun / A / IN-A / NA
+     codes, totals, averages, 0/1/2/3/4+ counts, absents, leave and PRODUCTIVE (PAID) counts per day. */
+function FosVisitReportsModal({ defDate, cycle, locations, onClose }) {
+  const [kind, setKind] = useState('daily');
+  const [dStart, setDStart] = useState(defDate); const [dEnd, setDEnd] = useState(defDate);
+  const [mStart, setMStart] = useState(() => cycle(0)[0]); const [mEnd, setMEnd] = useState(() => cycle(0)[1]);
+  const [branch, setBranch] = useState(''); const [busy, setBusy] = useState(false);
+  const go = async () => {
+    const p = new URLSearchParams();
+    const [a, b] = kind === 'daily' ? [dStart, dEnd || dStart] : [mStart, mEnd];
+    p.set('start', a); p.set('end', b); if (branch) p.set('branch', branch);
+    setBusy(true);
+    try {
+      if (kind === 'daily') await download('/api/attendance/fos-report/daily.xlsx?' + p, 'FOS_Daily_Visit_Report_' + a + (a === b ? '' : '_to_' + b) + '.xlsx');
+      else await download('/api/attendance/fos-report/monthly.xlsx?' + p, 'FOS_Visit_Attendance_' + a + '_to_' + b + '.xlsx');
+    } finally { setBusy(false); }
+  };
+  const card = (k, icon, title, sub) => <div className={cx('glass card')} onClick={() => setKind(k)}
+    style={{ cursor: 'pointer', flex: 1, minWidth: 220, border: kind === k ? '2px solid var(--info)' : '1px solid var(--line, #e2e8f0)' }}>
+    <div style={{ fontSize: 22 }}>{icon}</div><b>{title}</b><div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{sub}</div></div>;
+  return (<div className="modal-bg" onClick={onClose}><div className="modal glass" style={{ maxWidth: 620 }} onClick={e => e.stopPropagation()}>
+    <div className="section-h"><b>📋 FOS visit reports</b><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '8px 0 12px' }}>
+      {card('daily', '📅', 'Daily FOS visit report', 'One sheet per day: first start time, total & productive (paid) visits, 8-11 / 11-1 / 1-4 / 4-7 slots, present, remarks, start & end time + summary.')}
+      {card('monthly', '🗓️', 'Monthly visit & attendance sheet', 'Salary cycle grid: visits per day (Sun / A / IN-A / NA), total, average, working days, 0/1/2/3/4+ counts, absents, leave, paid counts.')}
+    </div>
+    {kind === 'daily' ? <div className="toolbar" style={{ gap: 6, flexWrap: 'wrap' }}>
+      <span className="muted" style={{ fontSize: 12 }}>Date</span>
+      <input type="date" className="input" value={dStart} onChange={e => { setDStart(e.target.value); if (!dEnd || dEnd < e.target.value) setDEnd(e.target.value); }} style={{ maxWidth: 160 }} />
+      <span className="muted">→</span>
+      <input type="date" className="input" value={dEnd} min={dStart} onChange={e => setDEnd(e.target.value)} style={{ maxWidth: 160 }} title="Optional: pick an end date for one sheet per day (max 31 days)" />
+    </div> : <div className="toolbar" style={{ gap: 6, flexWrap: 'wrap' }}>
+      <button className="btn ghost sm" onClick={() => { const [a, b] = cycle(0); setMStart(a); setMEnd(b); }}>💰 This cycle</button>
+      <button className="btn ghost sm" onClick={() => { const [a, b] = cycle(1); setMStart(a); setMEnd(b); }}>Previous cycle</button>
+      <input type="date" className="input" value={mStart} onChange={e => setMStart(e.target.value)} style={{ maxWidth: 150 }} />
+      <span className="muted">→</span>
+      <input type="date" className="input" value={mEnd} min={mStart} onChange={e => setMEnd(e.target.value)} style={{ maxWidth: 150 }} />
+    </div>}
+    <div className="toolbar" style={{ gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+      <span className="muted" style={{ fontSize: 12 }}>Branch</span>
+      <select className="input" value={branch} onChange={e => setBranch(e.target.value)} style={{ maxWidth: 220 }}>
+        <option value="">All branches</option>
+        {(locations || []).map(l => <option key={l} value={l}>{l}</option>)}
+      </select>
+      <div style={{ flex: 1 }} />
+      <button className="btn gold" disabled={busy} onClick={go}>{busy ? 'Preparing…' : '⬇ Download Excel'}</button>
+    </div>
+    <div className="muted" style={{ fontSize: 11.5, marginTop: 10 }}>Built from check-ins, visits (time + paid), approved leave and joining dates. You get the field agents you're allowed to see.</div>
+  </div></div>);
+}
+
 function AttendanceView({ user }) {
   const today = istToday();
   const [tab, setTab] = useState('today');
@@ -11820,6 +11874,7 @@ function AttendanceView({ user }) {
   const [mon, setMon] = useState(null);
   const [detail, setDetail] = useState(null);
   const [statF, setStatF] = useState('');   // click a KPI to filter the list to that status
+  const [fosRep, setFosRep] = useState(false);  // FOS visit reports dialog
   const money = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
   const loadDay = () => { const p = new URLSearchParams(); p.set('date', date); if (role) p.set('role', role); api('/api/attendance/day?' + p).then(setDay).catch(() => setDay(null)); };
   // Live ViciDial state per employee (managers/HO/admin/TL only; today only). Refreshes every 20s.
@@ -11928,6 +11983,8 @@ function AttendanceView({ user }) {
             <input type="date" className="input" value={rEnd} min={rStart} onChange={e => setREnd(e.target.value)} style={{ maxWidth: 150 }} />
           </span>}
       {mon && (tab === 'month' || tab === 'range') && <button className="btn gold sm" onClick={dl}>⬇ Download sheet</button>}
+      <button className="btn sm" title="Daily FOS field-visit report & monthly FOS visit/attendance sheet (Excel)" onClick={() => setFosRep(true)}>📋 FOS visit reports</button>
+      {fosRep && <FosVisitReportsModal user={user} defDate={tab === 'today' ? date : today} cycle={salaryCycle} locations={locations} onClose={() => setFosRep(false)} />}
       {tab === 'today' && day && <button className="btn ghost sm" title="Print exactly what's shown (respects role/status/search filters)" onClick={printDay}>🖨 Print</button>}
       {tab === 'today' && day && <button className="btn ghost sm" title="Export the filtered list to CSV" onClick={exportDayCsv}>⬇ CSV</button>}
     </div>
