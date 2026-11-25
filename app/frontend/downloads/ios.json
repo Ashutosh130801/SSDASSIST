@@ -1,9 +1,9 @@
 {
-  "version_code": 1,
-  "version_name": "1.0.1",
+  "version_code": 4,
+  "version_name": "1.0.4",
   "file": "RecoverIQ.ipa",
-  "size": 1337240,
-  "min_ios": "15.0",
-  "date": "2026-11-12T10:35:16Z",
+  "size": 3617105,
+  "min_ios": "16.0",
+  "date": "2026-11-25T08:51:46Z",
   "notes": "Latest improvements and fixes."
 }
