@@ -14,18 +14,18 @@
       "iconURL": "https://recoveriq.ssdenterprises.org.in/assets/logo.png",
       "tintColor": "2563EB",
       "category": "productivity",
-      "version": "1.0.1",
-      "versionDate": "2026-11-12T10:35:16Z",
+      "version": "1.0.4",
+      "versionDate": "2026-11-25T08:51:46Z",
       "downloadURL": "https://recoveriq.ssdenterprises.org.in/downloads/RecoverIQ.ipa",
-      "size": 1337240,
+      "size": 3617105,
       "versions": [
         {
-          "version": "1.0.1",
-          "buildVersion": "1",
-          "date": "2026-11-12T10:35:16Z",
+          "version": "1.0.4",
+          "buildVersion": "4",
+          "date": "2026-11-25T08:51:46Z",
           "downloadURL": "https://recoveriq.ssdenterprises.org.in/downloads/RecoverIQ.ipa",
-          "size": 1337240,
-          "minOSVersion": "15.0",
+          "size": 3617105,
+          "minOSVersion": "16.0",
           "localizedDescription": "Latest improvements and fixes."
         }
       ],
