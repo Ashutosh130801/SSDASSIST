@@ -70,6 +70,20 @@ class FosReports(unittest.TestCase):
         self.assertIn("NA", vals)                                         # joined 10 Nov → earlier days NA
         self.assertEqual(ws.cell(row=8, column=8 + 31).value, "TOTAL COUNT")
 
+    def test_previews_match_excel(self):
+        import openpyxl
+        d = cl.get("/api/attendance/fos-report/daily?start=2026-11-20&end=2026-11-21").json()
+        self.assertEqual([x["date"] for x in d["days"]], ["2026-11-20", "2026-11-21"])
+        day = d["days"][0]
+        self.assertEqual(day["totals"]["visits"], sum(r["total"] for r in day["rows"]))
+        m = cl.get("/api/attendance/fos-report/monthly?start=2026-10-21&end=2026-11-20").json()
+        self.assertEqual(len(m["days"]), 31)
+        ws = openpyxl.load_workbook(io.BytesIO(cl.get(
+            "/api/attendance/fos-report/monthly.xlsx?start=2026-10-21&end=2026-11-20").content)).worksheets[0]
+        for i, r in enumerate(m["rows"]):
+            excel = [ws.cell(row=10 + i, column=8 + k).value for k in range(31)]
+            self.assertEqual(excel, r["days"])                       # preview grid == Excel grid
+
     def test_bad_range(self):
         self.assertEqual(cl.get("/api/attendance/fos-report/daily.xlsx?start=2026-09-01&end=2026-11-20").status_code, 400)
 

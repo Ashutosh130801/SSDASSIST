@@ -11818,10 +11818,23 @@ function FosVisitReportsModal({ defDate, cycle, locations, onClose }) {
   const [dStart, setDStart] = useState(defDate); const [dEnd, setDEnd] = useState(defDate);
   const [mStart, setMStart] = useState(() => cycle(0)[0]); const [mEnd, setMEnd] = useState(() => cycle(0)[1]);
   const [branch, setBranch] = useState(''); const [busy, setBusy] = useState(false);
-  const go = async () => {
+  const [prev, setPrev] = useState(null); const [pBusy, setPBusy] = useState(false); const [pErr, setPErr] = useState('');
+  const [pvOpen, setPvOpen] = useState(false);   // preview viewer open (false = minimised back to this dialog)
+  const qs = () => {
     const p = new URLSearchParams();
     const [a, b] = kind === 'daily' ? [dStart, dEnd || dStart] : [mStart, mEnd];
     p.set('start', a); p.set('end', b); if (branch) p.set('branch', branch);
+    return p;
+  };
+  // Changing the report or its filters clears an old preview so it never shows stale numbers.
+  useEffect(() => { setPrev(null); setPErr(''); }, [kind, dStart, dEnd, mStart, mEnd, branch]);
+  const preview = () => {
+    setPBusy(true); setPErr('');
+    api('/api/attendance/fos-report/' + kind + '?' + qs()).then(d => { setPrev({ kind, d, branch }); setPvOpen(true); })
+      .catch(e => setPErr(e.message || 'Could not load the preview')).finally(() => setPBusy(false));
+  };
+  const go = async () => {
+    const p = qs(); const a = p.get('start'), b = p.get('end');
     setBusy(true);
     try {
       if (kind === 'daily') await download('/api/attendance/fos-report/daily.xlsx?' + p, 'FOS_Daily_Visit_Report_' + a + (a === b ? '' : '_to_' + b) + '.xlsx');
@@ -11831,6 +11844,8 @@ function FosVisitReportsModal({ defDate, cycle, locations, onClose }) {
   const card = (k, icon, title, sub) => <div className={cx('glass card')} onClick={() => setKind(k)}
     style={{ cursor: 'pointer', flex: 1, minWidth: 220, border: kind === k ? '2px solid var(--info)' : '1px solid var(--line, #e2e8f0)' }}>
     <div style={{ fontSize: 22 }}>{icon}</div><b>{title}</b><div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{sub}</div></div>;
+  if (prev && pvOpen) return <FosPreviewViewer prev={prev} busy={busy} onDownload={go}
+    onMinimize={() => setPvOpen(false)} onClose={onClose} />;
   return (<div className="modal-bg" onClick={onClose}><div className="modal glass" style={{ maxWidth: 620 }} onClick={e => e.stopPropagation()}>
     <div className="section-h"><b>📋 FOS visit reports</b><button className="btn ghost sm" onClick={onClose}>✕</button></div>
     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '8px 0 12px' }}>
@@ -11856,10 +11871,176 @@ function FosVisitReportsModal({ defDate, cycle, locations, onClose }) {
         {(locations || []).map(l => <option key={l} value={l}>{l}</option>)}
       </select>
       <div style={{ flex: 1 }} />
+      {prev && <button className="btn ghost" title="Re-open the minimised preview" onClick={() => setPvOpen(true)}>🗖 Restore preview</button>}
+      <button className="btn" disabled={pBusy} onClick={preview}>{pBusy ? 'Loading…' : '👁 Preview'}</button>
       <button className="btn gold" disabled={busy} onClick={go}>{busy ? 'Preparing…' : '⬇ Download Excel'}</button>
     </div>
+    {pErr && <div style={{ color: 'var(--bad)', fontSize: 13, marginTop: 8 }}>{pErr}</div>}
+
     <div className="muted" style={{ fontSize: 11.5, marginTop: 10 }}>Built from check-ins, visits (time + paid), approved leave and joining dates. You get the field agents you're allowed to see.</div>
   </div></div>);
+}
+
+// ---- on-screen previews (same numbers and colours as the Excel files) ----
+const FOS_STATUS_STYLE = { PRESENT: ['#C6EFCE', '#166534'], 'HALF-DAY': ['#FED7AA', '#9A3412'], ABSENT: ['#FFC7CE', '#B91C1C'],
+  LEAVE: ['#BDD7EE', '#1E40AF'], SUNDAY: ['#E2E8F0', '#475569'], 'NOT JOINED': ['#E5E7EB', '#6B7280'] };
+const fosVisitBg = (n) => n >= 12 ? '#86EFAC' : n >= 8 ? '#BBF7D0' : n >= 5 ? '#FEF08A' : n >= 1 ? '#FDE68A' : '#FCA5A5';
+const fosTh = (bg, extra) => ({ background: bg, color: '#fff', padding: '6px 6px', fontSize: 11, fontWeight: 700, textAlign: 'center', border: '1px solid #CBD5E1', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 2, ...(extra || {}) });
+const fosTd = (extra) => ({ padding: '4px 6px', fontSize: 12, border: '1px solid #E2E8F0', textAlign: 'center', whiteSpace: 'nowrap', ...(extra || {}) });
+
+// Big preview window (like the MIS Pivot viewer): ⛶ full screen, ▁ minimise back to the dialog, ⬇ Excel, ✕ close.
+function FosPreviewViewer({ prev, busy, onDownload, onMinimize, onClose }) {
+  const boxRef = React.useRef(null);
+  const [full, setFull] = useState(false);
+  useEffect(() => {
+    const h = () => setFull(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', h);
+    return () => document.removeEventListener('fullscreenchange', h);
+  }, []);
+  const toggleFull = () => { try { document.fullscreenElement ? document.exitFullscreen() : boxRef.current.requestFullscreen(); } catch (e) {} };
+  const leave = (fn) => { try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) {} fn(); };
+  const isDaily = prev.kind === 'daily';
+  const title = isDaily ? '📅 Daily FOS visit report' : '🗓️ FOS visit & attendance sheet';
+  const sub = (isDaily ? (prev.d.start === prev.d.end ? prev.d.start : prev.d.start + ' → ' + prev.d.end) : prev.d.label)
+    + (prev.branch ? ' · ' + prev.branch : ' · all branches');
+  const tableH = full ? 'calc(100vh - 230px)' : 'calc(94vh - 260px)';
+  return <div className="drawer-bg" style={{ zIndex: 3000 }} onClick={() => leave(onClose)}>
+    <div ref={boxRef} className="glass" onClick={e => e.stopPropagation()}
+      style={{ position: 'fixed', inset: full ? 0 : '3vh 2vw', background: '#fff', borderRadius: full ? 0 : 14, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,.35)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: '#0F2747', color: '#fff', flexWrap: 'wrap' }}>
+        <b style={{ fontSize: 15 }}>{title}</b>
+        <span style={{ fontSize: 12, opacity: .8 }}>{sub} · preview</span>
+        <div style={{ flex: 1 }} />
+        <button className="btn sm" title="Minimise back to the report dialog" onClick={() => leave(onMinimize)}>▁ Minimise</button>
+        <button className="btn sm" onClick={toggleFull}>{full ? '🗗 Exit full screen' : '⛶ Full screen'}</button>
+        <button className="btn sm gold" disabled={busy} onClick={onDownload}>{busy ? 'Preparing…' : '⬇ Download Excel'}</button>
+        <button className="btn sm" title="Close" onClick={() => leave(onClose)}>✕</button>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: '4px 14px 14px' }}>
+        {isDaily ? <FosDailyPreview d={prev.d} tableH={tableH} /> : <FosMonthlyPreview d={prev.d} tableH={tableH} />}
+      </div>
+    </div>
+  </div>;
+}
+
+function FosDailyPreview({ d, tableH }) {
+  const [di, setDi] = useState(0);
+  const [q, setQ] = useState('');
+  const day = d.days[Math.min(di, d.days.length - 1)];
+  if (!day) return <div className="muted" style={{ padding: 16 }}>No days in this range.</div>;
+  const rows = day.rows.filter(r => !q || (r.name + ' ' + r.area + ' ' + r.branch).toLowerCase().includes(q.toLowerCase()));
+  const t = day.totals;
+  const kpi = (label, val, color) => <div className="glass card" style={{ padding: '8px 12px', minWidth: 110 }}><div className="muted" style={{ fontSize: 11 }}>{label}</div><b style={{ fontSize: 18, color }}>{val}</b></div>;
+  return (<div style={{ marginTop: 12 }}>
+    {d.days.length > 1 && <div className="toolbar" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+      {d.days.map((x, i) => <div key={x.date} className={cx('chip', i === di && 'on')} onClick={() => setDi(i)}>{x.date.slice(8, 10) + '/' + x.date.slice(5, 7)}</div>)}
+    </div>}
+    <div style={{ background: '#16A34A', color: '#fff', fontWeight: 800, fontSize: 16, textAlign: 'center', padding: '8px', borderRadius: '8px 8px 0 0' }}>TODAY FIELD VISIT REPORT</div>
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#0EA5E9', color: '#fff', padding: '5px 10px', fontWeight: 700 }}>
+      <span>{day.label}</span><div style={{ flex: 1 }} />
+      <input className="input" placeholder="🔎 Search FOS / area / branch" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 240, height: 30 }} />
+    </div>
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '8px 0' }}>
+      {kpi('Field agents', t.fos)}{kpi('Present', t.present, 'var(--good)')}{kpi('Total visits', t.visits, 'var(--info)')}
+      {kpi('Productive (paid)', t.paid, '#B45309')}{kpi('Avg / present FOS', t.present ? (t.visits / t.present).toFixed(1) : 0)}{kpi('Present, zero visits', t.zero, 'var(--bad)')}
+    </div>
+    <div style={{ overflow: 'auto', maxHeight: tableH || '52vh', border: '1px solid #E2E8F0', borderRadius: 8 }}>
+      <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+        <thead><tr>
+          {['S.NO', 'FOS NAMES', 'AREA', 'CONTACT', 'REPORTING BRANCH', 'FIRST START'].map(h => <th key={h} style={fosTh('#0F2747')}>{h}</th>)}
+          <th style={fosTh('#16A34A')}>TOTAL VISITS</th><th style={fosTh('#16A34A')}>PRODUCTIVE (PAID)</th>
+          {d.slots.map((h, k) => <th key={h} style={fosTh(k < 2 ? '#B45309' : '#C2410C')}>{(k === 0 ? '☀ ' : k === 2 ? '🌇 ' : '') + h}</th>)}
+          <th style={fosTh('#0EA5E9')}>PRESENT</th>
+          {['REMARKS', 'START TIME', 'END TIME'].map(h => <th key={h} style={fosTh('#0F2747')}>{h}</th>)}
+        </tr></thead>
+        <tbody>{rows.map((r, i) => {
+          const st = FOS_STATUS_STYLE[r.status] || ['', ''];
+          return <tr key={r.user_id} style={{ background: i % 2 ? '#F8FAFC' : '#fff' }}>
+            <td style={fosTd()}>{i + 1}</td>
+            <td style={fosTd({ textAlign: 'left', fontWeight: 700 })}>{r.name}</td>
+            <td style={fosTd({ textAlign: 'left' })}>{r.area}</td>
+            <td style={fosTd()}>{r.phone}</td>
+            <td style={fosTd({ textAlign: 'left' })}>{r.branch}</td>
+            <td style={fosTd({ background: (r.remarks || '').includes('LATE START') ? '#FEF3C7' : undefined })}>{r.first_start}</td>
+            <td style={fosTd({ fontWeight: 800, background: r.status === 'PRESENT' || r.status === 'HALF-DAY' || r.total ? fosVisitBg(r.total) : undefined })}>{r.total}</td>
+            <td style={fosTd({ fontWeight: 700, background: r.paid ? '#BBF7D0' : undefined, color: r.paid ? '#166534' : undefined })}>{r.paid || ''}</td>
+            {r.slots.map((n, k) => <td key={k} style={fosTd()}>{n || ''}</td>)}
+            <td style={fosTd({ background: st[0], color: st[1], fontWeight: 700 })}>{r.status}</td>
+            <td style={fosTd({ textAlign: 'left', whiteSpace: 'normal', minWidth: 160 })}>{r.remarks}</td>
+            <td style={fosTd()}>{r.start}</td><td style={fosTd()}>{r.end}</td>
+          </tr>;
+        })}
+        <tr style={{ background: '#DCE6FA', fontWeight: 800 }}>
+          <td style={fosTd()} /><td style={fosTd({ textAlign: 'left' })}>TOTAL ({t.fos} FOS)</td><td style={fosTd()} colSpan={4} />
+          <td style={fosTd()}>{t.visits}</td><td style={fosTd()}>{t.paid}</td>
+          {t.slots.map((n, k) => <td key={k} style={fosTd()}>{n}</td>)}
+          <td style={fosTd()}>{t.present} present</td><td style={fosTd()} colSpan={3} />
+        </tr></tbody>
+      </table>
+    </div>
+  </div>);
+}
+
+function FosMonthlyPreview({ d, tableH }) {
+  const [mode, setMode] = useState('visits');   // visits | paid
+  const [q, setQ] = useState('');
+  const rows = d.rows.filter(r => !q || (r.name + ' ' + r.area + ' ' + r.branch).toLowerCase().includes(q.toLowerCase()));
+  const cellStyle = (v, sun) => {
+    if (v === 'Sun') return { background: '#F2DCDB', color: '#9B2C2C', fontWeight: 700 };
+    if (v === 'A') return { background: '#FDE047', color: '#DC2626', fontWeight: 800 };
+    if (v === 'NA') return { background: '#E5E7EB', color: '#6B7280' };
+    if (v === 'IN-A') return { background: '#BFDBFE', color: '#1E40AF', fontWeight: 700 };
+    if (v === 0) return { background: '#FECACA', color: '#B91C1C', fontWeight: 700 };
+    if (typeof v === 'number') return v >= 4 ? { background: '#BBF7D0', color: '#166534', fontWeight: 700 } : { background: '#FEF3C7' };
+    return sun ? { background: '#F1F5F9' } : {};
+  };
+  const stats = [['TOTAL', 'total', '#0F766E'], ['AVG', 'avg', '#0F766E'], ['WORK DAYS', 'working_days', '#0F766E'], ['NA', 'na', '#7C3AED'],
+    ['ZERO', 'zero', '#7C3AED'], ["1'S", 'ones', '#7C3AED'], ["2'S", 'twos', '#7C3AED'], ["3'S", 'threes', '#7C3AED'], ['4+', 'four_plus', '#7C3AED'],
+    ['SUN', 'sundays', '#B91C1C'], ['ABSENT', 'absents', '#B91C1C'], ['LEAVE', 'leave', '#B91C1C'], ['PAID', 'total_paid', '#B45309']];
+  const left = { position: 'sticky', left: 0, zIndex: 1, background: '#fff' };
+  return (<div style={{ marginTop: 12 }}>
+    <div style={{ background: '#0F2747', color: '#fff', fontWeight: 800, fontSize: 16, textAlign: 'center', padding: 8, borderRadius: '8px 8px 0 0' }}>FOS ATTENDANCE & VISIT SHEET</div>
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#16A34A', color: '#fff', padding: '5px 10px', fontWeight: 700, flexWrap: 'wrap' }}>
+      <span>{d.label}</span><div style={{ flex: 1 }} />
+      <div className={cx('chip', mode === 'visits' && 'on')} onClick={() => setMode('visits')}>Visit counts</div>
+      <div className={cx('chip', mode === 'paid' && 'on')} onClick={() => setMode('paid')}>Productive (paid)</div>
+      <input className="input" placeholder="🔎 Search FOS / area / branch" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 220, height: 30 }} />
+    </div>
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11.5, margin: '6px 0' }} className="muted">
+      {[['#BBF7D0', '4+ visits'], ['#FEF3C7', '1–3'], ['#FECACA', '0 (present, no visit)'], ['#F2DCDB', 'Sun'], ['#FDE047', 'A absent'], ['#BFDBFE', 'IN-A leave'], ['#E5E7EB', 'NA not joined']].map(([c, l]) =>
+        <span key={l}><span style={{ display: 'inline-block', width: 12, height: 12, background: c, borderRadius: 3, verticalAlign: -2, marginRight: 4, border: '1px solid #CBD5E1' }} />{l}</span>)}
+    </div>
+    <div style={{ overflow: 'auto', maxHeight: tableH || '56vh', border: '1px solid #E2E8F0', borderRadius: 8 }}>
+      <table style={{ borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            <th style={fosTh('#0F2747', { ...left, zIndex: 3, minWidth: 34 })}>#</th>
+            <th style={fosTh('#0F2747', { position: 'sticky', left: 34, zIndex: 3, minWidth: 190 })}>FOS NAMES</th>
+            <th style={fosTh('#0F2747')}>AREA</th><th style={fosTh('#0F2747')}>BRANCH</th>
+            {d.days.map(x => <th key={x.date} style={fosTh(mode === 'paid' ? (x.sun ? '#94A3B8' : '#F59E0B') : (x.sun ? '#64748B' : '#1D4ED8'), { padding: '3px 4px', minWidth: 30 })}>
+              <div>{x.day}</div><div style={{ fontSize: 9, opacity: .85 }}>{x.dow}</div></th>)}
+            {stats.map(([h, , c]) => <th key={h} style={fosTh(c)}>{h}</th>)}
+          </tr>
+          {mode === 'visits' && <tr>
+            <td style={fosTd({ ...left, background: '#E0E7FF' })} /><td style={fosTd({ position: 'sticky', left: 34, background: '#E0E7FF', fontWeight: 700, textAlign: 'left' })}>Day total</td><td style={fosTd({ background: '#E0E7FF' })} colSpan={2} />
+            {d.day_totals.map((n, k) => <td key={k} style={fosTd({ background: '#E0E7FF', fontWeight: 700 })}>{n}</td>)}
+            <td style={fosTd({ background: '#E0E7FF' })} colSpan={stats.length} />
+          </tr>}
+        </thead>
+        <tbody>{rows.map((r, i) => <tr key={r.user_id}>
+          <td style={fosTd({ ...left })}>{i + 1}</td>
+          <td style={fosTd({ position: 'sticky', left: 34, zIndex: 1, background: '#fff', textAlign: 'left', fontWeight: 700 })}>{r.name}</td>
+          <td style={fosTd({ textAlign: 'left' })}>{r.area}</td><td style={fosTd({ textAlign: 'left' })}>{r.branch}</td>
+          {(mode === 'paid' ? r.paid : r.days).map((v, k) => {
+            const sun = d.days[k] && d.days[k].sun;
+            const st = mode === 'paid' ? (v > 0 ? { background: '#FDE68A', color: '#92400E', fontWeight: 700 } : (sun ? { background: '#F1F5F9' } : {})) : cellStyle(v, sun);
+            return <td key={k} style={fosTd({ padding: '3px 4px', ...st })}>{v === null || v === undefined ? '' : (mode === 'paid' && v === 0 ? '·' : v)}</td>;
+          })}
+          {stats.map(([h, k]) => <td key={h} style={fosTd({ fontWeight: 700, background: k === 'avg' ? fosVisitBg(r.avg * 2) : undefined })}>{r[k]}</td>)}
+        </tr>)}</tbody>
+      </table>
+    </div>
+  </div>);
 }
 
 function AttendanceView({ user }) {

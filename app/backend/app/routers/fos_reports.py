@@ -179,6 +179,34 @@ def _ordinal(d: date_cls) -> str:
     return f"{n}{suf} {d.strftime('%B').upper()} {d.year}"
 
 
+def _daily_row(db, p, d: date_cls, visits, arows, today) -> dict:
+    """One FOS on one day — shared by the Excel sheet and the on-screen preview."""
+    u, iso = p["u"], d.isoformat()
+    code = p["codes"].get(iso, "")
+    v = visits.get(u.id, {}).get(iso) or {"n": 0, "paid": 0, "slots": [0, 0, 0, 0], "first": None, "last": None}
+    a = arows.get((u.id, iso))
+    jd = getattr(u, "joining_date", None)
+    status = "NOT JOINED" if (jd and d < jd) else ("" if d > today else STATUS.get(code, ""))
+    if v["n"] and status in ("", "ABSENT", "SUNDAY", "LEAVE"):
+        status = "PRESENT"
+    start = a.check_in_at if a and a.check_in_at else v["first"]
+    end = (a.check_out_at if a and a.check_out_at else None) or v["last"]
+    remarks = []
+    if code == "L":
+        remarks.append("LATE START")
+    if code in ("LV", "H•"):
+        lv = att._leave_for(db, u.id, d)
+        remarks.append(("LEAVE" + (f" – {lv.reason}" if lv and lv.reason else "")) if code == "LV" else "HALF-DAY LEAVE")
+    if status in ("PRESENT", "HALF-DAY") and v["n"] == 0 and d <= today:
+        remarks.append("NO VISITS")
+    if code == "W":
+        remarks.append("SUNDAY")
+    return {"user_id": u.id, "name": u.name or "", "area": _area(u), "phone": u.phone or "",
+            "branch": (u.branch or "").upper(), "first_start": _t(start), "total": v["n"], "paid": v["paid"],
+            "slots": list(v["slots"]), "status": status, "remarks": " // ".join(remarks),
+            "start": _t(a.check_in_at) if a and a.check_in_at else "", "end": _t(end), "code": code}
+
+
 def _daily_sheet(wb, db, d: date_cls, people, visits, arows, today, S):
     from openpyxl.formatting.rule import CellIsRule, ColorScaleRule, FormulaRule
     from openpyxl.utils import get_column_letter as L
@@ -214,29 +242,11 @@ def _daily_sheet(wb, db, d: date_cls, people, visits, arows, today, S):
 
     r = hr
     for i, p in enumerate(people, 1):
-        u, code = p["u"], p["codes"].get(iso, "")
-        v = visits.get(u.id, {}).get(iso) or {"n": 0, "paid": 0, "slots": [0, 0, 0, 0], "first": None, "last": None}
-        a = arows.get((u.id, iso))
-        jd = getattr(u, "joining_date", None)
-        status = "NOT JOINED" if (jd and d < jd) else ("" if d > today else STATUS.get(code, ""))
-        if v["n"] and status in ("", "ABSENT", "SUNDAY", "LEAVE"):
-            status = status or "PRESENT"
-        start = a.check_in_at if a and a.check_in_at else v["first"]
-        end = (a.check_out_at if a and a.check_out_at else None) or v["last"]
-        remarks = []
-        if code == "L":
-            remarks.append("LATE START")
-        if code in ("LV", "H•"):
-            lv = att._leave_for(db, u.id, d)
-            remarks.append(("LEAVE" + (f" – {lv.reason}" if lv and lv.reason else "")) if code == "LV" else "HALF-DAY LEAVE")
-        if status in ("PRESENT", "HALF-DAY") and v["n"] == 0 and d <= today:
-            remarks.append("NO VISITS")
-        if code == "W":
-            remarks.append("SUNDAY")
+        d_row = _daily_row(db, p, d, visits, arows, today)
         r += 1
-        row = [i, u.name or "", _area(u), u.phone or "", (u.branch or "").upper(),
-               _t(start), None, v["paid"] or None] + [x or None for x in v["slots"]] + \
-              [status, " // ".join(remarks) or None, _t(a.check_in_at) if a and a.check_in_at else "", _t(end)]
+        row = [i, d_row["name"], d_row["area"], d_row["phone"], d_row["branch"], d_row["first_start"], None,
+               d_row["paid"] or None] + [x or None for x in d_row["slots"]] + \
+              [d_row["status"], d_row["remarks"] or None, d_row["start"], d_row["end"]]
         for j, val in enumerate(row):
             c = ws.cell(row=r, column=C0 + j, value=val)
             c.border, c.alignment = S["B"], (S["L"] if j in (1, 2, 4, 13) else S["C"])
@@ -586,3 +596,61 @@ def monthly_report(start: str | None = None, end: str | None = None, branch: str
     fn = f"FOS_Visit_Attendance_{a:%d%b}-{b:%d%b%Y}.xlsx".upper().replace(".XLSX", ".xlsx")
     return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+
+# ---------------------------------------------------------------------------------------- previews
+# Same numbers as the Excel files, as JSON for the on-screen preview in Attendance → FOS visit reports.
+
+@router.get("/daily")
+def daily_preview(start: str | None = None, end: str | None = None, branch: str | None = None,
+                  db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    a, b = _parse_range(start, end, default_cycle=False)
+    if (b - a).days > 31:
+        raise HTTPException(status_code=400, detail="The daily report covers at most 31 days.")
+    people, days, visits, arows = _collect(db, user, a, b, branch)
+    today = att._ist_today()
+    out_days = []
+    for d in days:
+        rows = [_daily_row(db, p, d, visits, arows, today) for p in people]
+        tot = {"fos": len(rows), "present": sum(1 for r in rows if r["status"] in ("PRESENT", "HALF-DAY")),
+               "visits": sum(r["total"] for r in rows), "paid": sum(r["paid"] for r in rows),
+               "slots": [sum(r["slots"][k] for r in rows) for k in range(4)],
+               "zero": sum(1 for r in rows if r["status"] in ("PRESENT", "HALF-DAY") and r["total"] == 0)}
+        out_days.append({"date": d.isoformat(), "label": _ordinal(d) + " · " + d.strftime("%A"), "rows": rows, "totals": tot})
+    return {"start": a.isoformat(), "end": b.isoformat(), "slots": [s_[0] for s_ in SLOTS], "days": out_days}
+
+
+@router.get("/monthly")
+def monthly_preview(start: str | None = None, end: str | None = None, branch: str | None = None,
+                    db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    a, b = _parse_range(start, end, default_cycle=True)
+    people, days, visits, arows = _collect(db, user, a, b, branch)
+    today = att._ist_today()
+    rows = []
+    for p in people:
+        u = p["u"]
+        cells, paid = [], []
+        for d in days:
+            iso = d.isoformat()
+            v = visits.get(u.id, {}).get(iso)
+            ar = arows.get((u.id, iso))
+            val = _day_code(u, d, p["codes"].get(iso, ""), v, today, bool(ar and ar.check_in_at))
+            cells.append(val)
+            paid.append(None if val in (None, "NA") else (v or {}).get("paid", 0))
+        nums = [c for c in cells if isinstance(c, int)]
+        total = sum(nums)
+        working = sum(1 for c in nums if c > 0) + sum(1 for c in nums if c == 0)
+        cnt = lambda x: sum(1 for c in cells if c == x)
+        rows.append({
+            "user_id": u.id, "name": u.name or "", "area": _area(u), "phone": u.phone or "", "branch": (u.branch or "").upper(),
+            "days": cells, "paid": paid, "total": total, "working_days": working,
+            "avg": round(total / working, 1) if working else 0,
+            "na": cnt("NA"), "zero": cnt(0), "ones": cnt(1), "twos": cnt(2), "threes": cnt(3),
+            "four_plus": sum(1 for c in nums if c >= 4), "sundays": cnt("Sun"), "absents": cnt("A"),
+            "leave": cnt("IN-A"), "total_paid": sum(x or 0 for x in paid),
+        })
+    day_tot = [sum(r["days"][k] for r in rows if isinstance(r["days"][k], int)) for k in range(len(days))]
+    return {"start": a.isoformat(), "end": b.isoformat(),
+            "label": f"{_ordinal(a)} – {_ordinal(b)}",
+            "days": [{"date": d.isoformat(), "day": d.day, "dow": d.strftime("%a"), "sun": d.weekday() == 6} for d in days],
+            "day_totals": day_tot, "rows": rows}
