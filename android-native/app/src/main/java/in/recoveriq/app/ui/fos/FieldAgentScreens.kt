@@ -256,7 +256,15 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
     }
     BackHandler(enabled = portfolio != null) { changePortfolio(null) }
 
-    fun monthOf(c: Case): String = (c.month ?: "").trim().ifEmpty { "—" }
+    // Case month = the upload period ('2026-11'); the sheet's free-text month is only a fallback.
+    fun monthOf(c: Case): String = (c.period ?: "").trim().ifEmpty { (c.month ?: "").trim() }.ifEmpty { "—" }
+    // '2026-11' -> 'Nov 2026' for the chips / headings (anything else is shown as-is).
+    fun monthLabel(m: String): String {
+        val r = Regex("^(\\d{4})-(\\d{2})$").find(m) ?: return if (m == "—") "No month" else m
+        val names = listOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+        val mi = r.groupValues[2].toInt()
+        return if (mi in 1..12) "${names[mi - 1]} ${r.groupValues[1]}" else m
+    }
     fun portKey(c: Case): String = "${(c.bank ?: "—")}||${(c.product ?: "—")}"
     // All PIN codes on a case (address 1/2/3), digits only.
     fun pinsOf(c: Case): List<String> = listOf(c.pincode, c.pincode2, c.pincode3)
@@ -312,7 +320,7 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
                     val n = cases.count { monthOf(it) == m }
                     FilterChip(selected = curMonth == m,
                         onClick = { month = m; changePortfolio(null) },
-                        label = { Text("$m ($n)") })
+                        label = { Text("${monthLabel(m)} ($n)") })
                 }
             }
         }
@@ -336,7 +344,7 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
             if (areaQuery.isNotBlank()) {
                 val hits = monthCases.filter { areaMatch(it, areaQuery) }.sortedByDescending { it.pendingAmount }
                 item(key = "area-count") {
-                    Text("${hits.size} account${if (hits.size == 1) "" else "s"} in $curMonth matching \"${areaQuery.trim()}\"" +
+                    Text("${hits.size} account${if (hits.size == 1) "" else "s"} in ${monthLabel(curMonth)} matching \"${areaQuery.trim()}\"" +
                         "  ·  pending ₹${"%,.0f".format(hits.sumOf { it.pendingAmount })}",
                         color = Muted, modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 2.dp))
                 }
@@ -352,7 +360,7 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
             }
             // ---- Portfolio picker: one card per Bank · Product in this month ----
             val ports = monthCases.groupBy { portKey(it) }.toList().sortedByDescending { it.second.size }
-            item(key = "portfolio-heading") { Text("Portfolios in $curMonth", color = Muted,
+            item(key = "portfolio-heading") { Text("Portfolios in ${monthLabel(curMonth)}", color = Muted,
                 modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
             }
             items(ports, key = { "portfolio:$curMonth:${it.first}" }) { (key, list) ->
@@ -392,7 +400,7 @@ fun MyCasesScreen(vm: AuthViewModel, onOpenCase: (Int) -> Unit) {
         // PIN codes in this portfolio with their account counts (busiest first) for one-tap filtering.
         val pinCounts = portCases.flatMap { pinsOf(it) }.groupingBy { it }.eachCount()
             .toList().sortedByDescending { it.second }
-        val exportTitle = "$bank · $prod · $curMonth"
+        val exportTitle = "$bank · $prod · ${monthLabel(curMonth)}"
         val exportBase = "Cases_${bank}_${prod}_$curMonth".replace(Regex("[^A-Za-z0-9_-]"), "")
 
         // Context bar: which portfolio, change link, and Excel / PDF download of the filtered set.

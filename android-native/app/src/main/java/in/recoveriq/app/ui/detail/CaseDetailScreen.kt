@@ -432,7 +432,7 @@ private fun DetailFields(case: Case) {
         Field("Product", case.product)
         Field("Bucket", case.bucket)
         Field("Cycle", case.cycle)
-        Field("Month", case.month)
+        Field("Month", case.period ?: case.month)
         Field("Total outstanding", money(case.totalOutstanding))
         Field("Principal", money(case.principalOutstanding))
         Field("Min due", money(case.minAmountDue))
@@ -628,7 +628,7 @@ private fun caseInfoText(c: Case): String {
         line("Alt phone", c.altPhone),
         line("New phone", c.newPhone),
         line("Bank / Product", listOfNotNull(c.bank, c.product).joinToString(" / ").ifBlank { null }),
-        line("Bucket / Cycle / Month", listOfNotNull(c.bucket?.let { "Bkt $it" }, c.cycle?.let { "Cyc $it" }, c.month).joinToString(" | ").ifBlank { null }),
+        line("Bucket / Cycle / Month", listOfNotNull(c.bucket?.let { "Bkt $it" }, c.cycle?.let { "Cyc $it" }, c.period ?: c.month).joinToString(" | ").ifBlank { null }),
         "Pending: ${rs(c.pendingAmount)}   Received: ${rs(c.receivedAmount)}",
         "TOS: ${rs(c.totalOutstanding)}   NORM: ${rs(c.normAmount)}   STAB: ${rs(c.stabAmount)}" +
             (c.normStab?.takeIf { it.isNotBlank() }?.let { "   N/S: $it" } ?: ""),
@@ -668,7 +668,7 @@ private fun caseFullText(c: Case): String {
             "New contact by" to listOfNotNull(c.newContactBy, c.newContactAt).joinToString(" · ").ifBlank { null }),
         sec("PORTFOLIO",
             "Bank" to c.bank, "Product" to c.product, "Segment" to c.segment, "Branch" to c.branch,
-            "Bucket" to c.bucket, "Cycle" to c.cycle, "Month" to c.month, "Category" to c.cat),
+            "Bucket" to c.bucket, "Cycle" to c.cycle, "Month" to (c.period ?: c.month), "Category" to c.cat),
         sec("AMOUNTS",
             "TOS" to rs(c.totalOutstanding),
             "Principal (POS)" to money(c.principalOutstanding),

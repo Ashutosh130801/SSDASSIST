@@ -193,7 +193,8 @@ data class Case(
     val digipin: String? = null,
     val bucket: String? = null,
     val cycle: String? = null,
-    val month: String? = null,
+    val month: String? = null,                                        // legacy free-text month from the sheet
+    val period: String? = null,                                       // real case month 'YYYY-MM'
     @Json(name = "total_outstanding") val totalOutstanding: Double = 0.0,
     @Json(name = "principal_outstanding") val principalOutstanding: Double = 0.0,
     @Json(name = "min_amount_due") val minAmountDue: Double = 0.0,
