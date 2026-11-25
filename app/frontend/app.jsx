@@ -695,7 +695,7 @@ function IosInstallGuide({ ver, onClose }) {
     <div style={{ fontSize: 13, lineHeight: 1.55 }}>{body}</div></div>;
   return (<div className="modal-bg" onClick={onClose}><div className="modal glass" style={{ maxWidth: 520, textAlign: 'left' }} onClick={e => e.stopPropagation()}>
     <div className="section-h"><b>🍎 Install RecoverIQ on iPhone</b><button className="btn ghost sm" onClick={onClose}>✕</button></div>
-    <div className="muted" style={{ fontSize: 12.5 }}>v{ver.version_name} · iOS {ver.min_ios || '15'}+ · installed with <b>SideStore</b> (or AltStore) using your own free Apple ID.</div>
+    <div className="muted" style={{ fontSize: 12.5 }}>v{ver.version_name} · iOS {ver.min_ios || '16'}+ · installed with <b>SideStore</b> (or AltStore) using your own free Apple ID.</div>
     {step(1, <>Install <b>SideStore</b> on the iPhone (one time, needs a computer for ~15 min): <a href="https://sidestore.io" target="_blank" rel="noreferrer">sidestore.io</a>. Already have AltStore? That works too.</>)}
     {step(2, <>On the iPhone, open this page in Safari and tap <a className="btn sm" href={'sidestore://source?url=' + encodeURIComponent(source)}>➕ Add RecoverIQ to SideStore</a> — then install RecoverIQ from the source. You'll get updates there too.
       <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>Or add the source manually: <span className="mono" style={{ wordBreak: 'break-all' }}>{source}</span> <a href="#" onClick={e => { e.preventDefault(); copy(source); }}>copy</a></div></>)}

@@ -122,7 +122,7 @@ jobs:
           base, ver, build, size, date = os.environ["BASE"], os.environ["VERSION"], int(os.environ["BUILD"]), int("$SIZE"), "$DATE"
           ipa = base + "downloads/RecoverIQ.ipa"
           json.dump({"version_code": build, "version_name": ver, "file": "RecoverIQ.ipa", "size": size,
-                     "min_ios": "15.0", "date": date, "notes": "Latest improvements and fixes."},
+                     "min_ios": "16.0", "date": date, "notes": "Latest improvements and fixes."},
                     open("app/frontend/downloads/ios.json", "w"), indent=2)
           desc = ("RecoverIQ for iPhone — collections, field visits and route tracking. "
                   "Allow location 'Always' so your route keeps recording when the phone is locked.")
@@ -131,7 +131,7 @@ jobs:
                  "iconURL": base + "assets/logo.png", "tintColor": "2563EB", "category": "productivity",
                  "version": ver, "versionDate": date, "downloadURL": ipa, "size": size,
                  "versions": [{"version": ver, "buildVersion": str(build), "date": date, "downloadURL": ipa,
-                               "size": size, "minOSVersion": "15.0", "localizedDescription": "Latest improvements and fixes."}],
+                               "size": size, "minOSVersion": "16.0", "localizedDescription": "Latest improvements and fixes."}],
                  "appPermissions": {"entitlements": [], "privacy": {
                      "NSLocationAlwaysAndWhenInUseUsageDescription": "Route tracking during duty hours, also when locked.",
                      "NSLocationWhenInUseUsageDescription": "GPS-stamp visits and check-ins.",

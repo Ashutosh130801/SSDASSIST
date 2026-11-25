@@ -1,12 +1,12 @@
-# XcodeGen spec for the RecoverIQ iPhone app (hybrid: native shell + native GPS/camera/files,
-# the RecoverIQ web app for screens). Generated into RecoverIQ.xcodeproj on the macOS CI runner:
+# XcodeGen spec for the RecoverIQ iPhone app (fully native SwiftUI port of android-native/;
+# all subfolders of RecoverIQ/ are compiled). Generated into RecoverIQ.xcodeproj on the macOS CI runner:
 #   brew install xcodegen && cd ios && xcodegen generate
 # Built UNSIGNED (no Apple account needed) — SideStore / AltStore re-sign it on the phone.
 name: RecoverIQ
 options:
   bundleIdPrefix: in.recoveriq
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "16.0"
   createIntermediateGroups: true
 settings:
   base:

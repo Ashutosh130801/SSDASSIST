@@ -2,12 +2,23 @@ import UIKit
 
 /// Checks /downloads/ios.json on the RecoverIQ server. When a newer build is published, offers a
 /// one-tap update through SideStore (or AltStore), which re-signs and installs it over this one.
+/// (Android equivalent: Updater.kt / UpdateGate.) AppRoot calls `Updater.checkAndPrompt()` once per launch.
 enum Updater {
-    static func check(from vc: UIViewController) {
-        let url = NativeStore.baseURL.appendingPathComponent("downloads/ios.json")
+    private static var checkedThisLaunch = false
+
+    /// Check once per launch and present the alert on the top-most view controller.
+    static func checkAndPrompt() {
+        if checkedThisLaunch { return }
+        checkedThisLaunch = true
+        check(from: nil)
+    }
+
+    static func check(from vc: UIViewController?) {
+        let url = Session.baseURL.appendingPathComponent("downloads/ios.json")
         var req = URLRequest(url: url)
         req.cachePolicy = .reloadIgnoringLocalCacheData
         req.timeoutInterval = 15
+        req.setValue("true", forHTTPHeaderField: "ngrok-skip-browser-warning")
         URLSession.shared.dataTask(with: req) { data, resp, _ in
             guard (resp as? HTTPURLResponse)?.statusCode == 200, let data = data,
                   let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
@@ -15,8 +26,12 @@ enum Updater {
             guard latest > AppInfo.build else { return }
             let name = info["version_name"] as? String ?? "\(latest)"
             let file = info["file"] as? String ?? "RecoverIQ.ipa"
-            let ipa = NativeStore.baseURL.appendingPathComponent("downloads/" + file).absoluteString
-            DispatchQueue.main.async { prompt(vc, version: name, ipa: ipa, notes: info["notes"] as? String) }
+            let ipa = Session.baseURL.appendingPathComponent("downloads/" + file).absoluteString
+            let notes = info["notes"] as? String
+            DispatchQueue.main.async {
+                guard let host = vc ?? Files.topViewController() else { return }
+                prompt(host, version: name, ipa: ipa, notes: notes)
+            }
         }.resume()
     }
 
@@ -36,7 +51,8 @@ enum Updater {
         let candidates = ["sidestore://install?url=" + enc, "altstore://install?url=" + enc, ipa]
         for s in candidates {
             if let u = URL(string: s), UIApplication.shared.canOpenURL(u) {
-                UIApplication.shared.open(u); return
+                UIApplication.shared.open(u)
+                return
             }
         }
         if let u = URL(string: ipa) { UIApplication.shared.open(u) }

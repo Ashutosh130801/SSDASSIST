@@ -1,25 +1,30 @@
 import CoreLocation
 import UIKit
 import UserNotifications
+import Combine
 
-/// Always-on FOS location tracking — the iOS counterpart of the Android LocationService.
+/// Always-on FOS location tracking — the iOS counterpart of the Android LocationService
+/// (location/LocationService.kt + Tracking.start/stop).
 ///
-/// Runs in NATIVE code (not the web page), so it keeps reporting while the app is in the
-/// background or the phone is locked:
+/// Runs in native code, so it keeps reporting while the app is in the background or the phone is locked:
 ///  • standard GPS updates with `allowsBackgroundLocationUpdates` (blue location pill),
-///  • plus significant-location-change monitoring, which makes iOS RELAUNCH the app after a
-///    restart / when it was closed, so tracking resumes by itself after ~500 m of movement.
-/// Each fix is posted straight to /api/tracking/ping with the saved token + device id.
-final class LocationTracker: NSObject, CLLocationManagerDelegate {
+///  • plus significant-location-change monitoring, which makes iOS RELAUNCH the app after a restart / when
+///    it was closed, so tracking resumes by itself after ~500 m of movement (AppDelegate.resumeIfEnabled()).
+/// Each fix is posted to /api/tracking/ping with the Session token + device id.
+///
+/// Screens: `LocationTracker.shared.start()` (On Duty ON), `.stop()` (OFF), observe `running`,
+/// `permission`, `lastFix`, `lastError` (it's an ObservableObject — use `@ObservedObject var tracker = LocationTracker.shared`).
+final class LocationTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     static let shared = LocationTracker()
 
     private let manager = CLLocationManager()
-    private(set) var running = false
-    private var lastSentAt = Date.distantPast
+    @Published private(set) var running = false
+    @Published private(set) var lastFix: CLLocation?
+    @Published private(set) var lastError: String?
+    @Published private(set) var permission: String = "unknown"
+    @Published private(set) var lastSentAt = Date.distantPast
     private var lastSentLoc: CLLocation?
     private var inFlight = false
-    private(set) var lastFix: CLLocation?
-    private(set) var lastError: String?
 
     // Same cadence as Android: keep-alive every 20 s when standing still, while MOVING send as
     // often as every 3 s once the officer has moved 20 m (route quality without DB spam).
@@ -34,6 +39,7 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
         manager.distanceFilter = kCLDistanceFilterNone
         manager.activityType = .otherNavigation
         manager.pausesLocationUpdatesAutomatically = false
+        permission = permissionName()
     }
 
     private var authStatus: CLAuthorizationStatus {
@@ -46,12 +52,29 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
         return modes.contains("location")
     }
 
+    /// Persisted on-duty flag (shared with Session.onDuty).
+    var enabled: Bool { Session.shared.trackingEnabled }
+
+    /// "always" | "when_in_use" | "denied" | "restricted" | "not_determined" | "unknown"
+    func permissionName() -> String {
+        switch authStatus {
+        case .authorizedAlways: return "always"
+        case .authorizedWhenInUse: return "when_in_use"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        case .notDetermined: return "not_determined"
+        @unknown default: return "unknown"
+        }
+    }
+
+    var hasAlwaysPermission: Bool { authStatus == .authorizedAlways }
+
     // MARK: - Control
 
     /// Start (or keep) tracking. Asks for permission the first time: "While Using" first, then iOS
     /// offers "Change to Always Allow", which is what lets tracking run with the screen locked.
     func start() {
-        NativeStore.trackingEnabled = true
+        Session.shared.trackingEnabled = true
         requestNotificationPermission()
         switch authStatus {
         case .notDetermined:
@@ -67,7 +90,7 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
     }
 
     func stop(keepEnabled: Bool = false) {
-        if !keepEnabled { NativeStore.trackingEnabled = false }
+        if !keepEnabled { Session.shared.trackingEnabled = false }
         running = false
         manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
@@ -76,9 +99,25 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
 
     /// Called at every launch (also silent background relaunches) and when the app becomes active.
     func resumeIfEnabled() {
-        guard NativeStore.trackingEnabled, !NativeStore.token.isEmpty else { return }
-        guard NativeStore.userRole.isEmpty || NativeStore.userRole == "fos" else { return }
+        guard Session.shared.trackingEnabled, Session.shared.isLoggedIn else { return }
+        let role = Session.shared.userRole
+        let view = Session.shared.user?.activeView ?? ""
+        guard role.isEmpty || role == "fos" || view == "fos" || (Session.shared.user?.alsoFieldAgent ?? false) else { return }
         if !running { start() }
+    }
+
+    /// Ask for "Always" permission up-front (Android ensureLocationPermissions equivalent).
+    func requestPermission() {
+        switch authStatus {
+        case .notDetermined: manager.requestWhenInUseAuthorization()
+        case .authorizedWhenInUse: manager.requestAlwaysAuthorization()
+        default: break
+        }
+    }
+
+    /// Open the app's page in Settings (to switch location to "Always").
+    func openSettings() {
+        if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) }
     }
 
     private func begin() {
@@ -92,18 +131,9 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    /// For the web page's tracking banner / settings screen.
+    /// Diagnostic snapshot (tracking banner / settings screen).
     func status() -> [String: Any] {
-        var perm = "unknown"
-        switch authStatus {
-        case .authorizedAlways: perm = "always"
-        case .authorizedWhenInUse: perm = "when_in_use"
-        case .denied: perm = "denied"
-        case .restricted: perm = "restricted"
-        case .notDetermined: perm = "not_determined"
-        @unknown default: perm = "unknown"
-        }
-        var out: [String: Any] = ["running": running, "enabled": NativeStore.trackingEnabled, "permission": perm,
+        var out: [String: Any] = ["running": running, "enabled": Session.shared.trackingEnabled, "permission": permissionName(),
                                   "platform": "ios", "version": AppInfo.version, "build": AppInfo.build]
         if let f = lastFix {
             out["last_fix"] = ["lat": f.coordinate.latitude, "lng": f.coordinate.longitude,
@@ -126,7 +156,8 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
     }
 
     private func authChanged() {
-        guard NativeStore.trackingEnabled else { return }
+        permission = permissionName()
+        guard Session.shared.trackingEnabled else { return }
         switch authStatus {
         case .authorizedWhenInUse:
             begin()
@@ -144,7 +175,7 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last, loc.horizontalAccuracy >= 0 else { return }
         lastFix = loc
-        guard NativeStore.trackingEnabled else { return }
+        guard Session.shared.trackingEnabled else { return }
         let now = Date()
         let since = now.timeIntervalSince(lastSentAt)
         let moved = lastSentLoc.map { loc.distance(from: $0) } ?? .greatestFiniteMagnitude
@@ -160,8 +191,7 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
     // MARK: - Posting
 
     private func post(_ loc: CLLocation) {
-        let token = NativeStore.token
-        guard !token.isEmpty, !inFlight else { return }
+        guard let token = Session.shared.token, !token.isEmpty, !inFlight else { return }
         inFlight = true
         lastSentAt = Date()
         lastSentLoc = loc
@@ -169,14 +199,15 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
         var body: [String: Any] = ["latitude": loc.coordinate.latitude, "longitude": loc.coordinate.longitude,
                                    "accuracy": loc.horizontalAccuracy]
         if loc.speed >= 0 { body["speed"] = loc.speed }
-        let dev = NativeStore.deviceId
-        if !dev.isEmpty { body["device_id"] = dev }
+        body["device_id"] = Session.shared.deviceId
 
-        var req = URLRequest(url: NativeStore.baseURL.appendingPathComponent("api/tracking/ping"))
+        var req = URLRequest(url: Session.baseURL.appendingPathComponent("api/tracking/ping"))
         req.httpMethod = "POST"
         req.timeoutInterval = 20
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        req.setValue("true", forHTTPHeaderField: "ngrok-skip-browser-warning")
+        req.setValue("RecoverIQ-iOS/" + AppInfo.version, forHTTPHeaderField: "User-Agent")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         // Finish the request even if iOS is about to suspend the app.
@@ -193,8 +224,8 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
                 if code == 401 {
                     // Session ended (logout elsewhere / token expired) — stop using GPS and battery.
                     self.lastError = "Signed out — open RecoverIQ and sign in again"
-                    NativeStore.token = ""
                     self.stop()
+                    NotificationCenter.default.post(name: .riqForceLogout, object: nil)
                 } else if let err = err {
                     self.lastError = err.localizedDescription
                 } else if code >= 400 {
@@ -218,7 +249,7 @@ final class LocationTracker: NSObject, CLLocationManagerDelegate {
 
     /// The user swiped the app away — iOS stops live tracking. Remind them to reopen it.
     func notifyPausedIfTracking() {
-        guard NativeStore.trackingEnabled, !NativeStore.token.isEmpty else { return }
+        guard Session.shared.trackingEnabled, Session.shared.isLoggedIn else { return }
         let c = UNMutableNotificationContent()
         c.title = "Location tracking paused"
         c.body = "RecoverIQ was closed. Open it again to keep your route tracking on during duty."
