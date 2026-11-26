@@ -50,7 +50,7 @@ const FALLBACK_LABEL = {
   ...LABELS,
 };
 
-export const NATIVE_MODULES = ['fcases', 'jointcases', 'queue', 'myperf', 'todo', 'escalations', 'tldash', 'leave', 'preqs', 'devices', 'audit', 'records', 'rtsb', 'monitor'];
+export const NATIVE_MODULES = ['fcases', 'jointcases', 'queue', 'myperf', 'todo', 'escalations', 'tldash', 'leave', 'preqs', 'devices', 'audit', 'records', 'rtsb', 'monitor', 'staff', 'mis', 'sheet'];
 
 const MGMT = ['admin', 'manager', 'headoffice', 'backend', 'it_support_view', 'techsupport'];
 /** Which screens have a native (rebuilt) page for this role. Everything else uses the classic module. */

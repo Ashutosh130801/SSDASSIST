@@ -189,3 +189,37 @@ export function SearchBox({ value, onChange, placeholder = 'Search…', onEnter,
     </div>
   );
 }
+
+/** Multi-select dropdown chip (checkbox list). options: [{value,label}] */
+export function MultiSelect({ label, icon: Icon, options, selected, onChange, width = 220 }) {
+  const [open, setOpen] = useState(false);
+  const sel = selected || [];
+  const toggle = (v) => onChange(sel.includes(v) ? sel.filter(x => x !== v) : [...sel, v]);
+  return (
+    <span className="pop-wrap">
+      <button type="button" className={cx('chip', sel.length > 0 && 'on')} onClick={() => setOpen(o => !o)}>
+        {Icon && <Icon size={13} />}{label}{sel.length ? ` · ${sel.length}` : ''}<span style={{ opacity: .6 }}>▾</span>
+      </button>
+      {open && <>
+        <div className="pop-scrim" onClick={() => setOpen(false)} />
+        <div className="pop-menu ms-menu" style={{ minWidth: width }}>
+          <div className="row" style={{ marginBottom: 4 }}><b className="grow" style={{ fontSize: 12 }}>{label}</b>
+            {sel.length > 0 && <button className="btn sm ghost" onClick={() => onChange([])}>Clear</button>}</div>
+          {(!options || !options.length) && <div className="faint" style={{ fontSize: 12 }}>None available</div>}
+          {(options || []).map(o => (
+            <label key={String(o.value)} className="ms-opt"><input type="checkbox" checked={sel.includes(o.value)} onChange={() => toggle(o.value)} /><span>{o.label}</span></label>
+          ))}
+        </div>
+      </>}
+    </span>
+  );
+}
+
+/** Open a printable window with one or more tables. tables: [[title, headers[], rows2d[][]]] */
+export function printTables(docTitle, tables) {
+  const w = window.open('', '_blank'); if (!w) return;
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  let html = '<html><head><title>' + esc(docTitle) + '</title><style>body{font-family:system-ui;padding:20px}h1{font-size:18px}h2{color:#2563EB;margin:16px 0 6px;font-size:14px}table{border-collapse:collapse;width:100%;font-size:11px;margin-bottom:12px}th,td{border:1px solid #cbd5e1;padding:4px 7px;text-align:left}th{background:#EEF3FB}</style></head><body><h1>' + esc(docTitle) + '</h1>';
+  tables.forEach(([t, h, rows]) => { html += '<h2>' + esc(t) + '</h2><table><thead><tr>' + h.map(x => '<th>' + esc(x) + '</th>').join('') + '</tr></thead><tbody>' + rows.map(r => '<tr>' + r.map(c => '<td>' + esc(c) + '</td>').join('') + '</tr>').join('') + '</tbody></table>'; });
+  w.document.write(html + '</body></html>'); w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch (e) { /* ignore */ } }, 400);
+}

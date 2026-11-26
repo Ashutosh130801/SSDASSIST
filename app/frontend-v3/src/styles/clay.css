@@ -157,3 +157,12 @@ table.t tbody tr:hover { background: transparent; box-shadow: var(--press-sm); }
 .note-card, .remind { border-left: 0 !important; }
 .rank-badge { box-shadow: var(--raise-xs), inset 0 1px 2px rgba(255,255,255,.6); }
 .toolbar-card { border-radius: 24px !important; }
+
+/* Round 2 modules in clay */
+.branch-card, .mini-kpi { background: var(--surf) !important; border: 0 !important; box-shadow: var(--raise) !important; border-radius: 26px !important; }
+.branch-card:hover { transform: none !important; box-shadow: 12px 12px 26px var(--sh-d), -12px -12px 26px var(--sh-l) !important; }
+.branch-roles span, .calc, .ls-fil input, .heat { background: var(--surf) !important; border: 0 !important; box-shadow: var(--press-sm) !important; }
+.ls-t thead th, .ls-act, .ls-t tfoot td { background: var(--surf) !important; backdrop-filter: none !important; }
+.ls-t td input:focus, .ls-t td select:focus { background: var(--surf) !important; box-shadow: var(--press-sm), 0 0 0 2px rgba(var(--t-accent), .35) !important; border-color: transparent !important; }
+.ls-ico:hover { background: var(--surf); box-shadow: var(--raise-xs); }
+.ms-opt:hover { background: transparent; box-shadow: var(--press-sm); }

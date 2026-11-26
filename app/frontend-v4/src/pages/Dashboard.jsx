@@ -25,10 +25,10 @@ function ChartTip({ active, payload, label, money }) {
   );
 }
 
-export default function Dashboard({ edition }) {
+export default function Dashboard({ edition, branch, embedded }) {
   const { user } = useAuth();
   const [mb, setMb] = useState('current');
-  const { data: d, error, loading } = useLoad(() => api('/api/analytics/dashboard' + qs({ month_bucket: mb })), [mb]);
+  const { data: d, error, loading } = useLoad(() => api('/api/analytics/dashboard' + qs({ month_bucket: mb, branch })), [mb, branch]);
   const k = (d && d.kpis) || {};
   const first = ((user && user.name) || '').split(' ')[0];
   const trend = ((d && d.trend) || []).map(t => ({ ...t, label: String(t.date).slice(5).split('-').reverse().join('/') }));
@@ -45,8 +45,9 @@ export default function Dashboard({ edition }) {
     <>
       <div className="page-head rise">
         <div className="grow">
-          <h1 className="page-title">{greeting()}, <span className="grad-text">{first}</span></h1>
-          <div className="page-sub">{roleName(user && user.role)} · here’s how recovery is tracking</div>
+          {embedded ? <h2 className="page-title" style={{ fontSize: 18 }}>Branch analytics · <span className="grad-text">{branch}</span></h2> :
+          <h1 className="page-title">{greeting()}, <span className="grad-text">{first}</span></h1>}
+          {!embedded && <div className="page-sub">{roleName(user && user.role)} · here’s how recovery is tracking</div>}
         </div>
         <Seg value={mb} onChange={setMb} options={MONTHS} />
       </div>

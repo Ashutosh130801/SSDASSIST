@@ -29,6 +29,9 @@ import Escalations from './modules/Escalations.jsx';
 import MyTeam from './modules/MyTeam.jsx';
 import Leave from './modules/Leave.jsx';
 import { ChangeRequests, Devices, AuditLog, Activity, Rtsb, Monitor } from './modules/Admin.jsx';
+import Team from './modules/Team.jsx';
+import Mis from './modules/Mis.jsx';
+import LiveSheet from './modules/LiveSheet.jsx';
 
 const edition = detectEdition();
 
@@ -107,6 +110,9 @@ function Workspace({ mode, setM, palette, setPal, onLogout }) {
           <Route path="/records" element={nativeOr('records', <Activity />)} />
           <Route path="/rtsb" element={nativeOr('rtsb', <Rtsb />)} />
           <Route path="/monitor" element={nativeOr('monitor', <Monitor />)} />
+          <Route path="/staff" element={nativeOr('staff', <Team />)} />
+          <Route path="/mis" element={nativeOr('mis', <Mis />)} />
+          <Route path="/sheet" element={nativeOr('sheet', <LiveSheet />)} />
           <Route path="/m/:id" element={<ClassicRoute />} />
           <Route path="*" element={<Navigate to={home} replace />} />
         </Routes>

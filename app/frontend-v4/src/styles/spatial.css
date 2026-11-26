@@ -162,3 +162,19 @@ table.t tr.grp-row td { background: rgba(59,130,246,.14) !important; color: #7DD
 table.t tr.you td { background: rgba(56,189,248,.14) !important; }
 .rank-badge { box-shadow: 0 0 22px -4px rgba(245,158,11,.95); }
 .btn.wa { color: #4ade80 !important; }
+
+/* Round 2 modules in the spatial stage */
+.branch-card, .mini-kpi { transform-style: preserve-3d; }
+.branch-card:hover { transform: perspective(1000px) translateZ(20px) rotateX(3deg) !important; box-shadow: var(--holo-glow), 0 0 60px -10px rgba(var(--t-accent), .85) !important; }
+.branch-n, .mini-kpi b { text-shadow: 0 0 18px rgba(125,211,252,.45); }
+.branch-roles span, .calc, .ls-fil input { background: rgba(255,255,255,.05) !important; border: 1px solid rgba(147,197,253,.18) !important; }
+.mini-kpi { background: var(--holo) !important; border: 1px solid var(--holo-edge) !important; }
+.mini-kpi > svg { color: #7DD3FC; filter: drop-shadow(0 0 6px #38BDF8); }
+.heat.h-good { background: rgba(74,222,128,.16); color: #4ADE80; box-shadow: 0 0 12px -4px #4ADE80; }
+.heat.h-warn { background: rgba(251,191,36,.16); color: #FBBF24; } .heat.h-bad { background: rgba(248,113,113,.16); color: #F87171; }
+.ls-t thead th, .ls-act, .ls-t tfoot td { background: rgba(8,14,32,.94) !important; }
+.ls-t thead th { color: #7DD3FC !important; letter-spacing: .06em; }
+.ls-t tbody tr:hover td { background: rgba(59,130,246,.12); }
+.ls-t td input:focus, .ls-t td select:focus { background: rgba(8,14,32,.9) !important; box-shadow: 0 0 0 1px #38BDF8, 0 0 18px -4px #38BDF8 !important; }
+.ls-t td select option { background: #0B1430; }
+.sdot.s-good { box-shadow: 0 0 10px #4ADE80; } .sdot.s-bad { box-shadow: 0 0 10px #F87171; }
