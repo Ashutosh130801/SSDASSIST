@@ -50,6 +50,8 @@ const FALLBACK_LABEL = {
   ...LABELS,
 };
 
+export const NATIVE_MODULES = ['fcases', 'jointcases', 'queue', 'myperf', 'todo', 'escalations', 'tldash', 'leave', 'preqs', 'devices', 'audit', 'records', 'rtsb', 'monitor'];
+
 const MGMT = ['admin', 'manager', 'headoffice', 'backend', 'it_support_view', 'techsupport'];
 /** Which screens have a native (rebuilt) page for this role. Everything else uses the classic module. */
 export function nativeFor(user) {
@@ -60,6 +62,8 @@ export function nativeFor(user) {
   if (['admin', 'manager', 'headoffice'].includes(r)) s.add('map');   // live field map (native)
   if (r === 'fos') s.add('fmap');                                      // my route (native)
   if (['admin', 'manager', 'headoffice', 'hr', 'it_support_view', 'techsupport'].includes(r)) s.add('attendance');
+  // Redesigned modules (round 1). The live classic menu still decides who sees each one.
+  NATIVE_MODULES.forEach(id => s.add(id));
   return s;
 }
 

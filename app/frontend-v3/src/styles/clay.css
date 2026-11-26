@@ -127,3 +127,33 @@ table.t tbody tr:hover { background: transparent; box-shadow: var(--press-sm); }
 @keyframes clayRise { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
 .page-enter { animation: clayRise .5s cubic-bezier(.3,1.4,.5,1) both !important; }
 .card.hero-card { background: var(--hero-bg) !important; color: var(--hero-ink) !important; }
+
+/* ── Redesigned modules, moulded in clay ── */
+.chip, .seg-tabs button, .grp-h { background: var(--surf) !important; border: 0 !important; box-shadow: var(--raise-sm) !important; color: var(--text-2) !important; }
+.chip:hover, .seg-tabs button:hover { transform: none !important; box-shadow: var(--raise) !important; }
+.chip.on, .seg-tabs button.on { box-shadow: var(--press-sm) !important; color: var(--accent-ink) !important; background: var(--surf) !important; }
+.chip.on .chip-n, .seg-tabs button.on b { background: rgba(var(--t-accent), .14) !important; color: var(--accent-ink) !important; }
+.chip.warn-chip.on { color: var(--bad) !important; }
+.seg-tabs { gap: 12px; padding: 6px 6px 14px; }
+.seg-tabs button { border-radius: 20px; }
+.mod-ic { box-shadow: var(--raise-sm), inset 0 2px 3px rgba(255,255,255,.4), inset 0 -4px 8px rgba(0,0,0,.15); }
+.ccard, .member, .lane, .creq { border-radius: 26px !important; }
+.ccard:hover, .member:hover { transform: none !important; box-shadow: 12px 12px 26px var(--sh-d), -12px -12px 26px var(--sh-l) !important; }
+.ccard::before { top: 18px; bottom: 18px; }
+.ccard.st-paid, .ccard.st-touched { background: var(--surf) !important; }
+.ccard.st-paid { box-shadow: var(--raise), inset 0 0 0 2px rgba(var(--t-good), .35) !important; }
+.ccard.st-touched { box-shadow: var(--raise), inset 0 0 0 2px rgba(var(--t-warn), .35) !important; }
+.ccard-addr a, .ccard-note, .member-stats div, .metric, .trend, .lane-i, .remind-i, .creq-diff, .quote, .day {
+  background: var(--surf) !important; border: 0 !important; box-shadow: var(--press-sm) !important; }
+.lane-i:hover, .remind-i:hover { transform: none !important; box-shadow: var(--raise-xs) !important; }
+.trend.hot, .day.on { box-shadow: var(--press-sm), inset 0 0 0 2px rgba(var(--t-good), .35) !important; }
+.lane { border-top: 0 !important; }
+.lane-h { border-bottom: 0; }
+.pbar { background: var(--surf); box-shadow: var(--press-sm); }
+.av { box-shadow: var(--raise-xs), inset 0 1px 2px rgba(255,255,255,.4); }
+.modal-v { background: var(--surf) !important; border: 0 !important; box-shadow: 20px 20px 50px var(--sh-d), -14px -14px 40px var(--sh-l) !important; border-radius: 30px; backdrop-filter: none; }
+.modal-h, .modal-f, .card-tools { border: 0 !important; }
+.pop-menu { background: var(--surf) !important; border: 0 !important; box-shadow: var(--raise) !important; }
+.note-card, .remind { border-left: 0 !important; }
+.rank-badge { box-shadow: var(--raise-xs), inset 0 1px 2px rgba(255,255,255,.6); }
+.toolbar-card { border-radius: 24px !important; }

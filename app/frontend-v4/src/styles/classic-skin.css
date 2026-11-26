@@ -149,3 +149,30 @@ html.riq-host .muted { color: #A8B6D8 !important; }
 html.riq-host a { color: #7DD3FC; }
 html.riq-host canvas { filter: brightness(1.05); }
 html.riq-host button[title="App tour / help"] { background: linear-gradient(180deg, #3B82F6, #1D4ED8) !important; box-shadow: 0 0 30px -4px rgba(59,130,246,1) !important; }
+
+/* ═════════ Spatial 3D — full module layer ═════════ */
+html.riq-host .main > * { animation: riqSpRise .85s cubic-bezier(.16,1,.3,1) both; transform-origin: 50% 100%; }
+html.riq-host .main > *:nth-child(2) { animation-delay: .07s; } html.riq-host .main > *:nth-child(3) { animation-delay: .14s; } html.riq-host .main > *:nth-child(n+4) { animation-delay: .2s; }
+@keyframes riqSpRise { from { opacity: 0; transform: perspective(1200px) translateZ(-160px) rotateX(18deg) translateY(24px); } to { opacity: 1; transform: none; } }
+html.riq-host .kpi, html.riq-host .kpi-row > .glass, html.riq-host .kpis > .glass {
+  border-radius: 20px !important; background: linear-gradient(160deg, rgba(59,130,246,.18), rgba(255,255,255,.02)) !important;
+  border: 1px solid rgba(125,211,252,.35) !important; box-shadow: 0 0 40px -14px rgba(56,189,248,.9) !important; transition: transform .4s cubic-bezier(.2,.8,.2,1); }
+html.riq-host .kpi:hover, html.riq-host .kpi-row > .glass:hover { transform: perspective(1000px) translateZ(14px) rotateX(2deg); }
+html.riq-host .kpi .v, html.riq-host .kpi-row b { color: #fff; text-shadow: 0 0 22px rgba(125,211,252,.6); font-family: 'Sora', sans-serif; }
+html.riq-host .kpi .l, html.riq-host .kpi-row .k { color: #7DD3FC !important; letter-spacing: .1em; }
+html.riq-host .section-h h3, html.riq-host .section-h h2, html.riq-host h2 { color: #fff !important; text-shadow: 0 0 18px rgba(125,211,252,.45); }
+html.riq-host .section-h h3::before, html.riq-host .section-h h2::before { content: ''; display: inline-block; width: 3px; height: 16px; margin-right: 10px; vertical-align: -2px;
+  background: #7DD3FC; box-shadow: 0 0 10px #38BDF8; border-radius: 2px; }
+html.riq-host .grid3 > .glass:hover, html.riq-host .grid2 > .glass:hover { transform: perspective(1000px) translateZ(16px) rotateX(2deg); }
+html.riq-host .grid3 > .glass, html.riq-host .grid2 > .glass { transition: transform .45s cubic-bezier(.2,.8,.2,1), box-shadow .45s !important; }
+html.riq-host .chip { background: rgba(255,255,255,.05) !important; border: 1px solid rgba(147,197,253,.24) !important; color: #A8B6D8 !important; border-radius: 999px !important; }
+html.riq-host .chip.on { color: #fff !important; background: linear-gradient(90deg, rgba(59,130,246,.5), rgba(56,189,248,.2)) !important; border-color: rgba(125,211,252,.6) !important; box-shadow: 0 0 22px -6px #38BDF8 !important; }
+html.riq-host .badge { background: rgba(255,255,255,.06) !important; border: 1px solid rgba(147,197,253,.22); }
+html.riq-host .badge.paid { color: #4ADE80 !important; } html.riq-host .badge.unpaid { color: #F87171 !important; } html.riq-host .badge.partial { color: #FBBF24 !important; }
+html.riq-host .badge.new, html.riq-host .badge.ptp, html.riq-host .badge.allocated { color: #7DD3FC !important; }
+html.riq-host thead th { background: rgba(8,14,32,.92) !important; color: #7DD3FC !important; letter-spacing: .1em !important; border-bottom: 1px solid rgba(125,211,252,.25) !important; }
+html.riq-host tbody td, html.riq-host .stat-row { border-bottom-color: rgba(147,197,253,.1) !important; }
+html.riq-host tr:hover td { background: rgba(59,130,246,.1) !important; }
+html.riq-host .modal { animation: riqSpPop .6s cubic-bezier(.16,1,.3,1); }
+@keyframes riqSpPop { from { opacity: 0; transform: perspective(1200px) translateZ(-200px) rotateX(14deg); filter: blur(4px); } to { opacity: 1; transform: none; filter: none; } }
+@media (prefers-reduced-motion: reduce) { html.riq-host .main > *, html.riq-host .modal { animation: none !important; } }

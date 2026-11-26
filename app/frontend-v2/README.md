@@ -42,6 +42,13 @@ The runtime is a **patched copy generated on the fly** by `backend/app/classic_h
 - Both Field Tracking pages use the existing APIs only, and each has a **Full module** button for the classic tools (geocoding, roster, exports, flagged visits).
 - **Attendance** day board (management/HR), including the FOS daily and monthly reports.
 
+- **Round 1 modules** (`src/modules/`, identical in v2 / v3 / v4, styled by each template):
+  - My Accounts (FOS), Joint Cases, Calling queue, My Performance, My Work Queue
+  - Escalations, My Team (team lead), Leave (apply, approvals, history, balances), Change Requests
+  - Devices, Audit Log, Activity, RTSB, Live Monitor
+  - Complex classic forms are reused, not duplicated: the GPS-camera visit, staff editor, employee profile, performance and audit-detail panels open through `__riqClassic.openPanel()` (patched in by `classic_host.py`). Pages refresh live through `__riqClassic.subscribe()` (same WebSocket as classic).
+- Modules not yet rebuilt (MIS, Live Sheet, Team, Manpower, Payroll, Litigation, Bank Feedback, Connections, AI Assist, etc.) run the classic screen under a full per-template skin (`classic-skin.css`): tiles, chips, badges, tables, modals and entrance motion follow the template.
+
 Each native page has a **Full module** button that opens the complete classic module.
 
 ## Design system

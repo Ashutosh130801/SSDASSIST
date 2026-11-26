@@ -96,3 +96,41 @@ html.riq-host button[title="App tour / help"] {
 @media (max-width: 860px) {
   html.riq-host .main { padding: 12px 10px 40px !important; border-radius: 16px; }
 }
+
+/* ═════════ Aurora Glass — full module layer (screens still drawn by the classic runtime) ═════════ */
+html.riq-host .main > * { animation: riqRise .6s cubic-bezier(.2,.8,.2,1) both; }
+html.riq-host .main > *:nth-child(2) { animation-delay: .05s; } html.riq-host .main > *:nth-child(3) { animation-delay: .1s; }
+html.riq-host .main > *:nth-child(4) { animation-delay: .15s; } html.riq-host .main > *:nth-child(n+5) { animation-delay: .2s; }
+@keyframes riqRise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+html.riq-host h2 { font-size: 22px; font-weight: 650; }
+html.riq-host .section-h h3, html.riq-host .section-h h2 { display: flex; align-items: center; gap: 10px; }
+html.riq-host .section-h h3::before, html.riq-host .section-h h2::before { content: ''; width: 4px; height: 18px; border-radius: 4px;
+  background: linear-gradient(180deg, rgba(var(--t-accent), .6), rgb(var(--t-accent))); box-shadow: 0 0 10px rgba(var(--t-accent), .6); }
+/* KPI tiles → clay tiles */
+html.riq-host .kpi, html.riq-host .kpi-row > .glass, html.riq-host .kpis > .glass {
+  border-radius: 22px !important; border: 0 !important; position: relative; overflow: hidden;
+  background: linear-gradient(150deg, rgba(var(--t-accent), .06), rgba(var(--t-accent), .16)), #fff !important;
+  box-shadow: 0 22px 30px -20px rgba(var(--t-accent), .55), inset 0 -8px 16px rgba(var(--t-accent), .12), inset 0 8px 14px rgba(255,255,255,.95) !important;
+  transition: transform .25s cubic-bezier(.2,.8,.2,1);
+}
+html.riq-host .kpi:hover, html.riq-host .kpi-row > .glass:hover { transform: translateY(-3px); }
+html.riq-host .kpi .v, html.riq-host .kpi-row b { font-family: 'Sora', sans-serif; letter-spacing: -.02em; }
+html.riq-host .kpi .l, html.riq-host .kpi-row .k { text-transform: none; letter-spacing: 0; color: #4A5160; }
+/* cards in grids lift on hover */
+html.riq-host .grid3 > .glass, html.riq-host .grid2 > .glass { transition: transform .22s cubic-bezier(.2,.8,.2,1), box-shadow .25s !important; }
+html.riq-host .grid3 > .glass:hover, html.riq-host .grid2 > .glass:hover { transform: translateY(-3px); box-shadow: 0 26px 46px -24px rgba(20,24,60,.38) !important; }
+/* chips + badges → v2 pills */
+html.riq-host .chip { border-radius: 999px !important; border: 1px solid rgba(var(--t-accent), .16) !important; background: rgba(255,255,255,.85) !important; font-weight: 550; }
+html.riq-host .chip.on { color: #fff !important; background: linear-gradient(150deg, rgba(var(--t-accent), .8), rgb(var(--t-accent))) !important; border-color: transparent !important; }
+html.riq-host .badge { border-radius: 999px; font-weight: 650; }
+html.riq-host .badge.new, html.riq-host .badge.ptp, html.riq-host .badge.allocated { background: rgba(var(--t-accent), .12) !important; color: var(--accent-ink) !important; }
+/* tables */
+html.riq-host .tablewrap { border-radius: 16px; }
+html.riq-host thead th { background: rgba(246, 248, 253, .96) !important; backdrop-filter: blur(6px); text-transform: uppercase; font-size: 11px !important; letter-spacing: .06em !important; }
+html.riq-host tbody td { border-bottom-color: rgba(20, 24, 40, .06) !important; }
+html.riq-host .stat-row { border-bottom-color: rgba(20, 24, 40, .06) !important; }
+/* modals → glass sheets */
+html.riq-host .modal { border-radius: 26px !important; background: rgba(255,255,255,.96) !important; box-shadow: 0 40px 90px -30px rgba(10,14,40,.55) !important;
+  animation: riqPop .3s cubic-bezier(.2,.8,.2,1); }
+@keyframes riqPop { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { html.riq-host .main > *, html.riq-host .modal { animation: none !important; } }

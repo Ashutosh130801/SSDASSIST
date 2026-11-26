@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { inr, fmtDate, fmtTime } from '../lib/format.js';
 import { Drawer, StatusPill, Pill, Skeleton, useLoad, Card } from '../components/ui.jsx';
 import { useClassic } from '../lib/classic.jsx';
+import { useAuth } from '../lib/auth.jsx';
 
 const tel = (p) => String(p || '').replace(/[^0-9+]/g, '');
 const wa = (p) => { let d = String(p || '').replace(/\D/g, ''); if (d.length === 10) d = '91' + d; return 'https://wa.me/' + d; };
@@ -13,6 +14,9 @@ const ICON = { visit: Footprints, call: PhoneCall, payment: Wallet };
  *  still happens in the classic case screen (linked) until those forms are redesigned. */
 export default function CaseDrawer({ id, onClose }) {
   const classic = useClassic();
+  const { user } = useAuth();
+  const isFos = user && (user.role === 'fos' || user.active_view === 'fos');
+  const logVisit = () => { if (classic.api && classic.api.openPanel && c) { onClose(); classic.api.openPanel('visit', { c }); } };
   const openFull = () => { if (classic.api) { onClose(); classic.api.openCase(id); } };
   const { data: c, loading } = useLoad(() => (id ? api('/api/cases/' + id) : Promise.resolve(null)), [id]);
   const { data: tl } = useLoad(() => (id ? api('/api/cases/' + id + '/timeline') : Promise.resolve([])), [id]);
@@ -39,6 +43,7 @@ export default function CaseDrawer({ id, onClose }) {
           {c.phone && <a className="btn sm" href={wa(c.phone)} target="_blank" rel="noreferrer"><MessageCircle />WhatsApp</a>}
           {addr[0] && <a className="btn sm" target="_blank" rel="noreferrer" href={c.latitude ? `https://www.google.com/maps/dir/?api=1&destination=${c.latitude},${c.longitude}` : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr[0])}><Navigation />Navigate</a>}
           <div className="grow" />
+          {isFos && <button className="btn sm" disabled={!classic.api || (c && c.closed)} onClick={logVisit} title="Log a field visit (GPS camera)"><Footprints />Log visit</button>}
           <button className="btn primary sm" disabled={!classic.api} onClick={openFull} title="Open the full case: log call / visit / payment, PTP, edits, history"><ExternalLink />Open full case · log activity</button>
         </div>
 

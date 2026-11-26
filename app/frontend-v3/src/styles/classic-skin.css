@@ -119,3 +119,25 @@ html.riq-host .chip.active, html.riq-host .chip.on, html.riq-host .tab.active, h
 html.riq-host tr:hover td { background: rgba(var(--t-accent), .04); }
 html.riq-host .modal-bg > *, html.riq-host .drawer-bg > * { background: #E8EDF6 !important; box-shadow: 14px 14px 30px rgba(120,135,165,.5), -10px -10px 24px #fff !important; }
 html.riq-host button[title="App tour / help"] { box-shadow: 6px 6px 14px #C2CCDD, -6px -6px 14px #fff, inset 0 2px 3px rgba(255,255,255,.4) !important; }
+
+/* ═════════ Soft Clay — full module layer ═════════ */
+html.riq-host .main > * { animation: riqRise .6s cubic-bezier(.2,.8,.2,1) both; }
+html.riq-host .main > *:nth-child(2) { animation-delay: .06s; } html.riq-host .main > *:nth-child(n+3) { animation-delay: .12s; }
+@keyframes riqRise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+html.riq-host .kpi, html.riq-host .kpi-row > .glass, html.riq-host .kpis > .glass { border-radius: 26px !important; background: #E8EDF6 !important; border: 0 !important;
+  box-shadow: 9px 9px 20px #C2CCDD, -9px -9px 20px #FFFFFF !important; }
+html.riq-host .kpi .v, html.riq-host .kpi-row b { font-family: 'Sora', sans-serif; color: #1E2A3D; }
+html.riq-host .kpi .l, html.riq-host .kpi-row .k { text-transform: none; letter-spacing: 0; color: #4F5B70; }
+html.riq-host .section-h h3::before, html.riq-host .section-h h2::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 10px; vertical-align: middle;
+  background: rgb(var(--t-accent)); box-shadow: 2px 2px 4px #C2CCDD, -2px -2px 4px #fff; }
+html.riq-host .badge { background: #E8EDF6 !important; box-shadow: inset 2px 2px 4px #C2CCDD, inset -2px -2px 4px #FFFFFF; border-radius: 999px; }
+html.riq-host .badge.paid { color: #15803D !important; } html.riq-host .badge.unpaid { color: #DC2626 !important; } html.riq-host .badge.partial { color: #B45309 !important; }
+html.riq-host .badge.new, html.riq-host .badge.ptp, html.riq-host .badge.allocated { color: rgb(var(--t-accent)) !important; }
+html.riq-host thead th { background: #E8EDF6 !important; border-bottom: 0 !important; }
+html.riq-host tbody td, html.riq-host .stat-row { border-bottom-color: rgba(30,42,61,.06) !important; }
+html.riq-host tr:hover td { background: transparent !important; box-shadow: inset 0 0 0 999px rgba(var(--t-accent), .03); }
+html.riq-host .tablewrap, html.riq-host .hscroll { border-radius: 20px; box-shadow: inset 3px 3px 7px #C2CCDD, inset -3px -3px 7px #FFFFFF; padding: 4px; }
+html.riq-host .grid3 > .glass:hover, html.riq-host .grid2 > .glass:hover { box-shadow: 12px 12px 26px #C2CCDD, -12px -12px 26px #FFFFFF !important; }
+html.riq-host .modal { border-radius: 30px !important; animation: riqPop .3s cubic-bezier(.2,.8,.2,1); }
+@keyframes riqPop { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { html.riq-host .main > *, html.riq-host .modal { animation: none !important; } }

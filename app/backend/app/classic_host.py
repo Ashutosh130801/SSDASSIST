@@ -66,6 +66,7 @@ _PATCHES: list[tuple[str, str, str]] = [
     ("bridge",
      "  const closeTour = () => { try { localStorage.setItem(tourKey, '1'); } catch (e) {} setTour(false); };",
      "  const closeTour = () => { try { localStorage.setItem(tourKey, '1'); } catch (e) {} setTour(false); };\n"
+     "  const [riqPanel, setRiqPanel] = useState(null);\n"
      "  useEffect(() => {\n"
      "    if (!RIQ_HOST) return undefined;\n"
      "    window.__riqClassic = Object.assign(window.__riqClassic || {}, {\n"
@@ -74,9 +75,38 @@ _PATCHES: list[tuple[str, str, str]] = [
      "      openCase: (id) => setNotifCase(Number(id)),\n"
      "      openTour: () => setTour(true),\n"
      "      printLiner: () => printLiner(),\n"
+     "      /* Classic forms reused by the native pages (GPS-camera visit, staff editor, profiles, audit detail…). Resolves true when saved. */\n"
+     "      openPanel: (kind, props) => new Promise(res => setRiqPanel({ kind, props: props || {}, res })),\n"
+     "      dialCase: (id) => dialCaseViaVici(id),\n"
+     "      dialerStatus: () => dialerStatus(),\n"
+     "      /* Live refresh: same WebSocket + local events the classic screens listen to. */\n"
+     "      subscribe: (cb) => {\n"
+     "        let t; const fire = (m) => { clearTimeout(t); t = setTimeout(() => { try { cb(m); } catch (e) {} }, 700); };\n"
+     "        const conn = ssdWS({ onMessage: e => { try { const m = JSON.parse(e.data); if (m.type === 'data_changed' || m.type === 'case_update') fire(m); } catch (x) {} } });\n"
+     "        const local = () => fire({ type: 'case_update' });\n"
+     "        window.addEventListener('ssd-case-changed', local);\n"
+     "        return () => { clearTimeout(t); try { conn.close(); } catch (e) {} window.removeEventListener('ssd-case-changed', local); };\n"
+     "      },\n"
      "    });\n"
      "    const h = riqHost(); if (h && h.onReady) h.onReady(window.__riqClassic);\n"
      "  });"),
+    ("panels",
+     "        {notifCase && <CaseDrawer c={{ id: notifCase }} onClose={() => setNotifCase(null)} onChanged={() => {}} />}",
+     "        {notifCase && <CaseDrawer c={{ id: notifCase }} onClose={() => setNotifCase(null)} onChanged={() => { if (RIQ_HOST) window.dispatchEvent(new CustomEvent('ssd-case-changed')); }} />}\n"
+     "        {RIQ_HOST && riqPanel && (() => {\n"
+     "          const P = riqPanel.props;\n"
+     "          const done = (ok) => { const p = riqPanel; setRiqPanel(null); if (ok) window.dispatchEvent(new CustomEvent('ssd-case-changed')); p.res(!!ok); };\n"
+     "          switch (riqPanel.kind) {\n"
+     "            case 'visit': return <VisitModal c={P.c} onClose={() => done(false)} onDone={() => done(true)} />;\n"
+     "            case 'staff': return <StaffModal me={user} editing={P.editing || null} presetBranch={P.presetBranch} onClose={() => done(false)} onDone={() => done(true)} />;\n"
+     "            case 'perf': return <PerformanceModal u={P.u} onClose={() => done(false)} />;\n"
+     "            case 'employee': return <EmployeeDashboard u={P.u} config={config} onClose={() => done(false)} />;\n"
+     "            case 'audit': return P.row && P.row.meta && P.row.meta.dpr ? <DprLogModal row={P.row} onClose={() => done(false)} />\n"
+     "              : P.row && P.row.meta && P.row.meta.bulk ? <BulkLogModal row={P.row} onClose={() => done(false)} />\n"
+     "              : <AuditDetailModal row={P.row} onClose={() => done(false)} />;\n"
+     "            default: setTimeout(() => done(false)); return null;\n"
+     "          }\n"
+     "        })()}"),
     ("none-view",
      "      case 'dashboard': return <Dashboard user={user} />;",
      "      case 'none': return null;\n      case 'dashboard': return <Dashboard user={user} />;"),

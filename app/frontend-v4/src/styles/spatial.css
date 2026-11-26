@@ -128,3 +128,37 @@ table.t tbody tr:hover { background: rgba(59,130,246,.10) !important; box-shadow
   .side, .bento > * .tilt, .bento > * > .card, .login-form .login-box { transform: none !important; }
 }
 @media (max-width: 860px) { .side { transform: none; } .bento > * .tilt, .bento > * > .card { transform: none !important; } .sp-rings { display: none; } }
+
+/* ── Redesigned modules in the spatial stage ── */
+.chip, .seg-tabs button, .grp-h {
+  background: rgba(255,255,255,.05) !important; border: 1px solid rgba(147,197,253,.22) !important; color: var(--text-2) !important;
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.chip:hover, .seg-tabs button:hover { color: #fff !important; box-shadow: 0 0 20px -6px rgba(59,130,246,.9) !important; }
+.chip.on, .seg-tabs button.on { color: #fff !important; background: linear-gradient(90deg, rgba(59,130,246,.45), rgba(56,189,248,.18)) !important;
+  border-color: rgba(125,211,252,.6) !important; box-shadow: 0 0 26px -6px rgba(56,189,248,.95), inset 0 0 12px rgba(125,211,252,.25) !important; }
+.chip.on .chip-n, .seg-tabs button.on b { background: rgba(125,211,252,.22) !important; color: #E0F2FE !important; }
+.seg-tabs button b, .chip-n { background: rgba(125,211,252,.12); color: #7DD3FC; }
+.grp-t, .ccard-name, .member-pct, .lane-n { text-shadow: 0 0 18px rgba(125,211,252,.45); }
+.mod-ic { color: #031026 !important; box-shadow: 0 0 26px -4px rgba(var(--t), .95), inset 0 1px 2px rgba(255,255,255,.55) !important; }
+.ccard, .member, .lane, .creq { transform-style: preserve-3d; }
+.ccard:hover, .member:hover { transform: perspective(1000px) translateZ(18px) rotateX(2deg) !important; box-shadow: var(--holo-glow), 0 0 50px -10px rgba(var(--t-accent), .8) !important; }
+.ccard::before { box-shadow: 0 0 14px currentColor; }
+.ccard.st-paid { background: linear-gradient(160deg, rgba(74,222,128,.14), rgba(255,255,255,.02)) !important; }
+.ccard.st-touched { background: linear-gradient(160deg, rgba(251,191,36,.12), rgba(255,255,255,.02)) !important; }
+.ccard-amt b { text-shadow: 0 0 18px rgba(251,191,36,.5); }
+.ccard-addr a, .ccard-note, .member-stats div, .metric, .trend, .lane-i, .remind-i, .creq-diff, .quote, .day {
+  background: rgba(255,255,255,.04) !important; border: 1px solid rgba(147,197,253,.14) !important; }
+.lane-i:hover { box-shadow: inset 3px 0 0 #7DD3FC, 0 0 20px -8px rgba(59,130,246,.9); }
+.trend.hot { background: linear-gradient(160deg, rgba(74,222,128,.16), rgba(255,255,255,.02)) !important; border-color: rgba(74,222,128,.35) !important; }
+.trend-v, .metric-v { text-shadow: 0 0 16px rgba(125,211,252,.35); }
+.pbar { background: rgba(147,197,253,.12); } .pbar i { box-shadow: 0 0 14px rgba(var(--t), .9); }
+.av { color: #031026 !important; box-shadow: 0 0 16px -4px rgba(var(--t-accent), .95); }
+.modal-v { background: var(--holo-strong) !important; border: 1px solid var(--holo-edge) !important; box-shadow: var(--holo-glow), 0 60px 120px -40px #000 !important; }
+@keyframes modalIn { from { opacity: 0; transform: translate(-50%, -50%) perspective(1200px) translateZ(-220px) rotateX(18deg); filter: blur(6px); } to { opacity: 1; transform: translate(-50%, -50%); filter: none; } }
+.pop-menu { background: var(--holo-strong) !important; border-color: var(--holo-edge) !important; }
+.feed-i { border-bottom-color: rgba(147,197,253,.1); } .feed-d { color: #7DD3FC; }
+.select, .input { color: var(--text); }
+table.t tr.grp-row td { background: rgba(59,130,246,.14) !important; color: #7DD3FC; letter-spacing: .04em; }
+table.t tr.you td { background: rgba(56,189,248,.14) !important; }
+.rank-badge { box-shadow: 0 0 22px -4px rgba(245,158,11,.95); }
+.btn.wa { color: #4ade80 !important; }

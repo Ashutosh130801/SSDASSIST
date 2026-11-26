@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import './styles/app.css';
 import './styles/surfaces.css';
+import './styles/modules.css';
 import './styles/spatial.css';
 import { AuthProvider, useAuth } from './lib/auth.jsx';
 import { detectEdition, getMode, setMode } from './lib/edition.js';
@@ -19,6 +20,15 @@ import Accounts from './pages/Accounts.jsx';
 import Ptp from './pages/Ptp.jsx';
 import Attendance from './pages/Attendance.jsx';
 import ClassicPage from './pages/ClassicPage.jsx';
+import MyAccounts from './modules/MyAccounts.jsx';
+import JointCases from './modules/JointCases.jsx';
+import CallQueue from './modules/CallQueue.jsx';
+import MyPerformance from './modules/MyPerformance.jsx';
+import Todo from './modules/Todo.jsx';
+import Escalations from './modules/Escalations.jsx';
+import MyTeam from './modules/MyTeam.jsx';
+import Leave from './modules/Leave.jsx';
+import { ChangeRequests, Devices, AuditLog, Activity, Rtsb, Monitor } from './modules/Admin.jsx';
 
 const edition = detectEdition();
 
@@ -83,6 +93,20 @@ function Workspace({ mode, setM, palette, setPal, onLogout }) {
           <Route path="/cases" element={nativeOr('cases', <Accounts />)} />
           <Route path="/ptp" element={nativeOr('ptp', <Ptp />)} />
           <Route path="/attendance" element={nativeOr('attendance', <Attendance />)} />
+          <Route path="/fcases" element={nativeOr('fcases', <MyAccounts mapRoute={routeFor('fmap', native)} />)} />
+          <Route path="/jointcases" element={nativeOr('jointcases', <JointCases />)} />
+          <Route path="/queue" element={nativeOr('queue', <CallQueue />)} />
+          <Route path="/myperf" element={nativeOr('myperf', <MyPerformance />)} />
+          <Route path="/todo" element={nativeOr('todo', <Todo />)} />
+          <Route path="/escalations" element={nativeOr('escalations', <Escalations />)} />
+          <Route path="/tldash" element={nativeOr('tldash', <MyTeam />)} />
+          <Route path="/leave" element={nativeOr('leave', <Leave />)} />
+          <Route path="/preqs" element={nativeOr('preqs', <ChangeRequests />)} />
+          <Route path="/devices" element={nativeOr('devices', <Devices />)} />
+          <Route path="/audit" element={nativeOr('audit', <AuditLog />)} />
+          <Route path="/records" element={nativeOr('records', <Activity />)} />
+          <Route path="/rtsb" element={nativeOr('rtsb', <Rtsb />)} />
+          <Route path="/monitor" element={nativeOr('monitor', <Monitor />)} />
           <Route path="/m/:id" element={<ClassicRoute />} />
           <Route path="*" element={<Navigate to={home} replace />} />
         </Routes>
