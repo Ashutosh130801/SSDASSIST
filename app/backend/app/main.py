@@ -815,6 +815,47 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
+# Redesigned UIs — each its own folder + Vite build, served side by side. Purely additive: the classic
+# UI at "/" is untouched. Registered before the "/" mount.
+#   /v2/ → frontend-v2  Aurora Glass (Enterprise / Premium looks)
+#   /v3/ → frontend-v3  Soft Clay
+#   /v4/ → frontend-v4  Spatial 3D
+from fastapi.responses import RedirectResponse as _Redirect, HTMLResponse as _Html, Response as _Resp
+from . import classic_host as _ch
+_V2_NOCACHE = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+
+# Classic runtime the new UIs embed: a patched copy of the LIVE classic app, generated on the fly
+# (the files at "/" are never modified). Shared by every new UI. See app/classic_host.py.
+@app.get("/v2/classic/index.html", include_in_schema=False)
+def _classic_host_index():
+    try:
+        return _Html(_ch.host_html(FRONTEND_DIR), headers=_V2_NOCACHE)
+    except _ch.PatchError as e:
+        return _Html(f"<!-- {e} -->", status_code=503, headers=_V2_NOCACHE)
+
+
+@app.get("/v2/classic/app.host.jsx", include_in_schema=False)
+def _classic_host_js():
+    try:
+        return _Resp(_ch.host_js(FRONTEND_DIR), media_type="text/babel; charset=utf-8",
+                     headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    except _ch.PatchError as e:
+        return _Resp(f"/* {e} */", status_code=503, media_type="text/plain")
+
+
+for _p, _folder in (("v2", "frontend-v2"), ("v3", "frontend-v3"), ("v4", "frontend-v4")):
+    _dist = os.path.abspath(os.path.join(BASE_DIR, "..", _folder, "dist"))
+    if not os.path.isdir(_dist):
+        continue
+
+    def _index(d=_dist):
+        return FileResponse(os.path.join(d, "index.html"), headers=_V2_NOCACHE)
+
+    app.add_api_route(f"/{_p}", (lambda p=_p: _Redirect(f"/{p}/")), include_in_schema=False)
+    app.add_api_route(f"/{_p}/", _index, include_in_schema=False)
+    app.add_api_route(f"/{_p}/index.html", _index, include_in_schema=False)
+    app.mount(f"/{_p}", StaticFiles(directory=_dist), name=f"frontend_{_p}")
+
 if os.path.isdir(FRONTEND_DIR):
     # index.html (and the service worker) must NEVER be cached: they're the entry point that
     # references app.jsx?v=NNN, so if a client caches index.html it keeps loading the OLD app.jsx

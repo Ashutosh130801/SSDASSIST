@@ -1,0 +1,121 @@
+/* Injected into the embedded classic app (html.riq-host). Hides classic chrome, lays the active
+   module over v2's content area, and re-skins classic components with the v2 palette
+   (palette vars are written onto <html> by ClassicHost). Classic modules stay on a light sheet
+   in both modes — many of them use light inline colours. */
+
+html.riq-host {
+  --text: #141821; --text-2: #4A5160; --text-3: #8A90A0; --line: rgba(20, 24, 40, .09);
+  /* classic tokens → v2 palette */
+  --gold: var(--accent); --gold-2: var(--accent-2); --gold-deep: var(--accent-ink); --gold-soft: var(--accent-soft);
+  --bg-0: rgba(255, 255, 255, .55); --bg-1: #FFFFFF; --bg-2: rgba(var(--t-accent), .06);
+  --ink: var(--text); --ink-soft: var(--text-2); --ink-dim: var(--text-3);
+  --glass: rgba(255, 255, 255, .72); --glass-2: rgba(255, 255, 255, .92);
+  --stroke: rgba(var(--t-accent), .24); --stroke-soft: var(--line);
+  --brand: var(--accent); --navy: #141821;
+  --radius: 18px; --shadow: 0 12px 34px -16px rgba(20, 24, 60, .22);
+  background: transparent !important;
+}
+html.riq-host body {
+  background: transparent !important; background-image: none !important;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; color: var(--text);
+}
+html.riq-host h1, html.riq-host h2, html.riq-host h3, html.riq-host .brandfont { font-family: 'Sora', 'Inter', sans-serif; letter-spacing: -.015em; }
+
+/* ── Chrome off: v2 provides sidebar, top bar, bell, downloads, sign-out ── */
+html.riq-host .sidebar, html.riq-host .topbar, html.riq-host .mobnav { display: none !important; }
+html.riq-host .app { display: block; min-height: 0; }
+html.riq-host .sidebar ~ .main { margin-left: 0 !important; }
+
+/* ── Module area = v2 content rect ── */
+html.riq-host .main {
+  position: fixed !important; top: var(--ht, 80px); left: var(--hl, 270px); width: var(--hw, 70vw); height: var(--hh, 80vh);
+  overflow: auto; overflow-x: hidden; margin: 0 !important; padding: 16px 18px 48px !important; border-radius: 22px;
+  scrollbar-gutter: stable;
+}
+html.riq-host.riq-module .main {
+  background: rgba(255, 255, 255, .80);
+  box-shadow: 0 24px 60px -28px rgba(20, 24, 60, .35), inset 0 1px 0 rgba(255,255,255,.9);
+  border: 1px solid rgba(255, 255, 255, .85);
+  animation: riqIn .45s cubic-bezier(.2, .8, .2, 1) both;
+}
+html.riq-host[data-mode="dark"].riq-module .main { background: rgba(250, 250, 253, .94); border-color: rgba(255,255,255,.18); }
+@keyframes riqIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+/* No module showing: only floating things (popups, chat, bot, modals, check-in) are visible. */
+html.riq-host:not(.riq-module) .main { visibility: hidden; pointer-events: none; overflow: hidden; background: none; }
+html.riq-host:not(.riq-module) .main [style*="position: fixed"],
+html.riq-host:not(.riq-module) .main [style*="position:fixed"],
+html.riq-host:not(.riq-module) .main .modal-bg,
+html.riq-host:not(.riq-module) .main .drawer-bg,
+html.riq-host:not(.riq-module) .main .toast,
+html.riq-host:not(.riq-module) .main [role="status"] { visibility: visible; pointer-events: auto; }
+
+/* Telecaller screen-pop status → a floating pill so it stays visible on every screen. */
+html.riq-host .main > [role="status"] {
+  position: fixed !important; left: calc(var(--hl, 270px) + 16px); bottom: 18px; z-index: 2400; max-width: min(560px, 60vw);
+  margin: 0 !important; border-radius: 999px !important; padding: 8px 16px !important;
+  background: rgba(255, 255, 255, .92) !important; box-shadow: 0 14px 30px -14px rgba(20, 24, 60, .45);
+}
+
+/* ── Re-skin classic primitives ── */
+html.riq-host .glass {
+  background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(255,255,255,.78)) !important;
+  border: 1px solid rgba(255, 255, 255, .9) !important;
+  box-shadow: 0 16px 40px -22px rgba(20, 24, 60, .30), inset 0 1px 0 rgba(255,255,255,.95) !important;
+  border-radius: 20px;
+}
+html.riq-host .btn { border-radius: 12px !important; font-weight: 600; transition: transform .15s, box-shadow .2s, filter .2s; }
+html.riq-host .btn:hover { transform: translateY(-1px); }
+html.riq-host .btn.gold, html.riq-host .btn.primary {
+  background: linear-gradient(180deg, rgba(var(--t-accent), .82), rgb(var(--t-accent))) !important; color: #fff !important; border: 0 !important;
+  box-shadow: 0 12px 20px -12px rgba(var(--t-accent), .9), inset 0 2px 3px rgba(255,255,255,.4), inset 0 -4px 8px rgba(0,0,0,.18) !important;
+}
+html.riq-host .input, html.riq-host select, html.riq-host textarea {
+  border-radius: 12px !important;
+  box-shadow: inset 2px 3px 6px rgba(20, 24, 60, .06), inset -2px -2px 5px rgba(255,255,255,.9);
+}
+html.riq-host .input:focus, html.riq-host select:focus, html.riq-host textarea:focus { outline: none; border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(var(--t-accent), .2) !important; }
+html.riq-host .chip.active, html.riq-host .chip.on, html.riq-host .tab.active, html.riq-host .tab.on {
+  background: linear-gradient(150deg, rgba(var(--t-accent), .12), rgba(var(--t-accent), .22)) !important; color: var(--accent-ink) !important;
+  box-shadow: 0 8px 14px -10px rgba(var(--t-accent), .8), inset 0 1px 0 rgba(255,255,255,.7);
+}
+html.riq-host table th { color: var(--text-3); letter-spacing: .03em; }
+html.riq-host tr:hover td { background: rgba(var(--t-accent), .045); }
+html.riq-host .modal-bg, html.riq-host .drawer-bg { background: rgba(10, 12, 24, .34) !important; backdrop-filter: blur(8px) saturate(140%) !important; }
+html.riq-host .modal-bg > *, html.riq-host .drawer-bg > * { border-radius: 22px; }
+html.riq-host .toast { border-radius: 14px !important; box-shadow: 0 18px 40px -16px rgba(0,0,0,.45) !important; }
+html.riq-host a { color: var(--accent); }
+html.riq-host ::-webkit-scrollbar-thumb { background: rgba(var(--t-accent), .35); background-clip: padding-box; }
+
+/* Help "?" button: lift it so it doesn't sit on v2's corner, and match the palette. */
+html.riq-host button[title="App tour / help"] {
+  background: linear-gradient(150deg, rgba(var(--t-accent), .85), rgb(var(--t-accent))) !important; color: #fff !important;
+  border: 0 !important; box-shadow: 0 14px 24px -12px rgba(var(--t-accent), .9), inset 0 2px 3px rgba(255,255,255,.45), inset 0 -4px 8px rgba(0,0,0,.2) !important;
+}
+
+@media (max-width: 860px) {
+  html.riq-host .main { padding: 12px 10px 40px !important; border-radius: 16px; }
+}
+
+/* ═════════ Soft Clay skin (v3) — classic modules moulded like the rest of the template ═════════ */
+html.riq-host { --surf: #E8EDF6; --sh-d: #C2CCDD; --sh-l: #FFFFFF; --bg-0: #E8EDF6; --bg-1: #E8EDF6; --glass: #E8EDF6; --glass-2: #E8EDF6; }
+html.riq-host.riq-module .main, html.riq-host[data-mode="dark"].riq-module .main {
+  background: #E8EDF6 !important; border: 0 !important; border-radius: 30px !important;
+  box-shadow: 10px 10px 24px #C2CCDD, -10px -10px 24px #FFFFFF !important;
+}
+html.riq-host .glass {
+  background: #E8EDF6 !important; border: 0 !important; border-radius: 24px !important;
+  box-shadow: 8px 8px 18px #C2CCDD, -8px -8px 18px #FFFFFF !important;
+}
+html.riq-host .btn { background: #E8EDF6 !important; border: 0 !important; box-shadow: 4px 4px 9px #C2CCDD, -4px -4px 9px #FFFFFF !important; }
+html.riq-host .btn:active { box-shadow: inset 3px 3px 7px #C2CCDD, inset -3px -3px 7px #FFFFFF !important; }
+html.riq-host .btn.gold, html.riq-host .btn.primary { background: linear-gradient(145deg, rgba(var(--t-accent), .82), rgb(var(--t-accent))) !important; color: #fff !important;
+  box-shadow: 5px 5px 12px #C2CCDD, -5px -5px 12px #FFFFFF, inset 0 2px 3px rgba(255,255,255,.35) !important; }
+html.riq-host .input, html.riq-host select, html.riq-host textarea { background: #E8EDF6 !important; border: 0 !important;
+  box-shadow: inset 3px 3px 7px #C2CCDD, inset -3px -3px 7px #FFFFFF !important; }
+html.riq-host .chip, html.riq-host .tab { background: #E8EDF6 !important; border: 0 !important; box-shadow: 3px 3px 7px #C2CCDD, -3px -3px 7px #FFFFFF; }
+html.riq-host .chip.active, html.riq-host .chip.on, html.riq-host .tab.active, html.riq-host .tab.on {
+  background: #E8EDF6 !important; color: rgb(var(--t-accent)) !important; box-shadow: inset 3px 3px 7px #C2CCDD, inset -3px -3px 7px #FFFFFF !important; }
+html.riq-host tr:hover td { background: rgba(var(--t-accent), .04); }
+html.riq-host .modal-bg > *, html.riq-host .drawer-bg > * { background: #E8EDF6 !important; box-shadow: 14px 14px 30px rgba(120,135,165,.5), -10px -10px 24px #fff !important; }
+html.riq-host button[title="App tour / help"] { box-shadow: 6px 6px 14px #C2CCDD, -6px -6px 14px #fff, inset 0 2px 3px rgba(255,255,255,.4) !important; }

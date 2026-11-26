@@ -1,0 +1,117 @@
+/* ───────────────────────── Design tokens ─────────────────────────
+   Two editions × two modes, all components read only these variables.
+   Enterprise ("Atlas")  — Linear / Stripe style: zinc neutrals, indigo accent, crisp hairlines.
+   Premium   ("Aurum")   — luxe fintech: ink-navy canvas, champagne-gold + violet accents, glass. */
+
+:root,
+[data-edition="enterprise"][data-mode="light"] {
+  --font: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-display: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --bg: #F7F7F8;           /* page */
+  --bg-elev: #FFFFFF;      /* cards, sidebar */
+  --bg-sunken: #F1F1F3;    /* inputs, table header */
+  --bg-hover: #F4F4F6;
+  --bg-active: #EEF0FF;
+  --line: #E6E6EA;
+  --line-strong: #D4D4DA;
+
+  --text: #18181B;
+  --text-2: #52525B;
+  --text-3: #8A8A94;
+
+  --accent: #4F46E5;        /* indigo-600 */
+  --accent-2: #6366F1;
+  --accent-soft: #EEF0FF;
+  --accent-ink: #3730A3;
+  --on-accent: #FFFFFF;
+
+  --good: #16A34A;  --good-soft: #E8F7EE;  --good-ink: #166534;
+  --warn: #D97706;  --warn-soft: #FEF4E2;  --warn-ink: #92400E;
+  --bad: #DC2626;   --bad-soft: #FDECEC;   --bad-ink: #991B1B;
+  --info: #0284C7;  --info-soft: #E6F4FB;  --info-ink: #075985;
+
+  --chart-1: #4F46E5; --chart-2: #0EA5E9; --chart-3: #16A34A; --chart-4: #F59E0B; --chart-5: #EC4899; --chart-6: #8B5CF6;
+
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 2px rgba(16, 16, 24, .05);
+  --shadow: 0 1px 2px rgba(16, 16, 24, .04), 0 4px 16px rgba(16, 16, 24, .05);
+  --shadow-lg: 0 12px 40px rgba(16, 16, 24, .14);
+  --ring: 0 0 0 3px rgba(79, 70, 229, .18);
+
+  --sidebar-w: 248px;
+  --glass: none;
+  --hero: linear-gradient(180deg, #FFFFFF, #FFFFFF);
+}
+
+[data-edition="enterprise"][data-mode="dark"] {
+  --bg: #0E0E11; --bg-elev: #16161A; --bg-sunken: #1C1C21; --bg-hover: #1E1E24; --bg-active: #23233A;
+  --line: #26262C; --line-strong: #34343C;
+  --text: #F4F4F5; --text-2: #A1A1AA; --text-3: #71717A;
+  --accent: #818CF8; --accent-2: #A5B4FC; --accent-soft: #23233A; --accent-ink: #C7D2FE; --on-accent: #0E0E11;
+  --good-soft: #0F2A1B; --good-ink: #86EFAC; --warn-soft: #2B1E08; --warn-ink: #FCD34D;
+  --bad-soft: #2E1111; --bad-ink: #FCA5A5; --info-soft: #0B2230; --info-ink: #7DD3FC;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); --shadow-lg: 0 16px 48px rgba(0,0,0,.6);
+  --ring: 0 0 0 3px rgba(129, 140, 248, .25);
+}
+
+/* ── Premium ── */
+[data-edition="premium"] {
+  --font: 'Inter', system-ui, sans-serif;
+  --font-display: 'Sora', 'Inter', sans-serif;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --sidebar-w: 260px;
+  --chart-1: #E8C27A; --chart-2: #8B7CF6; --chart-3: #34D399; --chart-4: #60A5FA; --chart-5: #F472B6; --chart-6: #F59E0B;
+}
+
+[data-edition="premium"][data-mode="dark"] {
+  --bg: #070A12;
+  --bg-elev: rgba(20, 24, 38, .72);
+  --bg-sunken: rgba(255, 255, 255, .04);
+  --bg-hover: rgba(255, 255, 255, .06);
+  --bg-active: rgba(232, 194, 122, .12);
+  --line: rgba(255, 255, 255, .08);
+  --line-strong: rgba(255, 255, 255, .14);
+  --text: #F5F3EE; --text-2: #B6B3C6; --text-3: #7C7990;
+  --accent: #E8C27A;        /* champagne gold */
+  --accent-2: #8B7CF6;      /* violet */
+  --accent-soft: rgba(232, 194, 122, .12);
+  --accent-ink: #F3D9A4;
+  --on-accent: #1A1406;
+  --good: #34D399; --good-soft: rgba(52, 211, 153, .12); --good-ink: #6EE7B7;
+  --warn: #FBBF24; --warn-soft: rgba(251, 191, 36, .12); --warn-ink: #FCD34D;
+  --bad: #F87171;  --bad-soft: rgba(248, 113, 113, .12); --bad-ink: #FCA5A5;
+  --info: #60A5FA; --info-soft: rgba(96, 165, 250, .12); --info-ink: #93C5FD;
+  --shadow-sm: 0 1px 0 rgba(255,255,255,.04) inset;
+  --shadow: 0 1px 0 rgba(255,255,255,.05) inset, 0 10px 30px rgba(0,0,0,.35);
+  --shadow-lg: 0 30px 80px rgba(0,0,0,.6);
+  --ring: 0 0 0 3px rgba(232, 194, 122, .22);
+  --glass: blur(18px) saturate(140%);
+  --hero: radial-gradient(1200px 500px at 10% -10%, rgba(139,124,246,.28), transparent 60%),
+          radial-gradient(900px 420px at 95% 0%, rgba(232,194,122,.20), transparent 60%);
+}
+
+[data-edition="premium"][data-mode="light"] {
+  --bg: #F6F4EF;
+  --bg-elev: rgba(255, 255, 255, .82);
+  --bg-sunken: #EFECE5;
+  --bg-hover: #F1EEE7;
+  --bg-active: #F5ECD9;
+  --line: #E6E1D6; --line-strong: #D8D1C2;
+  --text: #17141F; --text-2: #4F4A5C; --text-3: #8A8497;
+  --accent: #A8822F; --accent-2: #6D5DD3; --accent-soft: #F5ECD9; --accent-ink: #7A5C17; --on-accent: #FFFFFF;
+  --good: #059669; --good-soft: #E3F5EE; --good-ink: #065F46;
+  --warn: #D97706; --warn-soft: #FDF1DD; --warn-ink: #92400E;
+  --bad: #DC2626;  --bad-soft: #FCE9E9; --bad-ink: #991B1B;
+  --info: #2563EB; --info-soft: #E7EEFC; --info-ink: #1E3A8A;
+  --shadow-sm: 0 1px 2px rgba(40, 30, 10, .05);
+  --shadow: 0 1px 2px rgba(40, 30, 10, .04), 0 10px 30px rgba(40, 30, 10, .07);
+  --shadow-lg: 0 30px 80px rgba(40, 30, 10, .18);
+  --ring: 0 0 0 3px rgba(168, 130, 47, .2);
+  --glass: blur(14px) saturate(130%);
+  --hero: radial-gradient(1100px 480px at 0% -10%, rgba(109,93,211,.14), transparent 60%),
+          radial-gradient(900px 420px at 100% 0%, rgba(168,130,47,.16), transparent 60%);
+}

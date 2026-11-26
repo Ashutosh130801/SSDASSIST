@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RecoverIQ — template directions</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&family=JetBrains+Mono:wght@500&family=Fraunces:opsz,wght@9..144,600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#0B1020;color:#E5E9F5}
+.intro{max-width:1240px;margin:0 auto;padding:40px 24px 8px}.intro h1{font-family:Sora;font-size:30px;margin:0 0 6px}.intro p{color:#9AA6C4;margin:0}
+.tpl{max-width:1240px;margin:28px auto 46px;padding:0 24px}
+.tpl-h{display:flex;align-items:baseline;gap:14px;margin-bottom:12px}.tpl-h .n{font-family:Sora;font-weight:800;font-size:44px;color:#3B82F6;line-height:1}
+.tpl-h h2{font-family:Sora;margin:0;font-size:22px}.tpl-h p{margin:2px 0 0;color:#9AA6C4;font-size:13.5px}
+.frame{height:720px;border-radius:22px;overflow:hidden;position:relative;box-shadow:0 30px 80px -30px rgba(0,0,0,.7);border:1px solid rgba(255,255,255,.08)}
+.num{font-variant-numeric:tabular-nums}
+svg{display:block}
+
+/* ───────── A. Aurora Glass (current) ───────── */
+.A{background:radial-gradient(700px 400px at 10% 0%,#BFDBFE,transparent 60%),radial-gradient(700px 500px at 100% 100%,#A5F3FC,transparent 60%),#EEF4FF;color:#0F172A;display:grid;grid-template-columns:230px 1fr;gap:12px;padding:12px}
+.A .side,.A .top,.A .card{background:rgba(255,255,255,.6);backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.85);box-shadow:0 10px 40px -12px rgba(30,35,90,.14)}
+.A .side{border-radius:22px;padding:16px}.A .main{display:flex;flex-direction:column;gap:12px;min-width:0}
+.A .top{border-radius:16px;height:52px;display:flex;align-items:center;padding:0 16px;gap:10px}
+.A .nav div{padding:9px 12px;border-radius:12px;font-size:13px;color:#475569}.A .nav .on{background:linear-gradient(150deg,rgba(37,99,235,.1),rgba(37,99,235,.2)),#fff;color:#0F172A;box-shadow:0 10px 18px -12px #2563EB}
+.A .bento{display:grid;grid-template-columns:1.4fr 1fr;gap:12px}
+.A .hero{border-radius:24px;padding:22px;color:#fff;background:radial-gradient(400px 200px at 90% -20%,rgba(255,255,255,.4),transparent),linear-gradient(135deg,#1D4ED8,#2563EB 50%,#0EA5E9);box-shadow:0 30px 50px -26px #2563EB,inset 0 2px 4px rgba(255,255,255,.35)}
+.A .kpis{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.A .clay{border-radius:22px;padding:14px 16px;background:linear-gradient(150deg,rgba(var(--t),.06),rgba(var(--t),.18)),#fff;box-shadow:0 22px 30px -20px rgba(var(--t),.6),inset 0 -8px 14px rgba(var(--t),.12),inset 0 8px 14px #fff}
+.A .card{border-radius:20px;padding:16px}
+
+/* ───────── B. Command Center ───────── */
+.B{background:#060B18;color:#DCE6FF;font-family:Inter;display:flex;flex-direction:column}
+.B .bar{height:54px;display:flex;align-items:center;gap:22px;padding:0 22px;border-bottom:1px solid #15203B;background:linear-gradient(180deg,#0A1226,#070D1C)}
+.B .tabs span{font-size:13px;color:#7C8DB5;padding:17px 0;margin-right:18px}.B .tabs .on{color:#fff;box-shadow:inset 0 -2px 0 #3B82F6}
+.B .grid{flex:1;display:grid;grid-template-columns:repeat(12,1fr);grid-auto-rows:minmax(0,1fr);gap:1px;background:#15203B}
+.B .cell{background:#08101F;padding:16px;position:relative;overflow:hidden}
+.B .lbl{font-family:'JetBrains Mono';font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:#5B6E99}
+.B .big{font-family:Sora;font-size:30px;font-weight:700;color:#fff;margin-top:8px}
+.B .up{color:#34D399;font-size:12px;font-family:'JetBrains Mono'}
+.B .glow{position:absolute;inset:auto -40px -60px auto;width:180px;height:180px;border-radius:50%;background:radial-gradient(circle,rgba(59,130,246,.35),transparent 70%)}
+.B table{width:100%;border-collapse:collapse;font-size:12px}.B td,.B th{padding:7px 6px;border-bottom:1px solid #121C33;text-align:left}.B th{font-family:'JetBrains Mono';font-weight:500;color:#5B6E99;font-size:10px;letter-spacing:.1em}
+.B .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px}
+
+/* ───────── C. Soft Clay ───────── */
+.C{background:#E9EEF8;color:#1E293B;display:grid;grid-template-columns:84px 1fr;font-family:Inter}
+.C .rail{display:flex;flex-direction:column;align-items:center;gap:16px;padding:22px 0}
+.C .ri{width:46px;height:46px;border-radius:16px;background:#E9EEF8;box-shadow:6px 6px 12px #C9D2E3,-6px -6px 12px #fff}
+.C .ri.on{background:linear-gradient(145deg,#3B82F6,#2563EB);box-shadow:8px 8px 16px #B9C7E6,-6px -6px 12px #fff,inset 0 2px 3px rgba(255,255,255,.45)}
+.C .body{padding:26px 30px;display:flex;flex-direction:column;gap:22px}
+.C h3{font-family:Sora;font-size:26px;margin:0}
+.C .soft{background:#E9EEF8;border-radius:30px;box-shadow:12px 12px 24px #C5CFE2,-12px -12px 24px #fff}
+.C .ins{background:#E9EEF8;border-radius:18px;box-shadow:inset 6px 6px 12px #C9D2E3,inset -6px -6px 12px #fff}
+.C .k{padding:18px 20px}.C .k b{display:block;font-family:Sora;font-size:28px;margin-top:6px}
+.C .pill{display:inline-block;padding:6px 14px;border-radius:999px;font-size:12px;font-weight:600}
+
+/* ───────── D. Fintech Pro ───────── */
+.D{background:#fff;color:#0A2540;font-family:Inter;display:flex;flex-direction:column}
+.D .hdr{display:flex;align-items:center;gap:26px;padding:0 32px;height:60px;border-bottom:1px solid #E6EBF1}
+.D .hdr .t{font-size:13.5px;color:#425466}.D .hdr .t.on{color:#2563EB;font-weight:600}
+.D .wrap{padding:28px 32px;display:grid;grid-template-columns:2fr 1fr;gap:28px;flex:1}
+.D h3{font-family:'Fraunces',serif;font-size:34px;font-weight:600;margin:0;letter-spacing:-.02em}
+.D .sub{color:#697386;font-size:13.5px}
+.D .stat{border-top:1px solid #E6EBF1;padding-top:12px}.D .stat .l{color:#697386;font-size:12.5px}.D .stat b{font-size:22px;display:block;margin-top:4px}
+.D table{width:100%;border-collapse:collapse;font-size:13px}.D td,.D th{padding:10px 0;border-bottom:1px solid #EEF2F7;text-align:left}.D th{color:#8792A2;font-weight:500;font-size:12px}
+.D .tag{font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:5px}
+.D .side{background:#F6F9FC;border-radius:14px;padding:20px}
+
+/* ───────── E. Spatial 3D ───────── */
+.E{background:radial-gradient(900px 500px at 50% 120%,#1D4ED8 0%,transparent 60%),linear-gradient(180deg,#030712,#071233);color:#E6EEFF;perspective:1400px;overflow:hidden}
+.E .floor{position:absolute;left:-50%;right:-50%;bottom:-40%;height:90%;transform:rotateX(72deg);background-image:linear-gradient(rgba(96,165,250,.35) 1px,transparent 1px),linear-gradient(90deg,rgba(96,165,250,.35) 1px,transparent 1px);background-size:60px 60px;mask:linear-gradient(to top,#000 20%,transparent 85%);-webkit-mask:linear-gradient(to top,#000 20%,transparent 85%)}
+.E .stage{position:absolute;inset:0;transform-style:preserve-3d}
+.E .panel{position:absolute;border-radius:22px;background:linear-gradient(160deg,rgba(255,255,255,.12),rgba(255,255,255,.03));border:1px solid rgba(147,197,253,.35);backdrop-filter:blur(14px);box-shadow:0 40px 80px -30px rgba(0,0,0,.8),0 0 40px -10px rgba(59,130,246,.45),inset 0 1px 0 rgba(255,255,255,.2);padding:18px}
+.E .lbl{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#93C5FD}
+.E .big{font-family:Sora;font-weight:700;font-size:40px;margin-top:6px;text-shadow:0 0 24px rgba(96,165,250,.6)}
+.E .orb{position:absolute;border-radius:50%;background:radial-gradient(circle at 30% 28%,#fff,#93C5FD 22%,#2563EB 58%,#0B1E4F 100%);box-shadow:0 0 80px rgba(59,130,246,.7)}
+.E .ring{position:absolute;border-radius:50%;border:2px solid rgba(147,197,253,.5);transform:rotateX(70deg)}
+</style></head><body>
+<div class="intro"><h1>RecoverIQ — pick a template direction</h1>
+<p>Five complete visual directions, all on the blue palette. Each would apply to every screen (sidebar, dashboard, tables, modules, login). Reply with the letter — or mix, e.g. “B layout with A cards”.</p></div>
+
+<!-- A -->
+<section class="tpl"><div class="tpl-h"><span class="n">A</span><div><h2>Aurora Glass <small style="color:#60A5FA;font-size:13px">· current build</small></h2><p>Frosted glass + clay KPI tiles, bento dashboard, WebGL aurora & 3D particle terrain. Friendly, premium, modern SaaS.</p></div></div>
+<div class="frame A">
+  <div class="side"><div style="display:flex;gap:10px;align-items:center;margin-bottom:18px"><div style="width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#0EA5E9,#2563EB)"></div><b style="font-family:Sora">Recover<span style="color:#2563EB">IQ</span></b></div>
+    <div class="nav"><div class="on">▦ Dashboard</div><div>▤ Accounts</div><div>▥ Live Sheet</div><div>◎ PTP Tracker</div><div>⚑ Escalations</div><div>⌖ Field Tracking</div><div>☷ Team</div><div>◔ MIS</div><div>✦ AI Assist</div></div></div>
+  <div class="main"><div class="top"><span style="color:#64748B;font-size:13px">RecoverIQ › <b style="color:#0F172A">Dashboard</b></span><span style="flex:1"></span><span style="background:#fff;border-radius:10px;padding:7px 12px;font-size:12px;color:#94A3B8;width:240px">Search accounts…  ⌘K</span><span style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#2563EB,#0EA5E9)"></span></div>
+    <div style="font-family:Sora;font-size:22px;font-weight:600">Good evening, <span style="color:#2563EB">Suhas</span></div>
+    <div class="bento"><div class="hero"><div style="font-size:12px;opacity:.85">Recovered this period</div><div class="num" style="font-family:Sora;font-size:44px;font-weight:700">₹1,84,52,300</div><div style="opacity:.85;font-size:13px">of ₹4.28 Cr target · 43.1%</div><div style="height:9px;background:rgba(255,255,255,.25);border-radius:9px;margin-top:14px"><div style="width:43%;height:100%;border-radius:9px;background:linear-gradient(90deg,#fff,#BAE6FD)"></div></div>
+      <div style="display:flex;gap:10px;margin-top:18px"><div style="padding:9px 12px;border-radius:14px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);font-size:11px">Cash<br><b style="font-size:16px">₹23.1 L</b></div><div style="padding:9px 12px;border-radius:14px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);font-size:11px">Resolution<br><b style="font-size:16px">38.4%</b></div></div></div>
+      <div class="kpis"><div class="clay" style="--t:16,185,129">Recovered<b style="display:block;font-family:Sora;font-size:24px;margin-top:8px">₹1.8 Cr</b></div><div class="clay" style="--t:37,99,235">Target<b style="display:block;font-family:Sora;font-size:24px;margin-top:8px">₹4.3 Cr</b></div><div class="clay" style="--t:245,158,11">Pending<b style="display:block;font-family:Sora;font-size:24px;margin-top:8px">₹2.4 Cr</b></div><div class="clay" style="--t:79,70,229">Resolved<b style="display:block;font-family:Sora;font-size:24px;margin-top:8px">38.4%</b></div></div></div>
+    <div class="card" style="flex:1"><b>Collections trend</b><svg viewBox="0 0 800 180" width="100%" height="200"><defs><linearGradient id="ga" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563EB" stop-opacity=".35"/><stop offset="1" stop-color="#2563EB" stop-opacity="0"/></linearGradient></defs><path d="M0 140 C60 120 90 150 140 110 S240 60 300 90 S420 40 480 70 S600 20 660 50 S760 30 800 20 L800 180 L0 180Z" fill="url(#ga)"/><path d="M0 140 C60 120 90 150 140 110 S240 60 300 90 S420 40 480 70 S600 20 660 50 S760 30 800 20" fill="none" stroke="#2563EB" stroke-width="3"/></svg></div>
+  </div>
+</div></section>
+
+<!-- B -->
+<section class="tpl"><div class="tpl-h"><span class="n">B</span><div><h2>Command Center</h2><p>Dark navy operations console: top tab navigation, edge-to-edge data grid, monospace labels, live map & ticker. Built for head office / managers watching everything at once.</p></div></div>
+<div class="frame B">
+  <div class="bar"><div style="width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#38BDF8,#2563EB)"></div><b style="font-family:Sora">RecoverIQ <span style="color:#3B82F6">OPS</span></b>
+    <div class="tabs"><span class="on">Overview</span><span>Accounts</span><span>Field</span><span>Calling</span><span>MIS</span><span>People</span></div><span style="flex:1"></span>
+    <span style="font-family:'JetBrains Mono';font-size:11px;color:#34D399">● LIVE · 142 agents online</span></div>
+  <div class="grid">
+    <div class="cell" style="grid-column:span 3"><div class="lbl">Recovered MTD</div><div class="big num">₹1.84 Cr</div><div class="up">▲ 12.4% vs LMTD</div><div class="glow"></div></div>
+    <div class="cell" style="grid-column:span 3"><div class="lbl">Recovery rate</div><div class="big num">43.1%</div><div class="up">▲ 3.2 pts</div></div>
+    <div class="cell" style="grid-column:span 3"><div class="lbl">PTP due today</div><div class="big num">318</div><div style="color:#FBBF24;font-size:12px;font-family:'JetBrains Mono'">₹38.2 L promised</div></div>
+    <div class="cell" style="grid-column:span 3"><div class="lbl">Field visits today</div><div class="big num">1,204</div><div class="up">▲ 86 in last hour</div></div>
+    <div class="cell" style="grid-column:span 7;grid-row:span 3"><div class="lbl">Collections · 30 days</div>
+      <svg viewBox="0 0 700 300" width="100%" height="85%"><g stroke="#13203D"><line x1="0" y1="60" x2="700" y2="60"/><line x1="0" y1="130" x2="700" y2="130"/><line x1="0" y1="200" x2="700" y2="200"/></g>
+      <path d="M0 240 L40 220 L80 230 L120 190 L160 200 L200 150 L240 170 L280 120 L320 140 L360 100 L400 115 L440 80 L480 95 L520 60 L560 78 L600 45 L640 60 L700 30" fill="none" stroke="#3B82F6" stroke-width="2.5"/><path d="M0 240 L40 220 L80 230 L120 190 L160 200 L200 150 L240 170 L280 120 L320 140 L360 100 L400 115 L440 80 L480 95 L520 60 L560 78 L600 45 L640 60 L700 30 L700 300 L0 300Z" fill="rgba(59,130,246,.12)"/>
+      <g fill="#22D3EE"><rect x="10" y="270" width="14" height="30"/><rect x="50" y="260" width="14" height="40"/><rect x="90" y="265" width="14" height="35"/><rect x="130" y="250" width="14" height="50"/><rect x="170" y="255" width="14" height="45"/><rect x="210" y="240" width="14" height="60"/><rect x="250" y="248" width="14" height="52"/><rect x="290" y="235" width="14" height="65"/></g></svg></div>
+    <div class="cell" style="grid-column:span 5;grid-row:span 3;background:radial-gradient(circle at 60% 50%,rgba(59,130,246,.18),transparent 60%),#08101F"><div class="lbl">Live field map · Hyderabad</div>
+      <svg viewBox="0 0 400 260" width="100%" height="88%"><g stroke="#1B2B52" fill="none"><path d="M20 200 Q120 120 200 150 T380 90"/><path d="M40 40 Q160 100 220 60 T380 180"/><path d="M0 120 H400"/><path d="M200 0 V260"/></g>
+      <g fill="#3B82F6"><circle cx="120" cy="140" r="5"/><circle cx="210" cy="95" r="5"/><circle cx="300" cy="160" r="5"/><circle cx="260" cy="210" r="5"/><circle cx="80" cy="80" r="5"/></g><g fill="none" stroke="#3B82F6" opacity=".4"><circle cx="210" cy="95" r="14"/><circle cx="300" cy="160" r="14"/></g><g fill="#34D399"><circle cx="160" cy="190" r="4"/><circle cx="330" cy="70" r="4"/></g></svg></div>
+    <div class="cell" style="grid-column:span 8;grid-row:span 2"><div class="lbl" style="margin-bottom:6px">Priority accounts</div><table><tr><th>CUSTOMER</th><th>PORTFOLIO</th><th>AGENT</th><th>STATUS</th><th style="text-align:right">PENDING</th></tr>
+      <tr><td>Ravi Teja K</td><td>AXIS · CC</td><td>Anitha S</td><td><span class="dot" style="background:#FBBF24"></span>PTP today</td><td style="text-align:right" class="num">₹84,200</td></tr>
+      <tr><td>Meena Iyer</td><td>ICICI · PL</td><td>Mahesh B</td><td><span class="dot" style="background:#F87171"></span>Broken PTP</td><td style="text-align:right" class="num">₹1,12,900</td></tr>
+      <tr><td>Arjun Rao</td><td>HDFC · BL</td><td>Priya N</td><td><span class="dot" style="background:#34D399"></span>Partial paid</td><td style="text-align:right" class="num">₹46,500</td></tr></table></div>
+    <div class="cell" style="grid-column:span 4;grid-row:span 2"><div class="lbl">Top field agents</div>
+      <div style="margin-top:10px;font-size:13px;line-height:2.1">1 Ravi Kumar <span style="float:right;color:#93C5FD" class="num">₹24.0 L</span><br>2 Anitha S <span style="float:right;color:#93C5FD" class="num">₹21.7 L</span><br>3 Mahesh B <span style="float:right;color:#93C5FD" class="num">₹19.4 L</span><br>4 Priya N <span style="float:right;color:#93C5FD" class="num">₹17.1 L</span></div></div>
+  </div>
+</div></section>
+
+<!-- C -->
+<section class="tpl"><div class="tpl-h"><span class="n">C</span><div><h2>Soft Clay</h2><p>Full neumorphism: everything is moulded from one soft blue-grey surface, pressed-in inputs, raised cards, icon rail. Calm, tactile, very friendly for field staff & callers.</p></div></div>
+<div class="frame C">
+  <div class="rail"><div class="ri on"></div><div class="ri"></div><div class="ri"></div><div class="ri"></div><div class="ri"></div><div class="ri"></div></div>
+  <div class="body">
+    <div style="display:flex;align-items:center;gap:16px"><h3>Hello Suhas 👋</h3><span style="flex:1"></span><div class="ins" style="width:300px;padding:12px 16px;font-size:13px;color:#94A3B8">Search accounts…</div><div class="soft" style="width:48px;height:48px;border-radius:16px"></div></div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:22px">
+      <div class="soft k">Recovered<b>₹1.84 Cr</b><span class="pill" style="background:#D1FAE5;color:#047857;margin-top:8px">▲ 12.4%</span></div>
+      <div class="soft k">Target<b>₹4.28 Cr</b><span class="pill" style="background:#DBEAFE;color:#1D4ED8;margin-top:8px">43.1% done</span></div>
+      <div class="soft k">PTP today<b>318</b><span class="pill" style="background:#FEF3C7;color:#B45309;margin-top:8px">₹38.2 L</span></div>
+      <div class="soft k">Visits today<b>1,204</b><span class="pill" style="background:#E0E7FF;color:#4338CA;margin-top:8px">142 agents</span></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:22px;flex:1">
+      <div class="soft" style="padding:22px"><b>Collections trend</b><div class="ins" style="margin-top:14px;padding:12px"><svg viewBox="0 0 700 200" width="100%" height="210"><path d="M0 170 C80 150 120 175 180 130 S300 80 360 110 S480 50 540 80 S640 30 700 40" fill="none" stroke="#2563EB" stroke-width="5" stroke-linecap="round"/><g fill="#2563EB"><circle cx="180" cy="130" r="7"/><circle cx="360" cy="110" r="7"/><circle cx="540" cy="80" r="7"/></g></svg></div></div>
+      <div class="soft" style="padding:22px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px"><b>Recovery</b>
+        <div class="ins" style="width:180px;height:180px;border-radius:50%;display:grid;place-items:center"><div class="soft" style="width:130px;height:130px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(#2563EB 0 43%,#E9EEF8 0)"><div style="width:100px;height:100px;border-radius:50%;background:#E9EEF8;display:grid;place-items:center;font-family:Sora;font-weight:700;font-size:24px">43%</div></div></div>
+        <div style="display:flex;gap:10px"><span class="pill soft" style="padding:10px 18px">Paid 1,912</span><span class="pill soft" style="padding:10px 18px">Partial 716</span></div></div>
+    </div>
+  </div>
+</div></section>
+
+<!-- D -->
+<section class="tpl"><div class="tpl-h"><span class="n">D</span><div><h2>Fintech Pro</h2><p>Bank-grade minimal: white canvas, hairline dividers, editorial serif headline, top navigation, numbers first. Feels like a premium banking product — very credible in front of lenders.</p></div></div>
+<div class="frame D">
+  <div class="hdr"><b style="font-family:Sora;font-size:17px">Recover<span style="color:#2563EB">IQ</span></b><span class="t on">Home</span><span class="t">Accounts</span><span class="t">Collections</span><span class="t">Field</span><span class="t">Reports</span><span class="t">People</span><span style="flex:1"></span><span style="border:1px solid #E6EBF1;border-radius:8px;padding:7px 12px;font-size:12.5px;color:#8792A2;width:230px">Search…</span><span style="width:30px;height:30px;border-radius:50%;background:#0A2540"></span></div>
+  <div class="wrap">
+    <div><div class="sub">Wednesday, 26 November</div><h3>₹1,84,52,300 recovered</h3><div class="sub" style="margin-top:4px">43.1% of the ₹4.28 Cr November target · <span style="color:#059669;font-weight:600">+12.4% vs last month</span></div>
+      <svg viewBox="0 0 760 210" width="100%" height="230" style="margin-top:14px"><g stroke="#EEF2F7"><line x1="0" y1="50" x2="760" y2="50"/><line x1="0" y1="110" x2="760" y2="110"/><line x1="0" y1="170" x2="760" y2="170"/></g><path d="M0 180 C70 170 110 185 170 150 S280 120 340 130 S460 80 520 95 S650 50 760 40" fill="none" stroke="#2563EB" stroke-width="2.4"/><path d="M0 190 C90 185 160 182 240 172 S420 160 520 150 S680 140 760 130" fill="none" stroke="#A3ACB9" stroke-width="1.6" stroke-dasharray="5 5"/></svg>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:24px;margin-top:6px"><div class="stat"><div class="l">Cash collected</div><b>₹23.1 L</b></div><div class="stat"><div class="l">Resolution</div><b>38.4%</b></div><div class="stat"><div class="l">PTP due today</div><b>318</b></div><div class="stat"><div class="l">Active accounts</div><b>6,842</b></div></div>
+      <table style="margin-top:20px"><tr><th>Customer</th><th>Portfolio</th><th>Status</th><th style="text-align:right">Pending</th></tr>
+      <tr><td><b>Ravi Teja K</b></td><td>Axis Bank · Credit card</td><td><span class="tag" style="background:#FEF3C7;color:#92400E">PTP today</span></td><td style="text-align:right" class="num">₹84,200</td></tr>
+      <tr><td><b>Meena Iyer</b></td><td>ICICI · Personal loan</td><td><span class="tag" style="background:#FEE2E2;color:#991B1B">Broken PTP</span></td><td style="text-align:right" class="num">₹1,12,900</td></tr></table></div>
+    <div class="side"><b style="font-size:14px">Today</b><div class="sub" style="margin:2px 0 14px">What needs attention</div>
+      <div style="display:flex;flex-direction:column;gap:14px;font-size:13px"><div>⚑ 42 broken promises<div class="sub">₹18.6 L at risk</div></div><div>⌖ 12 agents not checked in<div class="sub">Hyderabad, Vizag</div></div><div>⇪ DPR upload pending<div class="sub">AXIS CC · 2 portfolios</div></div><div>✓ 1,912 accounts paid<div class="sub">this month</div></div></div>
+      <div style="margin-top:22px;padding:14px;border-radius:10px;background:#0A2540;color:#fff"><div style="font-size:12px;opacity:.7">Top branch</div><b style="font-size:18px">Hyderabad Central</b><div style="font-size:12px;opacity:.7;margin-top:2px">₹62.4 L · 51% of target</div></div></div>
+  </div>
+</div></section>
+
+<!-- E -->
+<section class="tpl"><div class="tpl-h"><span class="n">E</span><div><h2>Spatial 3D</h2><p>Holographic panels floating in perspective over a glowing 3D grid floor with an orbiting recovery globe — the most “wow”, game-like and futuristic. Best as the Premium edition and for the login / dashboard; data tables stay flat for readability.</p></div></div>
+<div class="frame E">
+  <div class="floor"></div>
+  <div class="stage">
+    <div style="position:absolute;left:28px;top:22px;font-family:Sora;font-weight:700;font-size:18px">Recover<span style="color:#60A5FA">IQ</span> <span style="font-size:11px;color:#93C5FD;letter-spacing:.2em;margin-left:8px">SPATIAL</span></div>
+    <div class="ring" style="left:470px;top:150px;width:300px;height:300px"></div><div class="ring" style="left:430px;top:110px;width:380px;height:380px;opacity:.5"></div>
+    <div class="orb" style="left:540px;top:210px;width:160px;height:160px"></div>
+    <div style="position:absolute;left:520px;top:400px;width:200px;text-align:center"><div class="lbl">Recovery</div><div class="big" style="font-size:46px">43.1%</div></div>
+    <div class="panel" style="left:60px;top:110px;width:330px;height:190px;transform:rotateY(18deg) rotateX(4deg)"><div class="lbl">Recovered this month</div><div class="big num">₹1.84 Cr</div><div style="font-size:13px;color:#93C5FD">of ₹4.28 Cr target</div>
+      <svg viewBox="0 0 300 60" width="100%" height="60"><path d="M0 50 L30 44 L60 46 L90 30 L120 34 L150 22 L180 26 L210 14 L240 18 L270 8 L300 4" fill="none" stroke="#60A5FA" stroke-width="2.5"/></svg></div>
+    <div class="panel" style="left:80px;top:330px;width:300px;height:170px;transform:rotateY(20deg) rotateX(-2deg)"><div class="lbl">PTP due today</div><div class="big">318</div><div style="font-size:13px;color:#FCD34D">₹38.2 L promised · 42 broken</div></div>
+    <div class="panel" style="right:60px;top:100px;width:330px;height:200px;transform:rotateY(-18deg) rotateX(4deg)"><div class="lbl">Field force live</div><div class="big">142</div><div style="font-size:13px;color:#93C5FD">agents online · 1,204 visits</div>
+      <div style="display:flex;gap:6px;margin-top:14px"><span style="flex:1;height:44px;border-radius:6px;background:linear-gradient(to top,#2563EB 60%,transparent 60%)"></span><span style="flex:1;height:44px;border-radius:6px;background:linear-gradient(to top,#2563EB 80%,transparent 80%)"></span><span style="flex:1;height:44px;border-radius:6px;background:linear-gradient(to top,#38BDF8 45%,transparent 45%)"></span><span style="flex:1;height:44px;border-radius:6px;background:linear-gradient(to top,#2563EB 90%,transparent 90%)"></span><span style="flex:1;height:44px;border-radius:6px;background:linear-gradient(to top,#38BDF8 70%,transparent 70%)"></span></div></div>
+    <div class="panel" style="right:80px;top:330px;width:300px;height:170px;transform:rotateY(-20deg) rotateX(-2deg)"><div class="lbl">Resolution</div><div class="big">38.4%</div><div style="font-size:13px;color:#6EE7B7">1,912 paid · 716 partial</div></div>
+    <div style="position:absolute;left:50%;bottom:26px;transform:translateX(-50%);display:flex;gap:10px"><span class="panel" style="position:static;padding:10px 18px;border-radius:14px;font-size:13px">Dashboard</span><span class="panel" style="position:static;padding:10px 18px;border-radius:14px;font-size:13px;opacity:.7">Accounts</span><span class="panel" style="position:static;padding:10px 18px;border-radius:14px;font-size:13px;opacity:.7">Field</span><span class="panel" style="position:static;padding:10px 18px;border-radius:14px;font-size:13px;opacity:.7">MIS</span></div>
+  </div>
+</div></section>
+</body></html>

@@ -18,6 +18,10 @@ RUN pip install -r requirements.txt
 # App code + the frontend it serves (main.py serves ../frontend at "/")
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
+# Redesigned UIs (prebuilt Vite output): /v2 Aurora Glass, /v3 Soft Clay, /v4 Spatial 3D
+COPY frontend-v2/dist/ /app/frontend-v2/dist/
+COPY frontend-v3/dist/ /app/frontend-v3/dist/
+COPY frontend-v4/dist/ /app/frontend-v4/dist/
 
 # Cloud Run provides $PORT (defaults to 8080). Bind uvicorn to it.
 ENV PORT=8080

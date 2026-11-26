@@ -1,0 +1,129 @@
+/* ═══════════════════════ SOFT CLAY (frontend-v3) ═══════════════════════
+   Full neumorphism: every surface is moulded from one material. Raised = two soft shadows (dark
+   bottom-right, light top-left); pressed = the same shadows inset. Accent colour only marks state.
+   Layered last, so it overrides the glass rules inherited from the shared surfaces.css. */
+
+:root, [data-mode="light"] {
+  --surf: #E8EDF6; --surf-2: #EEF2F9;
+  --sh-d: #C2CCDD; --sh-l: #FFFFFF;
+  --text: #1E2A3D; --text-2: #4F5B70; --text-3: #8592A8; --line: rgba(30, 42, 61, .07);
+  --page: var(--surf);
+}
+[data-mode="dark"] {
+  --surf: #242B3A; --surf-2: #283041;
+  --sh-d: #161B26; --sh-l: #323C51;
+  --text: #E4E9F3; --text-2: #A9B3C6; --text-3: #7C879C; --line: rgba(255, 255, 255, .06);
+  --page: var(--surf);
+}
+:root {
+  --raise: 9px 9px 20px var(--sh-d), -9px -9px 20px var(--sh-l);
+  --raise-sm: 5px 5px 11px var(--sh-d), -5px -5px 11px var(--sh-l);
+  --raise-xs: 3px 3px 7px var(--sh-d), -3px -3px 7px var(--sh-l);
+  --press: inset 5px 5px 11px var(--sh-d), inset -5px -5px 11px var(--sh-l);
+  --press-sm: inset 3px 3px 7px var(--sh-d), inset -3px -3px 7px var(--sh-l);
+  --font-display: 'Sora', 'Inter', sans-serif;
+}
+html, body { background: var(--surf) !important; }
+
+/* ── calm backdrop: a few large soft clay forms drifting very slowly ── */
+.clay-bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; background: var(--surf); }
+.clay-bg i { position: absolute; border-radius: 50%; background: var(--surf); box-shadow: 30px 30px 60px var(--sh-d), -30px -30px 60px var(--sh-l); opacity: .55; }
+.clay-bg .c1 { width: 420px; height: 420px; right: -120px; top: -140px; animation: clayFloat 38s ease-in-out infinite alternate; }
+.clay-bg .c2 { width: 260px; height: 260px; left: 18%; bottom: -120px; animation: clayFloat 30s ease-in-out infinite alternate-reverse; }
+.clay-bg .c3 { width: 140px; height: 140px; right: 22%; bottom: 14%; border-radius: 40px; animation: clayFloat 26s ease-in-out infinite alternate; }
+.clay-bg .c4 { width: 90px; height: 90px; left: 44%; top: 8%; box-shadow: inset 12px 12px 24px var(--sh-d), inset -12px -12px 24px var(--sh-l); animation: clayFloat 34s ease-in-out infinite alternate-reverse; }
+@keyframes clayFloat { to { transform: translate(40px, 30px) rotate(12deg); } }
+@media (prefers-reduced-motion: reduce) { .clay-bg i { animation: none; } }
+
+/* ── every panel: moulded, not glass ── */
+.side, .top, .card, .palette, .menu, .drawer, .toast, .fm-panel {
+  background: var(--surf) !important; border: 0 !important;
+  -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+  box-shadow: var(--raise) !important;
+}
+.card { border-radius: 28px !important; }
+.side { border-radius: 30px !important; }
+.top { border-radius: 22px !important; height: 64px !important; }
+.card-h { border-bottom: 0 !important; }
+.palette, .menu { border-radius: 22px !important; }
+.drawer { border-radius: 30px 0 0 30px !important; }
+.scrim { background: rgba(30, 40, 60, .18) !important; backdrop-filter: blur(3px) !important; }
+table.t th { background: transparent !important; backdrop-filter: none !important; border-bottom: 0 !important; }
+table.t td { border-bottom: 1px solid var(--line); }
+table.t tbody tr:hover { background: transparent; box-shadow: var(--press-sm); }
+
+/* ── icon rail: collapsed by default, expands over content on hover ── */
+.app { grid-template-columns: 96px 1fr !important; gap: 16px !important; padding: 16px !important; }
+.side { position: relative; z-index: 40; width: 96px; transition: width .35s cubic-bezier(.2,.8,.2,1); }
+.app.collapsed .side:hover { width: 272px; }
+.app.collapsed .side:hover .nav-i .lbl, .app.collapsed .side:hover .side-sec-t, .app.collapsed .side:hover .side-brand .txt,
+.app.collapsed .side:hover .side-foot .txt, .app.collapsed .side:hover .by-ssd .txt { display: initial; }
+.app.collapsed .side:hover .nav-i { justify-content: flex-start; }
+.app:not(.collapsed) { grid-template-columns: 272px 1fr !important; }
+.app:not(.collapsed) .side { width: 272px; }
+.side-brand { padding: 20px 22px 14px !important; }
+.side-sec-t { padding-left: 14px !important; }
+.nav-i {
+  margin: 6px 0; padding: 11px 14px !important; border-radius: 16px !important; color: var(--text-2) !important;
+  background: var(--surf) !important; box-shadow: none !important; transition: box-shadow .25s, color .2s !important;
+}
+.nav-i:hover { box-shadow: var(--raise-xs) !important; transform: none !important; }
+.nav-i.on { box-shadow: var(--press) !important; color: var(--text) !important; }
+.nav-i.on svg { color: rgb(var(--t-accent)) !important; }
+.nav-i.on::after { content: ''; position: absolute; right: 10px; width: 7px; height: 7px; border-radius: 50%; background: rgb(var(--t-accent)); box-shadow: 0 0 10px rgb(var(--t-accent)); }
+.nav-i { position: relative; }
+.collapsed .nav-i.on::after { right: 6px; }
+
+/* ── controls ── */
+.icon-btn { border-radius: 14px !important; background: var(--surf) !important; box-shadow: var(--raise-xs) !important; margin: 0 2px; }
+.icon-btn:hover { box-shadow: var(--raise-sm) !important; }
+.icon-btn:active, .icon-btn.on { box-shadow: var(--press-sm) !important; color: rgb(var(--t-accent)) !important; }
+.search-trigger { background: var(--surf) !important; border: 0 !important; border-radius: 16px !important; box-shadow: var(--press-sm) !important; }
+.btn { background: var(--surf) !important; border: 0 !important; border-radius: 14px !important; box-shadow: var(--raise-sm) !important; color: var(--text) !important; }
+.btn:hover { transform: none !important; box-shadow: var(--raise) !important; }
+.btn:active { box-shadow: var(--press-sm) !important; }
+.btn.ghost { box-shadow: none !important; }
+.btn.primary { color: #fff !important; background: linear-gradient(145deg, rgba(var(--t-accent), .82), rgb(var(--t-accent))) !important;
+  box-shadow: 6px 6px 14px var(--sh-d), -6px -6px 14px var(--sh-l), inset 0 2px 3px rgba(255,255,255,.35) !important; }
+.input, .select { background: var(--surf) !important; border: 0 !important; border-radius: 14px !important; box-shadow: var(--press-sm) !important; height: 40px; }
+.input:focus, .select:focus { box-shadow: var(--press-sm), 0 0 0 2px rgba(var(--t-accent), .35) !important; }
+.seg { background: var(--surf) !important; border: 0 !important; border-radius: 16px !important; box-shadow: var(--press-sm) !important; padding: 5px !important; }
+.seg button { border-radius: 12px !important; }
+.seg button.on { background: var(--surf) !important; color: rgb(var(--t-accent)) !important; box-shadow: var(--raise-xs) !important; }
+.pill { box-shadow: var(--raise-xs); }
+.avatar { box-shadow: var(--raise-xs) !important; }
+.user-btn:hover { background: transparent !important; }
+.kbd { background: var(--surf) !important; border: 0 !important; box-shadow: var(--raise-xs); }
+
+/* ── KPI tiles: raised clay with a coloured, sunken icon well ── */
+.clay { background: var(--surf) !important; box-shadow: var(--raise) !important; border-radius: 28px !important; }
+.clay:hover { transform: translateY(-2px); }
+[data-mode="dark"] .clay { background: var(--surf) !important; box-shadow: var(--raise) !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+.kpi .kpi-l .ic { box-shadow: 4px 4px 9px var(--sh-d), -4px -4px 9px var(--sh-l), inset 0 2px 3px rgba(255,255,255,.4) !important; }
+.kpi .spark { opacity: .9; }
+.tilt::after { display: none; }
+.pipe > div { box-shadow: var(--press-sm) !important; background: var(--surf) !important; }
+.medal.mx { box-shadow: var(--press-sm); }
+.lb-bar, .bar { background: var(--surf) !important; box-shadow: var(--press-sm); height: 8px; }
+
+/* hero keeps a colour but is moulded like everything else */
+.hero-card { border-radius: 30px !important; box-shadow: 10px 10px 24px var(--sh-d), -10px -10px 24px var(--sh-l), inset 0 2px 4px rgba(255,255,255,.3) !important; }
+.hero-card::before { display: none; }
+.hero-chip { box-shadow: inset 2px 2px 5px rgba(0,0,0,.12), inset -2px -2px 5px rgba(255,255,255,.14); }
+
+/* ── login ── */
+.login-form .login-box { background: var(--surf) !important; box-shadow: var(--raise) !important; border-radius: 34px !important; }
+.login-art .feature { background: var(--surf) !important; border: 0 !important; box-shadow: var(--raise-xs) !important; backdrop-filter: none !important; }
+.shape { background: var(--surf) !important; box-shadow: 14px 14px 30px var(--sh-d), -14px -14px 30px var(--sh-l) !important; }
+.shape.glassy { box-shadow: inset 10px 10px 20px var(--sh-d), inset -10px -10px 20px var(--sh-l) !important; border: 0 !important; }
+.login-mode { background: var(--surf) !important; border: 0 !important; box-shadow: var(--raise-xs) !important; }
+.riq-mark { filter: drop-shadow(5px 5px 8px var(--sh-d)) drop-shadow(-4px -4px 8px var(--sh-l)) !important; }
+.brand-mark { filter: drop-shadow(3px 3px 5px var(--sh-d)) !important; }
+.swatch .sw { box-shadow: var(--raise-xs) !important; }
+.notif.unread { box-shadow: var(--press-sm) !important; background: transparent !important; }
+
+/* motion: gentle, springy */
+.rise { animation-name: clayRise !important; }
+@keyframes clayRise { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
+.page-enter { animation: clayRise .5s cubic-bezier(.3,1.4,.5,1) both !important; }
+.card.hero-card { background: var(--hero-bg) !important; color: var(--hero-ink) !important; }
