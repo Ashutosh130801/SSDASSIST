@@ -650,6 +650,27 @@ def _ensure_techsupport():
 _maybe_seed()
 _ensure_techsupport()
 
+
+def _merge_branch_spellings():
+    """One branch = one spelling: fold "Hyderabad"/"hyderabad "/"HYDERABAD" into the dominant spelling
+    (startup, idempotent) and normalise every future save the same way. See app/branch_norm.py."""
+    from . import branch_norm
+    from .database import SessionLocal
+    branch_norm.install()
+    db = SessionLocal()
+    try:
+        moved = branch_norm.merge_case_variants(db)
+        for m in moved:
+            print(f"[SSD] branch merged: {m['from']!r} -> {m['to']!r} {m['moved']}", flush=True)
+    except Exception as exc:
+        db.rollback()
+        print(f"[SSD] branch merge skipped: {exc!r}", flush=True)
+    finally:
+        db.close()
+
+
+_merge_branch_spellings()
+
 # Production guardrails
 _is_prod = settings.environment.lower() == "production"
 if _is_prod and settings.secret_key in ("dev-secret-change-me", "", "change-this-to-a-long-random-string"):

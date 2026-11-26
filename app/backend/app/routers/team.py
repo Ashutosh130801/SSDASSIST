@@ -180,7 +180,8 @@ def branch_associates(branch: str, db: Session = Depends(get_db),
 def create_branch(body: dict = Body(...), db: Session = Depends(get_db),
                   admin: models.User = Depends(require_roles("admin"))):
     """Create a branch by assigning its manager (with full details)."""
-    name = (body.get("branch") or "").strip()
+    from .. import branch_norm
+    name = branch_norm.canonical(db, (body.get("branch") or "").strip()) or ""
     m = body.get("manager") or {}
     if not name:
         raise HTTPException(status_code=400, detail="Branch name is required")
@@ -206,7 +207,8 @@ def create_branch(body: dict = Body(...), db: Session = Depends(get_db),
 def edit_branch(name: str, body: dict = Body(...), db: Session = Depends(get_db),
                 admin: models.User = Depends(require_roles("admin"))):
     """Rename a branch (cascades to its staff and cases) and/or (re)assign its manager."""
-    new = (body.get("new_name") or "").strip()
+    from .. import branch_norm
+    new = branch_norm.canonical(db, (body.get("new_name") or "").strip()) or ""
     if new and new != name:
         db.query(models.User).filter(models.User.branch == name).update({models.User.branch: new})
         db.query(models.Case).filter(models.Case.branch == name).update({models.Case.branch: new})
@@ -226,7 +228,8 @@ def delete_branch(name: str, reassign: str | None = None, db: Session = Depends(
                   admin: models.User = Depends(require_roles("admin"))):
     """Delete a branch. Its staff and cases are moved to `reassign` (another branch) or
     left unassigned. Staff accounts are NOT deleted — use the staff Remove action for that."""
-    target = (reassign or "").strip() or None
+    from .. import branch_norm
+    target = branch_norm.canonical(db, (reassign or "").strip()) or None
     n_staff = db.query(models.User).filter(models.User.branch == name).update({models.User.branch: target})
     n_cases = db.query(models.Case).filter(models.Case.branch == name).update({models.Case.branch: target})
     db.commit()
