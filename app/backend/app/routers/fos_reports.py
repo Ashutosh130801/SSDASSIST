@@ -64,6 +64,17 @@ def _is_fos(u: models.User) -> bool:
     return (u.role == "fos") or bool(getattr(u, "also_field_agent", False))
 
 
+def _ids(u: models.User) -> str:
+    """Every ID the person holds, primary first: e.g. 'FO012 / TL014' for a field agent who is also a
+    team lead, or 'TC003 / FO210' for a caller with the field-agent hat. De-duplicated, blanks skipped."""
+    out = []
+    for v in (u.emp_code, getattr(u, "fos_emp_code", None), getattr(u, "tl_emp_code", None), getattr(u, "tc_emp_code", None)):
+        v = (v or "").strip()
+        if v and v.upper() not in (x.upper() for x in out):
+            out.append(v)
+    return " / ".join(out)
+
+
 def _area(u: models.User) -> str:
     return (getattr(u, "location", None) or getattr(u, "branch", None) or "").strip()
 
@@ -201,7 +212,7 @@ def _daily_row(db, p, d: date_cls, visits, arows, today) -> dict:
         remarks.append("NO VISITS")
     if code == "W":
         remarks.append("SUNDAY")
-    return {"user_id": u.id, "name": u.name or "", "area": _area(u), "phone": u.phone or "",
+    return {"user_id": u.id, "name": u.name or "", "ids": _ids(u), "area": _area(u), "phone": u.phone or "",
             "branch": (u.branch or "").upper(), "first_start": _t(start), "total": v["n"], "paid": v["paid"],
             "slots": list(v["slots"]), "status": status, "remarks": " // ".join(remarks),
             "start": _t(a.check_in_at) if a and a.check_in_at else "", "end": _t(end), "code": code}
@@ -212,20 +223,22 @@ def _daily_sheet(wb, db, d: date_cls, people, visits, arows, today, S):
     from openpyxl.utils import get_column_letter as L
     ws = wb.create_sheet(f"{d.day}-{d.month}-{d.year}")
     iso = d.isoformat()
-    cols = ["S.NO", "FOS NAMES", "AREA", "CONTACT NUMBER", "REPORTING BRANCH", "FIRST START TIME", "TOTAL VISITS",
+    cols = ["S.NO", "FOS NAMES", "USER ID", "AREA", "CONTACT NUMBER", "REPORTING BRANCH", "FIRST START TIME", "TOTAL VISITS",
             "PRODUCTIVE VISIT (PAID)", "8-11AM", "11-1PM", "1-4PM", "4-7PM", "PRESENT", "REMARKS", "START TIME", "END TIME"]
+    X = {h: i for i, h in enumerate(cols)}                       # column offsets by name (no hard-coded positions)
     C0 = 2                                         # data starts in column B, like the team sheet
+    col = lambda h: C0 + X[h]
     last = C0 + len(cols) - 1
     ws.merge_cells(start_row=2, start_column=C0, end_row=2, end_column=last)
     t = ws.cell(row=2, column=C0, value="TODAY FIELD VISIT REPORT")
     t.fill, t.font, t.alignment = S["fill"](GREEN), S["font"](bold=True, size=16, color="FFFFFF"), S["C"]
     ws.row_dimensions[2].height = 28
-    ws.merge_cells(start_row=3, start_column=C0 + 1, end_row=3, end_column=C0 + 3)
-    _hdr(ws, 3, C0 + 1, _ordinal(d) + f"  ·  {d.strftime('%A')}", CYAN, S, size=12)
-    ws.merge_cells(start_row=3, start_column=C0 + 8, end_row=3, end_column=C0 + 9)
-    _hdr(ws, 3, C0 + 8, "MORNING", YELLOW, S, fc="7C2D12", size=11)
-    ws.merge_cells(start_row=3, start_column=C0 + 10, end_row=3, end_column=C0 + 11)
-    _hdr(ws, 3, C0 + 10, "EVENING", "FDBA74", S, fc="7C2D12", size=11)
+    ws.merge_cells(start_row=3, start_column=col("FOS NAMES"), end_row=3, end_column=col("CONTACT NUMBER"))
+    _hdr(ws, 3, col("FOS NAMES"), _ordinal(d) + f"  ·  {d.strftime('%A')}", CYAN, S, size=12)
+    ws.merge_cells(start_row=3, start_column=col("8-11AM"), end_row=3, end_column=col("11-1PM"))
+    _hdr(ws, 3, col("8-11AM"), "MORNING", YELLOW, S, fc="7C2D12", size=11)
+    ws.merge_cells(start_row=3, start_column=col("1-4PM"), end_row=3, end_column=col("4-7PM"))
+    _hdr(ws, 3, col("1-4PM"), "EVENING", "FDBA74", S, fc="7C2D12", size=11)
     hr = 4
     for j, h in enumerate(cols):
         color = NAVY
@@ -240,56 +253,60 @@ def _daily_sheet(wb, db, d: date_cls, people, visits, arows, today, S):
         _hdr(ws, hr, C0 + j, h, color, S)
     ws.row_dimensions[hr].height = 32
 
+    left = {X["FOS NAMES"], X["AREA"], X["REPORTING BRANCH"], X["REMARKS"]}
     r = hr
     for i, p in enumerate(people, 1):
         d_row = _daily_row(db, p, d, visits, arows, today)
         r += 1
-        row = [i, d_row["name"], d_row["area"], d_row["phone"], d_row["branch"], d_row["first_start"], None,
+        row = [i, d_row["name"], d_row["ids"], d_row["area"], d_row["phone"], d_row["branch"], d_row["first_start"], None,
                d_row["paid"] or None] + [x or None for x in d_row["slots"]] + \
               [d_row["status"], d_row["remarks"] or None, d_row["start"], d_row["end"]]
         for j, val in enumerate(row):
             c = ws.cell(row=r, column=C0 + j, value=val)
-            c.border, c.alignment = S["B"], (S["L"] if j in (1, 2, 4, 13) else S["C"])
-        ws.cell(row=r, column=C0 + 6, value=f"=SUM({L(C0 + 8)}{r}:{L(C0 + 11)}{r})")
-        ws.cell(row=r, column=C0 + 6).font = S["font"](bold=True)
-        ws.cell(row=r, column=C0 + 1).font = S["font"](bold=True)
+            c.border, c.alignment = S["B"], (S["L"] if j in left else S["C"])
+        ws.cell(row=r, column=col("TOTAL VISITS"), value=f"=SUM({L(col('8-11AM'))}{r}:{L(col('4-7PM'))}{r})")
+        ws.cell(row=r, column=col("TOTAL VISITS")).font = S["font"](bold=True)
+        ws.cell(row=r, column=col("FOS NAMES")).font = S["font"](bold=True)
+        ws.cell(row=r, column=col("USER ID")).font = S["font"](bold=True, color="1D4ED8")
         if i % 2 == 0:
             for j in range(len(cols)):
-                if j not in (6, 12):
+                if j not in (X["TOTAL VISITS"], X["PRESENT"]):
                     ws.cell(row=r, column=C0 + j).fill = S["fill"]("F8FAFC")
     first, lastr = hr + 1, r
     if people:
         r += 1
-        ws.cell(row=r, column=C0 + 1, value=f"TOTAL  ({len(people)} FOS)")
-        for j in (6, 7, 8, 9, 10, 11):
-            col = L(C0 + j)
-            ws.cell(row=r, column=C0 + j, value=f"=SUBTOTAL(9,{col}{first}:{col}{lastr})")
-        ws.cell(row=r, column=C0 + 12, value=f'=COUNTIF({L(C0 + 12)}{first}:{L(C0 + 12)}{lastr},"PRESENT")&" present"')
+        ws.cell(row=r, column=col("FOS NAMES"), value=f"TOTAL  ({len(people)} FOS)")
+        for h in ("TOTAL VISITS", "PRODUCTIVE VISIT (PAID)", "8-11AM", "11-1PM", "1-4PM", "4-7PM"):
+            cl = L(col(h))
+            ws.cell(row=r, column=col(h), value=f"=SUBTOTAL(9,{cl}{first}:{cl}{lastr})")
+        pc = L(col("PRESENT"))
+        ws.cell(row=r, column=col("PRESENT"), value=f'=COUNTIF({pc}{first}:{pc}{lastr},"PRESENT")&" present"')
         for j in range(len(cols)):
             c = ws.cell(row=r, column=C0 + j)
             c.fill, c.font, c.border, c.alignment = S["fill"]("DCE6FA"), S["font"](bold=True), S["B"], S["C"]
         # conditional formats: status colours, zero-visit present rows, visit heat
-        rng = f"{L(C0 + 12)}{first}:{L(C0 + 12)}{lastr}"
+        rng = f"{pc}{first}:{pc}{lastr}"
         for txt, bg, fg in (("PRESENT", "C6EFCE", "166534"), ("HALF-DAY", "FED7AA", "9A3412"), ("ABSENT", "FFC7CE", "B91C1C"),
                             ("LEAVE", "BDD7EE", "1E40AF"), ("SUNDAY", "E2E8F0", "475569"), ("NOT JOINED", "E5E7EB", "6B7280")):
             ws.conditional_formatting.add(rng, CellIsRule(operator="equal", formula=[f'"{txt}"'],
                                                           fill=S["fill"](bg), font=S["font"](bold=True, color=fg)))
-        tv = f"{L(C0 + 6)}{first}:{L(C0 + 6)}{lastr}"
-        ws.conditional_formatting.add(tv, ColorScaleRule(start_type="num", start_value=0, start_color="FCA5A5",
+        tvc = L(col("TOTAL VISITS"))
+        ws.conditional_formatting.add(f"{tvc}{first}:{tvc}{lastr}", ColorScaleRule(start_type="num", start_value=0, start_color="FCA5A5",
                                                          mid_type="num", mid_value=5, mid_color="FDE68A",
                                                          end_type="num", end_value=12, end_color="86EFAC"))
-        pv = f"{L(C0 + 7)}{first}:{L(C0 + 7)}{lastr}"
-        ws.conditional_formatting.add(pv, CellIsRule(operator="greaterThan", formula=["0"],
+        pvc = L(col("PRODUCTIVE VISIT (PAID)"))
+        ws.conditional_formatting.add(f"{pvc}{first}:{pvc}{lastr}", CellIsRule(operator="greaterThan", formula=["0"],
                                                      fill=S["fill"]("BBF7D0"), font=S["font"](bold=True, color="166534")))
-        ws.conditional_formatting.add(f"{L(C0 + 5)}{first}:{L(C0 + 5)}{lastr}",
-                                      FormulaRule(formula=[f'{L(C0 + 13)}{first}="LATE START"'], fill=S["fill"]("FEF3C7")))
+        fsc, rmc = L(col("FIRST START TIME")), L(col("REMARKS"))
+        ws.conditional_formatting.add(f"{fsc}{first}:{fsc}{lastr}",
+                                      FormulaRule(formula=[f'ISNUMBER(SEARCH("LATE START",{rmc}{first}))'], fill=S["fill"]("FEF3C7")))
         ws.auto_filter.ref = f"{L(C0)}{hr}:{L(last)}{lastr}"
         _branch_summary(ws, r + 3, C0, people, visits, iso, S)
-    widths = [6, 30, 22, 15, 18, 12, 10, 13, 9, 9, 9, 9, 13, 30, 11, 11]
+    widths = [6, 30, 16, 22, 15, 18, 12, 10, 13, 9, 9, 9, 9, 13, 30, 11, 11]
     ws.column_dimensions["A"].width = 2
     for j, w in enumerate(widths):
         ws.column_dimensions[L(C0 + j)].width = w
-    ws.freeze_panes = ws.cell(row=hr + 1, column=C0 + 2)
+    ws.freeze_panes = ws.cell(row=hr + 1, column=col("AREA"))
     ws.sheet_view.zoomScale = 90
     ws.page_setup.orientation = "landscape"
     ws.sheet_properties.pageSetUpPr.fitToPage = True
@@ -348,7 +365,7 @@ def daily_report(start: str | None = None, end: str | None = None, branch: str |
     # Summary: one row per FOS across the range
     n = len(days)
     label = _ordinal(a) if a == b else f"{_ordinal(a)}  →  {_ordinal(b)}"
-    cols = ["S.NO", "FOS NAMES", "AREA", "CONTACT NUMBER", "BRANCH", "DAYS PRESENT", "TOTAL VISITS", "PAID VISITS",
+    cols = ["S.NO", "FOS NAMES", "USER ID", "AREA", "CONTACT NUMBER", "BRANCH", "DAYS PRESENT", "TOTAL VISITS", "PAID VISITS",
             "AVG VISITS / DAY", "8-11AM", "11-1PM", "1-4PM", "4-7PM", "ZERO-VISIT DAYS", "LATE STARTS", "ABSENT DAYS"]
     summ.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cols))
     t = summ.cell(row=1, column=1, value=f"FOS FIELD VISIT SUMMARY — {label}")
@@ -377,22 +394,23 @@ def daily_report(start: str | None = None, end: str | None = None, branch: str |
             late += 1 if code == "L" else 0
             absent += 1 if code == "A" and d <= today else 0
         r = 3 + i
-        vals = [i, u.name, _area(u), u.phone or "", (u.branch or "").upper(), pres, tot, paid,
-                f"=IFERROR(ROUND({L(7)}{r}/{L(6)}{r},1),0)"] + sl + [zero, late, absent]
+        vals = [i, u.name, _ids(u), _area(u), u.phone or "", (u.branch or "").upper(), pres, tot, paid,
+                f"=IFERROR(ROUND({L(8)}{r}/{L(7)}{r},1),0)"] + sl + [zero, late, absent]
         for j, val in enumerate(vals, 1):
             c = summ.cell(row=r, column=j, value=val)
-            c.border, c.alignment = S["B"], S["L"] if j in (2, 3, 5) else S["C"]
+            c.border, c.alignment = S["B"], S["L"] if j in (2, 4, 6) else S["C"]
         summ.cell(row=r, column=2).font = S["font"](bold=True)
+        summ.cell(row=r, column=3).font = S["font"](bold=True, color="1D4ED8")
     if people:
         from openpyxl.formatting.rule import ColorScaleRule
         lr = 3 + len(people)
-        summ.conditional_formatting.add(f"I4:I{lr}", ColorScaleRule(start_type="min", start_color="FCA5A5", mid_type="percentile",
+        summ.conditional_formatting.add(f"J4:J{lr}", ColorScaleRule(start_type="min", start_color="FCA5A5", mid_type="percentile",
                                                                     mid_value=50, mid_color="FDE68A", end_type="max", end_color="86EFAC"))
-        summ.conditional_formatting.add(f"G4:G{lr}", ColorScaleRule(start_type="min", start_color="FFFFFF", end_type="max", end_color="86EFAC"))
+        summ.conditional_formatting.add(f"H4:H{lr}", ColorScaleRule(start_type="min", start_color="FFFFFF", end_type="max", end_color="86EFAC"))
         summ.auto_filter.ref = f"A3:{L(len(cols))}{lr}"
-    for j, w in enumerate([6, 30, 22, 15, 16, 10, 10, 10, 11, 9, 9, 9, 9, 11, 10, 10], 1):
+    for j, w in enumerate([6, 30, 16, 22, 15, 16, 10, 10, 10, 11, 9, 9, 9, 9, 11, 10, 10], 1):
         summ.column_dimensions[L(j)].width = w
-    summ.freeze_panes = "C4"
+    summ.freeze_panes = "D4"
     summ.page_setup.orientation = "landscape"
     summ.sheet_properties.pageSetUpPr.fitToPage = True
     summ.page_setup.fitToWidth, summ.page_setup.fitToHeight = 1, 0
@@ -424,7 +442,8 @@ def monthly_report(start: str | None = None, end: str | None = None, branch: str
     ws.title = f"{a:%b}-{b:%b}".upper()
 
     C0 = 3                                              # S.NO in column C, like the team sheet
-    D0 = C0 + 5                                         # first day column (H)
+    FIXED = ["S.NO", "FOS NAMES", "USER ID", "AREA", "CONTACT NUMBER", "BRANCH"]
+    D0 = C0 + len(FIXED)                                # first day column (I)
     DL = D0 + n - 1                                     # last day column
     stats = ["TOTAL COUNT", "AVG VISIT COUNT", "WORKING DAYS", "JOININGS (NA)", "ZERO COUNT", "1'S COUNT",
              "2'S COUNT", "3'S COUNT", "ABOVE 4'S COUNT", "SUNDAY", "ABSENTS", "LEAVE (IN-A)", "REASONS"]
@@ -456,7 +475,7 @@ def monthly_report(start: str | None = None, end: str | None = None, branch: str
     _hdr(ws, 7, C0, f"{_ordinal(a)}  –  {_ordinal(b)}   ·   VISIT COUNTS", GREEN, S, size=12)
     ws.merge_cells(start_row=7, start_column=P0, end_row=7, end_column=TP)
     _hdr(ws, 7, P0, "PRODUCTIVE COUNTS (PAID)", "D97706", S, size=12)
-    for j, h in enumerate(["S.NO", "FOS NAMES", "AREA", "CONTACT NUMBER", "BRANCH"]):
+    for j, h in enumerate(FIXED):
         ws.merge_cells(start_row=8, start_column=C0 + j, end_row=9, end_column=C0 + j)
         _hdr(ws, 8, C0 + j, h, NAVY, S)
         ws.cell(row=9, column=C0 + j).border = S["B"]
@@ -477,11 +496,12 @@ def monthly_report(start: str | None = None, end: str | None = None, branch: str
     for i, p in enumerate(people):
         u = p["u"]
         r = first + i
-        base = [i + 1, u.name or "", _area(u), u.phone or "", (u.branch or "").upper()]
+        base = [i + 1, u.name or "", _ids(u), _area(u), u.phone or "", (u.branch or "").upper()]
         for j, val in enumerate(base):
             c = ws.cell(row=r, column=C0 + j, value=val)
-            c.border, c.alignment = S["B"], S["L"] if j in (1, 2, 4) else S["C"]
+            c.border, c.alignment = S["B"], S["L"] if j in (1, 3, 5) else S["C"]
         ws.cell(row=r, column=C0 + 1).font = S["font"](bold=True)
+        ws.cell(row=r, column=C0 + 2).font = S["font"](bold=True, color="1D4ED8")
         reasons = []
         for k, d in enumerate(days):
             iso = d.isoformat()
@@ -521,7 +541,7 @@ def monthly_report(start: str | None = None, end: str | None = None, branch: str
         c = ws.cell(row=r, column=TP, value=f"=SUM({L(P0)}{r}:{L(PL)}{r})")
         c.border, c.alignment, c.font = S["B"], S["C"], S["font"](bold=True, color="B45309")
         if i % 2 == 1:
-            for j in range(5):
+            for j in range(len(FIXED)):
                 ws.cell(row=r, column=C0 + j).fill = S["fill"]("F8FAFC")
 
     if people:
@@ -545,7 +565,7 @@ def monthly_report(start: str | None = None, end: str | None = None, branch: str
         ws.auto_filter.ref = f"{L(C0)}9:{L(lastcol)}{lastr}"
 
     ws.column_dimensions["A"].width = 2; ws.column_dimensions["B"].width = 2
-    for j, w in enumerate([6, 30, 22, 14, 16]):
+    for j, w in enumerate([6, 30, 16, 22, 14, 16]):
         ws.column_dimensions[L(C0 + j)].width = w
     for k in range(n):
         ws.column_dimensions[L(D0 + k)].width = 5.2
@@ -642,7 +662,7 @@ def monthly_preview(start: str | None = None, end: str | None = None, branch: st
         working = sum(1 for c in nums if c > 0) + sum(1 for c in nums if c == 0)
         cnt = lambda x: sum(1 for c in cells if c == x)
         rows.append({
-            "user_id": u.id, "name": u.name or "", "area": _area(u), "phone": u.phone or "", "branch": (u.branch or "").upper(),
+            "user_id": u.id, "name": u.name or "", "ids": _ids(u), "area": _area(u), "phone": u.phone or "", "branch": (u.branch or "").upper(),
             "days": cells, "paid": paid, "total": total, "working_days": working,
             "avg": round(total / working, 1) if working else 0,
             "na": cnt("NA"), "zero": cnt(0), "ones": cnt(1), "twos": cnt(2), "threes": cnt(3),

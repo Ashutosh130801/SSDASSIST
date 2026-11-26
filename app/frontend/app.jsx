@@ -11928,7 +11928,7 @@ function FosDailyPreview({ d, tableH }) {
   const [q, setQ] = useState('');
   const day = d.days[Math.min(di, d.days.length - 1)];
   if (!day) return <div className="muted" style={{ padding: 16 }}>No days in this range.</div>;
-  const rows = day.rows.filter(r => !q || (r.name + ' ' + r.area + ' ' + r.branch).toLowerCase().includes(q.toLowerCase()));
+  const rows = day.rows.filter(r => !q || (r.name + ' ' + (r.ids || '') + ' ' + r.area + ' ' + r.branch).toLowerCase().includes(q.toLowerCase()));
   const t = day.totals;
   const kpi = (label, val, color) => <div className="glass card" style={{ padding: '8px 12px', minWidth: 110 }}><div className="muted" style={{ fontSize: 11 }}>{label}</div><b style={{ fontSize: 18, color }}>{val}</b></div>;
   return (<div style={{ marginTop: 12 }}>
@@ -11938,7 +11938,7 @@ function FosDailyPreview({ d, tableH }) {
     <div style={{ background: '#16A34A', color: '#fff', fontWeight: 800, fontSize: 16, textAlign: 'center', padding: '8px', borderRadius: '8px 8px 0 0' }}>TODAY FIELD VISIT REPORT</div>
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#0EA5E9', color: '#fff', padding: '5px 10px', fontWeight: 700 }}>
       <span>{day.label}</span><div style={{ flex: 1 }} />
-      <input className="input" placeholder="🔎 Search FOS / area / branch" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 240, height: 30 }} />
+      <input className="input" placeholder="🔎 Search FOS / ID / area / branch" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 240, height: 30 }} />
     </div>
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '8px 0' }}>
       {kpi('Field agents', t.fos)}{kpi('Present', t.present, 'var(--good)')}{kpi('Total visits', t.visits, 'var(--info)')}
@@ -11947,7 +11947,7 @@ function FosDailyPreview({ d, tableH }) {
     <div style={{ overflow: 'auto', maxHeight: tableH || '52vh', border: '1px solid #E2E8F0', borderRadius: 8 }}>
       <table style={{ borderCollapse: 'collapse', width: '100%' }}>
         <thead><tr>
-          {['S.NO', 'FOS NAMES', 'AREA', 'CONTACT', 'REPORTING BRANCH', 'FIRST START'].map(h => <th key={h} style={fosTh('#0F2747')}>{h}</th>)}
+          {['S.NO', 'FOS NAMES', 'USER ID', 'AREA', 'CONTACT', 'REPORTING BRANCH', 'FIRST START'].map(h => <th key={h} style={fosTh('#0F2747')}>{h}</th>)}
           <th style={fosTh('#16A34A')}>TOTAL VISITS</th><th style={fosTh('#16A34A')}>PRODUCTIVE (PAID)</th>
           {d.slots.map((h, k) => <th key={h} style={fosTh(k < 2 ? '#B45309' : '#C2410C')}>{(k === 0 ? '☀ ' : k === 2 ? '🌇 ' : '') + h}</th>)}
           <th style={fosTh('#0EA5E9')}>PRESENT</th>
@@ -11958,6 +11958,7 @@ function FosDailyPreview({ d, tableH }) {
           return <tr key={r.user_id} style={{ background: i % 2 ? '#F8FAFC' : '#fff' }}>
             <td style={fosTd()}>{i + 1}</td>
             <td style={fosTd({ textAlign: 'left', fontWeight: 700 })}>{r.name}</td>
+            <td style={fosTd({ fontWeight: 700, color: '#1D4ED8' })}>{r.ids}</td>
             <td style={fosTd({ textAlign: 'left' })}>{r.area}</td>
             <td style={fosTd()}>{r.phone}</td>
             <td style={fosTd({ textAlign: 'left' })}>{r.branch}</td>
@@ -11971,7 +11972,7 @@ function FosDailyPreview({ d, tableH }) {
           </tr>;
         })}
         <tr style={{ background: '#DCE6FA', fontWeight: 800 }}>
-          <td style={fosTd()} /><td style={fosTd({ textAlign: 'left' })}>TOTAL ({t.fos} FOS)</td><td style={fosTd()} colSpan={4} />
+          <td style={fosTd()} /><td style={fosTd({ textAlign: 'left' })}>TOTAL ({t.fos} FOS)</td><td style={fosTd()} colSpan={5} />
           <td style={fosTd()}>{t.visits}</td><td style={fosTd()}>{t.paid}</td>
           {t.slots.map((n, k) => <td key={k} style={fosTd()}>{n}</td>)}
           <td style={fosTd()}>{t.present} present</td><td style={fosTd()} colSpan={3} />
@@ -11984,7 +11985,7 @@ function FosDailyPreview({ d, tableH }) {
 function FosMonthlyPreview({ d, tableH }) {
   const [mode, setMode] = useState('visits');   // visits | paid
   const [q, setQ] = useState('');
-  const rows = d.rows.filter(r => !q || (r.name + ' ' + r.area + ' ' + r.branch).toLowerCase().includes(q.toLowerCase()));
+  const rows = d.rows.filter(r => !q || (r.name + ' ' + (r.ids || '') + ' ' + r.area + ' ' + r.branch).toLowerCase().includes(q.toLowerCase()));
   const cellStyle = (v, sun) => {
     if (v === 'Sun') return { background: '#F2DCDB', color: '#9B2C2C', fontWeight: 700 };
     if (v === 'A') return { background: '#FDE047', color: '#DC2626', fontWeight: 800 };
@@ -12004,7 +12005,7 @@ function FosMonthlyPreview({ d, tableH }) {
       <span>{d.label}</span><div style={{ flex: 1 }} />
       <div className={cx('chip', mode === 'visits' && 'on')} onClick={() => setMode('visits')}>Visit counts</div>
       <div className={cx('chip', mode === 'paid' && 'on')} onClick={() => setMode('paid')}>Productive (paid)</div>
-      <input className="input" placeholder="🔎 Search FOS / area / branch" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 220, height: 30 }} />
+      <input className="input" placeholder="🔎 Search FOS / ID / area / branch" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 220, height: 30 }} />
     </div>
     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11.5, margin: '6px 0' }} className="muted">
       {[['#BBF7D0', '4+ visits'], ['#FEF3C7', '1–3'], ['#FECACA', '0 (present, no visit)'], ['#F2DCDB', 'Sun'], ['#FDE047', 'A absent'], ['#BFDBFE', 'IN-A leave'], ['#E5E7EB', 'NA not joined']].map(([c, l]) =>
@@ -12016,13 +12017,13 @@ function FosMonthlyPreview({ d, tableH }) {
           <tr>
             <th style={fosTh('#0F2747', { ...left, zIndex: 3, minWidth: 34 })}>#</th>
             <th style={fosTh('#0F2747', { position: 'sticky', left: 34, zIndex: 3, minWidth: 190 })}>FOS NAMES</th>
-            <th style={fosTh('#0F2747')}>AREA</th><th style={fosTh('#0F2747')}>BRANCH</th>
+            <th style={fosTh('#0F2747')}>USER ID</th><th style={fosTh('#0F2747')}>AREA</th><th style={fosTh('#0F2747')}>BRANCH</th>
             {d.days.map(x => <th key={x.date} style={fosTh(mode === 'paid' ? (x.sun ? '#94A3B8' : '#F59E0B') : (x.sun ? '#64748B' : '#1D4ED8'), { padding: '3px 4px', minWidth: 30 })}>
               <div>{x.day}</div><div style={{ fontSize: 9, opacity: .85 }}>{x.dow}</div></th>)}
             {stats.map(([h, , c]) => <th key={h} style={fosTh(c)}>{h}</th>)}
           </tr>
           {mode === 'visits' && <tr>
-            <td style={fosTd({ ...left, background: '#E0E7FF' })} /><td style={fosTd({ position: 'sticky', left: 34, background: '#E0E7FF', fontWeight: 700, textAlign: 'left' })}>Day total</td><td style={fosTd({ background: '#E0E7FF' })} colSpan={2} />
+            <td style={fosTd({ ...left, background: '#E0E7FF' })} /><td style={fosTd({ position: 'sticky', left: 34, background: '#E0E7FF', fontWeight: 700, textAlign: 'left' })}>Day total</td><td style={fosTd({ background: '#E0E7FF' })} colSpan={3} />
             {d.day_totals.map((n, k) => <td key={k} style={fosTd({ background: '#E0E7FF', fontWeight: 700 })}>{n}</td>)}
             <td style={fosTd({ background: '#E0E7FF' })} colSpan={stats.length} />
           </tr>}
@@ -12030,6 +12031,7 @@ function FosMonthlyPreview({ d, tableH }) {
         <tbody>{rows.map((r, i) => <tr key={r.user_id}>
           <td style={fosTd({ ...left })}>{i + 1}</td>
           <td style={fosTd({ position: 'sticky', left: 34, zIndex: 1, background: '#fff', textAlign: 'left', fontWeight: 700 })}>{r.name}</td>
+          <td style={fosTd({ fontWeight: 700, color: '#1D4ED8' })}>{r.ids}</td>
           <td style={fosTd({ textAlign: 'left' })}>{r.area}</td><td style={fosTd({ textAlign: 'left' })}>{r.branch}</td>
           {(mode === 'paid' ? r.paid : r.days).map((v, k) => {
             const sun = d.days[k] && d.days[k].sun;

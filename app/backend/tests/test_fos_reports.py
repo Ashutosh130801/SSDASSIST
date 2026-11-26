@@ -22,7 +22,8 @@ names=[("CHINTA SRINIVASA RAO","TANUKU","EAST &WEST","9154934446"),("NADIPINTI B
 ("GAJULA PRAVEEN","MANCHERIAL","TELANGANA","8639562425"),("KARRI YASWANTH","VIZAG","VISAKHAPATNAM","7793912147")]
 fos=[]
 for i,(n,a,b,ph) in enumerate(names):
-    u=models.User(name=n,email=f"f{i}@x",role="fos",is_active=True,branch=b,location=a,phone=ph,
+    u=models.User(name=n,email=f"f{i}@x",role="fos",is_active=True,branch=b,location=a,phone=ph,emp_code=f"FO{i+1:03d}",
+                  tl_emp_code=("TL014" if i==0 else None), tc_emp_code=("TC210" if i==0 else None),
                   joining_date=date(2026,11,10) if i==5 else date(2025,1,1))
     db.add(u); fos.append(u)
 c=models.Case(customer_name="X",account_no="1",bank="AXIS",product="CC"); db.add(c); db.flush()
@@ -57,7 +58,8 @@ class FosReports(unittest.TestCase):
         self.assertEqual(wb.sheetnames, ["Summary", "20-11-2026", "21-11-2026", "22-11-2026"])
         ws = wb["20-11-2026"]
         self.assertEqual(ws["B2"].value, "TODAY FIELD VISIT REPORT")
-        self.assertEqual(ws.cell(row=4, column=9).value, "PRODUCTIVE VISIT (PAID)")
+        self.assertEqual(ws.cell(row=4, column=10).value, "PRODUCTIVE VISIT (PAID)")
+        self.assertEqual(ws.cell(row=4, column=4).value, "USER ID")
         self.assertEqual(ws.max_row > 6, True)
 
     def test_monthly(self):
@@ -65,10 +67,10 @@ class FosReports(unittest.TestCase):
         r = cl.get("/api/attendance/fos-report/monthly.xlsx?start=2026-10-21&end=2026-11-20")
         self.assertEqual(r.status_code, 200, r.text[:200])
         ws = openpyxl.load_workbook(io.BytesIO(r.content)).worksheets[0]
-        self.assertEqual(ws.cell(row=8, column=8).value, 21)          # first day column = 21st
-        vals = {ws.cell(row=15, column=8 + k).value for k in range(31)}
+        self.assertEqual(ws.cell(row=8, column=9).value, 21)          # first day column = 21st
+        vals = {ws.cell(row=15, column=9 + k).value for k in range(31)}
         self.assertIn("NA", vals)                                         # joined 10 Nov → earlier days NA
-        self.assertEqual(ws.cell(row=8, column=8 + 31).value, "TOTAL COUNT")
+        self.assertEqual(ws.cell(row=8, column=9 + 31).value, "TOTAL COUNT")
 
     def test_previews_match_excel(self):
         import openpyxl
@@ -81,8 +83,14 @@ class FosReports(unittest.TestCase):
         ws = openpyxl.load_workbook(io.BytesIO(cl.get(
             "/api/attendance/fos-report/monthly.xlsx?start=2026-10-21&end=2026-11-20").content)).worksheets[0]
         for i, r in enumerate(m["rows"]):
-            excel = [ws.cell(row=10 + i, column=8 + k).value for k in range(31)]
+            excel = [ws.cell(row=10 + i, column=9 + k).value for k in range(31)]
             self.assertEqual(excel, r["days"])                       # preview grid == Excel grid
+
+    def test_user_ids_all_hats(self):
+        d = cl.get("/api/attendance/fos-report/daily?start=2026-11-20").json()
+        ids = {r["name"]: r["ids"] for r in d["days"][0]["rows"]}
+        self.assertEqual(ids["CHINTA SRINIVASA RAO"], "FO001 / TL014 / TC210")    # FOS + TL + caller hats
+        self.assertEqual(ids["AKULA UDAY KUMAR"], "FO003")
 
     def test_bad_range(self):
         self.assertEqual(cl.get("/api/attendance/fos-report/daily.xlsx?start=2026-09-01&end=2026-11-20").status_code, 400)
