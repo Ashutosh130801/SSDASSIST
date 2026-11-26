@@ -3533,10 +3533,12 @@ function StaffView({ config, user }) {
             {branches.map(b => (
               <div key={b.branch} className="glass card" style={{ padding: 16, cursor: 'pointer' }} onClick={() => setOpenBranch(b.branch)}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <b style={{ fontSize: 16 }}>{b.branch}</b><span className="badge allocated">{b.staff} staff</span></div>
+                  <b style={{ fontSize: 16 }}>{b.branch}</b><span className="badge allocated" title="Everyone in this branch, all roles">{b.staff} staff</span></div>
                 <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>{b.manager ? '👤 ' + b.manager.name : '⚠ No manager'}</div>
                 <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 12 }} className="muted">
-                  <span>FOS {b.fos}</span><span>Callers {b.telecaller}</span><span>Back-office {b.backend}</span></div>
+                  <span>FOS {b.fos}</span><span>Callers {b.telecaller}</span><span>Team leads {b.teamlead || 0}</span>
+                  {b.backend > 0 && <span>Back-office {b.backend}</span>}
+                  {b.other > 0 && <span title="Managers, HR, IT and other roles">Others {b.other}</span>}</div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10 }}>
                   <div><div className="muted" style={{ fontSize: 11 }}>Recovered</div><b style={{ color: 'var(--good)' }}>{money(b.received)}</b></div>
                   <div style={{ textAlign: 'right' }}><div className="muted" style={{ fontSize: 11 }}>Pending</div><b style={{ color: 'var(--gold)' }}>{money(b.pending)}</b></div></div>

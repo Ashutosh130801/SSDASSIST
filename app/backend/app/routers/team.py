@@ -100,13 +100,19 @@ def branches(db: Session = Depends(get_db), user: models.User = Depends(require_
         b = u.branch or "Unassigned"
         if user.role == "manager" and b != (user.branch or "Unassigned"):
             continue
-        d = cards.setdefault(b, {"branch": b, "manager": None,
-                                 "fos": 0, "telecaller": 0, "backend": 0, "staff": 0})
+        d = cards.setdefault(b, {"branch": b, "manager": None, "fos": 0, "telecaller": 0, "backend": 0,
+                                 "teamlead": 0, "other": 0, "staff": 0})
         if u.role == "manager" and d["manager"] is None:
             d["manager"] = {"id": u.id, "name": u.name, "phone": u.phone, "email": u.email}
+        # Every active person in the branch counts once in the total, whatever their role.
+        d["staff"] += 1
         if u.role in ("fos", "telecaller", "backend"):
             d[u.role] += 1
-            d["staff"] += 1
+        # Team leads: the TL role itself, or a FOS/caller who also wears the team-lead hat.
+        if u.role == "teamlead" or getattr(u, "also_team_lead", False):
+            d["teamlead"] += 1
+        if u.role not in ("fos", "telecaller", "backend", "teamlead"):
+            d["other"] += 1                    # managers, HR, IT, head office … (still in the total)
 
     paid_enr_col = func.coalesce(func.sum(case((models.Case.paid_status == "PAID", models.Case.enr), else_=0)), 0)
     rows = (db.query(models.Case.branch, func.count(models.Case.id),
