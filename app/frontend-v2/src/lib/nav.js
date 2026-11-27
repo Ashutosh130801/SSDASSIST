@@ -38,7 +38,7 @@ const FALLBACK = {
   hr: 'manpower preqs leave payroll profile security',
   it: 'attendance profile leave security',
   staff: 'attendance profile leave security',
-  teamfollower: 'followdash attendance leave profile security',
+  teamfollower: 'followdash mis attendance leave profile security',
 };
 const FALLBACK_LABEL = {
   dashboard: 'Dashboard', cases: 'Accounts', fcases: 'My Accounts', sheet: 'Live Sheet', ptp: 'PTP Tracker',

@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { CheckCircle2, Clock, Download, Eye, FolderOpen, History, IdCard, LineChart, MapPin, Percent, Phone, PhoneCall, Footprints, Trash2, UserPlus, Users, Wallet } from 'lucide-react';
-import { api } from '../lib/api.js';
+import { api, download } from '../lib/api.js';
 import { inr, inrShort, num } from '../lib/format.js';
 import { Card, Kpi, Pill, Empty, Skeleton, useLoad, useToast } from '../components/ui.jsx';
 import { ModuleHead, Chips, Avatar, Bar, Presence, usePresence, usePanel, useLive, Modal, SearchBox } from './kit.jsx';
@@ -45,6 +45,7 @@ export function FollowBoard({ followerId, embedded }) {
           <option value="name">Sort: Name</option><option value="recovered">Sort: Recovered ₹</option><option value="pct">Sort: Recovery %</option>
           <option value="today">Sort: Collected today</option><option value="activity">Sort: Activity today</option></select>
         <button className="btn" onClick={csv} disabled={!rows.length}><Download />CSV</button>
+        <button className="btn primary" onClick={() => download('/api/team-follow/me/report.xlsx?month_bucket=' + mb + (followerId ? '&follower_id=' + followerId : ''), 'FieldTL_group_report_' + mb + '.xlsx')} title="Daily · monthly · per person · per portfolio"><Download />Group report</button>
       </div></div>
 
       {error && <div className="card" style={{ padding: 16, color: 'var(--bad)' }}>{error}</div>}

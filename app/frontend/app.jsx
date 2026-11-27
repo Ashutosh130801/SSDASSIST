@@ -822,22 +822,37 @@ function Loader({ size }) { return <div className={cx('ssd-loader', size)}><img 
 /* ---------- Reusable: multi-select checkbox dropdown (cycle / FOS / caller filters) ---------- */
 function MultiSelect({ label, icon, options, selected, onChange, width }) {
   const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
   const sel = selected || [];
   const toggle = (v) => onChange(sel.includes(v) ? sel.filter(x => x !== v) : [...sel, v]);
+  const ql = q.trim().toLowerCase();
+  // Type-to-search: matches the label (name + ID) — shown when the list is long enough to need it.
+  const searchable = (options || []).length > 6;
+  const shown = ql ? (options || []).filter(o => String(o.label || '').toLowerCase().includes(ql) || String(o.value || '').toLowerCase().includes(ql)) : (options || []);
+  const close = () => { setOpen(false); setQ(''); };
   return (
     <div style={{ position: 'relative', display: 'inline-block' }}>
       <div className={cx('chip', sel.length && 'on')} onClick={() => setOpen(o => !o)} style={{ cursor: 'pointer' }}>
         {icon} {label}{sel.length ? ` · ${sel.length}` : ''} ▾
       </div>
       {open && <>
-        <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-        <div className="glass card" style={{ position: 'absolute', zIndex: 50, marginTop: 6, minWidth: width || 190, maxHeight: 300, overflow: 'auto', padding: 10, boxShadow: '0 10px 26px rgba(0,0,0,.16)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-            <b style={{ fontSize: 12 }}>{label}</b>
-            {sel.length > 0 && <span className="muted" style={{ fontSize: 11, cursor: 'pointer' }} onClick={() => onChange([])}>Clear</span>}
+        <div onClick={close} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+        <div className="glass card" style={{ position: 'absolute', zIndex: 50, marginTop: 6, minWidth: width || 190, maxHeight: 340, overflow: 'auto', padding: 10, boxShadow: '0 10px 26px rgba(0,0,0,.16)' }}>
+          <div style={{ position: 'sticky', top: -10, background: 'var(--card, #fff)', margin: '-10px -10px 6px', padding: '10px 10px 6px', zIndex: 1 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: searchable ? 6 : 0 }}>
+              <b style={{ fontSize: 12 }}>{label}</b>
+              <span style={{ display: 'flex', gap: 10 }}>
+                {ql && shown.length > 0 && <span className="muted" style={{ fontSize: 11, cursor: 'pointer' }} onClick={() => onChange([...new Set([...sel, ...shown.map(o => o.value)])])}>Select shown</span>}
+                {sel.length > 0 && <span className="muted" style={{ fontSize: 11, cursor: 'pointer' }} onClick={() => onChange([])}>Clear</span>}
+              </span>
+            </div>
+            {searchable && <input className="input" autoFocus placeholder={'Search ' + String(label || '').toLowerCase() + ' name / ID…'} value={q}
+              onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') close(); }}
+              style={{ width: '100%', height: 32, padding: '0 10px', fontSize: 13 }} />}
           </div>
           {(!options || options.length === 0) && <div className="muted" style={{ fontSize: 12 }}>None available</div>}
-          {(options || []).map(o => (
+          {options && options.length > 0 && shown.length === 0 && <div className="muted" style={{ fontSize: 12, padding: '4px 2px' }}>No match for “{q}”</div>}
+          {shown.map(o => (
             <label key={o.value} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 2px', fontSize: 13, cursor: 'pointer' }}>
               <input type="checkbox" checked={sel.includes(o.value)} onChange={() => toggle(o.value)} />
               <span>{o.label}</span>
@@ -3046,11 +3061,70 @@ function StaffModal({ editing, onClose, onDone, presetBranch, me }) {
     </div>
   );
 }
+/* Field visits on a route map (profile → Route history / Live route): numbered pins coloured by
+   outcome (green = paid, red = off-location, amber = other), a list below the map, and a detail
+   popup with the GPS-camera photo. Used by team leads, Field TLs, managers, HO and admin. */
+function drawVisitMarkers(gmap, visits, onPick) {
+  const g = window.google; if (!g || !gmap) return [];
+  return (visits || []).map((v, i) => {
+    if (v.lat == null || v.lng == null) return null;
+    const mk = new g.maps.Marker({ position: { lat: v.lat, lng: v.lng }, map: gmap, zIndex: 900 + i,
+      title: `#${i + 1} · ${v.time} · ${v.customer || ''}${v.paid ? ' · ₹' + v.amount : ''}`,
+      label: { text: String(i + 1), color: '#fff', fontWeight: '700' },
+      icon: { path: g.maps.SymbolPath.CIRCLE, scale: 12, fillColor: v.paid ? '#16A34A' : (v.off_location ? '#DC2626' : '#D97706'), fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2 } });
+    try { mk.addListener('click', () => onPick && onPick(v)); } catch (e) {}
+    return mk;
+  }).filter(Boolean);
+}
+function clearVisitMarkers(arr) { (arr || []).forEach(m => { try { m.setMap(null); } catch (e) {} }); }
+function DayVisitsList({ data, onPick }) {
+  if (!data) return null;
+  const vs = data.visits || [];
+  return (
+    <div className="glass card" style={{ padding: 8, marginTop: 10 }}>
+      <div className="toolbar" style={{ margin: '0 0 6px', flexWrap: 'wrap' }}>
+        <b style={{ fontSize: 13 }}>📍 Visits on the map · {vs.length}</b>
+        <span className="muted" style={{ fontSize: 12 }}>Collected <b style={{ color: 'var(--good)' }}>{INR2(data.collected)}</b></span>
+        <div style={{ flex: 1 }} />
+        <span className="muted" style={{ fontSize: 11.5 }}><span style={{ color: '#16A34A' }}>●</span> paid <span style={{ color: '#DC2626' }}>●</span> off-location <span style={{ color: '#D97706' }}>●</span> other</span>
+      </div>
+      {!vs.length ? <div className="muted" style={{ fontSize: 12.5, padding: '4px 2px' }}>No visits logged this day.</div> :
+        <div className="tablewrap" style={{ maxHeight: 200, overflow: 'auto' }}><table><thead><tr><th>#</th><th>Time</th><th>Customer</th><th>Bank</th><th>Dispo</th><th>Paid</th><th>Location</th></tr></thead>
+          <tbody>{vs.map((v, i) => <tr key={v.id || i} style={{ cursor: 'pointer' }} onClick={() => onPick(v)}>
+            <td>{i + 1}</td><td>{v.time}</td><td><b>{v.customer || '—'}</b></td><td>{v.bank || '—'}</td><td>{v.disposition || '—'}</td>
+            <td style={{ color: v.paid ? 'var(--good)' : 'inherit' }}>{v.paid ? INR2(v.amount) : '—'}</td>
+            <td>{v.lat == null ? <span className="muted">no GPS</span> : v.off_location ? <span style={{ color: 'var(--bad)' }}>⚠ {v.distance_m != null ? Math.round(v.distance_m) + 'm off' : 'check'}</span> : <span style={{ color: 'var(--good)' }}>✓ ok</span>}</td></tr>)}</tbody></table></div>}
+    </div>);
+}
+function VisitDetailModal({ v, onClose }) {
+  const [drawerCase, setDrawerCase] = useState(null);
+  return (<>
+    <div className="modal-bg" onClick={onClose} style={{ zIndex: 1100 }}><div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+      <div className="section-h"><h3>Visit — {v.customer || '—'}</h3><button className="btn ghost sm" onClick={onClose}>✕</button></div>
+      <div className="stat-row"><span className="k">Time</span><b>{v.time}</b></div>
+      <div className="stat-row"><span className="k">Account</span><b className="mono">{v.account || '—'}</b></div>
+      <div className="stat-row"><span className="k">Bank / Product</span><b>{[v.bank, v.product].filter(Boolean).join(' · ') || '—'}</b></div>
+      <div className="stat-row"><span className="k">Disposition</span><b>{v.disposition || '—'}</b></div>
+      {v.paid && <div className="stat-row"><span className="k">Payment</span><b style={{ color: 'var(--good)' }}>{INR2(v.amount)}{v.norm_stab ? ' · ' + v.norm_stab : ''}</b></div>}
+      {v.person_moved && <div className="stat-row"><span className="k">Flag</span><b style={{ color: 'var(--warn)' }}>Person moved</b></div>}
+      {v.address_slot && <div className="stat-row"><span className="k">Visited</span><b>{{ '1': 'Address 1', '2': 'Address 2', '3': 'Address 3', new: 'New address' }[v.address_slot] || v.address_slot}</b></div>}
+      {v.trust ? <div style={{ margin: '6px 0' }}><TrustBadge level={v.trust} review={v.review_status} />
+        {(v.trust_reasons || []).filter(r => r.sev !== 'info').map((r, i) => <div key={i} style={{ fontSize: 12 }}>• {r.text}</div>)}</div>
+        : v.off_location && <div className="stat-row"><span className="k">⚠ Location</span><b style={{ color: 'var(--bad)' }}>{Math.round(v.distance_m)}m off case</b></div>}
+      {v.note && <div style={{ marginTop: 8 }}><div className="muted" style={{ fontSize: 12 }}>Log submitted</div><div style={{ fontSize: 13, lineHeight: 1.5 }}>{v.note}</div></div>}
+      {v.photo && <img src={v.photo} alt="visit" style={{ width: '100%', borderRadius: 10, marginTop: 10 }} />}
+      {v.payment_photo && <div style={{ marginTop: 10 }}><div className="muted" style={{ fontSize: 12 }}>🧾 Payment screenshot</div><a href={v.payment_photo} target="_blank" rel="noreferrer"><img src={v.payment_photo} alt="payment screenshot" style={{ width: '100%', borderRadius: 10, marginTop: 4 }} /></a></div>}
+      {v.case_id && <button className="btn gold block" style={{ marginTop: 10 }} onClick={async () => { try { setDrawerCase(await api('/api/cases/' + v.case_id)); } catch (e) { toast(e.message, 'err'); } }}>Open full case</button>}
+    </div></div>
+    {drawerCase && <CaseDrawer c={drawerCase} onClose={() => setDrawerCase(null)} onChanged={() => {}} />}
+  </>);
+}
 function RouteHistoryModal({ officer, config, onClose }) {
   const mapEl = useRef(null); const map = useRef(null); const routeObj = useRef(null);
   const mover = useRef(null); const timer = useRef(null); const pathRef = useRef([]); const idx = useRef(0);
   const [dates, setDates] = useState(null); const [selDate, setSelDate] = useState(''); const [info, setInfo] = useState(null);
   const [nokey, setNokey] = useState(false); const [playing, setPlaying] = useState(false); const [speed, setSpeed] = useState(2); const [ready, setReady] = useState(false);
+  const visitMks = useRef([]); const [dayVisits, setDayVisits] = useState(null); const [selVisit, setSelVisit] = useState(null);
   useEffect(() => {
     api(`/api/tracking/officer/${officer.id}/history-dates`).then(ds => { setDates(ds); if (ds.length) setSelDate(ds[0].date); }).catch(() => setDates([]));
     loadMaps(config && config.google_maps_api_key).then(g => {
@@ -3063,13 +3137,33 @@ function RouteHistoryModal({ officer, config, onClose }) {
     stopPlay();
     clearRouteLayers(routeObj.current); routeObj.current = null;
     if (mover.current) { mover.current.setMap(null); mover.current = null; }
+    clearVisitMarkers(visitMks.current); visitMks.current = []; setDayVisits(null);
     setReady(false);
+  };
+  const loadVisits = async (date) => {
+    try {
+      const dv = await api(`/api/visits/officer/${officer.id}/day?date=${date}`);
+      setDayVisits(dv);
+      if (map.current && window.google) {
+        clearVisitMarkers(visitMks.current);
+        visitMks.current = drawVisitMarkers(map.current, dv.visits, setSelVisit);
+      }
+      return dv;
+    } catch (e) { return null; }
   };
   const show = async () => {
     if (!selDate) return; clear();
     try {
       const pts = await api(`/api/tracking/officer/${officer.id}/route?date=${selDate}`);
-      if (!pts.length) { toast('No route recorded that day', 'err'); return; }
+      const dv = await loadVisits(selDate);       // field visits of that day, pinned on the map
+      if (!pts.length) {
+        if (dv && dv.count && map.current && window.google) {   // no GPS trail, but visits exist → fit to them
+          const b = new window.google.maps.LatLngBounds(); let n = 0;
+          (dv.visits || []).forEach(v => { if (v.lat != null) { b.extend({ lat: v.lat, lng: v.lng }); n++; } });
+          if (n) map.current.fitBounds(b);
+        }
+        toast('No route recorded that day', 'err'); return;
+      }
       if (map.current && window.google) {
         const g = window.google;
         const r = drawRouteLeaflet(map.current, pts);
@@ -3118,8 +3212,10 @@ function RouteHistoryModal({ officer, config, onClose }) {
           </div>}
           {info && <div className="stat-row"><span className="k">Selected day</span>
             <b>{info.points} pts{info.distance_km != null ? ` · ${info.distance_km} km` : ''}{info.first_seen ? ` · ${info.first_seen}–${info.last_seen}` : ''}</b></div>}
+          <DayVisitsList data={dayVisits} onPick={setSelVisit} />
         </>}
       </div>
+      {selVisit && <VisitDetailModal v={selVisit} onClose={() => setSelVisit(null)} />}
     </div>
   );
 }
@@ -3127,6 +3223,19 @@ function RouteHistoryModal({ officer, config, onClose }) {
 function LiveRouteModal({ officer, config, onClose }) {
   const mapEl = useRef(null), map = useRef(null), curMk = useRef(null), routeObj = useRef(null);
   const [info, setInfo] = useState(null);
+  const visitMks = useRef([]); const visitSig = useRef(''); const [dayVisits, setDayVisits] = useState(null); const [selVisit, setSelVisit] = useState(null);
+  // Today's visits — pinned on the live map; re-drawn only when the list changes (a new visit logged).
+  const drawVisits = async () => {
+    try {
+      const dv = await api(`/api/visits/officer/${officer.id}/day`);
+      const sig = (dv.visits || []).map(v => v.id + ':' + (v.paid ? 1 : 0)).join(',');
+      setDayVisits(dv);
+      if (sig !== visitSig.current && map.current && window.google) {
+        visitSig.current = sig; clearVisitMarkers(visitMks.current);
+        visitMks.current = drawVisitMarkers(map.current, dv.visits, setSelVisit);
+      }
+    } catch (e) {}
+  };
   const todayIST = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
   const draw = async (fit) => {
     try {
@@ -3146,13 +3255,14 @@ function LiveRouteModal({ officer, config, onClose }) {
     } catch (e) {}
   };
   useEffect(() => {
-    let timer;
+    let timer, vtimer;
     loadMaps(config && config.google_maps_api_key).then(() => {
       const g = window.google;
       map.current = new g.maps.Map(mapEl.current, { center: { lat: 17.72, lng: 83.30 }, zoom: 13, styles: DARK_MAP_STYLE });
       draw(true); timer = setInterval(() => draw(false), 3000);
+      drawVisits(); vtimer = setInterval(drawVisits, 30000);
     }).catch(() => {});
-    return () => timer && clearInterval(timer);
+    return () => { timer && clearInterval(timer); vtimer && clearInterval(vtimer); };
   }, []);
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -3165,8 +3275,10 @@ function LiveRouteModal({ officer, config, onClose }) {
         </div>
         <div className="glass" style={{ padding: 6, marginTop: 10 }}><div className="map tall" ref={mapEl}></div></div>
         {info && info.points === 0 && <p className="muted" style={{ marginTop: 8 }}>No movement recorded today yet. The route appears here once the officer's app sends a location.</p>}
-        <p className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>Live — refreshes every 3s. Green “S” is where they started today; the labelled marker is their current position.</p>
+        <DayVisitsList data={dayVisits} onPick={setSelVisit} />
+        <p className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>Live — refreshes every 3s (visits every 30s). Green “S” is where they started today; the labelled marker is their current position; numbered pins are today's visits.</p>
       </div>
+      {selVisit && <VisitDetailModal v={selVisit} onClose={() => setSelVisit(null)} />}
     </div>
   );
 }
@@ -3433,7 +3545,10 @@ function StaffView({ config, user }) {
   const load = () => { api('/api/users').then(setUsers); api('/api/team/branches').then(setBranches).catch(() => setBranches([])); };
   useEffect(() => { load(); }, []);
   const [associates, setAssociates] = useState([]);   // FOS from other locations working this branch's cases
+  const [brRole, setBrRole] = useState('all');         // branch detail: show one role only
+  const [brStatus, setBrStatus] = useState('all');     // all | active | inactive
   useEffect(() => {
+    setBrRole('all'); setBrStatus('all');
     if (!openBranch) { setAssociates([]); return; }
     api('/api/team/branch-associates?branch=' + encodeURIComponent(openBranch)).then(setAssociates).catch(() => setAssociates([]));
   }, [openBranch]);
@@ -3554,7 +3669,17 @@ function StaffView({ config, user }) {
   // ---- Branch detail: staff + stats ----
   const branchName = openBranch;
   const card = (branches || []).find(b => b.branch === branchName) || { branch: branchName, staff: 0, fos: 0, telecaller: 0, backend: 0, received: 0, pending: 0, cases: 0, manager: null };
-  const staff = (users || []).filter(u => (u.branch || 'Unassigned') === branchName);
+  const staffAll = (users || []).filter(u => (u.branch || 'Unassigned') === branchName);
+  // Role chips: each role (with a count) shows only that role's people. Dual-role staff appear under
+  // every role they hold (e.g. a FOS who is also a team lead shows under FOS and Team Lead).
+  const hasRole = (u, r) => u.role === r || (r === 'teamlead' && u.also_team_lead) || (r === 'fos' && u.also_field_agent)
+    || (r === 'telecaller' && u.also_caller) || (r === 'teamfollower' && u.also_team_follower);
+  const ROLE_ORDER = ['manager', 'teamlead', 'teamfollower', 'fos', 'telecaller', 'backend', 'hr', 'headoffice', 'admin', 'it', 'staff'];
+  const brRoles = [...new Set(staffAll.flatMap(u => ROLE_ORDER.filter(r => hasRole(u, r)).concat(ROLE_ORDER.includes(u.role) ? [] : [u.role])))]
+    .sort((a, b) => (ROLE_ORDER.indexOf(a) + 1 || 99) - (ROLE_ORDER.indexOf(b) + 1 || 99));
+  const isAct = u => u.is_active !== false;
+  const staffSt = brStatus === 'all' ? staffAll : staffAll.filter(u => (brStatus === 'active') === isAct(u));
+  const staff = brRole === 'all' ? staffSt : staffSt.filter(u => hasRole(u, brRole));
   const renameBranch = () => {
     const nn = (window.prompt('Rename branch', branchName) || '').trim();
     if (!nn || nn === branchName) return;
@@ -3599,6 +3724,16 @@ function StaffView({ config, user }) {
         <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Pending</div><b style={{ color: 'var(--gold)' }}>{money(card.pending)}</b></div>
       </div>
 
+      {users && staffAll.length > 0 && <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+        <span className="muted" style={{ fontSize: 12.5 }}>Role:</span>
+        <div className={cx('chip', brRole === 'all' && 'on')} onClick={() => setBrRole('all')}>All ({staffSt.length})</div>
+        {brRoles.map(r => <div key={r} className={cx('chip', brRole === r && 'on')} onClick={() => setBrRole(r)}>
+          {roleName(r)} ({staffSt.filter(u => hasRole(u, r)).length}{r === 'fos' && associates.length ? ' + ' + associates.length : ''})</div>)}
+        <div style={{ flex: 1 }} />
+        <span className="muted" style={{ fontSize: 12.5 }}>Status:</span>
+        {[['all', 'All'], ['active', 'Active'], ['inactive', 'Inactive']].map(([k, l]) => <div key={k} className={cx('chip', brStatus === k && 'on')} onClick={() => setBrStatus(k)}>
+          {l} ({k === 'all' ? staffAll.length : staffAll.filter(u => (k === 'active') === isAct(u)).length})</div>)}
+      </div>}
       {!users ? <Loader /> : <div className="glass card" style={{ padding: 6 }}>
         <div className="tablewrap"><table>
           <thead><tr><th>Name</th><th>Role</th><th>Banks</th><th>Status</th><th></th></tr></thead>
@@ -3606,7 +3741,11 @@ function StaffView({ config, user }) {
             <td><b style={{ color: 'var(--gold)', cursor: 'pointer' }} title="Open full dashboard" onClick={() => setDashUser(u)}>{u.name}</b>
               {u.emp_code && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10.5 }}>{u.emp_code}</span>}
               <div className="muted" style={{ fontSize: 12 }}>{u.email}</div></td>
-            <td><span className="badge allocated">{roleName(u.role)}</span></td>
+            <td><span className="badge allocated">{roleName(u.role)}</span>
+              {u.also_team_lead && u.role !== 'teamlead' && <span className="badge" style={{ marginLeft: 4, fontSize: 10 }}>+TL</span>}
+              {u.also_field_agent && u.role !== 'fos' && <span className="badge" style={{ marginLeft: 4, fontSize: 10 }}>+FOS</span>}
+              {u.also_caller && u.role !== 'telecaller' && <span className="badge" style={{ marginLeft: 4, fontSize: 10 }}>+Caller</span>}
+              {u.also_team_follower && u.role !== 'teamfollower' && <span className="badge" style={{ marginLeft: 4, fontSize: 10 }}>+Field TL</span>}</td>
             <td>{(u.banks || []).join(', ') || '—'}</td>
             <td>{u.is_active ? <span className="badge paid">active</span> : <span className="badge unpaid">inactive</span>}
               {u.employment_type && <div className="muted" style={{ fontSize: 11 }}>{u.employment_type}</div>}</td>
@@ -3618,9 +3757,9 @@ function StaffView({ config, user }) {
               {' '}<button className="btn sm" onClick={() => { setEditing(u); setPresetBranch(branchName); setModal(true); }}>Edit</button>
               {' '}{u.id !== user.id && <button className="btn sm" style={u.is_active === false ? { color: 'var(--good)' } : { color: 'var(--bad)' }} onClick={() => removeStaff(u)}>{u.is_active === false ? 'Restore' : 'Remove'}</button>}</td></tr>)}
           </tbody></table></div>
-        {staff.length === 0 && <div className="muted" style={{ padding: 18, textAlign: 'center' }}>No staff in this branch yet.</div>}</div>}
+        {staff.length === 0 && <div className="muted" style={{ padding: 18, textAlign: 'center' }}>{brRole === 'all' && brStatus === 'all' ? 'No staff in this branch yet.' : `No ${brStatus !== 'all' ? brStatus + ' ' : ''}${brRole === 'all' ? 'staff' : roleName(brRole)} in this branch.`}</div>}</div>}
 
-      {associates.length > 0 && <div style={{ marginTop: 16 }}>
+      {associates.length > 0 && (brRole === 'all' || brRole === 'fos') && <div style={{ marginTop: 16 }}>
         <div className="section-h"><h3 style={{ fontSize: 14, margin: 0 }}>Field officers working this branch <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>(based elsewhere · assigned to this branch's cases)</span></h3></div>
         <div className="glass card" style={{ padding: 6 }}>
           <div className="tablewrap"><table>
@@ -7992,6 +8131,30 @@ function MISView({ user }) {
   const LB_COLS = [['emp', 'Employee'], ['count', 'Count'], ['unpaid', 'Unpaid'], ['paid', 'Paid'], ['enr', 'ENR'], ['target_pct', 'Target %'], ['target_enr', 'Target ENR'], ['achieved_pct', 'Achieved %'], ['achieved_enr', 'Achieved ENR'], ['gap_enr', 'Gap ENR'], ['to_target_pct', 'To target %'], ['pending_visit', 'Pend visit'], ['cash_coll', 'Cash coll']];
   const sheetTables = () => [['Employee performance & leaderboard', LB_COLS, lb]].concat(
     TABLES.map(([tk, cols]) => [(d.table_names && d.table_names[tk]) || tk, cols, (d[tk] || [])]));
+  // KPI tiles + achievement strip — reused for a Field TL's portfolio-wide summary and their group MIS.
+  const kpiBlock = (dd, trendTitle) => (<>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12 }}>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total cases</div><b style={{ fontSize: 20 }}>{dd.overall.count}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Paid · Unpaid</div><b style={{ fontSize: 20 }}><span style={{ color: 'var(--good)' }}>{dd.overall.paid}</span> <span className="muted" style={{ fontSize: 14 }}>·</span> <span style={{ color: 'var(--bad)' }}>{dd.overall.unpaid}</span></b><div className="muted" style={{ fontSize: 11 }}>{dd.overall.count ? Math.round((dd.overall.paid / dd.overall.count) * 100) : 0}% paid</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total {dd.base_label || 'ENR'}</div><b style={{ fontSize: 20 }}>{money(dd.overall.enr)}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Paid {dd.base_label || 'ENR'}</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(dd.overall.paid_enr)}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total POS</div><b style={{ fontSize: 20 }}>{money(dd.overall.pos)}</b><div className="muted" style={{ fontSize: 11 }}>principal outstanding</div></div>
+          {/* "Pending" KPI tile removed — it confused users; the other tiles already convey progress. */}
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Achieved %</div><b style={{ fontSize: 20, color: 'var(--gold)' }}>{dd.overall.pct}%</b></div>
+          <div className="glass card" style={{ padding: 14 }} title="Settled cash (PAID cases, and all money on plain cases) — below-settlement partials excluded"><div className="muted" style={{ fontSize: 12 }}>Cash collection</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(dd.overall.amount)}</b><div className="muted" style={{ fontSize: 11 }}>settled cash only</div></div>
+          <div className="glass card" style={{ padding: 14, border: '1px solid rgba(22,163,74,.35)' }} title="Every rupee received: cash collection + below-settlement partial payments"><div className="muted" style={{ fontSize: 12 }}>💰 Actual collection</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(dd.overall.actual_collection != null ? dd.overall.actual_collection : (Number(dd.overall.amount || 0) + Number(dd.overall.partial_payments || 0)))}</b><div className="muted" style={{ fontSize: 11 }}>{money(dd.overall.amount)} cash + {money(dd.overall.partial_payments)} partial</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Collected (MTD)</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(dd.projection.collected_mtd)}</b></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Projected month-end</div><b style={{ fontSize: 20 }}>{money(dd.projection.projected_month_end)}</b><div className="muted" style={{ fontSize: 11 }}>{dd.projection.projected_pct}% of target</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>PTP kept</div><b style={{ fontSize: 20 }}>{dd.funnel.ptp_kept}/{dd.funnel.ptp_total}</b><div className="muted" style={{ fontSize: 11 }}>{dd.funnel.ptp_kept_pct}% · {dd.funnel.ptp_broken} broken</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Untouched</div><b style={{ fontSize: 20, color: 'var(--bad)' }}>{dd.funnel.untouched}</b><div className="muted" style={{ fontSize: 11 }}>{money(dd.funnel.untouched_pending)} pending</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Realization</div><b style={{ fontSize: 20 }}>{dd.settlement.realization_pct}%</b><div className="muted" style={{ fontSize: 11 }}>leak {money(dd.settlement.leakage)}</div></div>
+          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Conversion</div><b style={{ fontSize: 20 }}>{dd.funnel.conversion_pct}%</b><div className="muted" style={{ fontSize: 11 }}>{dd.funnel.paid_of_contacted}/{dd.funnel.contacted} contacted</div></div>
+          {dd.settlement.rollback_target > 0 && <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Rollback collected</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(dd.settlement.rollback_collected)}</b><div className="muted" style={{ fontSize: 11 }}>{dd.settlement.rollback_pct}% of ENR · {dd.settlement.rollback_realization_pct}% of {money(dd.settlement.rollback_target)} · {dd.settlement.rollback_count} cases</div></div>}
+        </div>
+
+        {/* FTD / MTD / LMTD / Overall cash-collected comparison for this portfolio */}
+        {dd.trends && <TrendStrip trends={dd.trends} title={trendTitle} />}
+  </>);
   const printAll = () => {
     const w = window.open('', '_blank'); if (!w) return;
     let html = '<html><head><title>MIS ' + sel.bank + ' ' + sel.product + '</title><style>body{font-family:system-ui;padding:20px}h1{font-size:18px;color:#1e293b}h2{color:#2563EB;margin:18px 0 6px;font-size:14px}table{border-collapse:collapse;width:100%;font-size:11px;margin-bottom:14px}th,td{border:1px solid #cbd5e1;padding:4px 7px;text-align:left}th{background:#EEF3FB}</style></head><body><h1>MIS — ' + sel.bank + ' · ' + sel.product + '</h1>';
@@ -8056,6 +8219,7 @@ function MISView({ user }) {
         <div style={{ flex: 1 }} />
         {d && <button className="btn" onClick={() => setFull(true)}>📄 Full sheet</button>}
         {d && <button className="btn gold" onClick={() => dl(Object.keys(d.table_names || {}).join(','))}>⬇ Download all MIS</button>}
+        {user.role === 'teamfollower' && <button className="btn" onClick={() => download('/api/team-follow/me/report.xlsx?month_bucket=' + (monthB || 'all'), 'FieldTL_group_report_' + (monthB || 'all') + '.xlsx')} title="Daily, monthly, per person and per portfolio performance of your group">⬇ Group performance report</button>}
       </div>
       {err && <div className="glass card" style={{ color: 'var(--bad)' }}>{err}</div>}
       {viewingPeer && d && d.viewing_lead && <div className="ro-banner">👁 Read-only — <b>{d.viewing_lead.name}</b>'s MIS on {sel.bank} · {sel.product}. Switch back to yourself in the team-lead dropdown.</div>}
@@ -8071,28 +8235,15 @@ function MISView({ user }) {
           </div>
         </div>
 
-        {/* KPIs + projection */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12 }}>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total cases</div><b style={{ fontSize: 20 }}>{d.overall.count}</b></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Paid · Unpaid</div><b style={{ fontSize: 20 }}><span style={{ color: 'var(--good)' }}>{d.overall.paid}</span> <span className="muted" style={{ fontSize: 14 }}>·</span> <span style={{ color: 'var(--bad)' }}>{d.overall.unpaid}</span></b><div className="muted" style={{ fontSize: 11 }}>{d.overall.count ? Math.round((d.overall.paid / d.overall.count) * 100) : 0}% paid</div></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total {d.base_label || 'ENR'}</div><b style={{ fontSize: 20 }}>{money(d.overall.enr)}</b></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Paid {d.base_label || 'ENR'}</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(d.overall.paid_enr)}</b></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Total POS</div><b style={{ fontSize: 20 }}>{money(d.overall.pos)}</b><div className="muted" style={{ fontSize: 11 }}>principal outstanding</div></div>
-          {/* "Pending" KPI tile removed — it confused users; the other tiles already convey progress. */}
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Achieved %</div><b style={{ fontSize: 20, color: 'var(--gold)' }}>{d.overall.pct}%</b></div>
-          <div className="glass card" style={{ padding: 14 }} title="Settled cash (PAID cases, and all money on plain cases) — below-settlement partials excluded"><div className="muted" style={{ fontSize: 12 }}>Cash collection</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(d.overall.amount)}</b><div className="muted" style={{ fontSize: 11 }}>settled cash only</div></div>
-          <div className="glass card" style={{ padding: 14, border: '1px solid rgba(22,163,74,.35)' }} title="Every rupee received: cash collection + below-settlement partial payments"><div className="muted" style={{ fontSize: 12 }}>💰 Actual collection</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(d.overall.actual_collection != null ? d.overall.actual_collection : (Number(d.overall.amount || 0) + Number(d.overall.partial_payments || 0)))}</b><div className="muted" style={{ fontSize: 11 }}>{money(d.overall.amount)} cash + {money(d.overall.partial_payments)} partial</div></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Collected (MTD)</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(proj.collected_mtd)}</b></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Projected month-end</div><b style={{ fontSize: 20 }}>{money(proj.projected_month_end)}</b><div className="muted" style={{ fontSize: 11 }}>{proj.projected_pct}% of target</div></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>PTP kept</div><b style={{ fontSize: 20 }}>{fn.ptp_kept}/{fn.ptp_total}</b><div className="muted" style={{ fontSize: 11 }}>{fn.ptp_kept_pct}% · {fn.ptp_broken} broken</div></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Untouched</div><b style={{ fontSize: 20, color: 'var(--bad)' }}>{fn.untouched}</b><div className="muted" style={{ fontSize: 11 }}>{money(fn.untouched_pending)} pending</div></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Realization</div><b style={{ fontSize: 20 }}>{st.realization_pct}%</b><div className="muted" style={{ fontSize: 11 }}>leak {money(st.leakage)}</div></div>
-          <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Conversion</div><b style={{ fontSize: 20 }}>{fn.conversion_pct}%</b><div className="muted" style={{ fontSize: 11 }}>{fn.paid_of_contacted}/{fn.contacted} contacted</div></div>
-          {st.rollback_target > 0 && <div className="glass card" style={{ padding: 14 }}><div className="muted" style={{ fontSize: 12 }}>Rollback collected</div><b style={{ fontSize: 20, color: 'var(--good)' }}>{money(st.rollback_collected)}</b><div className="muted" style={{ fontSize: 11 }}>{st.rollback_pct}% of ENR · {st.rollback_realization_pct}% of {money(st.rollback_target)} · {st.rollback_count} cases</div></div>}
-        </div>
-
-        {/* FTD / MTD / LMTD / Overall cash-collected comparison for this portfolio */}
-        {d.trends && <TrendStrip trends={d.trends} title={`Achievement (cash collected) — ${sel.bank} · ${sel.product}${branchSel.length ? ' · ' + branchSel.join(', ') : ''}`} />}
+        {/* Field TL: the portfolio's overall summary (all teams) first, then MIS scoped to their group */}
+        {d.portfolio_overall && <>
+          <div className="section-h" style={{ marginTop: 2 }}><h3 style={{ margin: 0 }}>🏦 Portfolio overall — {sel.bank} · {sel.product}</h3>
+            <span className="muted" style={{ fontSize: 12 }}>all teams · summary only</span></div>
+          {kpiBlock(d.portfolio_overall, `Portfolio achievement (cash collected) — ${sel.bank} · ${sel.product}`)}
+          <div className="section-h" style={{ marginTop: 18 }}><h3 style={{ margin: 0 }}>👁️ Your group — {d.group_size} {d.group_size === 1 ? 'person' : 'people'}</h3>
+            <span className="muted" style={{ fontSize: 12 }}>everything below is only the FOS / callers under you</span></div>
+        </>}
+        {kpiBlock(d, `Achievement (cash collected) — ${sel.bank} · ${sel.product}${branchSel.length ? ' · ' + branchSel.join(', ') : ''}${d.portfolio_overall ? ' · your group' : ''}`)}
 
         {/* Charts */}
         <div className="grid2" style={{ gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14 }}>
@@ -11508,6 +11659,7 @@ function TeamFollowView({ user, config, followerId }) {
           {[['current', 'This month'], ['next', 'Next'], ['last', 'Last'], ['all', 'All']].map(([v, l]) =>
             <button key={v} className={cx('btn sm', mb === v && 'gold')} onClick={() => setMb(v)}>{l}</button>)}
           <button className="btn sm" onClick={toCsv}>⬇ CSV</button>
+          <button className="btn sm gold" onClick={() => download('/api/team-follow/me/report.xlsx?month_bucket=' + mb + (followerId ? '&follower_id=' + followerId : ''), 'FieldTL_group_report_' + mb + '.xlsx')} title="Daily · monthly · per person · per portfolio">⬇ Group report (Excel)</button>
         </div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))', gap: 10 }}>
@@ -11665,7 +11817,7 @@ const NAV = {
   it: [['attendance', '🕐', 'Attendance'], ['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
   staff: [['attendance', '🕐', 'Attendance'], ['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
   // Team Follow-up: tracks a chosen group of FOS / callers (complete performance, read-only).
-  teamfollower: [['followdash', '👁️', 'Field TL'], ['attendance', '🕐', 'Attendance'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
+  teamfollower: [['followdash', '👁️', 'Field TL'], ['mis', '📈', 'MIS'], ['attendance', '🕐', 'Attendance'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
 };
 // Everyone gets a Help & Support entry (raise a query, track it).
 // Everyone gets their own payslips (hidden while the salary section is locked).

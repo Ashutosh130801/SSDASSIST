@@ -343,3 +343,10 @@ select option { color: #0f172a; background: #fff; }
 .tf-item .cell-sub { display: block; }
 @media (max-width: 860px) { .tf-manage { flex-direction: column; } .tf-list { width: 100%; max-height: 240px; } }
 .member > .pbar { flex: none; }
+
+/* Multi-select type-to-search (FOS / caller / team lead lists) */
+.ms-menu .ms-head { position: sticky; top: -8px; z-index: 1; margin: -8px -8px 6px; padding: 8px 8px 6px; background: inherit; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+.ms-search { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2, rgba(127,127,127,.06)); color: var(--text-3); }
+.ms-search:focus-within { border-color: var(--accent); }
+.ms-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; }
+.ms-search input::placeholder { color: var(--text-3); }

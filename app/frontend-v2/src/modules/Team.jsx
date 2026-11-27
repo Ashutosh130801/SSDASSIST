@@ -56,7 +56,19 @@ export default function Team() {
   const q0 = q.trim().toLowerCase();
   const hits = useMemo(() => (q0 && users ? users.filter(u => [u.name, u.emp_code, u.phone, u.email, u.role, u.branch, u.location, u.designation]
     .some(v => String(v || '').toLowerCase().includes(q0))) : []), [q0, users]);
-  const staff = useMemo(() => (users || []).filter(u => (u.branch || 'Unassigned') === openBranch), [users, openBranch]);
+  const staffAll = useMemo(() => (users || []).filter(u => (u.branch || 'Unassigned') === openBranch), [users, openBranch]);
+  // Branch detail role filter — each chip shows only that role's people (dual-role staff count under every role they hold).
+  const [brRole, setBrRole] = useState('all');
+  const [brStatus, setBrStatus] = useState('all');   // all | active | inactive
+  useEffect(() => { setBrRole('all'); setBrStatus('all'); }, [openBranch]);
+  const hasRole = (u, r) => u.role === r || (r === 'teamlead' && u.also_team_lead) || (r === 'fos' && u.also_field_agent)
+    || (r === 'telecaller' && u.also_caller) || (r === 'teamfollower' && u.also_team_follower);
+  const ROLE_ORDER = ['manager', 'teamlead', 'teamfollower', 'fos', 'telecaller', 'backend', 'hr', 'headoffice', 'admin', 'it', 'staff'];
+  const brRoles = useMemo(() => [...new Set(staffAll.flatMap(u => ROLE_ORDER.filter(r => hasRole(u, r)).concat(ROLE_ORDER.includes(u.role) ? [] : [u.role])))]
+    .sort((a, b) => (ROLE_ORDER.indexOf(a) + 1 || 99) - (ROLE_ORDER.indexOf(b) + 1 || 99)), [staffAll]);
+  const isAct = u => u.is_active !== false;
+  const staffSt = useMemo(() => (brStatus === 'all' ? staffAll : staffAll.filter(u => (brStatus === 'active') === isAct(u))), [staffAll, brStatus]);
+  const staff = useMemo(() => (brRole === 'all' ? staffSt : staffSt.filter(u => hasRole(u, brRole))), [staffSt, brRole]);
   const pres = usePresence((q0 ? hits : openBranch ? staff : []).slice(0, 200).map(u => u.id));
 
   const profile = (u) => panel('employee', { u });
@@ -200,15 +212,26 @@ export default function Team() {
         <Kpi icon={Wallet} label="Pending" i={4} value={card.pending || 0} format={inrShort} tone="warn" />
       </div>
 
-      <Card title={`People · ${staff.length}`} pad={false} className="rise">
-        {!users ? <div style={{ padding: 16 }}><Skeleton h={220} /></div> : !staff.length ? <Empty icon={Users} title="No staff in this branch yet" /> :
+      {users && staffAll.length > 0 && <div className="card toolbar-card rise"><div className="row wrap" style={{ gap: 10 }}>
+        <span className="faint" style={{ fontSize: 12.5 }}>Role</span>
+        <Chips value={brRole} onChange={setBrRole} options={[['all', `All (${staffSt.length})`],
+          ...brRoles.map(r => [r, `${roleName(r)} (${staffSt.filter(u => hasRole(u, r)).length}${r === 'fos' && associates.length ? ' + ' + associates.length : ''})`])]} />
+        <div className="grow" />
+        <span className="faint" style={{ fontSize: 12.5 }}>Status</span>
+        <Chips value={brStatus} onChange={setBrStatus} options={[['all', `All (${staffAll.length})`],
+          ['active', `Active (${staffAll.filter(isAct).length})`], ['inactive', `Inactive (${staffAll.filter(u => !isAct(u)).length})`]]} />
+      </div></div>}
+      <Card title={`${brRole === 'all' ? 'People' : roleName(brRole)} · ${staff.length}`} pad={false} className="rise">
+        {!users ? <div style={{ padding: 16 }}><Skeleton h={220} /></div> : !staff.length ? <Empty icon={Users} title={brRole === 'all' && brStatus === 'all' ? 'No staff in this branch yet' : `No ${brStatus !== 'all' ? brStatus + ' ' : ''}${brRole === 'all' ? 'staff' : roleName(brRole)} in this branch`} /> :
           <div className="table-wrap"><table className="t">
             <thead><tr><th>Employee</th><th>Role</th><th>Banks</th><th>Status</th><th></th></tr></thead>
             <tbody>{staff.map(u => <tr key={u.id}>
               <td><div className="row" style={{ gap: 10 }}><Avatar name={u.name} size={34} /><div>
                 <button className="link-btn" onClick={() => profile(u)}>{u.name}</button>{u.emp_code && <span className="mono faint" style={{ marginLeft: 6 }}>{u.emp_code}</span>}
                 <div className="cell-sub">{u.email}</div><Presence p={pres[String(u.id)]} /></div></div></td>
-              <td><Pill tone="accent">{roleName(u.role)}</Pill>{u.also_team_lead && u.role !== 'teamlead' && <Pill tone="info">+TL</Pill>}</td>
+              <td><Pill tone="accent">{roleName(u.role)}</Pill>{u.also_team_lead && u.role !== 'teamlead' && <Pill tone="info">+TL</Pill>}
+                {u.also_field_agent && u.role !== 'fos' && <Pill tone="info">+FOS</Pill>}{u.also_caller && u.role !== 'telecaller' && <Pill tone="info">+Caller</Pill>}
+                {u.also_team_follower && u.role !== 'teamfollower' && <Pill tone="info">+Field TL</Pill>}</td>
               <td className="muted" style={{ maxWidth: 200 }}>{(u.banks || []).join(', ') || '—'}</td>
               <td><Pill tone={u.is_active ? 'good' : 'bad'} dot>{u.is_active ? 'active' : 'inactive'}</Pill>{u.employment_type && <div className="cell-sub">{u.employment_type}</div>}</td>
               <td><div className="row wrap" style={{ gap: 6, justifyContent: 'flex-end' }}>
@@ -224,7 +247,7 @@ export default function Team() {
             </tr>)}</tbody></table></div>}
       </Card>
 
-      {associates.length > 0 && <Card title="Field officers working this branch" sub="Based elsewhere · assigned to this branch’s cases" pad={false} className="rise" style={{ marginTop: 16 }}>
+      {associates.length > 0 && (brRole === 'all' || brRole === 'fos') && <Card title="Field officers working this branch" sub="Based elsewhere · assigned to this branch’s cases" pad={false} className="rise" style={{ marginTop: 16 }}>
         <div className="table-wrap"><table className="t">
           <thead><tr><th>Employee</th><th>Home branch</th><th className="r">Cases here</th><th className="r">Paid</th><th className="r">Recovered</th><th className="r">Pending</th><th></th></tr></thead>
           <tbody>{associates.map(a => <tr key={a.id}>

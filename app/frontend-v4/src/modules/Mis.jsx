@@ -179,6 +179,26 @@ export default function Mis() {
   const tables = d ? TABLES.map(([tk, cols]) => [tk, cols, (d.table_names && d.table_names[tk]) || tk, d[tk] || []]) : [];
   const SECTIONS = [['overview', 'Overview', Gauge], ['people', 'Leaderboards', Users], ['tables', 'All tables', Table2]];
 
+  // KPI tiles + achievement — reused for a Field TL's portfolio-wide summary and their group MIS.
+  const kpiSection = (dd, trendTitle, trendSub) => (<>
+          <div className="grid g-kpi" style={{ marginBottom: 14 }}>
+            <Kpi icon={FolderOpen} label="Total cases" i={1} value={num(dd.overall.count)} sub={`${num(dd.overall.paid)} paid · ${num(dd.overall.unpaid)} unpaid`} />
+            <Kpi icon={Landmark} label={'Total ' + (dd.base_label || 'ENR')} i={2} value={dd.overall.enr || 0} format={inrShort} sub={'POS ' + inrShort(dd.overall.pos)} tone="info" />
+            <Kpi icon={CheckCircle2} label={'Paid ' + (dd.base_label || 'ENR')} i={3} value={dd.overall.paid_enr || 0} format={inrShort} sub={`${dd.overall.pct}% achieved`} tone="good" />
+            <Kpi icon={Wallet} label="Actual collection" i={4} value={dd.overall.actual_collection != null ? dd.overall.actual_collection : (Number(dd.overall.amount || 0) + Number(dd.overall.partial_payments || 0))} format={inrShort}
+              sub={`${inrShort(dd.overall.amount)} cash + ${inrShort(dd.overall.partial_payments)} partial`} tone="warn" />
+          </div>
+          <div className="mini-kpis rise">
+            {[['Collected MTD', inr(dd.projection.collected_mtd), null, TrendingUp], ['Projected month-end', inr(dd.projection.projected_month_end), `${dd.projection.projected_pct}% of target`, Target],
+              ['PTP kept', `${dd.funnel.ptp_kept}/${dd.funnel.ptp_total}`, `${dd.funnel.ptp_kept_pct}% · ${dd.funnel.ptp_broken} broken`, Handshake],
+              ['Untouched', num(dd.funnel.untouched), inr(dd.funnel.untouched_pending) + ' pending', UserX], ['Realization', dd.settlement.realization_pct + '%', 'leak ' + inr(dd.settlement.leakage), Percent],
+              ['Conversion', dd.funnel.conversion_pct + '%', `${dd.funnel.paid_of_contacted}/${dd.funnel.contacted} contacted`, Coins],
+              ...(dd.settlement.rollback_target > 0 ? [['Rollback collected', inr(dd.settlement.rollback_collected), `${dd.settlement.rollback_pct}% · ${dd.settlement.rollback_count} cases`, Layers]] : []),
+            ].map(([l, v, s, I]) => <div key={l} className="mini-kpi"><I /><div><div className="faint">{l}</div><b className="num">{v}</b>{s && <div className="cell-sub">{s}</div>}</div></div>)}
+          </div>
+
+          {dd.trends && <Card title={trendTitle} sub={trendSub} className="rise" style={{ margin: '14px 0' }}><Trends trends={dd.trends} /></Card>}
+  </>);
   return (
     <>
       <ModuleHead icon={LineChart} title="MIS" sub={sel ? `${sel.bank} · ${sel.product}${branchSel.length ? ' · ' + branchSel.join(', ') : ''}${area ? ' · ' + area : ''}` : ''} full="mis">
@@ -186,6 +206,7 @@ export default function Mis() {
         {sel && !viewingPeer && <button className="btn" onClick={() => panel('pivot', { bank: sel.bank, product: sel.product, monthB: mb, branch: branchSel.join(',') })}><FileSpreadsheet />MIS Pivot</button>}
         {d && <button className="btn" onClick={() => setFull(true)}><Eye />Full sheet</button>}
         {d && <button className="btn primary" onClick={dlAll}><Download />Download all</button>}
+        {user.role === 'teamfollower' && <button className="btn" onClick={() => download('/api/team-follow/me/report.xlsx?month_bucket=' + (mb || 'all'), 'FieldTL_group_report_' + (mb || 'all') + '.xlsx')} title="Daily · monthly · per person · per portfolio"><FileSpreadsheet />Group report</button>}
       </ModuleHead>
 
       <div className="card toolbar-card rise">
@@ -220,23 +241,12 @@ export default function Mis() {
         <div className="seg-tabs rise">{SECTIONS.map(([v, l, I]) => <button key={v} className={tab === v ? 'on' : ''} onClick={() => setTab(v)}><I /><span>{l}</span></button>)}</div>
 
         {tab === 'overview' && <>
-          <div className="grid g-kpi" style={{ marginBottom: 14 }}>
-            <Kpi icon={FolderOpen} label="Total cases" i={1} value={num(o.count)} sub={`${num(o.paid)} paid · ${num(o.unpaid)} unpaid`} />
-            <Kpi icon={Landmark} label={'Total ' + base} i={2} value={o.enr || 0} format={inrShort} sub={'POS ' + inrShort(o.pos)} tone="info" />
-            <Kpi icon={CheckCircle2} label={'Paid ' + base} i={3} value={o.paid_enr || 0} format={inrShort} sub={`${o.pct}% achieved`} tone="good" />
-            <Kpi icon={Wallet} label="Actual collection" i={4} value={o.actual_collection != null ? o.actual_collection : (Number(o.amount || 0) + Number(o.partial_payments || 0))} format={inrShort}
-              sub={`${inrShort(o.amount)} cash + ${inrShort(o.partial_payments)} partial`} tone="warn" />
-          </div>
-          <div className="mini-kpis rise">
-            {[['Collected MTD', inr(proj.collected_mtd), null, TrendingUp], ['Projected month-end', inr(proj.projected_month_end), `${proj.projected_pct}% of target`, Target],
-              ['PTP kept', `${fn.ptp_kept}/${fn.ptp_total}`, `${fn.ptp_kept_pct}% · ${fn.ptp_broken} broken`, Handshake],
-              ['Untouched', num(fn.untouched), inr(fn.untouched_pending) + ' pending', UserX], ['Realization', st.realization_pct + '%', 'leak ' + inr(st.leakage), Percent],
-              ['Conversion', fn.conversion_pct + '%', `${fn.paid_of_contacted}/${fn.contacted} contacted`, Coins],
-              ...(st.rollback_target > 0 ? [['Rollback collected', inr(st.rollback_collected), `${st.rollback_pct}% · ${st.rollback_count} cases`, Layers]] : []),
-            ].map(([l, v, s, I]) => <div key={l} className="mini-kpi"><I /><div><div className="faint">{l}</div><b className="num">{v}</b>{s && <div className="cell-sub">{s}</div>}</div></div>)}
-          </div>
-
-          {d.trends && <Card title="Achievement — cash collected" sub={`${sel.bank} · ${sel.product}`} className="rise" style={{ margin: '14px 0' }}><Trends trends={d.trends} /></Card>}
+          {d.portfolio_overall && <>
+            <div className="sec-t">Portfolio overall — {sel.bank} · {sel.product} <span className="faint" style={{ fontWeight: 400, fontSize: 12 }}>· all teams · summary only</span></div>
+            {kpiSection(d.portfolio_overall, 'Portfolio achievement — cash collected', `${sel.bank} · ${sel.product} · all teams`)}
+            <div className="sec-t" style={{ marginTop: 18 }}>Your group — {d.group_size} {d.group_size === 1 ? 'person' : 'people'} <span className="faint" style={{ fontWeight: 400, fontSize: 12 }}>· everything below is only the FOS / callers under you</span></div>
+          </>}
+          {kpiSection(d, 'Achievement — cash collected', `${sel.bank} · ${sel.product}${d.portfolio_overall ? ' · your group' : ''}`)}
 
           <Card className="rise target-card" style={{ marginBottom: 14 }}>
             <div className="row wrap" style={{ gap: 12 }}>

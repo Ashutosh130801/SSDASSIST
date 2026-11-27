@@ -269,3 +269,192 @@ def my_members(month_bucket: str | None = "current", follower_id: int | None = N
     return {"follower": {"id": f.id, "name": f.name,
                          "tf_emp_code": f.emp_code if f.role == "teamfollower" else f.tf_emp_code},
             "month_bucket": month_bucket, "period": period, "totals": tot, "members": rows}
+
+
+# ------------------------------------------------------------------ group performance report (Excel)
+
+@router.get("/me/report.xlsx")
+def group_report(month_bucket: str | None = "current", follower_id: int | None = None,
+                 db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Field TL group performance workbook: Summary (per person) · Daily (per person per day) ·
+    Monthly (last 6 months per person) · Per portfolio (person × bank/product) · Portfolio totals."""
+    import io
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from fastapi.responses import StreamingResponse
+    from .mis import _period_for
+    from .team import _month_bounds_utc
+    from .. import audit as _audit
+
+    fid = user.id
+    if follower_id and follower_id != user.id:
+        if user.role not in MANAGE_ROLES + ("techsupport", "it_support_view"):
+            raise HTTPException(status_code=403, detail="Not allowed")
+        fid = _get_follower(db, follower_id).id
+    elif user.role != "teamfollower" and user.role not in MANAGE_ROLES:
+        raise HTTPException(status_code=403, detail="Switch to the Field TL view to download your group report")
+    follower = db.query(models.User).filter(models.User.id == fid).first()
+    members = (db.query(models.User).filter(models.User.id.in_(member_ids(db, fid) or {-1}))
+               .order_by(models.User.name).all())
+    period = _period_for(month_bucket)
+    mstart, mend = _month_bounds_utc(month_bucket)
+    now_ist = datetime.now(IST)
+    if mstart is None:                                    # 'all' → daily sheet covers this month
+        mstart, mend = _month_bounds_utc("current")
+    today = now_ist.date()
+
+    def _ist(dt):
+        return _aware(dt).astimezone(IST) if dt else None
+
+    is_pay = lambda x: (x.disposition or "") in ("PAYMENT", "PAID")  # noqa: E731
+    wb = openpyxl.Workbook()
+    HEAD = PatternFill("solid", fgColor="1D4ED8"); HF = Font(bold=True, color="FFFFFF")
+    TOT = PatternFill("solid", fgColor="E8EEFB"); BOLD = Font(bold=True)
+
+    def sheet(ws, header, rows, total=None, money_cols=()):
+        ws.append(header)
+        for c in ws[1]:
+            c.fill = HEAD; c.font = HF; c.alignment = Alignment(vertical="center", wrap_text=True)
+        for r in rows:
+            ws.append(r)
+        if total:
+            ws.append(total)
+            for c in ws[ws.max_row]:
+                c.fill = TOT; c.font = BOLD
+        for i, h in enumerate(header, 1):
+            ws.column_dimensions[get_column_letter(i)].width = max(12, min(34, len(str(h)) + 4))
+            if i - 1 in money_cols:
+                for row in ws.iter_rows(min_row=2, min_col=i, max_col=i):
+                    for c in row:
+                        c.number_format = '#,##0'
+        ws.freeze_panes = "B2"
+
+    # ---- Summary (selected month) ----
+    sums = [_member_summary(db, u, period, *_month_bounds_utc(month_bucket), today) for u in members]
+    att_days = {}
+    for u in members:
+        att_days[u.id] = db.query(func.count(models.Attendance.id)).filter(
+            models.Attendance.user_id == u.id, models.Attendance.check_in_at.isnot(None),
+            models.Attendance.date >= mstart.astimezone(IST).date(),
+            models.Attendance.date < mend.astimezone(IST).date()).scalar() or 0
+    ws = wb.active; ws.title = "Summary"
+    hdr = ["Name", "IDs", "Role", "Branch", "Days present", "Cases", "Paid", "Partial", "Unpaid", "PTP open",
+           "ENR", "Recovered", "Recovery %", "Pending", "Collected via calls", "Collected via visits",
+           "Collected (calls+visits)", "Visits", "Calls"]
+    rows = [[s["name"], s["all_ids"], s["role_label"], s["branch"] or "", att_days[s["id"]], s["cases"]["assigned"],
+             s["cases"]["paid"], s["cases"]["partial"], s["cases"]["unpaid"], s["cases"]["ptp_open"],
+             s["money"]["enr"], s["money"]["recovered"], s["money"]["recovery_pct"], s["money"]["pending"],
+             s["money"]["collected_calls"], s["money"]["collected_visits"], s["money"]["collected_logs"],
+             s["activity"]["visits_month"], s["activity"]["calls_month"]] for s in sums]
+    tot_enr = sum(r[10] for r in rows); tot_rec = sum(r[11] for r in rows)
+    total = ["TOTAL", "", "", "", "", *[sum(r[i] for r in rows) for i in range(5, 10)], round(tot_enr, 2), round(tot_rec, 2),
+             round(tot_rec / tot_enr * 100, 2) if tot_enr else 0, *[round(sum(r[i] for r in rows), 2) for i in range(13, 17)],
+             sum(r[17] for r in rows), sum(r[18] for r in rows)]
+    sheet(ws, hdr, rows, total, money_cols=(10, 11, 13, 14, 15, 16))
+
+    # ---- Daily (per person per day of the month, up to today) ----
+    ws = wb.create_sheet("Daily")
+    days = []
+    d0 = mstart.astimezone(IST).date(); d1 = min(mend.astimezone(IST).date() - timedelta(days=1), today)
+    while d0 <= d1:
+        days.append(d0); d0 += timedelta(days=1)
+    drows = []; dtot = {}
+    for u in members:
+        vs = db.query(models.Visit).filter(models.Visit.officer_id == u.id, models.Visit.created_at >= mstart,
+                                           models.Visit.created_at < mend).all()
+        cs = db.query(models.CallLog).filter(models.CallLog.caller_id == u.id, models.CallLog.created_at >= mstart,
+                                             models.CallLog.created_at < mend).all()
+        att = {a.date: a for a in db.query(models.Attendance).filter(
+            models.Attendance.user_id == u.id, models.Attendance.date >= mstart.astimezone(IST).date(),
+            models.Attendance.date < mend.astimezone(IST).date()).all()}
+        for d in days:
+            v_d = [v for v in vs if v.created_at and _ist(v.created_at).date() == d]
+            c_d = [c for c in cs if c.created_at and _ist(c.created_at).date() == d]
+            coll = sum(_d(c.ptp_amount) for c in c_d if is_pay(c)) + sum(_d(v.amount_collected) for v in v_d)
+            a = att.get(d)
+            row = [d.isoformat(), u.name, u.emp_code or "",
+                   _ist(a.check_in_at).strftime("%H:%M") if a and a.check_in_at else ("leave" if a and a.status == "leave" else ""),
+                   _ist(a.check_out_at).strftime("%H:%M") if a and a.check_out_at else "",
+                   len(v_d), sum(1 for v in v_d if v.paid), len([c for c in c_d if not is_pay(c)]),
+                   sum(1 for c in c_d if (c.disposition or "").upper() == "PTP"), round(coll, 2)]
+            drows.append(row)
+            t = dtot.setdefault(d, [0, 0, 0, 0, 0.0])
+            t[0] += row[5]; t[1] += row[6]; t[2] += row[7]; t[3] += row[8]; t[4] += row[9]
+    sheet(ws, ["Date", "Name", "ID", "Check-in", "Check-out", "Visits", "Paid visits", "Calls", "PTPs", "Collected"],
+          drows, money_cols=(9,))
+    ws = wb.create_sheet("Daily totals")
+    sheet(ws, ["Date", "Visits", "Paid visits", "Calls", "PTPs", "Collected"],
+          [[d.isoformat(), *dtot.get(d, [0, 0, 0, 0, 0])[:4], round(dtot.get(d, [0, 0, 0, 0, 0])[4], 2)] for d in days],
+          ["TOTAL", *[sum(v[i] for v in dtot.values()) for i in range(4)], round(sum(v[4] for v in dtot.values()), 2)],
+          money_cols=(5,))
+
+    # ---- Monthly (last 6 calendar months per person) ----
+    ws = wb.create_sheet("Monthly")
+    months = []
+    y, m = today.year, today.month
+    for _ in range(6):
+        months.append((y, m)); y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    mrows = []
+    for u in members:
+        for (yy, mm) in months:
+            s = datetime(yy, mm, 1, tzinfo=IST).astimezone(timezone.utc)
+            ny, nm = (yy, mm + 1) if mm < 12 else (yy + 1, 1)
+            e = datetime(ny, nm, 1, tzinfo=IST).astimezone(timezone.utc)
+            pkey = f"{yy:04d}-{mm:02d}"
+            own = or_(models.Case.assigned_fos_id == u.id, models.Case.assigned_caller_id == u.id,
+                      models.Case.joint_fos_id == u.id)
+            cases = db.query(models.Case).filter(models.Case.removed.isnot(True), own, models.Case.period == pkey).all()
+            vs = db.query(models.Visit).filter(models.Visit.officer_id == u.id, models.Visit.created_at >= s,
+                                               models.Visit.created_at < e).all()
+            cs = db.query(models.CallLog).filter(models.CallLog.caller_id == u.id, models.CallLog.created_at >= s,
+                                                 models.CallLog.created_at < e).all()
+            enr = sum(_d(c.enr) for c in cases); rec = sum(_d(c.received_amount) for c in cases)
+            coll = sum(_d(c.ptp_amount) for c in cs if is_pay(c)) + sum(_d(v.amount_collected) for v in vs)
+            if not (cases or vs or cs):
+                continue
+            mrows.append([pkey, u.name, u.emp_code or "", len(cases),
+                          sum(1 for c in cases if (c.paid_status or "").upper() == "PAID"), round(enr, 2), round(rec, 2),
+                          round(rec / enr * 100, 2) if enr else 0, round(coll, 2), len(vs),
+                          len([c for c in cs if not is_pay(c)])])
+    sheet(ws, ["Month", "Name", "ID", "Cases", "Paid", "ENR", "Recovered", "Recovery %", "Collected (calls+visits)",
+               "Visits", "Calls"], mrows, money_cols=(5, 6, 8))
+
+    # ---- Per portfolio (person × bank/product, selected month) ----
+    ws = wb.create_sheet("Per portfolio")
+    prow = []; ptot = {}
+    for u in members:
+        own = or_(models.Case.assigned_fos_id == u.id, models.Case.assigned_caller_id == u.id,
+                  models.Case.joint_fos_id == u.id)
+        q = db.query(models.Case).filter(models.Case.removed.isnot(True), own)
+        if period:
+            q = q.filter(models.Case.period == period)
+        groups = {}
+        for c in q.all():
+            groups.setdefault((c.bank or "—", c.product or "—"), []).append(c)
+        for (bk, pr), cs in sorted(groups.items()):
+            enr = sum(_d(c.enr) for c in cs); rec = sum(_d(c.received_amount) for c in cs)
+            paid = sum(1 for c in cs if (c.paid_status or "").upper() == "PAID")
+            pend = sum(_d(c.pending_amount) for c in cs)
+            prow.append([u.name, u.emp_code or "", bk, pr, len(cs), paid, len(cs) - paid, round(enr, 2), round(rec, 2),
+                         round(rec / enr * 100, 2) if enr else 0, round(pend, 2)])
+            t = ptot.setdefault((bk, pr), [0, 0, 0.0, 0.0, 0.0, set()])
+            t[0] += len(cs); t[1] += paid; t[2] += enr; t[3] += rec; t[4] += pend; t[5].add(u.id)
+    sheet(ws, ["Name", "ID", "Bank", "Product", "Cases", "Paid", "Unpaid", "ENR", "Recovered", "Recovery %", "Pending"],
+          prow, money_cols=(7, 8, 10))
+    ws = wb.create_sheet("Portfolio totals")
+    sheet(ws, ["Bank", "Product", "People", "Cases", "Paid", "Unpaid", "ENR", "Recovered", "Recovery %", "Pending"],
+          [[bk, pr, len(t[5]), t[0], t[1], t[0] - t[1], round(t[2], 2), round(t[3], 2),
+            round(t[3] / t[2] * 100, 2) if t[2] else 0, round(t[4], 2)] for (bk, pr), t in sorted(ptot.items())],
+          money_cols=(6, 7, 9))
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    name = "".join(ch for ch in f"FieldTL_{follower.name}_{period or 'all'}" if ch.isalnum() or ch in "-_ ").replace(" ", "_")
+    try:
+        _audit.record(db, user, "download", None, entity_type="download",
+                      detail=f"Field TL group report — {follower.name} ({len(members)} people, {period or 'all months'})")
+        db.commit()
+    except Exception:
+        db.rollback()
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'})

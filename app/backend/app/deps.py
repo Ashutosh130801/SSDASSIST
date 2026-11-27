@@ -24,13 +24,18 @@ _READONLY_WRITE_ALLOW = ("/api/auth/", "/api/webauthn", "/api/attendance/")
 _FOLLOWER_ANY = ("/api/auth/", "/api/webauthn", "/api/attendance/", "/api/leaves", "/api/notifications",
                  "/api/manpower/me", "/api/chat/", "/api/support/", "/api/devices", "/api/rtc/",
                  "/api/todo/me", "/api/reminders", "/api/tracking/ping", "/api/tracking/me")
-_FOLLOWER_READ = ("/api/team-follow/", "/api/team/user/", "/api/tracking/officer/", "/api/mis/employee-trends",
+_FOLLOWER_READ = ("/api/team-follow/", "/api/team/user/", "/api/tracking/officer/", "/api/visits/officer/", "/api/mis/employee-trends",
                   "/api/mis/performance", "/api/config", "/api/services", "/api/cases/", "/api/users/me",
                   "/api/sheet/prefs")
+# Group MIS for a Field TL — every one of these is scoped to their members' cases by cases._scope.
+_FOLLOWER_MIS = ("/api/mis", "/api/mis/download", "/api/mis/pivot-data", "/api/mis/pivot-xlsx", "/api/mis/by-cycle",
+                 "/api/mis/overview", "/api/cases/product-summary", "/api/cases/filter-options", "/api/cases/areas")
 
 
 def _follower_path_ok(path: str, method: str) -> bool:
     if any(path.startswith(p) for p in _FOLLOWER_ANY):
+        return True
+    if method in _SAFE_METHODS and path.rstrip("/") in _FOLLOWER_MIS:
         return True
     if method in _SAFE_METHODS and any(path.startswith(p) for p in _FOLLOWER_READ):
         if path.startswith("/api/cases/"):

@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { Maximize2, Phone, MessageCircle, Navigation, X } from 'lucide-react';
+import { Maximize2, Phone, MessageCircle, Navigation, Search, X } from 'lucide-react';
 import { useClassic } from '../lib/classic.jsx';
 import { api } from '../lib/api.js';
 import { cx, initials } from '../lib/format.js';
@@ -192,20 +192,31 @@ export function SearchBox({ value, onChange, placeholder = 'Search…', onEnter,
 /** Multi-select dropdown chip (checkbox list). options: [{value,label}] */
 export function MultiSelect({ label, icon: Icon, options, selected, onChange, width = 220 }) {
   const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
   const sel = selected || [];
   const toggle = (v) => onChange(sel.includes(v) ? sel.filter(x => x !== v) : [...sel, v]);
+  const ql = q.trim().toLowerCase();
+  const searchable = (options || []).length > 6;          // type-to-search on long lists (FOS / callers …)
+  const shown = ql ? (options || []).filter(o => String(o.label || '').toLowerCase().includes(ql) || String(o.value || '').toLowerCase().includes(ql)) : (options || []);
+  const close = () => { setOpen(false); setQ(''); };
   return (
     <span className="pop-wrap">
       <button type="button" className={cx('chip', sel.length > 0 && 'on')} onClick={() => setOpen(o => !o)}>
         {Icon && <Icon size={13} />}{label}{sel.length ? ` · ${sel.length}` : ''}<span style={{ opacity: .6 }}>▾</span>
       </button>
       {open && <>
-        <div className="pop-scrim" onClick={() => setOpen(false)} />
+        <div className="pop-scrim" onClick={close} />
         <div className="pop-menu ms-menu" style={{ minWidth: width }}>
-          <div className="row" style={{ marginBottom: 4 }}><b className="grow" style={{ fontSize: 12 }}>{label}</b>
-            {sel.length > 0 && <button className="btn sm ghost" onClick={() => onChange([])}>Clear</button>}</div>
+          <div className="ms-head">
+            <div className="row" style={{ marginBottom: 4 }}><b className="grow" style={{ fontSize: 12 }}>{label}</b>
+              {ql && shown.length > 0 && <button className="btn sm ghost" onClick={() => onChange([...new Set([...sel, ...shown.map(o => o.value)])])}>Select shown</button>}
+              {sel.length > 0 && <button className="btn sm ghost" onClick={() => onChange([])}>Clear</button>}</div>
+            {searchable && <div className="ms-search"><Search size={14} /><input autoFocus value={q} onChange={e => setQ(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Escape') close(); }} placeholder={'Search ' + String(label || '').toLowerCase() + ' name / ID…'} /></div>}
+          </div>
           {(!options || !options.length) && <div className="faint" style={{ fontSize: 12 }}>None available</div>}
-          {(options || []).map(o => (
+          {options && options.length > 0 && !shown.length && <div className="faint" style={{ fontSize: 12, padding: '4px 2px' }}>No match for “{q}”</div>}
+          {shown.map(o => (
             <label key={String(o.value)} className="ms-opt"><input type="checkbox" checked={sel.includes(o.value)} onChange={() => toggle(o.value)} /><span>{o.label}</span></label>
           ))}
         </div>

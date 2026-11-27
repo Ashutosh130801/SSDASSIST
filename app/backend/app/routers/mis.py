@@ -29,7 +29,8 @@ OBSTACLE = {"DISPUTE", "WRONG NUMBER", "WRONG_NUMBER", "RNR", "SWITCHED OFF", "S
 router = APIRouter(prefix="/api/mis", tags=["mis"])
 DEFAULT_TARGET_PCT = 85.0          # every FOS / caller, every portfolio — unless set explicitly
 
-MIS_ROLES = ("admin", "manager", "backend", "headoffice", "teamlead")
+MIS_ROLES = ("admin", "manager", "backend", "headoffice", "teamlead",
+             "teamfollower")   # Field TL: MIS scoped (via cases._scope) to the people in their group
 
 # Every disposition that represents actual money moving on a case — so caller payments,
 # head-office mark-paid, and DPR uploads are ALL counted as collection (reversals carry a
@@ -598,6 +599,18 @@ def mis(bank: str = Query(...), product: str = Query(...), month_bucket: str | N
                       caller_ids=_csv_int(caller_ids), team_leads=_csv_str(team_leads),
                       paid=paid or None)
     out["table_names"] = TABLE_NAMES
+    if user.role == "teamfollower":
+        # Field TL: the portfolio's OVERALL summary (every team, all cases of this bank+product for the
+        # same month / branch / area / cycle) shown above their group-scoped MIS. Summary tiles only —
+        # no person-level tables of people outside their group.
+        from types import SimpleNamespace
+        whole = SimpleNamespace(id=user.id, role="headoffice", name=user.name)
+        full = compute_mis(db, whole, bank, product, period=_period_for(month_bucket),
+                           area=area or None, branch=_csv_str(branch), cycles=_csv_str(cycles))
+        out["portfolio_overall"] = {k: full.get(k) for k in
+                                    ("overall", "trends", "projection", "funnel", "settlement", "base_label")}
+        from ..follow_scope import member_ids
+        out["group_size"] = len(member_ids(db, user.id))
     if peer is not None:
         out["read_only"] = True
         out["viewing_lead"] = {"id": peer.id, "name": peer.name}

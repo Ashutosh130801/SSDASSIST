@@ -228,6 +228,14 @@ def officer_day(officer_id: int, date: str | None = None, db: Session = Depends(
         raise HTTPException(status_code=403, detail="Not in your branch")
     if actor.role in ("fos", "telecaller", "backend") and actor.id != u.id:
         raise HTTPException(status_code=403, detail="Not allowed")
+    if actor.role == "teamlead" and actor.id != u.id:          # a lead: own team members only
+        from .cases import _scope_user_ids
+        if u.id not in set(_scope_user_ids(db, actor)):
+            raise HTTPException(status_code=403, detail="Not one of your team members")
+    if actor.role == "teamfollower":                           # Field TL: the people in their group
+        from ..follow_scope import follows
+        if not follows(db, actor, u.id):
+            raise HTTPException(status_code=403, detail="Not one of your Field TL members")
 
     try:
         d = date and datetime.strptime(date, "%Y-%m-%d").date()
@@ -242,6 +250,9 @@ def officer_day(officer_id: int, date: str | None = None, db: Session = Depends(
               .filter(models.Visit.officer_id == officer_id,
                       models.Visit.created_at >= start, models.Visit.created_at < end)
               .order_by(models.Visit.created_at.asc()).all())
+    if actor.role == "teamlead" and actor.id != u.id:          # …and only visits on the lead's own cases
+        from .. import tl_scope
+        visits = [v for v in visits if tl_scope.owns(actor, v.case)]
     cids = [v.case_id for v in visits]
     cases = {c.id: c for c in db.query(models.Case).filter(models.Case.id.in_(cids)).all()} if cids else {}
 

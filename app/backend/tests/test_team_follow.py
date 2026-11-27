@@ -80,16 +80,18 @@ class TeamFollowTests(unittest.TestCase):
                     f"/api/team/user/{ids['f1']}/performance", f"/api/mis/employee-trends?user_id={ids['f1']}",
                     f"/api/mis/performance?emp_id={ids['f1']}&role=fos&month_bucket=all",
                     f"/api/tracking/officer/{ids['f1']}/history-dates",
-                    f"/api/attendance/user/{ids['f1']}/visits", f"/api/cases/{ids['case_f1']}"):
+                    f"/api/attendance/user/{ids['f1']}/visits", f"/api/visits/officer/{ids['f1']}/day",
+                    f"/api/cases/{ids['case_f1']}"):
             self.assertEqual(c.get(url, headers=F).status_code, 200, url)
         self.assertTrue(c.get(f"/api/cases/{ids['case_f1']}", headers=F).json().get("read_only"))
         # NOT a member → blocked everywhere
         for url in (f"/api/team/user/{ids['f2']}/dashboard", f"/api/mis/employee-trends?user_id={ids['f2']}",
-                    f"/api/tracking/officer/{ids['f2']}/history-dates", f"/api/attendance/user/{ids['f2']}/visits"):
+                    f"/api/tracking/officer/{ids['f2']}/history-dates", f"/api/attendance/user/{ids['f2']}/visits",
+                    f"/api/visits/officer/{ids['f2']}/day"):
             self.assertEqual(c.get(url, headers=F).status_code, 403, url)
         self.assertEqual(c.get(f"/api/cases/{ids['case_f2']}", headers=F).status_code, 404)
         # tracking-only view: company-wide screens + writes blocked
-        for url in ("/api/analytics/dashboard", "/api/cases", "/api/mis/overview", "/api/manpower"):
+        for url in ("/api/analytics/dashboard", "/api/cases", "/api/manpower", "/api/mis/highlights"):
             self.assertEqual(c.get(url, headers=F).status_code, 403, url)
         self.assertEqual(c.post("/api/calls", json={"case_id": ids["case_f1"], "disposition": "PTP"}, headers=F).status_code, 403)
         self.assertEqual(c.post("/api/visits", data={"case_id": ids["case_f1"]}, headers=F).status_code, 403)
@@ -133,6 +135,34 @@ class TeamFollowTests(unittest.TestCase):
         self.assertEqual(c.get("/api/cases", headers=tok(ids["f1"], "fos")).status_code, 200)
         self.assertEqual(c.get("/api/team-follow/followers", headers=tok(ids["f1"], "fos")).status_code, 403)
         self.assertEqual(c.get("/api/team-follow/followers", headers=tok(ids["mgr"], "manager")).status_code, 403)
+
+    def test_4_group_mis_and_report(self):
+        c, ids = self.c, self.ids
+        H = tok(ids["hr"], "hr")
+        fid = c.post("/api/manpower", json={"name": "Group TL", "email": "gtl@x", "role": "teamfollower"}, headers=H).json()["id"]
+        c.post(f"/api/team-follow/{fid}/members", json={"member_ids": [ids["f1"], ids["c1"]]}, headers=H)
+        F = tok(fid, "teamfollower")
+        r = c.get("/api/mis?bank=AXIS&product=CC&month_bucket=all", headers=F)
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()
+        self.assertEqual(d["overall"]["count"], 2)                       # f1's AXIS case + c1's case only
+        self.assertEqual(d["portfolio_overall"]["overall"]["count"], 3)  # whole AXIS·CC portfolio
+        self.assertEqual(d["group_size"], 2)
+        labels = {x["label"] for x in d["by_fos"]}
+        self.assertFalse(any("Fos Two" in (l or "") for l in labels))   # no one outside the group
+        for url in ("/api/cases/product-summary?month_bucket=all", "/api/cases/filter-options?bank=AXIS&product=CC",
+                    "/api/mis/overview", "/api/mis/download?bank=AXIS&product=CC&month_bucket=all&tables=by_fos"):
+            self.assertEqual(c.get(url, headers=F).status_code, 200, url)
+        r = c.get("/api/team-follow/me/report.xlsx?month_bucket=current", headers=F)
+        self.assertEqual(r.status_code, 200, r.text[:200])
+        import io, openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(r.content))
+        self.assertEqual(wb.sheetnames, ["Summary", "Daily", "Daily totals", "Monthly", "Per portfolio", "Portfolio totals"])
+        self.assertEqual(wb["Summary"].max_row, 4)                         # header + 2 people + total
+        # other roles unchanged: a FOS still can't open MIS
+        self.assertEqual(c.get("/api/mis?bank=AXIS&product=CC", headers=tok(ids["f2"], "fos")).status_code, 403)
+        # admin MIS has no portfolio_overall block
+        adm = c.get("/api/mis?bank=AXIS&product=CC&month_bucket=all", headers=tok(ids["hr"], "headoffice"))
 
 
 if __name__ == "__main__":
