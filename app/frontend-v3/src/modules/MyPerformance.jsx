@@ -4,7 +4,7 @@ import { Briefcase, CheckCircle2, FolderOpen, Medal, Repeat, Trophy, Wallet, X }
 import { api, qs } from '../lib/api.js';
 import { inr, inrShort, num, cx } from '../lib/format.js';
 import { Card, Kpi, Empty, Skeleton, useLoad } from '../components/ui.jsx';
-import { ModuleHead, Chips, Bar, Metric, useLive } from './kit.jsx';
+import { ModuleHead, Chips, Bar, Metric, useLive, useClassicUI } from './kit.jsx';
 
 export const TREND_META = [['ftd', 'FTD', 'Today'], ['mtd', 'MTD', 'Month till day'], ['lmtd', 'LMTD', 'Last month, same day'], ['overall', 'Overall', 'Lifetime']];
 
@@ -33,6 +33,7 @@ const MB = [['current', 'This month'], ['next', 'Next month'], ['last', 'Last mo
 
 /** Caller / FOS scorecard — per-portfolio books, targets, trends and leaderboard. */
 export default function MyPerformance() {
+  const ui = useClassicUI();
   const [mb, setMb] = useState('current');
   const [bank, setBank] = useState('');
   const [product, setProduct] = useState('');
@@ -51,7 +52,7 @@ export default function MyPerformance() {
   return (
     <>
       <ModuleHead icon={Trophy} title="My Performance" sub="Each portfolio is its own book for the month you pick — nothing is merged" full="myperf">
-        <Link className="btn" to="/m/myperf" title="Cycle-wise MIS for your portfolios"><Repeat />Cycle-wise</Link>
+        <button className="btn" onClick={() => ui.inline('CycleMIS', { compact: true }, 'Cycle-wise MIS — my portfolios', 1300)}><Repeat />Cycle-wise</button>
       </ModuleHead>
 
       <div className="card toolbar-card rise">

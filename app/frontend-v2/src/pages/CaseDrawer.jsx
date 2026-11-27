@@ -14,6 +14,11 @@ const ICON = { visit: Footprints, call: PhoneCall, payment: Wallet };
  *  still happens in the classic case screen (linked) until those forms are redesigned. */
 export default function CaseDrawer({ id, onClose }) {
   const classic = useClassic();
+  // The complete case screen (log call / visit / payment, PTP, edits, live ViciDial bar, history)
+  // opens directly as soon as the runtime is up; this read-only panel only covers the first seconds.
+  React.useEffect(() => {
+    if (id && classic.api && classic.api.openCase) { classic.api.openCase(id); onClose(); }
+  }, [id, classic.api]); // eslint-disable-line
   const { user } = useAuth();
   const isFos = user && (user.role === 'fos' || user.active_view === 'fos');
   const logVisit = () => { if (classic.api && classic.api.openPanel && c) { onClose(); classic.api.openPanel('visit', { c }); } };

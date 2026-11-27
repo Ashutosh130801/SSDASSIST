@@ -176,3 +176,29 @@ html.riq-host tr:hover td { background: rgba(59,130,246,.1) !important; }
 html.riq-host .modal { animation: riqSpPop .6s cubic-bezier(.16,1,.3,1); }
 @keyframes riqSpPop { from { opacity: 0; transform: perspective(1200px) translateZ(-200px) rotateX(14deg); filter: blur(4px); } to { opacity: 1; transform: none; filter: none; } }
 @media (prefers-reduced-motion: reduce) { html.riq-host .main > *, html.riq-host .modal { animation: none !important; } }
+
+/* ═════════ Spatial 3D — readability: every light classic surface becomes a dark glass panel ═════════ */
+html.riq-host .kpi3 .b, html.riq-host .pipe .st, html.riq-host .modal, html.riq-host .ai-msg.bot, html.riq-host .ai-msg .tablewrap,
+html.riq-host .ai-vis, html.riq-host .ai-steps, html.riq-host .aibot-body, html.riq-host .aibot-input, html.riq-host .sticker-tray,
+html.riq-host .sv-kpi, html.riq-host .sv-btn, html.riq-host .sv-menu, html.riq-host .sv-fxbar, html.riq-host .sv-slide, html.riq-host .sv-scroll,
+html.riq-host .drawer, html.riq-host .card, html.riq-host .dl, html.riq-host .divider {
+  background: rgba(14, 24, 52, .92) !important; color: #E8EEFF !important; border-color: rgba(147,197,253,.22) !important;
+}
+html.riq-host .kpi3 .b .l, html.riq-host .dl .dt, html.riq-host .muted, html.riq-host .stat-row .k, html.riq-host label { color: #A8B6D8 !important; }
+html.riq-host .kpi3 .b .v, html.riq-host .dl .dd, html.riq-host h1, html.riq-host h2, html.riq-host h3, html.riq-host b, html.riq-host strong { color: #F1F5FF; }
+html.riq-host .btn:hover, html.riq-host .chip:hover, html.riq-host .navitem:hover, html.riq-host tr:hover td, html.riq-host .lb .row:hover { background: rgba(59,130,246,.16) !important; }
+html.riq-host .badge.unpaid { background: rgba(248,113,113,.16) !important; } html.riq-host .badge.partial { background: rgba(251,191,36,.16) !important; }
+html.riq-host .input, html.riq-host select, html.riq-host textarea { background: rgba(8,14,32,.85) !important; color: #E8EEFF !important; border-color: rgba(147,197,253,.28) !important; }
+html.riq-host select option { background: #0B1430; color: #E8EEFF; }
+html.riq-host .input::placeholder, html.riq-host textarea::placeholder { color: #7184AE !important; }
+html.riq-host table th { background: rgba(8,14,32,.95) !important; }
+html.riq-host input[type="file"] { color: #E8EEFF; }
+html.riq-host input[type="checkbox"], html.riq-host input[type="radio"] { accent-color: #38BDF8; }
+html.riq-host [style*="color: rgb(15, 23, 42)"], html.riq-host [style*="color: rgb(30, 41, 59)"], html.riq-host [style*="color: rgb(55, 65, 81)"],
+html.riq-host [style*="color: rgb(17, 24, 39)"], html.riq-host [style*="color: rgb(11, 35, 79)"] { color: #E8EEFF !important; }
+html.riq-host [style*="background: rgb(248, 250, 252)"], html.riq-host [style*="background: rgb(245, 248, 253)"], html.riq-host [style*="background: rgb(241, 245, 251)"],
+html.riq-host [style*="background: rgb(238, 243, 251)"], html.riq-host [style*="background: rgb(239, 246, 255)"], html.riq-host [style*="background: rgb(254, 242, 224)"],
+html.riq-host [style*="background: rgb(253, 236, 236)"], html.riq-host [style*="background: rgb(231, 246, 236)"], html.riq-host [style*="background: rgb(232, 240, 254)"],
+html.riq-host [style*="background: rgb(219, 234, 254)"], html.riq-host [style*="background: rgb(229, 231, 235)"], html.riq-host [style*="background: rgb(238, 242, 255)"] {
+  background: rgba(59,130,246,.12) !important; color: #E8EEFF !important;
+}

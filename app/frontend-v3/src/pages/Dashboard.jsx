@@ -40,6 +40,9 @@ export default function Dashboard({ edition, branch, embedded }) {
   const topAmt = Math.max(1, ...leaders.map(r => r.collected ?? r.received ?? 0));
   const spark = trend.map(t => t.collected || 0);
   const pipeTone = ['accent', 'info', 'violet', 'warn', 'good'];
+  const isMgr = ['admin', 'manager', 'headoffice'].includes(user && user.role) && !branch;
+  const { data: hl } = useLoad(() => (isMgr ? api('/api/mis/highlights').catch(() => null) : Promise.resolve(null)), [isMgr]);
+  const dispo = ((d && d.by_disposition) || []).slice(0, 10);
 
   return (
     <>
@@ -174,6 +177,42 @@ export default function Dashboard({ edition, branch, embedded }) {
             ) : loading ? <Skeleton h={290} /> : <Empty title="No portfolios in this period" />}
           </Card>
         </div>
+
+        {/* MIS highlights (management) */}
+        {hl && <div className="s-12 rise" style={{ '--i': 9 }}>
+          <Card title="MIS highlights" sub="Live — targets, untouched work and settlements" actions={<Link className="btn ghost sm" to="/mis"><Layers />MIS<ArrowUpRight /></Link>}>
+            <div className="mini-kpis">
+              <div className="mini-kpi"><Target /><div><div className="faint">Target gap (ENR)</div><b className="num" style={{ color: 'var(--bad)' }}>{inr(hl.target_gap)}</b><div className="cell-sub">{hl.employees_behind}/{hl.employees_total} behind target</div></div></div>
+              <div className="mini-kpi"><Hourglass /><div><div className="faint">Untouched cases</div><b className="num" style={{ color: 'var(--warn)' }}>{num(hl.untouched)}</b><div className="cell-sub">{inr(hl.untouched_pending)} pending</div></div></div>
+              <div className="mini-kpi"><Footprints /><div><div className="faint">PTP broken</div><b className="num" style={{ color: 'var(--bad)' }}>{num(hl.ptp_broken)}</b></div></div>
+              <div className="mini-kpi"><Coins /><div><div className="faint">Realization</div><b className="num">{hl.realization_pct}%</b><div className="cell-sub">collected ÷ NORM</div></div></div>
+              <div className="mini-kpi"><CheckCircle2 /><div><div className="faint">Achieved (ENR)</div><b className="num" style={{ color: 'var(--good)' }}>{hl.achieved_pct}%</b><div className="cell-sub">{inr(hl.paid_enr)} of {inr(hl.total_enr)}</div></div></div>
+            </div>
+            <div className="hl-grid">
+              {[['Most behind target', hl.behind_targets, r => r.emp, r => inr(r.gap_enr), 'var(--bad)', 'No targets set yet.'],
+                ['Top untouched high-value', hl.top_untouched, r => r.customer || '—', r => inr(r.pending), 'var(--warn)', 'All cases have been contacted.'],
+                ['High-value by NORM (pending)', hl.top_by_norm, r => r.customer || '—', r => inr(r.pending), 'var(--info)', 'No NORM settlements pending.'],
+                ['High-value by STAB (pending)', hl.top_by_stab, r => r.customer || '—', r => inr(r.pending), 'var(--info)', 'No STAB settlements pending.']].map(([t, list, nm, amt, col, none]) =>
+                <div key={t}><div className="faint" style={{ fontSize: 12, margin: '0 0 6px' }}>{t}</div>
+                  {(list || []).slice(0, 5).map((r, i) => <div key={i} className="hl-row"><span className="grow ellip">{nm(r)} <span className="faint" style={{ fontSize: 11 }}>· {r.product}</span></span><b className="num" style={{ color: col }}>{amt(r)}</b></div>)}
+                  {!(list || []).length && <div className="faint" style={{ fontSize: 12 }}>{none}</div>}</div>)}
+            </div>
+          </Card>
+        </div>}
+
+        {/* Dispositions + partial payments */}
+        {(dispo.length > 0 || Number(k.partial_payments) > 0) && <div className="s-7 rise" style={{ '--i': 10 }}>
+          <Card title="Top dispositions" sub={Number(k.partial_payments) > 0 ? `Partial payments (below settlement, not in cash): ${inr(k.partial_payments)}` : 'What the last contact resulted in'}>
+            {dispo.length ? <div style={{ height: 260 }}><ResponsiveContainer>
+              <BarChart data={dispo} layout="vertical" margin={{ left: 8, right: 12 }}>
+                <CartesianGrid stroke="var(--line)" horizontal={false} />
+                <XAxis type="number" tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <YAxis type="category" dataKey="disposition" tick={{ fill: 'var(--text-2)', fontSize: 12 }} axisLine={false} tickLine={false} width={110} />
+                <Tooltip content={<ChartTip />} cursor={{ fill: 'var(--bg-hover)' }} />
+                <Bar isAnimationActive={false} dataKey="count" name="Cases" radius={[0, 8, 8, 0]}>{dispo.map((x, i) => <Cell key={i} fill={C(i)} />)}</Bar>
+              </BarChart></ResponsiveContainer></div> : <Empty title="No dispositions yet" />}
+          </Card>
+        </div>}
 
         {/* Leaderboard */}
         <div className="s-5 rise" style={{ '--i': 9 }}>

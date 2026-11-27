@@ -134,7 +134,6 @@ export default function FosRoute() {
           <button className={tile === 'satellite' ? 'on' : ''} onClick={() => setTile('satellite')}><Satellite size={14} /> Satellite</button>
         </div>
         {here && <button className="btn sm" onClick={() => map.current.flyTo(here, 16, { duration: .6 })}><LocateFixed />Me</button>}
-        <Link className="btn sm" to="/m/fmap" title="The complete classic field map"><SlidersHorizontal />Full module</Link>
       </div>
       <div className="fm-legend">
         <span><i style={{ background: '#2563EB' }} />To recover</span><span><i style={{ background: '#6366F1' }} />PTP</span>

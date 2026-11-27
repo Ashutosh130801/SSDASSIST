@@ -67,6 +67,8 @@ _PATCHES: list[tuple[str, str, str]] = [
      "  const closeTour = () => { try { localStorage.setItem(tourKey, '1'); } catch (e) {} setTour(false); };",
      "  const closeTour = () => { try { localStorage.setItem(tourKey, '1'); } catch (e) {} setTour(false); };\n"
      "  const [riqPanel, setRiqPanel] = useState(null);\n"
+     "  const RIQ_COMPONENTS = RIQ_HOST ? { UploadModal, DprModal, UploadsModal, CampaignModal, ViciPushModal, ReassignModal, AllocTransferModal, JointAllocateModal, StaffFormModal, LetterModal, FlaggedVisitsModal, FosVisitReportsModal, AttendanceDetail, ManageCatalogModal, AddProductModal, LegalModal, TemplateModal, TeamLeadOverviewModal, AddBranchModal, PaymentEditModal, LeaveDecisionModal, CaseDrawer, CycleMIS, MyViciAgent, EmployeeDocs, EIDCard, GeocodeButton, BackfillAddressButton, CorrectColumnsButton, RelinkAllocationButton, VisitModal, StaffModal, PerformanceModal, EmployeeDashboard, RouteHistoryModal, LiveRouteModal, ReportModal, TransferModal, MisPivotViewer, QR } : {};\n"     "  useEffect(() => { if (!RIQ_HOST || !riqPanel) return undefined; const k = (e) => { if (e.key === 'Escape') setRiqPanel(p => { if (p) setTimeout(() => p.res(false)); return null; }); }; window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k); }, [riqPanel]);\n"
+
      "  useEffect(() => {\n"
      "    if (!RIQ_HOST) return undefined;\n"
      "    window.__riqClassic = Object.assign(window.__riqClassic || {}, {\n"
@@ -77,10 +79,14 @@ _PATCHES: list[tuple[str, str, str]] = [
      "      printLiner: () => printLiner(),\n"
      "      /* Classic forms reused by the native pages (GPS-camera visit, staff editor, profiles, audit detail…). Resolves true when saved. */\n"
      "      openPanel: (kind, props) => new Promise(res => setRiqPanel({ kind, props: props || {}, res })),\n"
+     "      closePanel: () => setRiqPanel(p => { if (p) setTimeout(() => p.res(false)); return null; }),\n"
+     "      closeCase: () => setNotifCase(null),\n"
      "      dialCase: (id) => dialCaseViaVici(id),\n"
      "      dialerStatus: () => dialerStatus(),\n"
-     "      openPerf: (id, role, name) => { if (window.__ssdOpenPerf) window.__ssdOpenPerf(id, role, name); },\n"
+     "      openPerf: (id, role, name, peer) => { if (window.__ssdOpenPerf) window.__ssdOpenPerf(id, role, name, peer); },\n"
      "      getXLSX: () => window.XLSX || null,\n"
+     "      passkeySupported: () => passkeySupported(),\n"
+     "      registerPasskey: (label) => registerPasskey(label),\n"
      "      /* Live refresh: same WebSocket + local events the classic screens listen to. */\n"
      "      subscribe: (cb) => {\n"
      "        let t; const fire = (m) => { clearTimeout(t); t = setTimeout(() => { try { cb(m); } catch (e) {} }, 700); };\n"
@@ -117,6 +123,18 @@ _PATCHES: list[tuple[str, str, str]] = [
      "              <div className=\"section-h\"><h3 style={{ margin: 0 }}>Cycle-wise MIS{P.bank ? ' — ' + P.bank + ' · ' + P.product : ''}</h3><button className=\"btn ghost sm\" onClick={() => done(false)}>✕</button></div>\n"
      "              <CycleMIS bank={P.bank} product={P.product} monthBucket={P.monthB} compact={P.compact} /></div></div>;\n"
      "            case 'payEdit': return <PaymentEditModal row={P.row} mode={P.mode} initAmount={P.amount} onClose={() => done(false, null)} onDone={(u) => done(true, u || true)} />;\n"
+     "            case 'component': case 'inline': {\n"
+     "              const Comp = RIQ_COMPONENTS[P.name];\n"
+     "              if (!Comp) { setTimeout(() => done(false)); return null; }\n"
+     "              const el = <Comp {...(P.props || {})} user={user} me={user} config={config}\n"
+     "                onClose={() => done(false)} onDone={(v) => (v === false ? window.dispatchEvent(new CustomEvent('ssd-case-changed')) : done(true, v))} onChanged={() => window.dispatchEvent(new CustomEvent('ssd-case-changed'))} />;\n"
+     "              if (riqPanel.kind === 'component') return el;\n"
+     "              return <div className=\"modal-bg riq-inline\" onClick={() => done(false)}><div className=\"modal glass\" onClick={e => e.stopPropagation()} style={{ maxWidth: P.width || 720, width: '96vw', maxHeight: '92vh', overflow: 'auto' }}>\n"
+     "                <div className=\"section-h\"><h3 style={{ margin: 0 }}>{P.title || ''}</h3><button className=\"btn ghost sm\" onClick={() => done(false)}>✕</button></div>{el}</div></div>;\n"
+     "            }\n"
+     "            case 'tools': return <div className=\"modal-bg riq-inline\" onClick={() => done(false)}><div className=\"modal glass\" onClick={e => e.stopPropagation()} style={{ maxWidth: 760, width: '96vw', maxHeight: '92vh', overflow: 'auto' }}>\n"
+     "              <div className=\"section-h\"><h3 style={{ margin: 0 }}>{P.title || 'Tools'}</h3><button className=\"btn ghost sm\" onClick={() => done(false)}>✕</button></div>\n"
+     "              <div className=\"toolbar\" style={{ flexWrap: 'wrap', gap: 8 }}>{(P.names || []).map(n => { const C = RIQ_COMPONENTS[n]; return C ? <C key={n} /> : null; })}</div></div></div>;\n"
      "            default: setTimeout(() => done(false)); return null;\n"
      "          }\n"
      "        })()}"),
@@ -156,11 +174,17 @@ def _cached(key: str, path: str, build) -> str:
     return out
 
 
+RIQ_REGISTRY = ['UploadModal', 'DprModal', 'UploadsModal', 'CampaignModal', 'ViciPushModal', 'ReassignModal', 'AllocTransferModal', 'JointAllocateModal', 'StaffFormModal', 'LetterModal', 'FlaggedVisitsModal', 'FosVisitReportsModal', 'AttendanceDetail', 'ManageCatalogModal', 'AddProductModal', 'LegalModal', 'TemplateModal', 'TeamLeadOverviewModal', 'AddBranchModal', 'PaymentEditModal', 'LeaveDecisionModal', 'CaseDrawer', 'CycleMIS', 'MyViciAgent', 'EmployeeDocs', 'EIDCard', 'GeocodeButton', 'BackfillAddressButton', 'CorrectColumnsButton', 'RelinkAllocationButton', 'VisitModal', 'StaffModal', 'PerformanceModal', 'EmployeeDashboard', 'RouteHistoryModal', 'LiveRouteModal', 'ReportModal', 'TransferModal', 'MisPivotViewer', 'QR']
+
+
 def host_js(frontend_dir: str) -> str:
     path = os.path.join(frontend_dir, "app.jsx")
 
     def build() -> str:
         _, src = _read(path)
+        for name in RIQ_REGISTRY:          # every classic component the new UI may open must exist
+            if not re.search(r"^function " + name + r"\(", src, re.M):
+                raise PatchError(f"classic-host: component '{name}' not found in app.jsx")
         for label, find, repl in _PATCHES:
             src = _patch(src, label, find, repl)
         return src

@@ -32,6 +32,8 @@ import { ChangeRequests, Devices, AuditLog, Activity, Rtsb, Monitor } from './mo
 import Team from './modules/Team.jsx';
 import Mis from './modules/Mis.jsx';
 import LiveSheet from './modules/LiveSheet.jsx';
+import { Manpower, Profile } from './modules/People.jsx';
+import { Feedback, Legal, Templates, Archive, TLPortfolios, Security, Support } from './modules/Ops.jsx';
 
 const edition = detectEdition();
 
@@ -82,6 +84,13 @@ function Workspace({ mode, setM, palette, setPal, onLogout }) {
     if (locRef.current !== to) navigate(to);
   }, [native, navigate]);
 
+  // Popups opened from a page belong to that page: close them when the user moves to another screen,
+  // and let Escape close them from anywhere in the new UI.
+  useEffect(() => { if (classicApi && classicApi.closePanel) { classicApi.closePanel(); if (classicApi.closeCase) classicApi.closeCase(); } }, [loc.pathname]); // eslint-disable-line
+  useEffect(() => {
+    const k = (e) => { if (e.key === 'Escape' && classicApi && classicApi.closePanel) classicApi.closePanel(); };
+    window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k);
+  }, [classicApi]);
   const home = sections[0] && sections[0].items[0] ? sections[0].items[0].to : '/m/dashboard';
   const nativeOr = (id, el) => (native.has(id) ? el : <Navigate to={'/m/' + id} replace />);
 
@@ -110,6 +119,16 @@ function Workspace({ mode, setM, palette, setPal, onLogout }) {
           <Route path="/staff" element={nativeOr('staff', <Team />)} />
           <Route path="/mis" element={nativeOr('mis', <Mis />)} />
           <Route path="/sheet" element={nativeOr('sheet', <LiveSheet />)} />
+          <Route path="/manpower" element={nativeOr('manpower', <Manpower />)} />
+          <Route path="/profile" element={nativeOr('profile', <Profile />)} />
+          <Route path="/feedback" element={nativeOr('feedback', <Feedback />)} />
+          <Route path="/legal" element={nativeOr('legal', <Legal />)} />
+          <Route path="/templates" element={nativeOr('templates', <Templates />)} />
+          <Route path="/archive" element={nativeOr('archive', <Archive />)} />
+          <Route path="/portfolios" element={nativeOr('portfolios', <TLPortfolios />)} />
+          <Route path="/security" element={nativeOr('security', <Security />)} />
+          <Route path="/help" element={nativeOr('help', <Support />)} />
+          <Route path="/support" element={nativeOr('support', <Support />)} />
           <Route path="/m/:id" element={<ClassicRoute />} />
           <Route path="*" element={<Navigate to={home} replace />} />
         </Routes>

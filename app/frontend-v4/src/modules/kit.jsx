@@ -27,7 +27,6 @@ export function ModuleHead({ icon: Icon, title, sub, children, full }) {
       <div className="grow"><h1 className="page-title">{title}</h1>{sub && <div className="page-sub">{sub}</div>}</div>
       <div className="row wrap" style={{ gap: 8 }}>
         {children}
-        {full && <Link className="btn" to={'/m/' + full} title="Open the complete classic module"><Maximize2 />Full module</Link>}
       </div>
     </div>
   );
@@ -222,4 +221,21 @@ export function printTables(docTitle, tables) {
   let html = '<html><head><title>' + esc(docTitle) + '</title><style>body{font-family:system-ui;padding:20px}h1{font-size:18px}h2{color:#2563EB;margin:16px 0 6px;font-size:14px}table{border-collapse:collapse;width:100%;font-size:11px;margin-bottom:12px}th,td{border:1px solid #cbd5e1;padding:4px 7px;text-align:left}th{background:#EEF3FB}</style></head><body><h1>' + esc(docTitle) + '</h1>';
   tables.forEach(([t, h, rows]) => { html += '<h2>' + esc(t) + '</h2><table><thead><tr>' + h.map(x => '<th>' + esc(x) + '</th>').join('') + '</tr></thead><tbody>' + rows.map(r => '<tr>' + r.map(c => '<td>' + esc(c) + '</td>').join('') + '</tr>').join('') + '</tbody></table>'; });
   w.document.write(html + '</body></html>'); w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch (e) { /* ignore */ } }, 400);
+}
+
+/** Helpers that open the classic app's own forms/panels INSIDE the new UI (themed overlays). */
+export function useClassicUI() {
+  const { api: capi } = useClassic();
+  const open = (kind, props) => (capi && capi.openPanel ? capi.openPanel(kind, props) : Promise.resolve(false));
+  return {
+    ready: !!capi,
+    /** A classic modal component by name (UploadModal, DprModal, …). Resolves with its onDone value / true / false. */
+    modal: (name, props) => open('component', { name, props }),
+    /** A classic inline component shown inside a themed modal shell. */
+    inline: (name, props, title, width) => open('inline', { name, props, title, width }),
+    /** A row of classic tool buttons (each brings its own dialog). */
+    tools: (names, title) => open('tools', { names, title }),
+    openCase: (id) => capi && capi.openCase && capi.openCase(id),
+    perf: (id, role, name, peer) => capi && capi.openPerf && capi.openPerf(id, role, name, peer),
+  };
 }

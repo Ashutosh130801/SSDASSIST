@@ -51,7 +51,14 @@ The runtime is a **patched copy generated on the fly** by `backend/app/classic_h
   - **MIS:** overview (KPIs, projection, eight charts, target), leaderboards and all 16 tables with Excel/print, full sheet, cycle-wise and pivot views
   - **Live Sheet:** multi-user live editing with presence, column presets, data/formula columns, per-column filters, sort, drag-reorder, totals, formula bar, CSV/Excel
   - Complex classic forms are reused, not duplicated: the GPS-camera visit, staff editor, employee profile, performance and audit-detail panels open through `__riqClassic.openPanel()` (patched in by `classic_host.py`). Pages refresh live through `__riqClassic.subscribe()` (same WebSocket as classic).
-- Modules not yet rebuilt (Manpower, Payroll, Litigation, Bank Feedback, Connections, AI Assist, etc.) run the classic screen under a full per-template skin (`classic-skin.css`): tiles, chips, badges, tables, modals and entrance motion follow the template.
+- **Round 3:** no more "Full module" buttons — every native screen carries the complete classic feature set:
+  - Accounts (banks → products → locations → cases, all filters, re-allocate / joint / transfer / delete, removed cases, upload, DPR, undo upload, corrections, ViciDial push, campaign, auto-allocate, geocode, export, reset, segment fix, portfolio Excel)
+  - PTP Tracker, Attendance (day / month / salary-cycle range, role + location + status filters, live ViciDial state, print, CSV, Excel, FOS visit reports), Dashboard (MIS highlights, dispositions, partial payments)
+  - Manpower, My E-ID, Bank Feedback, Litigation, Communication, Monthly Archive, My Portfolios (team lead), Security, Help & Support / Support Inbox
+  - Field Tracking (v2): FOS roster, multi-officer route export, flagged visits, geocoding, day-visit Excel
+  - Every case opens the full case screen; complex classic forms open inside the new UI, themed, through `__riqClassic.openPanel('component' | 'inline' | 'tools', …)` (registry in `classic_host.py`, checked at startup). Popups close on Escape and when you change screen.
+- Still drawn by the classic runtime inside the new frame (fully re-skinned): AI Assist, Add-ons, Services, Connections, Salary & Payslips (kept locked), and the FOS map in v3/v4 (field-tracking redesign is v2-only).
+- (superseded) Modules not yet rebuilt (Manpower, Payroll, Litigation, Bank Feedback, Connections, AI Assist, etc.) run the classic screen under a full per-template skin (`classic-skin.css`): tiles, chips, badges, tables, modals and entrance motion follow the template.
 
 Each native page has a **Full module** button that opens the complete classic module.
 

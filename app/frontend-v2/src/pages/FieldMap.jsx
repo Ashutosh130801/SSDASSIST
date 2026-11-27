@@ -9,6 +9,7 @@ import { istToday, num, inr, fmtTime } from '../lib/format.js';
 import { L, baseLayer, INDIA, statusOf, STATUS, ago, agentIcon, dotIcon, pinIcon, gradientRoute, hhmm } from '../lib/map.js';
 import { useClassic } from '../lib/classic.jsx';
 import { CountUp } from '../components/fx.jsx';
+import { FieldToolButtons, dayVisitsExcel } from './FieldTools.jsx';
 
 const cssVar = (n) => (getComputedStyle(document.documentElement).getPropertyValue(n) || '').trim();
 const FILTERS = [['all', 'All'], ['live', 'Live'], ['idle', 'Idle'], ['offline', 'Offline']];
@@ -146,7 +147,7 @@ export default function FieldMap() {
           <button className={tile === 'satellite' ? 'on' : ''} onClick={() => setTile('satellite')}><Satellite size={14} /> Satellite</button>
         </div>
         <button className="btn sm" onClick={fitAll}><Crosshair />Fit all</button>
-        <Link className="btn sm" to="/m/map" title="Geocoding, FOS roster, exports, flagged visits, re-run month — the complete classic module"><SlidersHorizontal />Full module</Link>
+        <FieldToolButtons branch={branch} />
       </div>
       <div className="fm-legend">
         {Object.entries(STATUS).map(([k, s]) => <span key={k}><i style={{ background: s.color }} />{s.label}</span>)}
@@ -256,6 +257,7 @@ function AgentDetail({ a, date, map, layers, onClose }) {
       </div>}
 
       {tab === 'visits' && <div className="fm-sec fm-visits">
+        {visits && visits.length > 0 && <button className="btn sm" style={{ alignSelf: 'flex-start' }} onClick={() => { const X = classic.api && classic.api.getXLSX && classic.api.getXLSX(); if (!dayVisitsExcel(X, a.name || 'officer', day, visits)) alert('Excel export is still loading — try again in a moment.'); }}>Day visits → Excel</button>}
         {visits === null && <div className="skel" style={{ height: 70 }} />}
         {visits && !visits.length && <div className="faint" style={{ fontSize: 13 }}>No visits logged this day.</div>}
         {(visits || []).map(v => (
