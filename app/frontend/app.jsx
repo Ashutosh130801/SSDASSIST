@@ -12281,11 +12281,25 @@ function FosPreviewViewer({ prev, busy, onDownload, onMinimize, onClose }) {
 function FosDailyPreview({ d, tableH }) {
   const [di, setDi] = useState(0);
   const [q, setQ] = useState('');
+  const [zeroVisitsOnly, setZeroVisitsOnly] = useState(false);
   const day = d.days[Math.min(di, d.days.length - 1)];
   if (!day) return <div className="muted" style={{ padding: 16 }}>No days in this range.</div>;
-  const rows = day.rows.filter(r => !q || (r.name + ' ' + (r.ids || '') + ' ' + r.area + ' ' + r.branch).toLowerCase().includes(q.toLowerCase()));
+  const isPresentZeroVisit = r => ['PRESENT', 'HALF-DAY'].includes(r.status) && r.total === 0;
+  const rows = day.rows.filter(r => (!zeroVisitsOnly || isPresentZeroVisit(r)) && (!q || (r.name + ' ' + (r.ids || '') + ' ' + r.area + ' ' + r.branch).toLowerCase().includes(q.toLowerCase())));
   const t = day.totals;
-  const kpi = (label, val, color) => <div className="glass card" style={{ padding: '8px 12px', minWidth: 110 }}><div className="muted" style={{ fontSize: 11 }}>{label}</div><b style={{ fontSize: 18, color }}>{val}</b></div>;
+  const tableTotals = zeroVisitsOnly ? {
+    fos: rows.length,
+    present: rows.filter(r => ['PRESENT', 'HALF-DAY'].includes(r.status)).length,
+    visits: rows.reduce((sum, r) => sum + r.total, 0),
+    paid: rows.reduce((sum, r) => sum + r.paid, 0),
+    slots: [0, 1, 2, 3].map(k => rows.reduce((sum, r) => sum + r.slots[k], 0)),
+  } : t;
+  const kpi = (label, val, color, action) => {
+    const style = { padding: '8px 12px', minWidth: 110, textAlign: 'left', fontFamily: 'inherit', color: 'inherit', ...(action ? { cursor: 'pointer', border: action.active ? '2px solid #DC2626' : '1px solid #E2E8F0', outline: action.active ? '2px solid rgba(220,38,38,.25)' : 'none', outlineOffset: 1 } : {}) };
+    const content = <><div className="muted" style={{ fontSize: 11 }}>{label}</div><b style={{ fontSize: 18, color }}>{val}</b></>;
+    return action ? <button type="button" className="glass card" aria-pressed={action.active} title={action.active ? 'Clear present, zero-visit filter' : 'Show present FOS with zero visits'} onClick={action.onClick} style={style}>{content}</button>
+      : <div className="glass card" style={style}>{content}</div>;
+  };
   return (<div style={{ marginTop: 12 }}>
     {d.days.length > 1 && <div className="toolbar" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
       {d.days.map((x, i) => <div key={x.date} className={cx('chip', i === di && 'on')} onClick={() => setDi(i)}>{x.date.slice(8, 10) + '/' + x.date.slice(5, 7)}</div>)}
@@ -12297,7 +12311,8 @@ function FosDailyPreview({ d, tableH }) {
     </div>
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '8px 0' }}>
       {kpi('Field agents', t.fos)}{kpi('Present', t.present, 'var(--good)')}{kpi('Total visits', t.visits, 'var(--info)')}
-      {kpi('Productive (paid)', t.paid, '#B45309')}{kpi('Avg / present FOS', t.present ? (t.visits / t.present).toFixed(1) : 0)}{kpi('Present, zero visits', t.zero, 'var(--bad)')}
+      {kpi('Productive (paid)', t.paid, '#B45309')}{kpi('Avg / present FOS', t.present ? (t.visits / t.present).toFixed(1) : 0)}
+      {kpi('Present, zero visits', t.zero, 'var(--bad)', { active: zeroVisitsOnly, onClick: () => setZeroVisitsOnly(active => !active) })}
     </div>
     <div style={{ overflow: 'auto', maxHeight: tableH || '52vh', border: '1px solid #E2E8F0', borderRadius: 8 }}>
       <table className="fos-report-table" style={{ borderCollapse: 'collapse', width: 'max-content', minWidth: '100%' }}>
@@ -12312,7 +12327,7 @@ function FosDailyPreview({ d, tableH }) {
           </tr>
           <tr>{Array.from({ length: 10 }, (_, i) => <th key={i} style={fosTh('#0F766E', { top: 31, zIndex: 3, minWidth: 64 })}>{i + 1}</th>)}</tr>
         </thead>
-        <tbody>{rows.map((r, i) => {
+        <tbody>{rows.length ? rows.map((r, i) => {
           const st = FOS_STATUS_STYLE[r.status] || ['', ''];
           return <tr key={r.user_id} style={{ background: i % 2 ? '#F8FAFC' : '#fff' }}>
             <td style={fosTd()}>{i + 1}</td>
@@ -12330,12 +12345,12 @@ function FosDailyPreview({ d, tableH }) {
             <td style={fosTd()}>{r.start}</td><td style={fosTd()}>{r.end}</td>
             {Array.from({ length: 10 }, (_, k) => <td key={'visit-' + k} style={fosTd({ minWidth: 64, fontVariantNumeric: 'tabular-nums' })}>{(r.visit_times || [])[k] || ''}</td>)}
           </tr>;
-        })}
+        }) : <tr><td colSpan={27} style={fosTd({ padding: 18, color: '#64748B' })}>{zeroVisitsOnly ? 'No present FOS with zero visits match this search.' : 'No FOS match this search.'}</td></tr>}
         <tr style={{ background: '#DCE6FA', fontWeight: 800 }}>
-          <td style={fosTd()} /><td style={fosTd({ textAlign: 'left' })}>TOTAL ({t.fos} FOS)</td><td style={fosTd()} colSpan={5} />
-          <td style={fosTd()}>{t.visits}</td><td style={fosTd()}>{t.paid}</td>
-          {t.slots.map((n, k) => <td key={k} style={fosTd()}>{n}</td>)}
-          <td style={fosTd()}>{t.present} present</td><td style={fosTd()} colSpan={13} />
+          <td style={fosTd()} /><td style={fosTd({ textAlign: 'left' })}>TOTAL ({tableTotals.fos} FOS)</td><td style={fosTd()} colSpan={5} />
+          <td style={fosTd()}>{tableTotals.visits}</td><td style={fosTd()}>{tableTotals.paid}</td>
+          {tableTotals.slots.map((n, k) => <td key={k} style={fosTd()}>{n}</td>)}
+          <td style={fosTd()}>{tableTotals.present} present</td><td style={fosTd()} colSpan={13} />
         </tr></tbody>
       </table>
     </div>
