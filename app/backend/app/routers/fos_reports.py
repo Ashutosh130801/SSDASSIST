@@ -91,7 +91,7 @@ def _t(dt) -> str:
 def _collect(db: Session, viewer: models.User, a: date_cls, b: date_cls, branch: str | None):
     """→ (people, days, codes, visits) for every FOS the viewer may see.
     codes[uid][iso] = attendance code (P/L/H/H•/LV/W/A or '')
-    visits[uid][iso] = {n, paid, slots[4], first, last}"""
+    visits[uid][iso] = {n, paid, slots[4], times, first, last}"""
     sheet = att.month_sheet(None, None, None, db, viewer, start=a.isoformat(), end=b.isoformat())
     days = [date_cls.fromisoformat(d) for d in sheet["days"]]
     ids = [p["user_id"] for p in sheet["people"]]
@@ -108,8 +108,9 @@ def _collect(db: Session, viewer: models.User, a: date_cls, b: date_cls, branch:
         d = _ist(ts)
         if not d:
             continue
-        v = visits[uid].setdefault(d.date().isoformat(), {"n": 0, "paid": 0, "slots": [0, 0, 0, 0], "first": None, "last": None})
+        v = visits[uid].setdefault(d.date().isoformat(), {"n": 0, "paid": 0, "slots": [0, 0, 0, 0], "times": [], "first": None, "last": None})
         v["n"] += 1
+        v["times"].append(ts)
         if paid or float(amt or 0) > 0:
             v["paid"] += 1
         for i, (_l, lo, hi) in enumerate(SLOTS):
@@ -194,7 +195,7 @@ def _daily_row(db, p, d: date_cls, visits, arows, today) -> dict:
     """One FOS on one day — shared by the Excel sheet and the on-screen preview."""
     u, iso = p["u"], d.isoformat()
     code = p["codes"].get(iso, "")
-    v = visits.get(u.id, {}).get(iso) or {"n": 0, "paid": 0, "slots": [0, 0, 0, 0], "first": None, "last": None}
+    v = visits.get(u.id, {}).get(iso) or {"n": 0, "paid": 0, "slots": [0, 0, 0, 0], "times": [], "first": None, "last": None}
     a = arows.get((u.id, iso))
     jd = getattr(u, "joining_date", None)
     status = "NOT JOINED" if (jd and d < jd) else ("" if d > today else STATUS.get(code, ""))
@@ -214,7 +215,8 @@ def _daily_row(db, p, d: date_cls, visits, arows, today) -> dict:
         remarks.append("SUNDAY")
     return {"user_id": u.id, "name": u.name or "", "ids": _ids(u), "area": _area(u), "phone": u.phone or "",
             "branch": (u.branch or "").upper(), "first_start": _t(start), "total": v["n"], "paid": v["paid"],
-            "slots": list(v["slots"]), "status": status, "remarks": " // ".join(remarks),
+            "slots": list(v["slots"]), "visit_times": [_t(ts) for ts in sorted(v["times"])[:10]],
+            "status": status, "remarks": " // ".join(remarks),
             "start": _t(a.check_in_at) if a and a.check_in_at else "", "end": _t(end), "code": code}
 
 
@@ -223,8 +225,10 @@ def _daily_sheet(wb, db, d: date_cls, people, visits, arows, today, S):
     from openpyxl.utils import get_column_letter as L
     ws = wb.create_sheet(f"{d.day}-{d.month}-{d.year}")
     iso = d.isoformat()
+    visit_time_cols = [str(i) for i in range(1, 11)]
     cols = ["S.NO", "FOS NAMES", "USER ID", "AREA", "CONTACT NUMBER", "REPORTING BRANCH", "FIRST START TIME", "TOTAL VISITS",
-            "PRODUCTIVE VISIT (PAID)", "8-11AM", "11-1PM", "1-4PM", "4-7PM", "PRESENT", "REMARKS", "START TIME", "END TIME"]
+            "PRODUCTIVE VISIT (PAID)", "8-11AM", "11-1PM", "1-4PM", "4-7PM", "PRESENT", "REMARKS", "START TIME", "END TIME",
+            *visit_time_cols]
     X = {h: i for i, h in enumerate(cols)}                       # column offsets by name (no hard-coded positions)
     C0 = 2                                         # data starts in column B, like the team sheet
     col = lambda h: C0 + X[h]
@@ -239,6 +243,8 @@ def _daily_sheet(wb, db, d: date_cls, people, visits, arows, today, S):
     _hdr(ws, 3, col("8-11AM"), "MORNING", YELLOW, S, fc="7C2D12", size=11)
     ws.merge_cells(start_row=3, start_column=col("1-4PM"), end_row=3, end_column=col("4-7PM"))
     _hdr(ws, 3, col("1-4PM"), "EVENING", "FDBA74", S, fc="7C2D12", size=11)
+    ws.merge_cells(start_row=3, start_column=col(visit_time_cols[0]), end_row=3, end_column=col(visit_time_cols[-1]))
+    _hdr(ws, 3, col(visit_time_cols[0]), "VISIT TIMINGS", "0F766E", S, size=11)
     hr = 4
     for j, h in enumerate(cols):
         color = NAVY
@@ -250,6 +256,8 @@ def _daily_sheet(wb, db, d: date_cls, people, visits, arows, today, S):
             color = GREEN
         elif h == "PRESENT":
             color = CYAN
+        elif h in visit_time_cols:
+            color = "0F766E"
         _hdr(ws, hr, C0 + j, h, color, S)
     ws.row_dimensions[hr].height = 32
 
@@ -260,7 +268,8 @@ def _daily_sheet(wb, db, d: date_cls, people, visits, arows, today, S):
         r += 1
         row = [i, d_row["name"], d_row["ids"], d_row["area"], d_row["phone"], d_row["branch"], d_row["first_start"], None,
                d_row["paid"] or None] + [x or None for x in d_row["slots"]] + \
-              [d_row["status"], d_row["remarks"] or None, d_row["start"], d_row["end"]]
+              [d_row["status"], d_row["remarks"] or None, d_row["start"], d_row["end"]] + \
+              (d_row["visit_times"] + [""] * 10)[:10]
         for j, val in enumerate(row):
             c = ws.cell(row=r, column=C0 + j, value=val)
             c.border, c.alignment = S["B"], (S["L"] if j in left else S["C"])
@@ -302,7 +311,7 @@ def _daily_sheet(wb, db, d: date_cls, people, visits, arows, today, S):
                                       FormulaRule(formula=[f'ISNUMBER(SEARCH("LATE START",{rmc}{first}))'], fill=S["fill"]("FEF3C7")))
         ws.auto_filter.ref = f"{L(C0)}{hr}:{L(last)}{lastr}"
         _branch_summary(ws, r + 3, C0, people, visits, iso, S)
-    widths = [6, 30, 16, 22, 15, 18, 12, 10, 13, 9, 9, 9, 9, 13, 30, 11, 11]
+    widths = [6, 30, 16, 22, 15, 18, 12, 10, 13, 9, 9, 9, 9, 13, 30, 11, 11] + [11] * 10
     ws.column_dimensions["A"].width = 2
     for j, w in enumerate(widths):
         ws.column_dimensions[L(C0 + j)].width = w

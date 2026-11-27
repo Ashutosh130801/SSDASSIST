@@ -127,6 +127,11 @@ html.riq-host .badge.new, html.riq-host .badge.ptp, html.riq-host .badge.allocat
 /* tables */
 html.riq-host .tablewrap { border-radius: 16px; }
 html.riq-host thead th { background: rgba(246, 248, 253, .96) !important; backdrop-filter: blur(6px); text-transform: uppercase; font-size: 11px !important; letter-spacing: .06em !important; }
+html.riq-host .fos-report-table thead th {
+  background: var(--fos-head-bg, #0F2747) !important;
+  color: var(--fos-head-fg, #fff) !important;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, .2);
+}
 html.riq-host tbody td { border-bottom-color: rgba(20, 24, 40, .06) !important; }
 html.riq-host .stat-row { border-bottom-color: rgba(20, 24, 40, .06) !important; }
 /* modals → glass sheets */

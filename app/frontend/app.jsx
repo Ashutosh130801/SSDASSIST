@@ -12240,7 +12240,7 @@ function FosVisitReportsModal({ defDate, cycle, locations, onClose }) {
 const FOS_STATUS_STYLE = { PRESENT: ['#C6EFCE', '#166534'], 'HALF-DAY': ['#FED7AA', '#9A3412'], ABSENT: ['#FFC7CE', '#B91C1C'],
   LEAVE: ['#BDD7EE', '#1E40AF'], SUNDAY: ['#E2E8F0', '#475569'], 'NOT JOINED': ['#E5E7EB', '#6B7280'] };
 const fosVisitBg = (n) => n >= 12 ? '#86EFAC' : n >= 8 ? '#BBF7D0' : n >= 5 ? '#FEF08A' : n >= 1 ? '#FDE68A' : '#FCA5A5';
-const fosTh = (bg, extra) => ({ background: bg, color: '#fff', padding: '6px 6px', fontSize: 11, fontWeight: 700, textAlign: 'center', border: '1px solid #CBD5E1', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 2, ...(extra || {}) });
+const fosTh = (bg, extra) => ({ '--fos-head-bg': bg, '--fos-head-fg': '#fff', background: bg, color: '#fff', padding: '7px 7px', fontSize: 11.5, fontWeight: 750, letterSpacing: '.02em', lineHeight: 1.2, textAlign: 'center', border: '1px solid #94A3B8', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 2, ...(extra || {}) });
 const fosTd = (extra) => ({ padding: '4px 6px', fontSize: 12, border: '1px solid #E2E8F0', textAlign: 'center', whiteSpace: 'nowrap', ...(extra || {}) });
 
 // Big preview window (like the MIS Pivot viewer): ⛶ full screen, ▁ minimise back to the dialog, ⬇ Excel, ✕ close.
@@ -12300,14 +12300,18 @@ function FosDailyPreview({ d, tableH }) {
       {kpi('Productive (paid)', t.paid, '#B45309')}{kpi('Avg / present FOS', t.present ? (t.visits / t.present).toFixed(1) : 0)}{kpi('Present, zero visits', t.zero, 'var(--bad)')}
     </div>
     <div style={{ overflow: 'auto', maxHeight: tableH || '52vh', border: '1px solid #E2E8F0', borderRadius: 8 }}>
-      <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-        <thead><tr>
-          {['S.NO', 'FOS NAMES', 'USER ID', 'AREA', 'CONTACT', 'REPORTING BRANCH', 'FIRST START'].map(h => <th key={h} style={fosTh('#0F2747')}>{h}</th>)}
-          <th style={fosTh('#16A34A')}>TOTAL VISITS</th><th style={fosTh('#16A34A')}>PRODUCTIVE (PAID)</th>
-          {d.slots.map((h, k) => <th key={h} style={fosTh(k < 2 ? '#B45309' : '#C2410C')}>{(k === 0 ? '☀ ' : k === 2 ? '🌇 ' : '') + h}</th>)}
-          <th style={fosTh('#0EA5E9')}>PRESENT</th>
-          {['REMARKS', 'START TIME', 'END TIME'].map(h => <th key={h} style={fosTh('#0F2747')}>{h}</th>)}
-        </tr></thead>
+      <table className="fos-report-table" style={{ borderCollapse: 'collapse', width: 'max-content', minWidth: '100%' }}>
+        <thead>
+          <tr>
+            {['S.NO', 'FOS NAMES', 'USER ID', 'AREA', 'CONTACT', 'REPORTING BRANCH', 'FIRST START TIME', 'TOTAL VISITS', 'PRODUCTIVE (PAID)',
+              ...d.slots, 'PRESENT', 'REMARKS', 'START TIME', 'END TIME'].map((h, i) => {
+                const bg = i === 7 || i === 8 ? '#15803D' : i >= 9 && i < 13 ? (i < 11 ? '#B45309' : '#C2410C') : i === 13 ? '#0369A1' : '#0F2747';
+                return <th key={h} rowSpan={2} style={fosTh(bg)}>{h}</th>;
+              })}
+            <th colSpan={10} style={fosTh('#0F766E')}>VISIT TIMINGS</th>
+          </tr>
+          <tr>{Array.from({ length: 10 }, (_, i) => <th key={i} style={fosTh('#0F766E', { top: 31, zIndex: 3, minWidth: 64 })}>{i + 1}</th>)}</tr>
+        </thead>
         <tbody>{rows.map((r, i) => {
           const st = FOS_STATUS_STYLE[r.status] || ['', ''];
           return <tr key={r.user_id} style={{ background: i % 2 ? '#F8FAFC' : '#fff' }}>
@@ -12324,13 +12328,14 @@ function FosDailyPreview({ d, tableH }) {
             <td style={fosTd({ background: st[0], color: st[1], fontWeight: 700 })}>{r.status}</td>
             <td style={fosTd({ textAlign: 'left', whiteSpace: 'normal', minWidth: 160 })}>{r.remarks}</td>
             <td style={fosTd()}>{r.start}</td><td style={fosTd()}>{r.end}</td>
+            {Array.from({ length: 10 }, (_, k) => <td key={'visit-' + k} style={fosTd({ minWidth: 64, fontVariantNumeric: 'tabular-nums' })}>{(r.visit_times || [])[k] || ''}</td>)}
           </tr>;
         })}
         <tr style={{ background: '#DCE6FA', fontWeight: 800 }}>
           <td style={fosTd()} /><td style={fosTd({ textAlign: 'left' })}>TOTAL ({t.fos} FOS)</td><td style={fosTd()} colSpan={5} />
           <td style={fosTd()}>{t.visits}</td><td style={fosTd()}>{t.paid}</td>
           {t.slots.map((n, k) => <td key={k} style={fosTd()}>{n}</td>)}
-          <td style={fosTd()}>{t.present} present</td><td style={fosTd()} colSpan={3} />
+          <td style={fosTd()}>{t.present} present</td><td style={fosTd()} colSpan={13} />
         </tr></tbody>
       </table>
     </div>
