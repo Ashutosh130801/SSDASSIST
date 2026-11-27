@@ -12240,7 +12240,7 @@ function FosVisitReportsModal({ defDate, cycle, locations, onClose }) {
 const FOS_STATUS_STYLE = { PRESENT: ['#C6EFCE', '#166534'], 'HALF-DAY': ['#FED7AA', '#9A3412'], ABSENT: ['#FFC7CE', '#B91C1C'],
   LEAVE: ['#BDD7EE', '#1E40AF'], SUNDAY: ['#E2E8F0', '#475569'], 'NOT JOINED': ['#E5E7EB', '#6B7280'] };
 const fosVisitBg = (n) => n >= 12 ? '#86EFAC' : n >= 8 ? '#BBF7D0' : n >= 5 ? '#FEF08A' : n >= 1 ? '#FDE68A' : '#FCA5A5';
-const fosTh = (bg, extra) => ({ '--fos-head-bg': bg, '--fos-head-fg': '#fff', background: bg, color: '#fff', padding: '7px 7px', fontSize: 11.5, fontWeight: 750, letterSpacing: '.02em', lineHeight: 1.2, textAlign: 'center', border: '1px solid #94A3B8', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 2, ...(extra || {}) });
+const fosTh = (bg, extra) => ({ '--fos-head-bg': '#E2E8F0', '--fos-head-fg': '#0F2747', background: '#E2E8F0', color: '#0F2747', padding: '7px 7px', fontSize: 11.5, fontWeight: 800, letterSpacing: '.02em', lineHeight: 1.2, textAlign: 'center', border: '1px solid #94A3B8', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 2, ...(extra || {}) });
 const fosTd = (extra) => ({ padding: '4px 6px', fontSize: 12, border: '1px solid #E2E8F0', textAlign: 'center', whiteSpace: 'nowrap', ...(extra || {}) });
 
 // Big preview window (like the MIS Pivot viewer): ⛶ full screen, ▁ minimise back to the dialog, ⬇ Excel, ✕ close.
