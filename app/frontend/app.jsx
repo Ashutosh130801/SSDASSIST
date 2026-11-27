@@ -640,7 +640,7 @@ const GOLD = '#2563EB', GOLD2 = '#1D4ED8';
 const PALETTE = ['#2563EB', '#0EA5E9', '#16A34A', '#F97316', '#8B5CF6', '#14B8A6', '#EAB308'];
 
 /* Role display labels (internal keys stay admin/manager/fos/telecaller for RBAC) */
-const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', teamlead: 'Team Lead', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office', hr: 'HR', it: 'IT', staff: 'Staff', techsupport: 'Tech Support', it_support_view: 'IT Support View' };
+const ROLE_LABEL = { admin: 'Administrator', manager: 'Collections Manager', teamlead: 'Team Lead', fos: 'Field Agent', telecaller: 'Tele-calling Agent', backend: 'Back-office Official', headoffice: 'Head Office', hr: 'HR', it: 'IT', staff: 'Staff', techsupport: 'Tech Support', it_support_view: 'IT Support View', teamfollower: 'Field TL' };
 const roleName = (r) => ROLE_LABEL[r] || r;
 
 /* ============================== Login ============================== */
@@ -9194,6 +9194,7 @@ function StaffFormModal({ existing, roles, onClose, onDone, isAdmin }) {
   // Tech Support (super-role) and IT Support View (read-only auditor) are admin-only.
   if (isAdmin) { ['techsupport', 'it_support_view'].forEach(r => { if (!ROLE_OPTS.includes(r)) ROLE_OPTS = [...ROLE_OPTS, r]; }); }
   else ROLE_OPTS = ROLE_OPTS.filter(r => r !== 'techsupport' && r !== 'it_support_view');
+  if (!ROLE_OPTS.includes('teamfollower')) ROLE_OPTS = [...ROLE_OPTS, 'teamfollower'];   // Team Follow-up role
   const field = (k, label, type = 'text') => (
     <div className="field" key={k}><label>{label}</label>
       <input className="input" type={type} value={f[k] || ''} onChange={e => set(k, e.target.value)} /></div>
@@ -9269,6 +9270,16 @@ function StaffFormModal({ existing, roles, onClose, onDone, isAdmin }) {
             Also a caller — adds a Tele-calling view they can switch to
             {existing.tc_emp_code ? <> (caller ID: <b>{existing.tc_emp_code}</b>)</> : <> (a caller ID is generated on save)</>}
           </label>)}
+        {['teamlead', 'fos', 'telecaller'].includes(f.role) && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, margin: '6px 0' }}>
+            <input type="checkbox" checked={!!f.also_team_follower} onChange={e => set('also_team_follower', e.target.checked)} />
+            Also a Field TL — adds a Field TL view they can switch to, to track the FOS / callers added under them
+            {editing && existing.tf_emp_code ? <> (Field TL ID: <b>{existing.tf_emp_code}</b>)</> : <> (a Field TL ID is generated on save)</>}
+          </label>)}
+        {f.role === 'teamfollower' && (
+          <div className="muted" style={{ fontSize: 12.5, margin: '6px 0' }}>
+            👁️ Field TL: tracks the complete performance of the FOS / callers you add under them (Manpower → Field TL groups). Their ID starts with <b>FTL</b>.
+          </div>)}
         {err && <div style={{ color: 'var(--bad)', fontSize: 13, margin: '6px 0' }}>{err}</div>}
         <div className="toolbar" style={{ marginTop: 8 }}>
           <button className="btn" onClick={onClose}>Cancel</button><div style={{ flex: 1 }} />
@@ -9287,6 +9298,7 @@ function ManpowerView({ user }) {
   const [addOpen, setAddOpen] = useState(false);
   const [edit, setEdit] = useState(null);
   const [offerFor, setOfferFor] = useState(null);
+  const [follow, setFollow] = useState(null);      // Team follow-up manager (true | follower id)
   const canAdd = ['admin', 'headoffice', 'hr'].includes(user.role);
   useEffect(() => { api('/api/manpower/filters').then(setOpts).catch(() => {}); }, []);
   const load = useCallback(() => {
@@ -9332,21 +9344,23 @@ function ManpowerView({ user }) {
             <div key={v} className={cx('chip', statusF === v && 'on')} onClick={() => setStatusF(v)}
               style={v === 'blocked' && statusF === v ? { background: 'rgba(220,38,38,.12)', color: 'var(--bad)' } : null}>{lbl}</div>)}
           <div style={{ flex: 1 }} />
+          {canAdd && <button className="btn" onClick={() => setFollow(true)} title="Field TLs and the FOS / callers they track">👁️ Field TL groups</button>}
           {canAdd && <button className="btn" onClick={() => setAddOpen(true)}>➕ Add staff</button>}
           <button className="btn gold" onClick={dl}>⬇ Download Excel</button>
         </div>
       </div>
       {addOpen && <StaffFormModal roles={opts.roles} isAdmin={user.role === 'admin'} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); }} />}
+      {follow && <TeamFollowManageModal initialId={follow === true ? null : follow} onClose={() => { setFollow(null); load(); }} />}
       {edit && <StaffFormModal existing={edit} roles={opts.roles} isAdmin={user.role === 'admin'} onClose={() => setEdit(null)} onDone={() => { setEdit(null); setSel(null); load(); }} />}
       {!rows ? <Loader /> : shown.length === 0 ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center' }}>{statusF === 'blocked' ? 'No blocked employees.' : 'No employees match.'}</div> : (
         <div className="glass card" style={{ padding: 6 }}>
           <div className="tablewrap"><table>
             <thead><tr><th>Code</th><th>Name</th><th>Role</th><th>Designation</th><th>Location</th><th>Branch</th><th>Phone</th><th>DOJ</th><th></th></tr></thead>
             <tbody>{shown.map(e => <tr key={e.id} style={{ cursor: 'pointer', ...(e.is_active === false ? { background: 'rgba(220,38,38,.05)' } : {}) }} onClick={() => setSel(e)}>
-              <td className="mono">{e.emp_code || '—'}{e.also_team_lead && e.tl_emp_code ? <span className="muted"> / {e.tl_emp_code}</span> : ''}{e.also_field_agent && e.fos_emp_code ? <span className="muted"> / {e.fos_emp_code}</span> : ''}{e.also_caller && e.tc_emp_code ? <span className="muted"> / {e.tc_emp_code}</span> : ''}</td>
+              <td className="mono">{e.emp_code || '—'}{e.also_team_lead && e.tl_emp_code ? <span className="muted"> / {e.tl_emp_code}</span> : ''}{e.also_field_agent && e.fos_emp_code ? <span className="muted"> / {e.fos_emp_code}</span> : ''}{e.also_caller && e.tc_emp_code ? <span className="muted"> / {e.tc_emp_code}</span> : ''}{e.also_team_follower && e.tf_emp_code ? <span className="muted"> / {e.tf_emp_code}</span> : ''}</td>
               <td><b>{e.name}</b>{e.is_active === false && <span className="badge unpaid" style={{ marginLeft: 6 }} title={e.blocked_reason || 'Blocked'}>⛔ Blocked</span>}
                 <div><PersonPresence id={e.id} /></div></td>
-              <td><span className="badge allocated">{roleName(e.role)}</span>{e.also_team_lead && e.role !== 'teamlead' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ TL</span>}{e.also_field_agent && e.role !== 'fos' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ FOS</span>}{e.also_caller && e.role !== 'telecaller' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ Caller</span>}</td>
+              <td><span className="badge allocated">{roleName(e.role)}</span>{e.also_team_lead && e.role !== 'teamlead' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ TL</span>}{e.also_field_agent && e.role !== 'fos' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ FOS</span>}{e.also_caller && e.role !== 'telecaller' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ Caller</span>}{e.also_team_follower && e.role !== 'teamfollower' && <span className="badge" style={{ marginLeft: 4, background: 'rgba(59,130,246,.12)', color: 'var(--info)' }}>+ Field TL</span>}</td>
               <td className="muted" style={{ fontSize: 12 }}>{e.designation || '—'}</td>
               <td>{e.location || '—'}</td><td className="muted">{e.branch || '—'}</td>
               <td>{e.phone || '—'}</td><td className="muted" style={{ fontSize: 12 }}>{e.joining_date || '—'}</td>
@@ -9358,6 +9372,7 @@ function ManpowerView({ user }) {
         <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
           <div className="section-h"><h3>{sel.name}</h3>
             <div style={{ display: 'flex', gap: 8 }}>
+              {canAdd && (sel.role === 'teamfollower' || sel.also_team_follower) && <button className="btn sm gold" onClick={() => { setFollow(sel.id); setSel(null); }}>👁️ Field TL members</button>}
               {canAdd && <button className="btn sm" onClick={() => setEdit(sel)}>✏ Edit</button>}
               <button className="btn ghost sm" onClick={() => setSel(null)}>✕</button></div></div>
           <EIDCard e={sel} />
@@ -11455,6 +11470,189 @@ function JointCasesView({ config }) {
   );
 }
 
+/* ==================== Team Follow-up (tracking role) ====================
+   A team follower regularly tracks the COMPLETE performance of a chosen group of FOS / callers —
+   irrespective of case or portfolio. HR / admin / HO pick the members (TeamFollowManageModal). */
+const tfMoney = v => '₹' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+const tfTime = s => { if (!s) return '—'; try { return new Date(s).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); } catch (e) { return '—'; } };
+function TeamFollowView({ user, config, followerId }) {
+  const [mb, setMb] = useState('current'); const [d, setD] = useState(null); const [err, setErr] = useState('');
+  const [q, setQ] = useState(''); const [roleF, setRoleF] = useState('all'); const [sort, setSort] = useState('name');
+  const [dash, setDash] = useState(null); const [perf, setPerf] = useState(null); const [route, setRoute] = useState(null); const [live, setLive] = useState(null);
+  const load = () => api('/api/team-follow/me/members?month_bucket=' + mb + (followerId ? '&follower_id=' + followerId : ''))
+    .then(r => { setD(r); setErr(''); }).catch(e => setErr(e.message || 'Could not load'));
+  useEffect(() => { setD(null); load(); }, [mb, followerId]);
+  useDataChanged(load);
+  if (err) return <div className="glass card" style={{ color: 'var(--bad)', padding: 18 }}>{err}</div>;
+  if (!d) return <Loader />;
+  const t = d.totals;
+  let rows = d.members.filter(m => roleF === 'all' || (roleF === 'fos' ? m.fos_hat : m.caller_hat))
+    .filter(m => !q || [m.name, m.all_ids, m.branch, m.location, m.phone].some(x => String(x || '').toLowerCase().includes(q.toLowerCase())));
+  const by = { name: (a, b) => a.name.localeCompare(b.name), recovered: (a, b) => b.money.recovered - a.money.recovered,
+    pct: (a, b) => b.money.recovery_pct - a.money.recovery_pct, today: (a, b) => b.money.collected_today - a.money.collected_today,
+    activity: (a, b) => (b.activity.visits_today + b.activity.calls_today) - (a.activity.visits_today + a.activity.calls_today) };
+  rows = [...rows].sort(by[sort] || by.name);
+  const toCsv = () => {
+    const H = ['Name', 'IDs', 'Role', 'Branch', 'Checked in', 'Assigned', 'Paid', 'PTP open', 'ENR', 'Recovered', 'Recovery %', 'Pending', 'Collected (calls+visits)', 'Collected today', 'Visits today', 'Visits (month)', 'Calls today', 'Calls (month)'];
+    const R = rows.map(m => [m.name, m.all_ids, m.role_label, m.branch || '', tfTime(m.attendance.check_in_at), m.cases.assigned, m.cases.paid, m.cases.ptp_open, m.money.enr, m.money.recovered, m.money.recovery_pct, m.money.pending, m.money.collected_logs, m.money.collected_today, m.activity.visits_today, m.activity.visits_month, m.activity.calls_today, m.activity.calls_month]);
+    const csv = [H, ...R].map(r => r.map(x => '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"').join(',')).join('\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'team_follow_up.csv'; a.click();
+  };
+  const K = ({ l, v, c }) => <div className="glass card kpi" style={{ padding: 12 }}><div className="muted" style={{ fontSize: 12 }}>{l}</div><b style={{ fontSize: 19, color: c || 'inherit' }}>{v}</b></div>;
+  return (
+    <div>
+      <div className="section-h" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <div><h3 style={{ margin: 0 }}>👁️ Field TL</h3>
+          <div className="muted" style={{ fontSize: 12 }}>{d.follower.name}{d.follower.tf_emp_code ? ' · ' + d.follower.tf_emp_code : ''} — complete performance of your FOS / callers, across every bank &amp; portfolio</div></div>
+        <div className="toolbar" style={{ gap: 6, flexWrap: 'wrap' }}>
+          {[['current', 'This month'], ['next', 'Next'], ['last', 'Last'], ['all', 'All']].map(([v, l]) =>
+            <button key={v} className={cx('btn sm', mb === v && 'gold')} onClick={() => setMb(v)}>{l}</button>)}
+          <button className="btn sm" onClick={toCsv}>⬇ CSV</button>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))', gap: 10 }}>
+        <K l="Team members" v={t.members} />
+        <K l="Checked in today" v={`${t.present} / ${t.members}`} c="var(--good)" />
+        <K l="Cases" v={t.assigned} />
+        <K l="Paid" v={t.paid} c="var(--good)" />
+        <K l="PTP open" v={t.ptp_open} c="var(--warn)" />
+        <K l="Recovered" v={tfMoney(t.recovered)} c="var(--good)" />
+        <K l="Recovery %" v={t.recovery_pct + '%'} />
+        <K l="Pending" v={tfMoney(t.pending)} c="var(--warn)" />
+        <K l="Collected today" v={tfMoney(t.collected_today)} c="var(--good)" />
+        <K l="Visits today" v={t.visits_today} />
+        <K l="Calls today" v={t.calls_today} />
+      </div>
+      <div className="toolbar" style={{ marginTop: 12, flexWrap: 'wrap', gap: 6 }}>
+        <input className="input" style={{ maxWidth: 240 }} placeholder="Search name / ID / branch" value={q} onChange={e => setQ(e.target.value)} />
+        {[['all', 'All'], ['fos', 'Field agents'], ['caller', 'Callers']].map(([v, l]) => <div key={v} className={cx('chip', roleF === v && 'on')} onClick={() => setRoleF(v)}>{l}</div>)}
+        <div style={{ flex: 1 }} />
+        <select className="input" style={{ maxWidth: 200 }} value={sort} onChange={e => setSort(e.target.value)}>
+          <option value="name">Sort: Name</option><option value="recovered">Sort: Recovered ₹</option><option value="pct">Sort: Recovery %</option>
+          <option value="today">Sort: Collected today</option><option value="activity">Sort: Activity today</option></select>
+      </div>
+      {!d.members.length ? <div className="glass card muted" style={{ padding: 24, textAlign: 'center', marginTop: 12 }}>No one has been added under you yet. HR / Head Office can add FOS or callers from Manpower → Field TL groups.</div> :
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', gap: 12, marginTop: 12 }}>
+          {rows.map(m => (
+            <div key={m.id} className="glass card" style={{ padding: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                <div>
+                  <b style={{ color: 'var(--gold)', cursor: 'pointer' }} onClick={() => setDash(m)} title="Open full profile">{m.name}</b>
+                  {m.all_ids && <span className="badge allocated" style={{ marginLeft: 6, fontSize: 10.5 }}>{m.all_ids}</span>}
+                  <div className="muted" style={{ fontSize: 12 }}>{m.role_label}{m.also_field_agent && m.role !== 'fos' ? ' + Field Agent' : ''}{m.also_caller && m.role !== 'telecaller' ? ' + Caller' : ''}{m.branch ? ' · ' + m.branch : ''}</div>
+                  <PersonPresence id={m.id} style={{ marginTop: 3, display: 'inline-block' }} />
+                </div>
+                <span className="badge allocated" title="Recovery %">{Number(m.money.recovery_pct || 0).toFixed(0)}%</span>
+              </div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                {m.attendance.check_in_at ? <>In <b style={{ color: 'var(--ink)' }}>{tfTime(m.attendance.check_in_at)}</b>{m.attendance.late && <span style={{ color: 'var(--bad)' }}> · late</span>}{m.attendance.check_out_at ? <> · Out {tfTime(m.attendance.check_out_at)}</> : ''}</> : <span style={{ color: 'var(--warn)' }}>Not checked in today</span>}
+                {m.fos_hat && m.activity.last_ping && <> · last GPS {tfTime(m.activity.last_ping)}</>}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, marginTop: 8, fontSize: 12 }}>
+                <div><div className="muted">Cases</div><b>{m.cases.assigned}</b></div>
+                <div><div className="muted">Paid</div><b style={{ color: 'var(--good)' }}>{m.cases.paid}</b></div>
+                <div><div className="muted">PTP open</div><b style={{ color: 'var(--warn)' }}>{m.cases.ptp_open}</b></div>
+                <div><div className="muted">Recovered</div><b style={{ color: 'var(--good)' }}>{tfMoney(m.money.recovered)}</b></div>
+                <div><div className="muted">Pending</div><b>{tfMoney(m.money.pending)}</b></div>
+                <div><div className="muted">Today ₹</div><b style={{ color: 'var(--good)' }}>{tfMoney(m.money.collected_today)}</b></div>
+                {m.fos_hat && <div><div className="muted">Visits today</div><b>{m.activity.visits_today}</b></div>}
+                {m.fos_hat && <div><div className="muted">Visits (mo)</div><b>{m.activity.visits_month}</b></div>}
+                {m.caller_hat && <div><div className="muted">Calls today</div><b>{m.activity.calls_today}</b></div>}
+                {m.caller_hat && <div><div className="muted">Calls (mo)</div><b>{m.activity.calls_month}</b></div>}
+              </div>
+              {m.cases.banks.length > 0 && <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>Portfolios: {m.cases.banks.join(', ')}</div>}
+              <div className="toolbar" style={{ margin: '10px 0 0', flexWrap: 'wrap', gap: 6 }}>
+                {m.phone && <a className="btn sm gold" href={'tel:' + m.phone}>📞 Call</a>}
+                <button className="btn sm" onClick={() => setDash(m)}>Full profile</button>
+                <button className="btn sm" onClick={() => setPerf(m)}>📈 Performance</button>
+                {m.fos_hat && <button className="btn sm" onClick={() => setLive(m)}>📍 Live route</button>}
+                {m.fos_hat && <button className="btn sm" onClick={() => setRoute(m)}>🕘 Route history</button>}
+              </div>
+            </div>))}
+        </div>}
+      {dash && <EmployeeDashboard u={dash} config={config} onClose={() => setDash(null)} />}
+      {perf && <PerformanceModal u={perf} onClose={() => setPerf(null)} />}
+      {route && <RouteHistoryModal officer={route} config={config} onClose={() => setRoute(null)} />}
+      {live && <LiveRouteModal officer={live} config={config} onClose={() => setLive(null)} />}
+    </div>
+  );
+}
+
+/* HR / admin / HO: pick a team follower and add / remove the FOS & callers they track. */
+function TeamFollowManageModal({ onClose, initialId, config }) {
+  const [list, setList] = useState(null); const [sel, setSel] = useState(initialId || null);
+  const [cand, setCand] = useState(null); const [q, setQ] = useState(''); const [pick, setPick] = useState({}); const [busy, setBusy] = useState(false);
+  const [fq, setFq] = useState(''); const [preview, setPreview] = useState(false);
+  const load = () => api('/api/team-follow/followers').then(r => { setList(r); if (!sel && r.length) setSel(r[0].id); }).catch(e => { toast(e.message, 'err'); setList([]); });
+  useEffect(() => { load(); api('/api/team-follow/candidates').then(setCand).catch(() => setCand([])); }, []);
+  const cur = (list || []).find(f => f.id === sel);
+  const memberIds = new Set((cur ? cur.members : []).map(m => m.id));
+  const add = async () => {
+    const ids = Object.keys(pick).filter(k => pick[k]).map(Number);
+    if (!ids.length) { toast('Pick at least one FOS or caller', 'err'); return; }
+    setBusy(true);
+    try { await api(`/api/team-follow/${sel}/members`, { method: 'POST', body: { member_ids: ids } }); setPick({}); toast(`Added ${ids.length}`); await load(); }
+    catch (e) { toast(e.message, 'err'); } finally { setBusy(false); }
+  };
+  const remove = async (m) => {
+    if (!window.confirm(`Remove ${m.name} from ${cur.name}'s Field TL group?`)) return;
+    try { await api(`/api/team-follow/${sel}/members/${m.id}`, { method: 'DELETE' }); toast(m.name + ' removed'); load(); } catch (e) { toast(e.message, 'err'); }
+  };
+  const candRows = (cand || []).filter(u => u.id !== sel && !memberIds.has(u.id))
+    .filter(u => !q || [u.name, u.all_ids, u.branch, u.location].some(x => String(x || '').toLowerCase().includes(q.toLowerCase())));
+  const fRows = (list || []).filter(f => !fq || [f.name, f.tf_emp_code, f.all_ids].some(x => String(x || '').toLowerCase().includes(fq.toLowerCase())));
+  return (
+    <div className="modal-bg" onClick={onClose} style={{ zIndex: 1000 }}>
+      <div className="modal glass" onClick={e => e.stopPropagation()} style={{ maxWidth: 1040, width: '96%' }}>
+        <div className="section-h"><div><h3 style={{ margin: 0 }}>👁️ Field TL groups</h3>
+          <div className="muted" style={{ fontSize: 12 }}>Choose a Field TL, then add the FOS / callers whose complete performance they should track. To create a Field TL, add or edit staff with the <b>Field TL</b> role or tick <b>Also a Field TL</b>.</div></div>
+          <button className="btn ghost sm" onClick={onClose}>✕</button></div>
+        {!list ? <Loader /> : !list.length ? <div className="muted" style={{ padding: 20, textAlign: 'center' }}>No Field TLs yet. Use <b>+ Add staff</b> with role “Field TL”, or edit a team lead / FOS / caller and tick “Also a Field TL”.</div> :
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px,280px) 1fr', gap: 12 }}>
+            <div className="glass card" style={{ padding: 8, maxHeight: 520, overflow: 'auto' }}>
+              <input className="input" placeholder="Search Field TLs" value={fq} onChange={e => setFq(e.target.value)} style={{ marginBottom: 6 }} />
+              {fRows.map(f => (
+                <div key={f.id} onClick={() => { setSel(f.id); setPreview(false); }} className={cx('chip', sel === f.id && 'on')}
+                  style={{ display: 'block', margin: '4px 0', padding: '8px 10px', cursor: 'pointer', borderRadius: 10 }}>
+                  <b>{f.name}</b> <span className="muted" style={{ fontSize: 11 }}>{f.tf_emp_code || ''}</span>
+                  <div className="muted" style={{ fontSize: 11 }}>{f.primary_follower ? 'Field TL' : f.role_label + ' + Field TL'} · {f.member_count} members</div>
+                </div>))}
+            </div>
+            {cur && <div>
+              <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6 }}>
+                <b>{cur.name}</b><span className="badge allocated">{cur.tf_emp_code || '—'}</span>
+                <span className="muted" style={{ fontSize: 12 }}>{cur.member_count} members</span>
+                <div style={{ flex: 1 }} />
+                <button className={cx('btn sm', preview && 'gold')} onClick={() => setPreview(p => !p)}>{preview ? 'Back to members' : '👁 Preview their board'}</button>
+              </div>
+              {preview ? <div style={{ marginTop: 10 }}><TeamFollowView followerId={cur.id} config={config} /></div> : <>
+                <div className="glass card" style={{ padding: 8, marginTop: 8 }}>
+                  <b style={{ fontSize: 13 }}>Members</b>
+                  {!cur.members.length ? <div className="muted" style={{ padding: 10, fontSize: 13 }}>No one yet — add FOS / callers below.</div> :
+                    <div className="tablewrap" style={{ maxHeight: 200, overflow: 'auto' }}><table><thead><tr><th>Name</th><th>ID</th><th>Role</th><th>Branch</th><th></th></tr></thead>
+                      <tbody>{cur.members.map(m => <tr key={m.id}><td>{m.name}</td><td className="mono">{m.all_ids}</td><td>{m.role_label}</td><td>{m.branch || '—'}</td>
+                        <td><button className="btn ghost sm" style={{ color: 'var(--bad)' }} onClick={() => remove(m)}>Remove</button></td></tr>)}</tbody></table></div>}
+                </div>
+                <div className="glass card" style={{ padding: 8, marginTop: 10 }}>
+                  <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6 }}>
+                    <b style={{ fontSize: 13 }}>Add FOS / callers</b>
+                    <input className="input" style={{ maxWidth: 260 }} placeholder="Search name / ID / branch" value={q} onChange={e => setQ(e.target.value)} />
+                    <div style={{ flex: 1 }} />
+                    <button className="btn sm" onClick={() => { const n = {}; candRows.forEach(u => { n[u.id] = true; }); setPick(n); }}>Select shown</button>
+                    <button className="btn sm gold" disabled={busy} onClick={add}>{busy ? 'Adding…' : `Add selected (${Object.values(pick).filter(Boolean).length})`}</button>
+                  </div>
+                  {!cand ? <Loader /> : <div className="tablewrap" style={{ maxHeight: 260, overflow: 'auto' }}><table><thead><tr><th></th><th>Name</th><th>ID</th><th>Role</th><th>Branch</th></tr></thead>
+                    <tbody>{candRows.slice(0, 300).map(u => <tr key={u.id} style={{ cursor: 'pointer' }} onClick={() => setPick(p => ({ ...p, [u.id]: !p[u.id] }))}>
+                      <td><input type="checkbox" readOnly checked={!!pick[u.id]} /></td><td>{u.name}</td><td className="mono">{u.all_ids}</td>
+                      <td>{u.role_label}{u.also_field_agent && u.role !== 'fos' ? ' + FOS' : ''}{u.also_caller && u.role !== 'telecaller' ? ' + Caller' : ''}</td><td>{u.branch || '—'}</td></tr>)}</tbody></table></div>}
+                </div></>}
+            </div>}
+          </div>}
+      </div>
+    </div>
+  );
+}
+
 const NAV = {
   admin: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['sheet', '📊', 'Live Sheet'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['archive', '🗄️', 'Monthly Archive'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['connections', '🔌', 'Connections'], ['payroll', '💰', 'Salary & Payslips'], ['security', '🔒', 'Security']],
   manager: [['dashboard', '📊', 'Dashboard'], ['cases', '🗂️', 'Accounts'], ['ptp', '🤝', 'PTP Tracker'], ['escalations', '🚩', 'Escalations'], ['legal', '⚖️', 'Litigation'], ['map', '📍', 'Field Tracking'], ['records', '🗃️', 'Activity'], ['audit', '📜', 'Audit Log'], ['staff', '👥', 'Team'], ['manpower', '🧑‍💼', 'Manpower'], ['mis', '📈', 'MIS'], ['feedback', '🏦', 'Bank Feedback'], ['leave', '🌴', 'Leave'], ['templates', '💬', 'Communication'], ['devices', '📱', 'Devices'], ['ai', '✨', 'AI Assist'], ['security', '🔒', 'Security']],
@@ -11466,6 +11664,8 @@ const NAV = {
   hr: [['manpower', '🧑‍💼', 'Manpower'], ['preqs', '📝', 'Change Requests'], ['leave', '🌴', 'Leave'], ['payroll', '💰', 'Salary & Payslips'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
   it: [['attendance', '🕐', 'Attendance'], ['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
   staff: [['attendance', '🕐', 'Attendance'], ['profile', '🪪', 'My E-ID'], ['leave', '🌴', 'Leave'], ['security', '🔒', 'Security']],
+  // Team Follow-up: tracks a chosen group of FOS / callers (complete performance, read-only).
+  teamfollower: [['followdash', '👁️', 'Field TL'], ['attendance', '🕐', 'Attendance'], ['leave', '🌴', 'Leave'], ['profile', '🪪', 'My E-ID'], ['security', '🔒', 'Security']],
 };
 // Everyone gets a Help & Support entry (raise a query, track it).
 // Everyone gets their own payslips (hidden while the salary section is locked).
@@ -11561,6 +11761,7 @@ const TOUR_VERSION = 1;
 const TOUR_DESC = {
   dashboard: 'Your home base — headline numbers at a glance: total cases, recovery %, cash collected, pending, and your resolution %.',
   tldash: 'My Team — your team’s overview, members and their performance, all scoped to you.',
+  followdash: 'Field TL — the complete performance of your FOS / callers: collections, cases, visits, calls, attendance and live route, across every portfolio.',
   portfolios: 'My Portfolios — the portfolios you work on. Upload your team’s cases and view peer team leads on the same portfolio (read-only).',
   myperf: 'My Performance — how much you’ve achieved (FTD / MTD / LMTD / Overall), broken down per portfolio, with a live leaderboard.',
   cases: 'Portfolios & Accounts — browse every portfolio; open any case for full details, payments and history.',
@@ -13499,6 +13700,7 @@ function Shell({ user, config, onLogout, installEvt, onInstall, canSwitchView, o
       case 'map': return <LiveMap config={config} />;
       case 'staff': return <StaffView config={config} user={user} />;
       case 'tldash': return <TeamLeadView config={config} user={user} />;
+      case 'followdash': return <TeamFollowView config={config} user={user} />;
       case 'portfolios': return <TLPortfoliosView user={user} />;
       case 'records': return <RecordsView user={user} />;
       case 'audit': return <AuditLogView user={user} />;
@@ -13654,6 +13856,7 @@ const VIEW_META = {
   teamlead: ['👥', 'Team Leader', 'Your team’s cases, MIS & DPR'],
   fos: ['🗺️', 'Field Agent', 'Your field visits & route'],
   telecaller: ['📞', 'Tele-calling', 'Your calling queue'],
+  teamfollower: ['👁️', 'Field TL', 'Track the FOS / callers under you'],
   manager: ['🏢', 'Manager', 'Branch overview'],
   headoffice: ['🏛️', 'Head Office', 'All portfolios'],
   admin: ['🛡️', 'Administrator', 'Full access'],

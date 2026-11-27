@@ -317,6 +317,9 @@ def _scope_user_ids(db, user: models.User):
         return list(ids)
     if user.role == "manager":
         return [uid for (uid,) in db.query(models.User.id).filter(models.User.branch == user.branch).all()]
+    if user.role == "teamfollower":
+        from ..follow_scope import member_ids
+        return list(member_ids(db, user.id))
     return []
 
 
@@ -449,6 +452,14 @@ def _scope(q, user: models.User, include_removed: bool = False, bucket: str | No
     if user.role == "teamlead":
         # Case-level ownership: the case's team_lead (from the upload) names this lead.
         return q.filter(teamlead_case_filter(user))
+    if user.role == "teamfollower":
+        # Team Follow-up: every case handled by the people they follow (any bank / portfolio),
+        # as primary FOS, caller or joint FOS. Read-only (writes are blocked in deps).
+        from sqlalchemy import select
+        mids = select(models.TeamFollow.member_id).where(models.TeamFollow.follower_id == user.id)
+        return q.filter(or_(models.Case.assigned_fos_id.in_(mids),
+                            models.Case.assigned_caller_id.in_(mids),
+                            models.Case.joint_fos_id.in_(mids)))
     if user.role == "manager":
         ids = _branch_user_ids(user)
         # A case belongs to a branch if it's tagged with that branch OR handled by its staff.
@@ -1143,7 +1154,8 @@ def _case_for_read(db, user, case_id: int, log: bool = False):
     from .. import tl_scope
     case = _scope(db.query(models.Case), user).filter(models.Case.id == case_id).first()
     if case:
-        return case, False
+        # A team follower only TRACKS their members' cases — always read-only.
+        return case, user.role == "teamfollower"
     if tl_scope.is_lead(user):
         c = db.query(models.Case).filter(models.Case.id == case_id, models.Case.removed.isnot(True)).first()
         if c and tl_scope.peer_can_read(db, user, c):

@@ -12,7 +12,7 @@ _HRMS_FIELDS = ("employment_type", "joining_date", "address", "emergency_contact
 _ROLE_PREFIX = {"telecaller": "TC", "fos": "FO", "manager": "MG", "backend": "BO",
                 "admin": "AD", "headoffice": "HO", "teamlead": "TL",
                 "hr": "HR", "it": "IT", "staff": "ST", "techsupport": "TS",
-                "it_support_view": "IV"}
+                "it_support_view": "IV", "teamfollower": "FTL"}
 
 
 def _team_lead_name(db: Session, tl_id):
@@ -31,7 +31,8 @@ def generate_emp_code(db: Session, role: str) -> str:
     # Dual-role staff store their SECOND id in tl_emp_code / fos_emp_code / tc_emp_code — count
     # those too so each new grant gets a UNIQUE code (otherwise every dual-role user of the same
     # kind would collide on one code).
-    for _col in (models.User.tl_emp_code, models.User.fos_emp_code, models.User.tc_emp_code):
+    for _col in (models.User.tl_emp_code, models.User.fos_emp_code, models.User.tc_emp_code,
+                 models.User.tf_emp_code):
         existing += [c for (c,) in db.query(_col).filter(_col.like(prefix + "%")).all() if c]
     n = 0
     for code in existing:

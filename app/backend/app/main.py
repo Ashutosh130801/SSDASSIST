@@ -18,7 +18,7 @@ from .routers import (auth, users, cases, imports, visits, calls, tracking, anal
                       team, mis, feedback, reminders, audit_log, archive, catalog, manpower,
                       notifications, dpr, support, attendance, collab, integrations, payouts, payroll_extra, payroll, services_api,
                       compliance, paylinks, outreach, settlements, smart, notices, insights, billing, skiptrace, open_api,
-                      fos_reports)
+                      fos_reports, team_follow)
 
 settings = get_settings()
 
@@ -128,6 +128,8 @@ def _ensure_columns():
             "fos_emp_code": "VARCHAR(20)",
             "also_caller": "BOOLEAN",
             "tc_emp_code": "VARCHAR(20)",
+            "also_team_follower": "BOOLEAN",
+            "tf_emp_code": "VARCHAR(20)",
             "profile_completed": "BOOLEAN",
             "must_change_password": "BOOLEAN",
             "emergency_contact": "VARCHAR(60)",
@@ -439,7 +441,7 @@ def _backfill_dual_role_flag():
             conn.execute(text("UPDATE users SET also_team_lead = 0 WHERE also_team_lead IS NULL"))
         except Exception:
             pass
-        for col in ("also_field_agent", "also_caller"):
+        for col in ("also_field_agent", "also_caller", "also_team_follower"):
             try:
                 conn.execute(text(f"UPDATE users SET {col} = 0 WHERE {col} IS NULL"))
             except Exception:
@@ -727,7 +729,7 @@ for r in (auth, users, cases, imports, visits, calls, tracking, analytics, ai, d
           reminders, audit_log, archive, catalog, manpower, notifications, dpr, support,
           attendance, collab, integrations, payouts, payroll_extra, payroll, services_api,
           compliance, paylinks, outreach, settlements, smart, notices, insights, billing, skiptrace, open_api,
-          fos_reports):
+          fos_reports, team_follow):
     app.include_router(r.router)
 app.include_router(paylinks.public)          # /pay/<token> customer page (gated by the Payments add-on)
 app.include_router(open_api.admin_router)    # /api/apikeys

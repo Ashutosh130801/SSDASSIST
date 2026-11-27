@@ -57,6 +57,7 @@ The runtime is a **patched copy generated on the fly** by `backend/app/classic_h
   - Manpower, My E-ID, Bank Feedback, Litigation, Communication, Monthly Archive, My Portfolios (team lead), Security, Help & Support / Support Inbox
   - Field Tracking (v2): FOS roster, multi-officer route export, flagged visits, geocoding, day-visit Excel
   - Every case opens the full case screen; complex classic forms open inside the new UI, themed, through `__riqClassic.openPanel('component' | 'inline' | 'tools', …)` (registry in `classic_host.py`, checked at startup). Popups close on Escape and when you change screen.
+- **Field TL** (role key `teamfollower`, IDs `FTL…`): HR / admin / HO create one in Manpower (role “Field TL”, or tick “Also a Field TL” on a team lead / FOS / caller, which issues a second FTL id and a view switch) and pick their FOS / callers under **Manpower → Field TL groups**. The Field TL page shows each member’s complete performance across every portfolio — cases, collections, visits, calls, attendance, live route and history — read-only.
 - Still drawn by the classic runtime inside the new frame (fully re-skinned): AI Assist, Add-ons, Services, Connections, Salary & Payslips (kept locked), and the FOS map in v3/v4 (field-tracking redesign is v2-only).
 - (superseded) Modules not yet rebuilt (Manpower, Payroll, Litigation, Bank Feedback, Connections, AI Assist, etc.) run the classic screen under a full per-template skin (`classic-skin.css`): tiles, chips, badges, tables, modals and entrance motion follow the template.
 

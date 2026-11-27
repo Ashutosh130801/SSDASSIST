@@ -9,15 +9,14 @@ import {
   LayoutDashboard, FolderKanban, Table2, Handshake, Flag, Scale, MapPinned, History, ScrollText, Archive,
   Users, UserCog, FileEdit, LineChart, Landmark, Palmtree, MessageSquare, Smartphone, Sparkles, Lock,
   Trophy, Phone, Clock, IdCard, Wallet, LifeBuoy, Plug, Receipt, Briefcase, ListTodo, Target, MonitorDot,
-  Puzzle, Settings2, Headset, Users2, Circle,
-} from 'lucide-react';
+  Puzzle, Settings2, Headset, Users2, Circle, Eye } from 'lucide-react';
 
 export const ICONS = {
   dashboard: LayoutDashboard, cases: FolderKanban, fcases: FolderKanban, sheet: Table2, ptp: Handshake,
   escalations: Flag, legal: Scale, map: MapPinned, fmap: MapPinned, records: History, audit: ScrollText,
   archive: Archive, staff: Users, manpower: UserCog, preqs: FileEdit, mis: LineChart, feedback: Landmark,
   leave: Palmtree, templates: MessageSquare, devices: Smartphone, ai: Sparkles, security: Lock,
-  myperf: Trophy, jointcases: Users2, queue: Phone, tldash: Users, portfolios: Briefcase, profile: IdCard,
+  myperf: Trophy, jointcases: Users2, queue: Phone, tldash: Users, followdash: Eye, portfolios: Briefcase, profile: IdCard,
   payroll: Wallet, payouts: Wallet, payslips: Receipt, connections: Plug, help: LifeBuoy, support: Headset,
   attendance: Clock, todo: ListTodo, rtsb: Target, monitor: MonitorDot, addons: Puzzle, services: Settings2,
 };
@@ -39,6 +38,7 @@ const FALLBACK = {
   hr: 'manpower preqs leave payroll profile security',
   it: 'attendance profile leave security',
   staff: 'attendance profile leave security',
+  teamfollower: 'followdash attendance leave profile security',
 };
 const FALLBACK_LABEL = {
   dashboard: 'Dashboard', cases: 'Accounts', fcases: 'My Accounts', sheet: 'Live Sheet', ptp: 'PTP Tracker',
@@ -46,11 +46,11 @@ const FALLBACK_LABEL = {
   audit: 'Audit Log', archive: 'Monthly Archive', staff: 'Team', manpower: 'Manpower', preqs: 'Change Requests',
   mis: 'MIS', feedback: 'Bank Feedback', leave: 'Leave', templates: 'Communication', devices: 'Devices',
   ai: 'AI Assist', security: 'Security', myperf: 'My Performance', jointcases: 'Joint Cases', queue: 'Calling',
-  tldash: 'My Team', portfolios: 'My Portfolios', payroll: 'Salary & Payslips', connections: 'Connections',
+  tldash: 'My Team', followdash: 'Field TL', portfolios: 'My Portfolios', payroll: 'Salary & Payslips', connections: 'Connections',
   ...LABELS,
 };
 
-export const NATIVE_MODULES = ['fcases', 'jointcases', 'queue', 'myperf', 'todo', 'escalations', 'tldash', 'leave', 'preqs', 'devices', 'audit', 'records', 'rtsb', 'monitor', 'staff', 'mis', 'sheet',
+export const NATIVE_MODULES = ['fcases', 'jointcases', 'queue', 'myperf', 'todo', 'escalations', 'tldash', 'followdash', 'leave', 'preqs', 'devices', 'audit', 'records', 'rtsb', 'monitor', 'staff', 'mis', 'sheet',
   'dashboard', 'cases', 'ptp', 'attendance', 'manpower', 'profile', 'feedback', 'legal', 'templates', 'archive', 'portfolios', 'security', 'help', 'support'];
 
 const MGMT = ['admin', 'manager', 'headoffice', 'backend', 'it_support_view', 'techsupport'];
@@ -69,7 +69,7 @@ export function nativeFor(user) {
 }
 
 const SECTIONS = [
-  ['Overview', ['dashboard', 'tldash', 'myperf', 'support']],
+  ['Overview', ['dashboard', 'tldash', 'followdash', 'myperf', 'support']],
   ['Collections', ['cases', 'fcases', 'portfolios', 'queue', 'sheet', 'ptp', 'jointcases', 'escalations', 'legal', 'feedback']],
   ['Field & people', ['map', 'fmap', 'attendance', 'staff', 'manpower', 'leave', 'preqs', 'payroll', 'payouts', 'payslips', 'profile']],
   ['Insights', ['mis', 'records', 'audit', 'archive']],

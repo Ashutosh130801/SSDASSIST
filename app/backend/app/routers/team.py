@@ -86,6 +86,11 @@ def _guard_view(actor: models.User, u: models.User, db: Session = None):
         if db is None or u.id not in _teamlead_member_ids(db, actor):
             raise HTTPException(status_code=403, detail="Not one of your team members")
         return
+    if actor.role == "teamfollower":                 # Team Follow-up: only their assigned members
+        from ..follow_scope import follows
+        if db is None or not follows(db, actor, u.id):
+            raise HTTPException(status_code=403, detail="Not one of your Field TL members")
+        return
     raise HTTPException(status_code=403, detail="Not allowed")
 
 

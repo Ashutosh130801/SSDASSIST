@@ -104,6 +104,7 @@ def _emp(u: models.User) -> dict:
         "also_team_lead": bool(u.also_team_lead), "tl_emp_code": u.tl_emp_code,
         "also_field_agent": bool(getattr(u, "also_field_agent", False)), "fos_emp_code": getattr(u, "fos_emp_code", None),
         "also_caller": bool(getattr(u, "also_caller", False)), "tc_emp_code": getattr(u, "tc_emp_code", None),
+        "also_team_follower": bool(getattr(u, "also_team_follower", False)), "tf_emp_code": getattr(u, "tf_emp_code", None),
         "ho_manager": bool(getattr(u, "ho_manager", False)),
         "all_roles": _all_roles(u), "all_ids": _all_ids(u),
     }
@@ -112,7 +113,8 @@ def _emp(u: models.User) -> dict:
 _ROLE_LABELS = {"telecaller": "Tele-calling Agent", "fos": "Field Agent", "teamlead": "Team Lead",
                 "manager": "Collections Manager", "admin": "Administrator", "headoffice": "Head Office",
                 "backend": "Back-office Official", "hr": "HR", "it": "IT", "staff": "Staff",
-                "techsupport": "Tech Support", "it_support_view": "IT Support View"}
+                "techsupport": "Tech Support", "it_support_view": "IT Support View",
+                "teamfollower": "Field TL"}
 
 
 def _all_roles(u) -> str:
@@ -129,6 +131,8 @@ def _all_roles(u) -> str:
         extras.append("Field Agent")
     if getattr(u, "also_caller", False) and u.role != "telecaller":
         extras.append("Tele-calling Agent")
+    if getattr(u, "also_team_follower", False) and u.role != "teamfollower":
+        extras.append("Field TL")
     return label + (" + " + " + ".join(extras) if extras else "")
 
 
@@ -141,6 +145,8 @@ def _all_ids(u) -> str:
         ids.append(u.fos_emp_code)
     if getattr(u, "also_caller", False) and getattr(u, "tc_emp_code", None):
         ids.append(u.tc_emp_code)
+    if getattr(u, "also_team_follower", False) and getattr(u, "tf_emp_code", None):
+        ids.append(u.tf_emp_code)
     return " / ".join(ids)
 
 
@@ -173,6 +179,10 @@ def list_manpower(role: str | None = None, location: str | None = None, q: str |
         # team-leads directory, so their team is reachable too.
         from sqlalchemy import or_ as _or
         query = query.filter(_or(models.User.role == "teamlead", models.User.also_team_lead.is_(True)))
+    elif role == "teamfollower":
+        # Primary team followers plus anyone holding the extra team-follower hat.
+        from sqlalchemy import or_ as _or
+        query = query.filter(_or(models.User.role == "teamfollower", models.User.also_team_follower.is_(True)))
     elif role:
         query = query.filter(models.User.role == role)
     if location:
@@ -183,7 +193,7 @@ def list_manpower(role: str | None = None, location: str | None = None, q: str |
         s = q.lower().strip()
         def _hit(e):
             return any(s in (str(e.get(k) or "")).lower() for k in
-                       ("name", "emp_code", "tl_emp_code", "fos_emp_code", "tc_emp_code",
+                       ("name", "emp_code", "tl_emp_code", "fos_emp_code", "tc_emp_code", "tf_emp_code",
                         "email", "phone", "designation", "location", "branch", "hr_ref", "role"))
         out = [e for e in out if _hit(e)]
     return out
@@ -203,7 +213,8 @@ def download(role: str | None = None, location: str | None = None,
 
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Manpower"
     cols = [("emp_code", "Emp Code"), ("tl_emp_code", "Team Lead ID"),
-            ("fos_emp_code", "Field Agent ID"), ("tc_emp_code", "Caller ID"), ("all_roles", "Roles"),
+            ("fos_emp_code", "Field Agent ID"), ("tc_emp_code", "Caller ID"),
+            ("tf_emp_code", "Field TL ID"), ("all_roles", "Roles"),
             ("hr_ref", "HR Ref"), ("name", "Name"),
             ("role", "Primary Role"), ("designation", "Designation"), ("location", "Location"),
             ("branch", "Branch"), ("phone", "Phone"), ("email", "Email"), ("gender", "Gender"),
@@ -280,6 +291,12 @@ def add_employee(body: dict = Body(...), db: Session = Depends(get_db),
                 setattr(u, dk, _dt.strptime(str(dv)[:10], "%Y-%m-%d").date())
             except ValueError:
                 pass
+    # Extra Field TL (team follow-up) hat chosen on the add form → issue the FTL id right away.
+    if body.get("also_team_follower") and role != "teamfollower":
+        u.also_team_follower = True
+        db.add(u)
+        db.flush()
+        u.tf_emp_code = generate_emp_code(db, "teamfollower")
     db.add(u)
     db.flush()
     audit.record(db, user, "staff_create", None, entity_type="staff", target_user_id=u.id,
@@ -654,6 +671,13 @@ def edit_employee(emp_id: int, body: dict = Body(...), db: Session = Depends(get
         if grant and u.role != "telecaller" and not u.tc_emp_code:
             from .users import generate_emp_code
             u.tc_emp_code = generate_emp_code(db, "telecaller")
+    # Field TL (team follow-up) hat on a team lead / FOS / caller (or anyone): issues a FTL id once.
+    if "also_team_follower" in body:
+        grant = bool(body["also_team_follower"])
+        u.also_team_follower = grant
+        if grant and u.role != "teamfollower" and not u.tf_emp_code:
+            from .users import generate_emp_code
+            u.tf_emp_code = generate_emp_code(db, "teamfollower")
     if "is_active" in body:
         active = bool(body["is_active"])
         if active and not u.is_active:            # unblocking → clear the block record

@@ -844,7 +844,9 @@ def performance(emp_id: int, role: str | None = None, month_bucket: str | None =
     A team lead sees only their own members, scored on their own cases (plus the split by lead);
     with peer_lead= they see another lead's member read-only, scored on that lead's shared cases."""
     if actor.id != emp_id and actor.role not in ("admin", "manager", "headoffice", "teamlead", "hr", "backend"):
-        raise HTTPException(status_code=403, detail="Not allowed")
+        from ..follow_scope import follows
+        if not follows(db, actor, emp_id):             # a team follower → only people they follow
+            raise HTTPException(status_code=403, detail="Not allowed")
     target = db.query(models.User).filter(models.User.id == emp_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -881,7 +883,9 @@ def employee_trends(user_id: int, db: Session = Depends(get_db),
     from sqlalchemy import or_, and_, func
     # A person may view their own; managers / HO / admin / team leads / HR / back-office view others.
     if actor.id != user_id and actor.role not in ("admin", "manager", "headoffice", "teamlead", "hr", "backend"):
-        raise HTTPException(status_code=403, detail="Not allowed")
+        from ..follow_scope import follows
+        if not follows(db, actor, user_id):            # a team follower → only people they follow
+            raise HTTPException(status_code=403, detail="Not allowed")
     target = db.query(models.User).filter(models.User.id == user_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")

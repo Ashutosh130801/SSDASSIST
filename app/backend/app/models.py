@@ -83,6 +83,12 @@ class User(Base):
     fos_emp_code = Column(String(20), nullable=True)    # e.g. FO210, their field-agent id
     also_caller = Column(Boolean, default=False)        # a field agent who also makes calls
     tc_emp_code = Column(String(20), nullable=True)     # e.g. TC210, their caller id
+    # Team Follow-up: a person who regularly tracks the COMPLETE performance of a chosen group of
+    # FOS / callers (irrespective of case or portfolio). It can be a primary role ('teamfollower')
+    # or an extra hat on a team lead / FOS / caller, who then gets a second id (tf_emp_code, e.g.
+    # FTL004) and switches view like the other dual roles. Members live in team_follow.
+    also_team_follower = Column(Boolean, default=False)
+    tf_emp_code = Column(String(20), nullable=True)     # e.g. FTL004, their team-follower id
     # A head-office user additionally titled "Head Office Manager" (admin-only). Same access as
     # head office; only the label differs and they have no attendance login-window restriction.
     ho_manager = Column(Boolean, default=False)
@@ -103,6 +109,18 @@ class User(Base):
 
     visits = relationship("Visit", back_populates="officer")
     pings = relationship("LocationPing", back_populates="officer")
+
+
+class TeamFollow(Base):
+    """Team Follow-up membership: follower (a 'teamfollower' or a user with the extra hat) →
+    member (a FOS / caller they track). Many-to-many; a member may be followed by several people."""
+    __tablename__ = "team_follow"
+    __table_args__ = (UniqueConstraint("follower_id", "member_id", name="uq_team_follow_pair"),)
+    id = Column(Integer, primary_key=True)
+    follower_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    member_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    added_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
 
 
 class Case(Base):

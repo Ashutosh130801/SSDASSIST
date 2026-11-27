@@ -333,3 +333,13 @@ select option { color: #0f172a; background: #fff; }
 .input::placeholder, textarea.input::placeholder { color: var(--text-3); opacity: 1; }
 [data-mode="dark"] .bank-logo { background: #fff; }
 [data-mode="dark"] .eid { background: rgba(255,255,255,.04); }
+
+/* Field TL (team follow-up) group manager */
+.tf-manage { display: flex; gap: 14px; align-items: flex-start; }
+.tf-list { width: 280px; flex: none; padding: 10px; max-height: 560px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.tf-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px 10px; border-radius: 12px; border: 1px solid transparent; background: transparent; color: var(--text); cursor: pointer; }
+.tf-item:hover { background: var(--surface-2, rgba(37,99,235,.06)); }
+.tf-item.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.tf-item .cell-sub { display: block; }
+@media (max-width: 860px) { .tf-manage { flex-direction: column; } .tf-list { width: 100%; max-height: 240px; } }
+.member > .pbar { flex: none; }

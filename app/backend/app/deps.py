@@ -18,6 +18,28 @@ _SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 # collections data — attendance check-in/out/heartbeat only records the user's own presence.
 _READONLY_WRITE_ALLOW = ("/api/auth/", "/api/webauthn", "/api/attendance/")
 
+# Team Follow-up view: a tracking-only hat. The API is limited to an allow-list so nothing
+# outside "the people I follow" (or my own self-service) can be reached from this view, and
+# work data is read-only. Switch view (dual-role users) to work cases again.
+_FOLLOWER_ANY = ("/api/auth/", "/api/webauthn", "/api/attendance/", "/api/leaves", "/api/notifications",
+                 "/api/manpower/me", "/api/chat/", "/api/support/", "/api/devices", "/api/rtc/",
+                 "/api/todo/me", "/api/reminders", "/api/tracking/ping", "/api/tracking/me")
+_FOLLOWER_READ = ("/api/team-follow/", "/api/team/user/", "/api/tracking/officer/", "/api/mis/employee-trends",
+                  "/api/mis/performance", "/api/config", "/api/services", "/api/cases/", "/api/users/me",
+                  "/api/sheet/prefs")
+
+
+def _follower_path_ok(path: str, method: str) -> bool:
+    if any(path.startswith(p) for p in _FOLLOWER_ANY):
+        return True
+    if method in _SAFE_METHODS and any(path.startswith(p) for p in _FOLLOWER_READ):
+        if path.startswith("/api/cases/"):
+            # one case + its read views (detail, timeline, history, pay-state…) — scoped by _scope
+            import re as _re
+            return bool(_re.match(r"^/api/cases/\d+(/[a-z_-]+)?$", path))
+        return True
+    return False
+
 
 def get_current_user(request: Request, token: str = Depends(oauth2_scheme),
                      db: Session = Depends(get_db)) -> models.User:
@@ -55,6 +77,12 @@ def get_current_user(request: Request, token: str = Depends(oauth2_scheme),
     user.available_views = allowed
     user.active_view = user.role
 
+    # Team Follow-up view → allow-listed, tracking-only API surface.
+    if user.role == "teamfollower" and request.url.path.startswith("/api/") \
+            and not _follower_path_ok(request.url.path, request.method):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Field TL view is for tracking the people under you. "
+                                   "Switch view to do other work.")
     # Read-only roles: block every state-changing request (anything but GET/HEAD/OPTIONS),
     # except the self-security endpoints they need to sign in and secure their own account.
     if primary in READONLY_ROLES and request.method not in _SAFE_METHODS:
@@ -78,6 +106,9 @@ def allowed_views(user: "models.User") -> list[str]:
         views.append("fos")
     if getattr(user, "also_caller", False) and primary != "telecaller":
         views.append("telecaller")
+    # Team Follow-up hat: switch to the follower view to track the members assigned to them.
+    if getattr(user, "also_team_follower", False) and primary != "teamfollower":
+        views.append("teamfollower")
     return views
 
 

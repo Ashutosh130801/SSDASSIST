@@ -15,6 +15,9 @@ router = APIRouter(prefix="/api/tracking", tags=["tracking"])
 
 # Roles allowed to view a field officer's route history / map.
 HISTORY_ROLES = ("admin", "manager", "headoffice", "teamlead")
+# Per-officer route endpoints also open to a team follower (for the members they follow only —
+# enforced in _authorize_officer_view). Multi-officer export/date endpoints keep HISTORY_ROLES.
+OFFICER_ROLES = HISTORY_ROLES + ("teamfollower",)
 
 
 def _authorize_officer_view(db: Session, viewer: models.User, officer_id: int):
@@ -31,6 +34,11 @@ def _authorize_officer_view(db: Session, viewer: models.User, officer_id: int):
         from .cases import _scope_user_ids
         if officer_id not in set(_scope_user_ids(db, viewer)):
             raise HTTPException(status_code=403, detail="Not one of your team members")
+        return
+    if viewer.role == "teamfollower":
+        from ..follow_scope import follows
+        if not follows(db, viewer, officer_id):
+            raise HTTPException(status_code=403, detail="Not one of your Field TL members")
         return
     raise HTTPException(status_code=403, detail="Not allowed")
 
@@ -216,7 +224,7 @@ def live(minutes: int = 30, db: Session = Depends(get_db),
 
 @router.get("/officer/{officer_id}/trail", response_model=list[schemas.PingOut])
 def trail(officer_id: int, minutes: int = 240, db: Session = Depends(get_db),
-          viewer: models.User = Depends(require_roles(*HISTORY_ROLES))):
+          viewer: models.User = Depends(require_roles(*OFFICER_ROLES))):
     _authorize_officer_view(db, viewer, officer_id)
     since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     return (
@@ -291,7 +299,7 @@ def clean_route(pings, max_accuracy_m=80.0, max_speed_kmh=140.0):
 @router.get("/officer/{officer_id}/history-dates")
 def history_dates(officer_id: int, days: int = RETENTION_DAYS,
                   db: Session = Depends(get_db),
-                  viewer: models.User = Depends(require_roles(*HISTORY_ROLES))):
+                  viewer: models.User = Depends(require_roles(*OFFICER_ROLES))):
     """Days (IST) in the last `days` (default 90 = 3 months) on which this officer has recorded a route."""
     _authorize_officer_view(db, viewer, officer_id)
     prune_old_pings(db)  # keep only the last 90 days (3 months)
@@ -332,7 +340,7 @@ def history_dates(officer_id: int, days: int = RETENTION_DAYS,
 
 @router.get("/officer/{officer_id}/route", response_model=list[schemas.PingOut])
 def route_for_date(officer_id: int, date: str, db: Session = Depends(get_db),
-                   viewer: models.User = Depends(require_roles(*HISTORY_ROLES))):
+                   viewer: models.User = Depends(require_roles(*OFFICER_ROLES))):
     """Full ordered route for one IST calendar day (date = 'YYYY-MM-DD')."""
     _authorize_officer_view(db, viewer, officer_id)
     try:
@@ -493,7 +501,7 @@ def distance_report(start: str, end: str, officer_id: int | None = None,
 
 @router.get("/officer/{officer_id}/route.csv")
 def route_csv(officer_id: int, date: str, db: Session = Depends(get_db),
-              viewer: models.User = Depends(require_roles(*HISTORY_ROLES))):
+              viewer: models.User = Depends(require_roles(*OFFICER_ROLES))):
     """Download a field officer's full GPS route for one IST day as CSV
     (sequence, timestamp, latitude, longitude, accuracy, speed)."""
     _authorize_officer_view(db, viewer, officer_id)

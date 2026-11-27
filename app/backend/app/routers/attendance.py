@@ -143,6 +143,9 @@ def _scope_users(db: Session, viewer: models.User, period: str | None = None):
     if viewer.role == "teamlead":     # ACTIVE view only — a TL+FOS in the FOS view sees just themselves
         ids = _tl_member_ids(db, viewer, period) + [viewer.id]
         return q.filter(models.User.id.in_(ids))
+    if viewer.role == "teamfollower":   # Team Follow-up: the people they follow (+ themselves)
+        from ..follow_scope import member_ids
+        return q.filter(models.User.id.in_(list(member_ids(db, viewer.id)) + [viewer.id]))
     # everyone else: only themselves
     return q.filter(models.User.id == viewer.id)
 
@@ -156,6 +159,9 @@ def _can_view(viewer: models.User, target: models.User, db: Session, period: str
         return target.branch == viewer.branch
     if viewer.role == "teamlead":     # ACTIVE view only — a TL+FOS in the FOS view sees just themselves
         return target.id in set(_tl_member_ids(db, viewer, period))
+    if viewer.role == "teamfollower":
+        from ..follow_scope import follows
+        return follows(db, viewer, target.id)
     return False
 
 

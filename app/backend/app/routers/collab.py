@@ -234,6 +234,9 @@ def _direct_ids(db, user):
         ids = {i for (i,) in db.query(models.User.id).filter(active, models.User.branch == user.branch).all()}
     elif role == "teamlead":
         ids = set(_scope_user_ids(db, user))
+    elif role == "teamfollower":      # Team Follow-up: the people they follow
+        from ..follow_scope import member_ids
+        ids = member_ids(db, user.id)
     else:  # fos / telecaller → case partner(s) + their team lead
         col = models.Case.assigned_fos_id if role == "fos" else models.Case.assigned_caller_id
         other = models.Case.assigned_caller_id if role == "fos" else models.Case.assigned_fos_id

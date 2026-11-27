@@ -25,7 +25,7 @@ export const cx = (...a) => a.filter(Boolean).join(' ');
 export const ROLE_LABEL = {
   admin: 'Administrator', manager: 'Collections Manager', teamlead: 'Team Lead', fos: 'Field Agent',
   telecaller: 'Tele-calling Agent', backend: 'Back-office', headoffice: 'Head Office', hr: 'HR', it: 'IT',
-  staff: 'Staff', techsupport: 'Tech Support', it_support_view: 'IT Support View',
+  staff: 'Staff', techsupport: 'Tech Support', it_support_view: 'IT Support View', teamfollower: 'Field TL',
 };
 export const roleName = (r) => ROLE_LABEL[r] || r;
 

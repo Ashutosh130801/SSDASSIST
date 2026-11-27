@@ -1,12 +1,13 @@
 // People & HR: Manpower directory and My E-ID.
 import React, { useEffect, useState } from 'react';
-import { Ban, Camera, Check, Download, FileText, FolderOpen, IdCard, Pencil, Send, ShieldCheck, UserCog, UserPlus, Users, X, Lock, Crown } from 'lucide-react';
+import { Ban, Camera, Check, Download, FileText, FolderOpen, IdCard, Pencil, Send, ShieldCheck, UserCog, UserPlus, Users, X, Lock, Crown, Eye } from 'lucide-react';
 import { api, download } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { cx, fmtDate, fmtTime, initials, num, roleName } from '../lib/format.js';
 import { Card, Kpi, Pill, Empty, Skeleton, useLoad, useToast } from '../components/ui.jsx';
 import { ModuleHead, Chips, Modal, Field, SearchBox, Presence, usePresence, ContactBtns, useLive, useClassicUI } from './kit.jsx';
 import { Trends } from './MyPerformance.jsx';
+import { FollowManageModal } from './TeamFollow.jsx';
 
 export function EIDCard({ e, presence }) {
   return (
@@ -39,6 +40,7 @@ export function Manpower() {
   const [f, setF] = useState({ role: '', location: '', q: '' }); const [qd, setQd] = useState('');
   const [statusF, setStatusF] = useState('all');
   const [sel, setSel] = useState(null);
+  const [follow, setFollow] = useState(null);     // Field TL group manager (true | follower id)
   useEffect(() => { const t = setTimeout(() => setQd(f.q), 250); return () => clearTimeout(t); }, [f.q]);
   const { data: opts } = useLoad(() => api('/api/manpower/filters').catch(() => ({ roles: [], locations: [] })), []);
   const { data, loading, reload } = useLoad(() => { const p = new URLSearchParams(); if (f.role) p.set('role', f.role); if (f.location) p.set('location', f.location); if (qd) p.set('q', qd); return api('/api/manpower?' + p).catch(() => []); }, [f.role, f.location, qd]);
@@ -57,15 +59,17 @@ export function Manpower() {
   const unblock = (e) => api('/api/manpower/' + e.id, { method: 'PATCH', body: { is_active: true } }).then(() => { toast(e.name + ' restored — they can log in again.'); setSel(null); reload(); }).catch(err => toast(err.message, 'err'));
   const hoMgr = (e) => { const make = !e.ho_manager;
     api('/api/manpower/' + e.id + '/ho-manager', { method: 'POST', body: { value: make } }).then(() => { toast(make ? e.name + ' is now Head Office Manager.' : 'Head Office Manager title removed.'); setSel(s => (s ? { ...s, ho_manager: make } : s)); reload(); }).catch(err => toast(err.message, 'err')); };
-  const extra = (e) => [e.also_team_lead && e.role !== 'teamlead' && '+TL', e.also_field_agent && e.role !== 'fos' && '+FOS', e.also_caller && e.role !== 'telecaller' && '+Caller'].filter(Boolean);
+  const extra = (e) => [e.also_team_lead && e.role !== 'teamlead' && '+TL', e.also_field_agent && e.role !== 'fos' && '+FOS', e.also_caller && e.role !== 'telecaller' && '+Caller', e.also_team_follower && e.role !== 'teamfollower' && '+Field TL'].filter(Boolean);
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
 
   return (
     <>
       <ModuleHead icon={UserCog} title="Manpower" sub={`${num(shown.length)} employee${shown.length === 1 ? '' : 's'}${statusF !== 'all' ? ' · ' + statusF : ''}`}>
+        {canAdd && <button className="btn" onClick={() => setFollow(true)} title="Field TLs and the FOS / callers they track"><Eye />Field TL groups</button>}
         {canAdd && <button className="btn" onClick={() => ui.modal('StaffFormModal', { roles: o.roles, isAdmin: user.role === 'admin' }).then(ok => ok && reload())}><UserPlus />Add staff</button>}
         <button className="btn primary" onClick={dl}><Download />Download Excel</button>
       </ModuleHead>
+      <FollowManageModal open={!!follow} initialId={follow === true ? null : follow} onClose={() => { setFollow(null); reload(); }} />
       <div className="grid g-kpi" style={{ marginBottom: 16 }}>
         <Kpi icon={Users} label="Employees" i={1} value={num(rows.length)} />
         <Kpi icon={ShieldCheck} label="Active" i={2} value={num(rows.length - blocked)} tone="good" />
@@ -85,7 +89,7 @@ export function Manpower() {
             <tbody>{shown.map(e => <tr key={e.id} className={cx('click', e.is_active === false && 'flag-row')} onClick={() => setSel(e)}>
               <td><div className="row" style={{ gap: 10 }}><span className="av" style={{ width: 34, height: 34, fontSize: 12 }}>{e.photo_url ? <img src={e.photo_url} alt="" className="av-img" /> : initials(e.name)}</span><div>
                 <div className="cell-main">{e.name}{e.is_active === false && <Pill tone="bad">Blocked</Pill>}</div>
-                <div className="cell-sub mono">{e.emp_code || '—'}{e.also_team_lead && e.tl_emp_code ? ' / ' + e.tl_emp_code : ''}{e.also_field_agent && e.fos_emp_code ? ' / ' + e.fos_emp_code : ''}{e.also_caller && e.tc_emp_code ? ' / ' + e.tc_emp_code : ''}</div>
+                <div className="cell-sub mono">{e.emp_code || '—'}{e.also_team_lead && e.tl_emp_code ? ' / ' + e.tl_emp_code : ''}{e.also_field_agent && e.fos_emp_code ? ' / ' + e.fos_emp_code : ''}{e.also_caller && e.tc_emp_code ? ' / ' + e.tc_emp_code : ''}{e.also_team_follower && e.tf_emp_code ? ' / ' + e.tf_emp_code : ''}</div>
                 <Presence p={pres[String(e.id)]} /></div></div></td>
               <td><Pill tone="accent">{roleName(e.role)}</Pill>{extra(e).map(x => <Pill key={x} tone="info">{x}</Pill>)}</td>
               <td className="muted">{e.designation || '—'}</td><td>{e.location || '—'}</td><td className="muted">{e.branch || '—'}</td>
@@ -102,6 +106,7 @@ export function Manpower() {
           {sel.id !== user.id && (sel.is_active === false ? <button className="btn" style={{ color: 'var(--good)' }} onClick={() => unblock(sel)}><Check />Unblock / Restore</button>
             : <button className="btn ghost danger" onClick={() => block(sel)}><Ban />Block / Remove</button>)}</>}>
         <div className="row wrap" style={{ gap: 8, marginBottom: 12 }}>
+          {canAdd && (sel.role === 'teamfollower' || sel.also_team_follower) && <button className="btn sm primary" onClick={() => { setFollow(sel.id); setSel(null); }}><Eye />Field TL members</button>}
           {canAdd && <button className="btn sm" onClick={() => ui.modal('StaffFormModal', { existing: sel, roles: o.roles, isAdmin: user.role === 'admin' }).then(ok => { if (ok) { setSel(null); reload(); } })}><Pencil />Edit</button>}
           {canAdd && <button className="btn sm" onClick={() => ui.inline('EmployeeDocs', { emp: sel }, 'Documents — ' + sel.name, 820)}><FolderOpen />Documents</button>}
           <ContactBtns phone={sel.phone} />

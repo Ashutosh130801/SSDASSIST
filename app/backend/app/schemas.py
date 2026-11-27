@@ -64,13 +64,16 @@ class UserOut(UserBase):
     fos_emp_code: Optional[str] = None
     also_caller: Optional[bool] = None
     tc_emp_code: Optional[str] = None
+    # Team Follow-up (primary role 'teamfollower' or an extra hat)
+    also_team_follower: Optional[bool] = None
+    tf_emp_code: Optional[str] = None
     available_views: Optional[List[str]] = None   # hats this account can switch between
     active_view: Optional[str] = None             # the hat currently in effect
     is_active: bool
 
     # Never emit null for these — the native app parses them as non-null (a NULL from an
     # older DB row would otherwise fail JSON decoding on the phone).
-    @field_validator("also_team_lead", "ho_manager", "also_field_agent", "also_caller", mode="before")
+    @field_validator("also_team_lead", "ho_manager", "also_field_agent", "also_caller", "also_team_follower", mode="before")
     @classmethod
     def _atl_bool(cls, v):
         return bool(v)
