@@ -159,6 +159,34 @@ export default function ClassicHost({ user, mode, palette, moduleId, onView, onR
     // Inside the iframe: release the pointer as soon as it leaves classic's interactive areas.
     d.addEventListener('pointermove', (e) => { lastPt.current = [e.clientX, e.clientY]; if (!hit(e.clientX, e.clientY)) setPE('none'); }, { passive: true });
     d.documentElement.addEventListener('mouseleave', () => { lastPt.current = null; setPE('none'); });
+    // Mouse-wheel: if the pointer is over a classic layer that has nothing to scroll in that direction,
+    // the wheel belongs to the page underneath — hand the pointer back and scroll the v2 page instead.
+    const canScroll = (el, dy, win) => {
+      for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+        const cs = win.getComputedStyle(n);
+        if (/(auto|scroll|overlay)/.test(cs.overflowY) && n.scrollHeight > n.clientHeight + 1) {
+          if (dy > 0 ? n.scrollTop + n.clientHeight < n.scrollHeight - 1 : n.scrollTop > 0) return true;
+        }
+      }
+      return false;
+    };
+    d.addEventListener('wheel', (e) => {
+      if (e.ctrlKey) return;                                    // pinch-zoom
+      const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1);
+      const dx = e.deltaX * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerWidth : 1);
+      if (Math.abs(dy) >= Math.abs(dx) && canScroll(e.target, dy, d.defaultView)) return;   // a classic list/modal scrolls itself
+      if (Math.abs(dx) > Math.abs(dy)) return;
+      e.preventDefault();
+      setPE('none');
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      let n = under;
+      for (; n && n !== document.body; n = n.parentElement) {
+        const cs = getComputedStyle(n);
+        if (/(auto|scroll|overlay)/.test(cs.overflowY) && n.scrollHeight > n.clientHeight + 1) break;
+      }
+      const target = (n && n !== document.body) ? n : (document.querySelector('.content') || document.scrollingElement);
+      if (target) target.scrollBy({ top: dy, left: 0 });
+    }, { passive: false });
     d.addEventListener('keydown', (e) => {   // keep ⌘K / Ctrl+K working while focus is in classic
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true })); }
     });
