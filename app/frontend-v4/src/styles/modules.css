@@ -472,3 +472,7 @@ select option { color: #0f172a; background: #fff; }
 .ad-code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; padding: 1px 6px; border-radius: 6px; background: var(--bg-sunken); border: 1px solid var(--line); color: var(--text); }
 .ad-code.block { display: block; padding: 10px 12px; word-break: break-all; font-size: 13px; }
 .ad-url-t { word-break: break-all; }
+
+/* Dropdowns live above everything (portaled + fixed) — never hidden behind cards. */
+.pop-scrim.portal { z-index: 84; }
+.pop-menu.portal { position: fixed; z-index: 85; }

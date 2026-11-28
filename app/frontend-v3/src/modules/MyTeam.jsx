@@ -64,7 +64,7 @@ export default function MyTeam() {
               <defs><linearGradient id="tmc" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={chartColor(0)} stopOpacity={.42} /><stop offset="100%" stopColor={chartColor(0)} stopOpacity={0} /></linearGradient></defs>
               <CartesianGrid stroke="var(--line)" vertical={false} />
               <XAxis dataKey="label" tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-              <YAxis tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={inrShort} width={60} />
+              <YAxis tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={inrShort} width={92} />
               <Tooltip content={<ChartTip fmt={inr} />} />
               <Area isAnimationActive={false} type="monotone" dataKey="collected" name="Collected" stroke={chartColor(0)} strokeWidth={2.5} fill="url(#tmc)" />
             </AreaChart></ResponsiveContainer></div> : <Empty title="No collections in the last 30 days" />}

@@ -110,7 +110,7 @@ export default function Dashboard({ edition, branch, embedded }) {
                     </defs>
                     <CartesianGrid stroke="var(--line)" vertical={false} />
                     <XAxis dataKey="label" tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-                    <YAxis tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={inrShort} width={64} />
+                    <YAxis tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={inrShort} width={92} />
                     <Tooltip content={<ChartTip money />} cursor={{ stroke: C(0), strokeOpacity: .3 }} />
                     <Area isAnimationActive={false} type="monotone" dataKey="collected" name="Collected" stroke="url(#gl)" strokeWidth={3} fill="url(#gc)" activeDot={{ r: 5, strokeWidth: 0 }} />
                   </AreaChart>

@@ -9,7 +9,7 @@ import { api, download } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { cx, fmtDate, fmtTime, inr, inrShort, istToday, num, roleName } from '../lib/format.js';
 import { Card, Kpi, Pill, Empty, Skeleton, useLoad, useToast } from '../components/ui.jsx';
-import { ModuleHead, Chips, Modal, Field, SearchBox, Avatar, useLive, useClassicUI } from './kit.jsx';
+import { ModuleHead, Chips, Modal, Field, SearchBox, Avatar, useLive, useClassicUI, PopLayer } from './kit.jsx';
 import { useClassic } from '../lib/classic.jsx';
 
 const dt = (t) => (t ? `${fmtDate(t)} ${fmtTime(t)}` : '—');
@@ -64,8 +64,8 @@ export function Feedback() {
         <SearchBox value={search} onChange={setSearch} placeholder="Name, phone or any column" width={260} />
         <div className="grow" /><span className="faint" style={{ fontSize: 12 }}>{shown.length} of {rows.length} rows{pickedIds.length ? ` · ${pickedIds.length} selected` : ''}</span>
         <span className="pop-wrap"><button className={cx('btn sm', colMenu && 'primary')} onClick={() => setColMenu(v => !v)}><Columns3 />Columns</button>
-          {colMenu && dlCols && <><div className="pop-scrim" onClick={() => setColMenu(false)} /><div className="pop-menu col-menu" style={{ right: 0, left: 'auto' }}>
-            <div className="chips-l">Columns to download</div><div className="col-list">{cols.map(c => <label key={c.key} className="ms-opt"><input type="checkbox" checked={dlCols.has(c.key)} onChange={() => setDlCols(s => { const n = new Set(s); n.has(c.key) ? n.delete(c.key) : n.add(c.key); return n; })} />{c.label}</label>)}</div></div></>}</span>
+          {colMenu && dlCols && <><PopLayer onClose={() => setColMenu(false)} className="col-menu" align="right">
+            <div className="chips-l">Columns to download</div><div className="col-list">{cols.map(c => <label key={c.key} className="ms-opt"><input type="checkbox" checked={dlCols.has(c.key)} onChange={() => setDlCols(s => { const n = new Set(s); n.has(c.key) ? n.delete(c.key) : n.add(c.key); return n; })} />{c.label}</label>)}</div></PopLayer></>}</span>
       </div></div>
       {error && <div className="card" style={{ padding: 16, color: 'var(--bad)' }}>{error}</div>}
       <div className="card ls-scroll rise">

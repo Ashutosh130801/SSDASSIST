@@ -9,7 +9,7 @@ import { cx, istToday, num } from '../lib/format.js';
 import { Kpi, useToast } from '../components/ui.jsx';
 import { useClassic } from '../lib/classic.jsx';
 import CaseDrawer from '../pages/CaseDrawer.jsx';
-import { ModuleHead, Chips, MultiSelect, usePanel } from './kit.jsx';
+import { ModuleHead, Chips, MultiSelect, usePanel, PopLayer } from './kit.jsx';
 import { Wallet, PhoneCall, Handshake, Hourglass } from 'lucide-react';
 
 /* Column catalogue — identical to the classic Live Sheet (same keys, same saved prefs). */
@@ -259,15 +259,14 @@ export default function LiveSheet() {
             <button className="btn sm" onClick={runCalc}><Sigma /></button>{calcRes !== '' && <b className="calc-r">= {calcRes}</b>}</div>
           <span className="pop-wrap">
             <button className={cx('btn sm', colMenu && 'primary')} onClick={() => setColMenu(v => !v)}><Columns3 />Columns</button>
-            {colMenu && prefs && <><div className="pop-scrim" onClick={() => setColMenu(false)} />
-              <div className="pop-menu col-menu" style={{ right: 0, left: 'auto' }}>
+            {colMenu && prefs && <><PopLayer onClose={() => setColMenu(false)} className="col-menu" align="right">
                 <div className="chips-l">Presets</div>
                 <div className="row" style={{ gap: 6 }}><button className="btn sm" onClick={() => preset('cc')}>Credit Card</button><button className="btn sm" onClick={() => preset('plbl')}>PL / BL</button></div>
                 <div className="chips-l" style={{ marginTop: 8 }}>Show columns</div>
                 <div className="col-list">{allDefs().map(c => <label key={c.k} className="ms-opt"><input type="checkbox" checked={prefs.visible.includes(c.k)} onChange={() => toggleCol(c.k)} />{c.t}{c.custom ? ' (ƒ)' : ''}</label>)}</div>
                 <button className="btn sm block" onClick={addData}><Plus />Data column</button>
                 <button className="btn sm block" onClick={addFormula}><Plus />Formula column (ƒ)</button>
-              </div></>}
+              </PopLayer></>}
           </span>
         </div>
         {!loading && scopeTotal > rows.length && rows.length >= LIMIT && <div style={{ color: 'var(--warn)', fontSize: 12.5, fontWeight: 600 }}>Showing the latest {num(rows.length)} of {num(scopeTotal)} — pick a bank / product / location to see a whole portfolio.</div>}

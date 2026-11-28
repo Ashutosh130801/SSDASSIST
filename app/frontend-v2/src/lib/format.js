@@ -4,14 +4,8 @@ const nf1 = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 });
 
 export const num = (n) => nf0.format(Number(n) || 0);
 export const inr = (n) => '₹' + nf0.format(Number(n) || 0);
-/** ₹ in lakhs / crores for KPI tiles: 1,23,45,678 → ₹1.23 Cr */
-export const inrShort = (n) => {
-  const v = Number(n) || 0, a = Math.abs(v);
-  if (a >= 1e7) return '₹' + nf1.format(v / 1e7) + ' Cr';
-  if (a >= 1e5) return '₹' + nf1.format(v / 1e5) + ' L';
-  if (a >= 1e3) return '₹' + nf1.format(v / 1e3) + 'K';
-  return '₹' + nf0.format(v);
-};
+/** Full rupee amount everywhere (no K / L / Cr abbreviations): 12345678 → ₹1,23,45,678 */
+export const inrShort = (n) => '₹' + nf0.format(Math.round(Number(n) || 0));
 export const pct = (n) => (Number(n) || 0).toFixed(1) + '%';
 
 const toMs = (iso) => { if (!iso) return NaN; let s = String(iso); if (!/[zZ]|[+-]\d\d:?\d\d$/.test(s) && s.includes('T')) s += 'Z'; return new Date(s).getTime(); };

@@ -830,8 +830,10 @@ def portfolio_areas(bank: str | None = None, product: str | None = None, branch:
         q = q.filter(models.Case.bank == bank)
     if product:
         q = q.filter(models.Case.product == product)
-    if branch:
-        q = q.filter(func.lower(func.trim(models.Case.branch)) == branch.strip().lower())
+    if branch:                          # one or many (comma separated), case-insensitive
+        _br = [x.strip().lower() for x in str(branch).split(',') if x.strip()]
+        if _br:
+            q = q.filter(func.lower(func.trim(models.Case.branch)).in_(_br))
     return sorted({(t or "").strip() for (t,) in q.all() if t and str(t).strip()})
 
 
@@ -1030,9 +1032,14 @@ def sheet_options(month_bucket: str | None = None, db: Session = Depends(get_db)
     return {"combos": combos, "total": sum(c["count"] for c in combos)}
 
 
+def _mis_period(month_bucket):
+    from .mis import _period_for        # lazy: mis imports this module
+    return _period_for(month_bucket)
+
+
 @router.get("/filter-options")
 def filter_options(bank: str | None = None, product: str | None = None, branch: str | None = None,
-                   peer_lead: int | None = None,
+                   peer_lead: int | None = None, month_bucket: str | None = None,
                    db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     """Distinct cycles + the FOS and callers actually present in a portfolio, so the case-list and
     MIS filter dropdowns only offer values that exist. Names resolve to full name + emp code."""
@@ -1041,7 +1048,12 @@ def filter_options(bank: str | None = None, product: str | None = None, branch: 
         user, _ = mis_viewer(db, user, bank, product, peer_lead)
     q = _scope(db.query(
         models.Case.cycle, models.Case.assigned_fos_id, models.Case.assigned_caller_id,
-        models.Case.vehicle_type, models.Case.brand, models.Case.old_new, models.Case.team_lead), user)
+        models.Case.vehicle_type, models.Case.brand, models.Case.old_new, models.Case.team_lead), user,
+        bucket=_bucket_for_period(_mis_period(month_bucket)) if month_bucket else None)
+    if month_bucket:                    # same month window as the MIS → only that month's FOS / callers
+        _per = _mis_period(month_bucket)
+        if _per:
+            q = q.filter(models.Case.period == _per)
     if bank:
         q = q.filter(models.Case.bank == bank)
     if product:

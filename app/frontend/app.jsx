@@ -5768,7 +5768,6 @@ function MiniMd({ text }) {
 const AI_MONEY_RE = /(pending|received|collected|outstanding|enr|amount|total|offer|paid_total|via_)/i;
 const aiFmt = (k, v, short) => {
   const money = typeof v === 'number' && AI_MONEY_RE.test(k || '') && !/pct|count|cases|payments/i.test(k || '');
-  if (money && short && Math.abs(v) >= 1e5) return '₹' + (Math.abs(v) >= 1e7 ? (v / 1e7).toFixed(2) + ' Cr' : (v / 1e5).toFixed(2) + ' L');
   return money ? '₹' + Math.round(v).toLocaleString('en-IN') : (typeof v === 'number' ? v.toLocaleString('en-IN') : (v == null ? '—' : String(v)));
 };
 
@@ -8057,9 +8056,9 @@ function MISView({ user }) {
   useEffect(() => {
     if (!sel) return;
     setCyclesSel([]); setFosSel([]); setCallerSel([]);
-    const bq = `bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${(sel.branch ? '&branch=' + encodeURIComponent(sel.branch) : '')}${viewingPeer ? '&peer_lead=' + peerLead : ''}`;
+    const bq = `bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}${(sel.branch ? '&branch=' + encodeURIComponent(sel.branch) : '')}${viewingPeer ? '&peer_lead=' + peerLead : ''}${monthB ? '&month_bucket=' + monthB : ''}`;
     api('/api/cases/filter-options?' + bq).then(o => setFilterOpts(o || { cycles: [], fos: [], callers: [], team_leads: [] })).catch(() => setFilterOpts({ cycles: [], fos: [], callers: [], team_leads: [] }));
-  }, [sel, peerLead]);
+  }, [sel, peerLead, monthB]);
   // Real-time: recompute the MIS instantly whenever any log/payment/edit lands.
   useDataChanged(m => { if (!sel) return; if (m && m.product && m.product !== sel.product) return; load(); api('/api/mis/overview').then(setOv).catch(() => {}); });
   const saveTarget = (e) => {          // ONE product-wide target for every FOS & caller
@@ -8103,7 +8102,7 @@ function MISView({ user }) {
     ['aging', [['label', 'Recency'], ['count', 'Count'], ['pending', 'Pending']]],
     ['untouched_table', CASES], ['top_by_norm', NS_CASES], ['top_by_stab', NS_CASES], ['top_pending', CASES], ['priority', CASES],
     ['obstacles', [['caller', 'Caller'], ['total', 'Total'], ['obstacles', 'Obstacles'], ['rate_pct', 'Rate %']]],
-    ['productivity', [['emp', 'Employee'], ['calls_today', 'Calls'], ['visits_today', 'Visits'], ['idle', 'Idle']]],
+    ['productivity', [['emp', 'Employee'], ['role', 'Role'], ['calls_today', 'Calls'], ['visits_today', 'Visits'], ['idle', 'Idle']]],
     ['field_efficiency', [['fos', 'FOS'], ['visits', 'Visits'], ['distance_km', 'Dist km'], ['off_location', 'Off-loc'], ['collected', 'Collected']]],
     ['trend', [['date', 'Date'], ['collected', 'Collected']]],
   ];

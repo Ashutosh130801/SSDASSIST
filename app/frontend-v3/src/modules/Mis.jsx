@@ -31,7 +31,7 @@ const TABLES = [
   ['aging', [['label', 'Recency'], ['count', 'Count'], ['pending', 'Pending']]],
   ['untouched_table', CASES], ['top_by_norm', NS_CASES], ['top_by_stab', NS_CASES], ['top_pending', CASES], ['priority', CASES],
   ['obstacles', [['caller', 'Caller'], ['total', 'Total'], ['obstacles', 'Obstacles'], ['rate_pct', 'Rate %']]],
-  ['productivity', [['emp', 'Employee'], ['calls_today', 'Calls'], ['visits_today', 'Visits'], ['idle', 'Idle']]],
+  ['productivity', [['emp', 'Employee'], ['role', 'Role'], ['calls_today', 'Calls'], ['visits_today', 'Visits'], ['idle', 'Idle']]],
   ['field_efficiency', [['fos', 'FOS'], ['visits', 'Visits'], ['distance_km', 'Dist km'], ['off_location', 'Off-loc'], ['collected', 'Collected']]],
   ['trend', [['date', 'Date'], ['collected', 'Collected']]],
 ];
@@ -145,7 +145,7 @@ export default function Mis() {
   const bq = sel ? `bank=${encodeURIComponent(sel.bank)}&product=${encodeURIComponent(sel.product)}` : '';
   const { data: areas } = useLoad(() => (sel ? api('/api/cases/areas?' + bq).catch(() => []) : Promise.resolve([])), [bq]);
   const { data: tlOpts } = useLoad(() => (sel && isTL ? api('/api/mis/tl-options?' + bq).catch(() => []) : Promise.resolve([])), [bq]);
-  const { data: fo } = useLoad(() => (sel ? api('/api/cases/filter-options?' + bq + (viewingPeer ? '&peer_lead=' + peer : '')).catch(() => ({})) : Promise.resolve({})), [bq, peer]);
+  const { data: fo } = useLoad(() => (sel ? api('/api/cases/filter-options?' + bq + (mb ? '&month_bucket=' + mb : '') + (branchSel.length ? '&branch=' + branchSel.map(encodeURIComponent).join(',') : '') + (viewingPeer ? '&peer_lead=' + peer : '')).catch(() => ({})) : Promise.resolve({})), [bq, peer, mb, branchSel.join(',')]);
   const { data: ov } = useLoad(() => api('/api/mis/overview').catch(() => null), []);
   useEffect(() => { setArea(''); setCycles([]); setFosSel([]); setCallerSel([]); setTlSel([]); setBranchSel([]); setEmp(''); setPeer(isTL ? user.id : null); }, [bq]); // eslint-disable-line
   useEffect(() => { setCycles([]); setFosSel([]); setCallerSel([]); }, [peer]);
@@ -262,13 +262,13 @@ export default function Mis() {
             <ChartCard title="Collection trend · 30 days" i={1}>
               <AreaChart data={trend} margin={{ left: 0, right: 8, top: 6 }}>
                 <defs><linearGradient id="misg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C(0)} stopOpacity={.42} /><stop offset="100%" stopColor={C(0)} stopOpacity={0} /></linearGradient></defs>
-                <CartesianGrid stroke="var(--line)" vertical={false} /><XAxis dataKey="label" {...axis} interval="preserveStartEnd" /><YAxis {...axis} tickFormatter={inrShort} width={58} />
+                <CartesianGrid stroke="var(--line)" vertical={false} /><XAxis dataKey="label" {...axis} interval="preserveStartEnd" /><YAxis {...axis} tickFormatter={inrShort} width={92} />
                 <Tooltip content={<ChartTip fmt={inr} />} /><Area isAnimationActive={false} type="monotone" dataKey="collected" name="Collected" stroke={C(0)} strokeWidth={2.5} fill="url(#misg)" />
               </AreaChart>
             </ChartCard>
             <ChartCard title="Top FOS — achieved ENR" i={2}>
               <BarChart data={d.leaderboard.slice(0, 10).map(r => ({ name: (r.emp || '').split('/')[0], v: r.achieved_enr }))} margin={{ left: 0, right: 8 }}>
-                <CartesianGrid stroke="var(--line)" vertical={false} /><XAxis dataKey="name" {...axis} interval={0} angle={-25} textAnchor="end" height={50} /><YAxis {...axis} tickFormatter={inrShort} width={58} />
+                <CartesianGrid stroke="var(--line)" vertical={false} /><XAxis dataKey="name" {...axis} interval={0} angle={-25} textAnchor="end" height={50} /><YAxis {...axis} tickFormatter={inrShort} width={92} />
                 <Tooltip content={<ChartTip fmt={inr} />} cursor={{ fill: 'var(--bg-hover)' }} /><Bar isAnimationActive={false} dataKey="v" name="Achieved" radius={[6, 6, 0, 0]} fill={C(0)} />
               </BarChart>
             </ChartCard>
@@ -291,7 +291,7 @@ export default function Mis() {
             </ChartCard>
             <ChartCard title="Contact aging — pending ₹" i={7}>
               <BarChart data={(d.aging || []).map(r => ({ name: r.label, v: r.pending }))} margin={{ left: 0, right: 8 }}>
-                <CartesianGrid stroke="var(--line)" vertical={false} /><XAxis dataKey="name" {...axis} /><YAxis {...axis} tickFormatter={inrShort} width={58} />
+                <CartesianGrid stroke="var(--line)" vertical={false} /><XAxis dataKey="name" {...axis} /><YAxis {...axis} tickFormatter={inrShort} width={92} />
                 <Tooltip content={<ChartTip fmt={inr} />} cursor={{ fill: 'var(--bg-hover)' }} /><Bar isAnimationActive={false} dataKey="v" name="Pending" radius={[6, 6, 0, 0]} fill={cssVar('--warn')} />
               </BarChart>
             </ChartCard>

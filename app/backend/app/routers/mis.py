@@ -416,15 +416,24 @@ def compute_mis(db: Session, user: models.User, bank: str, product: str,
     for v in visits:
         if d_ist(v.created_at) == today:
             visits_today[v.officer_id] = visits_today.get(v.officer_id, 0) + 1
-    emp_ids = set(calls_today) | set(visits_today) | {cl.caller_id for cl in calls} | {v.officer_id for v in visits}
+    # Only the people ALLOCATED to this portfolio (FOS / joint FOS / callers on its cases) count as
+    # its workforce — a log by someone else (a TL, an old allocation, another portfolio's officer)
+    # must not make them show up as "working" here.
+    port_fos = {c.assigned_fos_id or _resolve(c.fos_name) for c in cases} | {getattr(c, "joint_fos_id", None) for c in cases}
+    port_callers = {c.assigned_caller_id or _resolve(c.caller_name) for c in cases}
+    port_fos.discard(None); port_callers.discard(None)
+    emp_ids = port_fos | port_callers
     productivity = sorted(
-        [{"emp": users.get(i, f"#{i}"), "calls_today": calls_today.get(i, 0),
-          "visits_today": visits_today.get(i, 0),
-          "idle": (calls_today.get(i, 0) + visits_today.get(i, 0)) == 0} for i in emp_ids if i],
+        [{"emp": users.get(i, f"#{i}"), "role": ("FOS" if i in port_fos else "") + (" + " if i in port_fos and i in port_callers else "") + ("Caller" if i in port_callers else ""),
+          "calls_today": calls_today.get(i, 0) if i in port_callers else 0,
+          "visits_today": visits_today.get(i, 0) if i in port_fos else 0,
+          "idle": ((calls_today.get(i, 0) if i in port_callers else 0) + (visits_today.get(i, 0) if i in port_fos else 0)) == 0} for i in emp_ids],
         key=lambda x: x["calls_today"] + x["visits_today"], reverse=True)
 
     eff: dict[int, dict] = {}
     for v in visits:
+        if v.officer_id not in port_fos:
+            continue
         e = eff.setdefault(v.officer_id, {"visits": 0, "distance": 0.0, "off": 0, "collected": 0.0})
         e["visits"] += 1
         dm = _f(v.distance_from_case_m)
@@ -1095,7 +1104,7 @@ _TABLE_COLS = {
     "untouched_table": _CASELIST, "top_pending": _CASELIST, "priority": _CASELIST,
     "top_by_norm": _NS_CASELIST, "top_by_stab": _NS_CASELIST,
     "obstacles": [("caller", "Caller"), ("total", "Total"), ("obstacles", "Obstacles"), ("rate_pct", "Rate %")],
-    "productivity": [("emp", "Employee"), ("calls_today", "Calls today"), ("visits_today", "Visits today"), ("idle", "Idle")],
+    "productivity": [("emp", "Employee"), ("role", "Role"), ("calls_today", "Calls today"), ("visits_today", "Visits today"), ("idle", "Idle")],
     "field_efficiency": [("fos", "FOS"), ("visits", "Visits"), ("distance_km", "Distance km"), ("off_location", "Off-location"), ("collected", "Collected")],
     "trend": [("date", "Date"), ("collected", "Collected")],
 }

@@ -8,6 +8,38 @@ import { useClassic } from '../lib/classic.jsx';
 import { api } from '../lib/api.js';
 import { cx, initials } from '../lib/format.js';
 
+/** Dropdown layer: drawn on top of everything (portaled to <body>, fixed to its button) so cards, tables and
+ *  animated panels can never hide or clip it. Flips upward when there's no room below. */
+export function PopLayer({ onClose, className = '', style, align = 'left', children, onClick }) {
+  const mark = useRef(null); const menu = useRef(null);
+  const [pos, setPos] = useState(null);
+  useEffect(() => {
+    const place = () => {
+      const a = mark.current && (mark.current.closest('.pop-wrap') || mark.current.parentElement); if (!a) return;
+      const r = a.getBoundingClientRect(); const vw = window.innerWidth, vh = window.innerHeight;
+      const m = menu.current; const mw = m ? m.offsetWidth : 240; const mh = m ? m.scrollHeight : 300;
+      const below = vh - r.bottom - 12, above = r.top - 12;
+      const up = mh > below && above > below;
+      const maxH = Math.max(160, Math.min(up ? above : below, vh - 24));
+      let left = align === 'right' ? r.right - mw : r.left;
+      left = Math.max(8, Math.min(left, vw - mw - 8));
+      setPos(up ? { left, bottom: vh - r.top + 6, maxHeight: maxH } : { left, top: r.bottom + 6, maxHeight: maxH });
+    };
+    place(); const t = requestAnimationFrame(place);
+    window.addEventListener('resize', place); window.addEventListener('scroll', place, true);
+    return () => { cancelAnimationFrame(t); window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
+  }, [align]);
+  const { right, left: _l, ...rest } = style || {};
+  return <>
+    <span ref={mark} style={{ display: 'none' }} />
+    {createPortal(<>
+      <div className="pop-scrim portal" onClick={(e) => { e.stopPropagation(); onClose && onClose(); }} />
+      <div ref={menu} data-v2-overlay className={cx('pop-menu portal', className)} onClick={onClick}
+        style={{ ...rest, ...(pos || { left: -9999, top: 0 }), overflowY: 'auto' }}>{children}</div>
+    </>, document.body)}
+  </>;
+}
+
 /** Re-run `fn` whenever data changes anywhere (same WebSocket + local events the classic app uses). */
 export function useLive(fn) {
   const classic = useClassic();
@@ -119,11 +151,10 @@ export function ContactBtns({ phone, caseId, compact }) {
         <Phone />{!compact && 'Call'}
       </button>
       {open && <>
-        <div className="pop-scrim" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
-        <div className="pop-menu" onClick={e => e.stopPropagation()}>
+        <PopLayer onClose={() => setOpen(false)} onClick={e => e.stopPropagation()}>
           <button className="btn sm primary block" onClick={() => { setOpen(false); capi.dialCase(caseId); }}>Call via ViciDial</button>
           <a className="btn sm ghost block" href={'tel:' + tel(phone)} onClick={() => setOpen(false)}>Phone dialer</a>
-        </div>
+        </PopLayer>
       </>}
     </span>
     <a className="btn sm wa" href={waHref(phone)} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="WhatsApp"><MessageCircle />{!compact && 'WhatsApp'}</a>
@@ -205,8 +236,7 @@ export function MultiSelect({ label, icon: Icon, options, selected, onChange, wi
         {Icon && <Icon size={13} />}{label}{sel.length ? ` · ${sel.length}` : ''}<span style={{ opacity: .6 }}>▾</span>
       </button>
       {open && <>
-        <div className="pop-scrim" onClick={close} />
-        <div className="pop-menu ms-menu" style={{ minWidth: width }}>
+        <PopLayer onClose={close} className="ms-menu" style={{ minWidth: width }}>
           <div className="ms-head">
             <div className="row" style={{ marginBottom: 4 }}><b className="grow" style={{ fontSize: 12 }}>{label}</b>
               {ql && shown.length > 0 && <button className="btn sm ghost" onClick={() => onChange([...new Set([...sel, ...shown.map(o => o.value)])])}>Select shown</button>}
@@ -219,7 +249,7 @@ export function MultiSelect({ label, icon: Icon, options, selected, onChange, wi
           {shown.map(o => (
             <label key={String(o.value)} className="ms-opt"><input type="checkbox" checked={sel.includes(o.value)} onChange={() => toggle(o.value)} /><span>{o.label}</span></label>
           ))}
-        </div>
+        </PopLayer>
       </>}
     </span>
   );

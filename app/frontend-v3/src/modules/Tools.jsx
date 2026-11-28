@@ -21,8 +21,6 @@ const fmtN = (k, v, short) => {
   const pct = /(pct|%|rate|percent)/i.test(String(k || ''));
   if (pct) return v.toFixed(1) + '%';
   if (money) {
-    if (short && Math.abs(v) >= 1e7) return '₹' + (v / 1e7).toFixed(2) + ' Cr';
-    if (short && Math.abs(v) >= 1e5) return '₹' + (v / 1e5).toFixed(2) + ' L';
     return '₹' + Math.round(v).toLocaleString('en-IN');
   }
   return v.toLocaleString('en-IN');
@@ -69,7 +67,7 @@ function AiVisual({ v, xlsx }) {
     const ct = v.chart_type; const data = v.labels.map((l, i) => { const o = { label: l }; v.series.forEach(s => { o[s.name] = s.data[i]; }); return o; });
     const H = h || 260;
     const axes = <><CartesianGrid stroke="var(--line)" vertical={false} /><XAxis dataKey="label" tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} />
-      <YAxis tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} width={56} tickFormatter={x => fmtN(v.series[0] && v.series[0].name, x, true)} />
+      <YAxis tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} width={92} tickFormatter={x => fmtN(v.series[0] && v.series[0].name, x, true)} />
       <Tooltip content={<ChartTip fmt={x => fmtN(v.series[0] && v.series[0].name, x)} />} />{v.series.length > 1 && <Legend />}</>;
     if (ct === 'pie' || ct === 'doughnut') {
       const s = v.series[0] || { data: [] };
