@@ -1,7 +1,7 @@
 /* Injected into the embedded classic app (html.riq-host). Hides classic chrome, lays the active
    module over v2's content area, and re-skins classic components with the v2 palette
-   (palette vars are written onto <html> by ClassicHost). Classic modules stay on a light sheet
-   in both modes — many of them use light inline colours. */
+   (palette vars are written onto <html> by ClassicHost). Classic content follows the light or dark mode (dark layer at the end of this file).
+   Coloured status cells keep their colour with dark text. */
 
 html.riq-host {
   --text: #141821; --text-2: #4A5160; --text-3: #8A90A0; --line: rgba(20, 24, 40, .09);
@@ -38,7 +38,7 @@ html.riq-host.riq-module .main {
   border: 1px solid rgba(255, 255, 255, .85);
   animation: riqIn .45s cubic-bezier(.2, .8, .2, 1) both;
 }
-html.riq-host[data-mode="dark"].riq-module .main { background: rgba(250, 250, 253, .94); border-color: rgba(255,255,255,.18); }
+
 @keyframes riqIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 
 /* No module showing: only floating things (popups, chat, bot, modals, check-in) are visible. */
@@ -129,7 +129,7 @@ html.riq-host .tablewrap { border-radius: 16px; }
 html.riq-host thead th { background: rgba(246, 248, 253, .96) !important; backdrop-filter: blur(6px); text-transform: uppercase; font-size: 11px !important; letter-spacing: .06em !important; }
 html.riq-host .fos-report-table thead th {
   background: var(--fos-head-bg, #0F2747) !important;
-  color: #111827 !important;
+  color: var(--fos-head-fg, #FFFFFF) !important;
   text-shadow: none;
 }
 html.riq-host tbody td { border-bottom-color: rgba(20, 24, 40, .06) !important; }
@@ -139,3 +139,128 @@ html.riq-host .modal { border-radius: 26px !important; background: rgba(255,255,
   animation: riqPop .3s cubic-bezier(.2,.8,.2,1); }
 @keyframes riqPop { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { html.riq-host .main > *, html.riq-host .modal { animation: none !important; } }
+
+/* FOS visit reports (daily + monthly): keep each header cell's own colour + readable text */
+html.riq-host .fos-report-table thead th {
+  background: var(--fos-head-bg, #0F2747) !important;
+  color: var(--fos-head-fg, #FFFFFF) !important;
+  text-shadow: none !important;
+  text-transform: none;
+}
+html.riq-host .fos-report-table thead th * { color: inherit !important; }
+
+
+/* ═════════ DARK MODE — every classic surface (popups, drawers, forms, tables, add-on screens) follows the theme ═════════ */
+html.riq-host[data-mode="dark"] {
+  --text: #E7EBF5; --text-2: #AEB6C9; --text-3: #7F889D; --line: rgba(255, 255, 255, .09);
+  --bg-0: rgba(20, 25, 40, .97); --bg-1: rgba(20, 25, 40, .97); --bg-2: rgba(var(--t-accent), .10);
+  --ink: #E7EBF5; --ink-soft: #AEB6C9; --ink-dim: #7F889D;
+  --glass: rgba(20, 25, 40, .97); --glass-2: rgba(28, 34, 52, .98); --stroke: rgba(var(--t-accent), .30); --stroke-soft: rgba(255, 255, 255, .09); --navy: #E7EBF5;
+}
+html.riq-host[data-mode="dark"] body { color: #E7EBF5; }
+html.riq-host[data-mode="dark"].riq-module .main { background: rgba(20, 25, 40, .97) !important; border-color: rgba(255, 255, 255, .09) !important; box-shadow: 0 24px 60px -28px rgba(0,0,0,.6) !important; }
+html.riq-host[data-mode="dark"] .main > [role="status"] { background: rgba(28, 34, 52, .98) !important; color: #E7EBF5 !important; }
+html.riq-host[data-mode="dark"] .glass, html.riq-host[data-mode="dark"] .card, html.riq-host[data-mode="dark"] .modal, html.riq-host[data-mode="dark"] .drawer, html.riq-host[data-mode="dark"] .kpi3 .b, html.riq-host[data-mode="dark"] .pipe .st, html.riq-host[data-mode="dark"] .dl, html.riq-host[data-mode="dark"] .ai-msg.bot, html.riq-host[data-mode="dark"] .ai-msg .tablewrap, html.riq-host[data-mode="dark"] .ai-vis, html.riq-host[data-mode="dark"] .ai-steps, html.riq-host[data-mode="dark"] .aibot-body, html.riq-host[data-mode="dark"] .aibot-input, html.riq-host[data-mode="dark"] .sticker-tray, html.riq-host[data-mode="dark"] .sv-kpi, html.riq-host[data-mode="dark"] .sv-btn, html.riq-host[data-mode="dark"] .sv-menu, html.riq-host[data-mode="dark"] .sv-fxbar, html.riq-host[data-mode="dark"] .sv-slide, html.riq-host[data-mode="dark"] .sv-scroll, html.riq-host[data-mode="dark"] .tablewrap, html.riq-host[data-mode="dark"] .toast, html.riq-host[data-mode="dark"] .chat-panel, html.riq-host[data-mode="dark"] .chat-list, html.riq-host[data-mode="dark"] .chat-thread, html.riq-host[data-mode="dark"] .lb .row, html.riq-host[data-mode="dark"] .stat-card, html.riq-host[data-mode="dark"] .kpi, html.riq-host[data-mode="dark"] .menu, html.riq-host[data-mode="dark"] .dropdown, html.riq-host[data-mode="dark"] .popover {
+  background: rgba(20, 25, 40, .97) !important; color: #E7EBF5 !important; border-color: rgba(255, 255, 255, .09) !important;
+}
+html.riq-host[data-mode="dark"] .modal .glass, html.riq-host[data-mode="dark"] .drawer .glass, html.riq-host[data-mode="dark"] .modal .card, html.riq-host[data-mode="dark"] .drawer .card { background: rgba(28, 34, 52, .98) !important; }
+html.riq-host[data-mode="dark"] .modal-bg, html.riq-host[data-mode="dark"] .drawer-bg { background: rgba(4, 8, 18, .58) !important; }
+html.riq-host[data-mode="dark"] h1, html.riq-host[data-mode="dark"] h2, html.riq-host[data-mode="dark"] h3, html.riq-host[data-mode="dark"] h4, html.riq-host[data-mode="dark"] b, html.riq-host[data-mode="dark"] strong, html.riq-host[data-mode="dark"] .kpi3 .b .v, html.riq-host[data-mode="dark"] .dl .dd { color: #E7EBF5; }
+html.riq-host[data-mode="dark"] .muted, html.riq-host[data-mode="dark"] .stat-row .k, html.riq-host[data-mode="dark"] .kpi3 .b .l, html.riq-host[data-mode="dark"] .dl .dt, html.riq-host[data-mode="dark"] label, html.riq-host[data-mode="dark"] small { color: #AEB6C9 !important; }
+html.riq-host[data-mode="dark"] .input, html.riq-host[data-mode="dark"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), html.riq-host[data-mode="dark"] select, html.riq-host[data-mode="dark"] textarea {
+  background: rgba(10, 14, 26, .7) !important; color: #E7EBF5 !important; border-color: rgba(255, 255, 255, .09) !important; color-scheme: dark;
+}
+html.riq-host[data-mode="dark"] select option, html.riq-host[data-mode="dark"] select optgroup { background: rgba(20, 25, 40, .97); color: #E7EBF5; }
+html.riq-host[data-mode="dark"] .input::placeholder, html.riq-host[data-mode="dark"] input::placeholder, html.riq-host[data-mode="dark"] textarea::placeholder { color: #7F889D !important; opacity: 1; }
+html.riq-host[data-mode="dark"] input[type="checkbox"], html.riq-host[data-mode="dark"] input[type="radio"], html.riq-host[data-mode="dark"] input[type="range"] { accent-color: rgb(var(--t-accent)); }
+html.riq-host[data-mode="dark"] table th, html.riq-host[data-mode="dark"] thead th { background: rgba(28, 34, 52, .98) !important; color: #AEB6C9 !important; border-color: rgba(255, 255, 255, .09) !important; }
+html.riq-host[data-mode="dark"] table td { border-color: rgba(255, 255, 255, .09) !important; color: #E7EBF5; }
+html.riq-host[data-mode="dark"] tbody tr:nth-child(even) td { background: rgba(255,255,255,.025) !important; }
+html.riq-host[data-mode="dark"] tbody tr:hover td { background: rgba(var(--t-accent), .12) !important; }
+html.riq-host[data-mode="dark"] .stat-row, html.riq-host[data-mode="dark"] .divider, html.riq-host[data-mode="dark"] hr { border-color: rgba(255, 255, 255, .09) !important; }
+html.riq-host[data-mode="dark"] .btn:not(.gold):not(.primary) { background: rgba(255,255,255,.06) !important; color: #E7EBF5 !important; border-color: rgba(255, 255, 255, .09) !important; }
+html.riq-host[data-mode="dark"] .btn.ghost { background: transparent !important; }
+html.riq-host[data-mode="dark"] .btn:not(.gold):not(.primary):hover { background: rgba(var(--t-accent), .18) !important; }
+html.riq-host[data-mode="dark"] .chip { background: rgba(255,255,255,.06) !important; color: #AEB6C9 !important; border-color: rgba(255, 255, 255, .09) !important; }
+html.riq-host[data-mode="dark"] .chip.on { color: #fff !important; }
+html.riq-host[data-mode="dark"] .badge { background: rgba(255,255,255,.08) !important; color: #E7EBF5 !important; }
+html.riq-host[data-mode="dark"] .badge.paid { color: #4ADE80 !important; background: rgba(74,222,128,.14) !important; }
+html.riq-host[data-mode="dark"] .badge.unpaid { color: #F87171 !important; background: rgba(248,113,113,.14) !important; }
+html.riq-host[data-mode="dark"] .badge.partial { color: #FBBF24 !important; background: rgba(251,191,36,.14) !important; }
+html.riq-host[data-mode="dark"] .badge.new, html.riq-host[data-mode="dark"] .badge.ptp, html.riq-host[data-mode="dark"] .badge.allocated { color: rgb(var(--t-accent)) !important; background: rgba(var(--t-accent), .16) !important; filter: brightness(1.35); }
+html.riq-host[data-mode="dark"] a { color: rgb(var(--t-accent)); filter: brightness(1.25); }
+html.riq-host[data-mode="dark"] code, html.riq-host[data-mode="dark"] .mono { color: #E7EBF5; }
+html.riq-host[data-mode="dark"] ::-webkit-scrollbar-track { background: rgba(255,255,255,.04); }
+/* inline light colours used by classic screens */
+html.riq-host[data-mode="dark"] [style*="color: rgb(15, 23, 42)"], html.riq-host[data-mode="dark"] [style*="color: rgb(15, 27, 45)"], html.riq-host[data-mode="dark"] [style*="color: rgb(30, 41, 59)"], html.riq-host[data-mode="dark"] [style*="color: rgb(55, 65, 81)"],
+html.riq-host[data-mode="dark"] [style*="color: rgb(17, 24, 39)"], html.riq-host[data-mode="dark"] [style*="color: rgb(11, 35, 79)"], html.riq-host[data-mode="dark"] [style*="color: rgb(51, 65, 85)"], html.riq-host[data-mode="dark"] [style*="color: rgb(71, 85, 105)"] { color: #E7EBF5 !important; }
+html.riq-host[data-mode="dark"] [style*="color: rgb(100, 116, 139)"], html.riq-host[data-mode="dark"] [style*="color: rgb(132, 148, 168)"], html.riq-host[data-mode="dark"] [style*="color: rgb(148, 163, 184)"] { color: #7F889D !important; }
+html.riq-host[data-mode="dark"] [style*="background: rgb(255, 255, 255)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(255, 255, 255)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(248, 250, 252)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(248, 250, 252)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(245, 248, 253)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(245, 248, 253)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(241, 245, 251)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(241, 245, 251)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(238, 243, 251)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(238, 243, 251)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(239, 246, 255)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(239, 246, 255)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(232, 240, 254)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(232, 240, 254)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(238, 242, 255)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(238, 242, 255)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(247, 250, 253)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(247, 250, 253)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(240, 242, 245)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(240, 242, 245)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(241, 245, 249)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(241, 245, 249)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(243, 244, 246)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(243, 244, 246)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(244, 247, 251)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(244, 247, 251)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(237, 242, 249)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(237, 242, 249)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(250, 250, 253)"], html.riq-host[data-mode="dark"] [style*="background-color: rgb(250, 250, 253)"] {
+  background: rgba(28, 34, 52, .98) !important; color: #E7EBF5 !important;
+}
+/* status / heat-map pastels keep their colour — text on them stays dark so it reads */
+html.riq-host[data-mode="dark"] [style*="background: rgb(254, 243, 199)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(187, 247, 208)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(254, 202, 202)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(220, 252, 231)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(219, 234, 254)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(253, 230, 138)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(253, 224, 71)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(191, 219, 254)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(224, 231, 255)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(229, 231, 235)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(242, 220, 219)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(254, 242, 242)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(253, 236, 236)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(254, 242, 224)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(231, 246, 236)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(198, 239, 206)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(255, 235, 156)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(255, 199, 206)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(209, 250, 229)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(254, 249, 195)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(224, 242, 254)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(237, 233, 254)"],
+html.riq-host[data-mode="dark"] [style*="background: rgb(252, 231, 243)"] { color: #111827 !important; }
+html.riq-host[data-mode="dark"] [style*="background: rgb(254, 243, 199)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(187, 247, 208)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(254, 202, 202)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(220, 252, 231)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(219, 234, 254)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(253, 230, 138)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(253, 224, 71)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(191, 219, 254)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(224, 231, 255)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(229, 231, 235)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(242, 220, 219)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(254, 242, 242)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(253, 236, 236)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(254, 242, 224)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(231, 246, 236)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(198, 239, 206)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(255, 235, 156)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(255, 199, 206)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(209, 250, 229)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(254, 249, 195)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(224, 242, 254)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(237, 233, 254)"] *,
+html.riq-host[data-mode="dark"] [style*="background: rgb(252, 231, 243)"] * { color: #111827 !important; }
+/* keep the FOS report header cells their own colour */
+html.riq-host[data-mode="dark"] .fos-report-table thead th { background: var(--fos-head-bg, #0F2747) !important; color: var(--fos-head-fg, #FFFFFF) !important; }
+html.riq-host[data-mode="dark"] .fos-report-table td { color: #E7EBF5; }
+html.riq-host[data-mode="dark"] img { opacity: .96; }
+

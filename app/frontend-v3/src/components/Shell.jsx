@@ -14,6 +14,9 @@ import { EDITIONS, setEdition } from '../lib/edition.js';
 import { api } from '../lib/api.js';
 import BrandMark from './BrandMark.jsx';
 import { RecoverIQMark } from './RecoverIQLogo.jsx';
+import { FloatChat, FloatBot } from '../modules/FloatWidgets.jsx';
+import '../styles/pets.css';
+import '../styles/float.css';
 
 /** App frame shared by both editions — the look differs through tokens + palette + edition CSS. */
 export default function Shell({ edition, mode, onMode, palette, onPalette, sections, children }) {
@@ -110,6 +113,8 @@ export default function Shell({ edition, mode, onMode, palette, onPalette, secti
       </div>
       {mobile && <div className="scrim" onClick={() => setMobile(false)} />}
       {palette_ && <CommandPalette sections={sections} onClose={() => setPaletteOpen(false)} />}
+      {user && <FloatChat user={user} />}
+      {user && <FloatBot user={user} />}
     </div>
   );
 }

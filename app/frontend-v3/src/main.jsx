@@ -5,6 +5,7 @@ import './styles/app.css';
 import './styles/surfaces.css';
 import './styles/modules.css';
 import './styles/clay.css';
+import './styles/fieldmap.css';
 import { AuthProvider, useAuth } from './lib/auth.jsx';
 import { detectEdition, getMode, setMode } from './lib/edition.js';
 import { applyPalette, getPalette, savePalette, shaderPalette, DEFAULT_PALETTE, PALETTES } from './lib/palettes.js';
@@ -20,6 +21,8 @@ import Accounts from './pages/Accounts.jsx';
 import Ptp from './pages/Ptp.jsx';
 import Attendance from './pages/Attendance.jsx';
 import ClassicPage from './pages/ClassicPage.jsx';
+import FieldMap from './pages/FieldMap.jsx';
+import FosRoute from './pages/FosRoute.jsx';
 import MyAccounts from './modules/MyAccounts.jsx';
 import JointCases from './modules/JointCases.jsx';
 import CallQueue from './modules/CallQueue.jsx';
@@ -28,6 +31,8 @@ import Todo from './modules/Todo.jsx';
 import Escalations from './modules/Escalations.jsx';
 import MyTeam from './modules/MyTeam.jsx';
 import TeamFollow from './modules/TeamFollow.jsx';
+import { AiAssist, Services, Addons, Connections, SalaryLocked } from './modules/Tools.jsx';
+import AddonHost from './modules/AddonHost.jsx';
 import Leave from './modules/Leave.jsx';
 import { ChangeRequests, Devices, AuditLog, Activity, Rtsb, Monitor } from './modules/Admin.jsx';
 import Team from './modules/Team.jsx';
@@ -103,6 +108,8 @@ function Workspace({ mode, setM, palette, setPal, onLogout }) {
           <Route path="/cases" element={nativeOr('cases', <Accounts />)} />
           <Route path="/ptp" element={nativeOr('ptp', <Ptp />)} />
           <Route path="/attendance" element={nativeOr('attendance', <Attendance />)} />
+          <Route path="/map" element={nativeOr('map', <FieldMap />)} />
+          <Route path="/fmap" element={nativeOr('fmap', <FosRoute />)} />
           <Route path="/fcases" element={nativeOr('fcases', <MyAccounts mapRoute={routeFor('fmap', native)} />)} />
           <Route path="/jointcases" element={nativeOr('jointcases', <JointCases />)} />
           <Route path="/queue" element={nativeOr('queue', <CallQueue />)} />
@@ -111,6 +118,12 @@ function Workspace({ mode, setM, palette, setPal, onLogout }) {
           <Route path="/escalations" element={nativeOr('escalations', <Escalations />)} />
           <Route path="/tldash" element={nativeOr('tldash', <MyTeam />)} />
           <Route path="/followdash" element={nativeOr('followdash', <TeamFollow />)} />
+          <Route path="/ai" element={nativeOr('ai', <AiAssist />)} />
+          <Route path="/services" element={nativeOr('services', <Services />)} />
+          <Route path="/addons" element={nativeOr('addons', <Addons />)} />
+          <Route path="/addons/:key" element={nativeOr('addons', <AddonHost />)} />
+          <Route path="/connections" element={nativeOr('connections', <Connections />)} />
+          <Route path="/payroll" element={nativeOr('payroll', <SalaryLocked />)} />
           <Route path="/leave" element={nativeOr('leave', <Leave />)} />
           <Route path="/preqs" element={nativeOr('preqs', <ChangeRequests />)} />
           <Route path="/devices" element={nativeOr('devices', <Devices />)} />

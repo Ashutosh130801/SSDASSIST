@@ -12240,7 +12240,16 @@ function FosVisitReportsModal({ defDate, cycle, locations, onClose }) {
 const FOS_STATUS_STYLE = { PRESENT: ['#C6EFCE', '#166534'], 'HALF-DAY': ['#FED7AA', '#9A3412'], ABSENT: ['#FFC7CE', '#B91C1C'],
   LEAVE: ['#BDD7EE', '#1E40AF'], SUNDAY: ['#E2E8F0', '#475569'], 'NOT JOINED': ['#E5E7EB', '#6B7280'] };
 const fosVisitBg = (n) => n >= 12 ? '#86EFAC' : n >= 8 ? '#BBF7D0' : n >= 5 ? '#FEF08A' : n >= 1 ? '#FDE68A' : '#FCA5A5';
-const fosTh = (bg, extra) => ({ '--fos-head-bg': bg, '--fos-head-fg': '#fff', background: bg, color: '#fff', padding: '7px 7px', fontSize: 11.5, fontWeight: 750, letterSpacing: '.02em', lineHeight: 1.2, textAlign: 'center', border: '1px solid #94A3B8', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 2, ...(extra || {}) });
+const fosHeadText = (bg) => {
+  const hex = String(bg || '').replace('#', '');
+  const rgb = hex.length === 6 ? [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16)) : [15, 39, 71];
+  const luminance = (0.299 * rgb[0]) + (0.587 * rgb[1]) + (0.114 * rgb[2]);
+  return luminance > 155 ? '#111827' : '#FFFFFF';
+};
+const fosTh = (bg, extra) => {
+  const fg = document.documentElement.classList.contains('riq-host') ? fosHeadText(bg) : '#FFFFFF';
+  return { '--fos-head-bg': bg, '--fos-head-fg': fg, background: bg, color: fg, padding: '7px 7px', fontSize: 11.5, fontWeight: 750, letterSpacing: '.02em', lineHeight: 1.2, textAlign: 'center', border: '1px solid #94A3B8', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 2, ...(extra || {}) };
+};
 const fosTd = (extra) => ({ padding: '4px 6px', fontSize: 12, border: '1px solid #E2E8F0', textAlign: 'center', whiteSpace: 'nowrap', ...(extra || {}) });
 
 // Big preview window (like the MIS Pivot viewer): ⛶ full screen, ▁ minimise back to the dialog, ⬇ Excel, ✕ close.
@@ -12387,7 +12396,7 @@ function FosMonthlyPreview({ d, tableH }) {
         <span key={l}><span style={{ display: 'inline-block', width: 12, height: 12, background: c, borderRadius: 3, verticalAlign: -2, marginRight: 4, border: '1px solid #CBD5E1' }} />{l}</span>)}
     </div>
     <div style={{ overflow: 'auto', maxHeight: tableH || '56vh', border: '1px solid #E2E8F0', borderRadius: 8 }}>
-      <table style={{ borderCollapse: 'collapse' }}>
+      <table className="fos-report-table" style={{ borderCollapse: 'collapse' }}>
         <thead>
           <tr>
             <th style={fosTh('#0F2747', { ...left, zIndex: 3, minWidth: 34 })}>#</th>

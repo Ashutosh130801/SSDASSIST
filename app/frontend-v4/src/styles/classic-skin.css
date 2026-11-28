@@ -202,3 +202,12 @@ html.riq-host [style*="background: rgb(253, 236, 236)"], html.riq-host [style*="
 html.riq-host [style*="background: rgb(219, 234, 254)"], html.riq-host [style*="background: rgb(229, 231, 235)"], html.riq-host [style*="background: rgb(238, 242, 255)"] {
   background: rgba(59,130,246,.12) !important; color: #E8EEFF !important;
 }
+
+/* FOS visit reports (daily + monthly): keep each header cell's own colour + readable text */
+html.riq-host .fos-report-table thead th {
+  background: var(--fos-head-bg, #0F2747) !important;
+  color: var(--fos-head-fg, #FFFFFF) !important;
+  text-shadow: none !important;
+  text-transform: none;
+}
+html.riq-host .fos-report-table thead th * { color: inherit !important; }

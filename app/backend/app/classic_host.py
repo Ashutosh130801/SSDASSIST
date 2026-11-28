@@ -67,7 +67,7 @@ _PATCHES: list[tuple[str, str, str]] = [
      "  const closeTour = () => { try { localStorage.setItem(tourKey, '1'); } catch (e) {} setTour(false); };",
      "  const closeTour = () => { try { localStorage.setItem(tourKey, '1'); } catch (e) {} setTour(false); };\n"
      "  const [riqPanel, setRiqPanel] = useState(null);\n"
-     "  const RIQ_COMPONENTS = RIQ_HOST ? { UploadModal, DprModal, UploadsModal, CampaignModal, ViciPushModal, ReassignModal, AllocTransferModal, JointAllocateModal, StaffFormModal, LetterModal, FlaggedVisitsModal, FosVisitReportsModal, AttendanceDetail, ManageCatalogModal, AddProductModal, LegalModal, TemplateModal, TeamLeadOverviewModal, AddBranchModal, PaymentEditModal, LeaveDecisionModal, CaseDrawer, CycleMIS, MyViciAgent, EmployeeDocs, EIDCard, GeocodeButton, BackfillAddressButton, CorrectColumnsButton, RelinkAllocationButton, VisitModal, StaffModal, PerformanceModal, EmployeeDashboard, RouteHistoryModal, LiveRouteModal, ReportModal, TransferModal, MisPivotViewer, QR } : {};\n"     "  useEffect(() => { if (!RIQ_HOST || !riqPanel) return undefined; const k = (e) => { if (e.key === 'Escape') setRiqPanel(p => { if (p) setTimeout(() => p.res(false)); return null; }); }; window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k); }, [riqPanel]);\n"
+     "  const RIQ_COMPONENTS = RIQ_HOST ? { UploadModal, DprModal, UploadsModal, CampaignModal, ViciPushModal, ReassignModal, AllocTransferModal, JointAllocateModal, StaffFormModal, LetterModal, FlaggedVisitsModal, FosVisitReportsModal, AttendanceDetail, ManageCatalogModal, AddProductModal, LegalModal, TemplateModal, TeamLeadOverviewModal, AddBranchModal, PaymentEditModal, LeaveDecisionModal, CaseDrawer, CycleMIS, MyViciAgent, EmployeeDocs, EIDCard, GeocodeButton, BackfillAddressButton, CorrectColumnsButton, RelinkAllocationButton, VisitModal, StaffModal, PerformanceModal, EmployeeDashboard, RouteHistoryModal, LiveRouteModal, ReportModal, TransferModal, MisPivotViewer, QR, ViciDialTestCall } : {};\n"     "  useEffect(() => { if (!RIQ_HOST || !riqPanel) return undefined; const k = (e) => { if (e.key === 'Escape') setRiqPanel(p => { if (p) setTimeout(() => p.res(false)); return null; }); }; window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k); }, [riqPanel]);\n"
 
      "  useEffect(() => {\n"
      "    if (!RIQ_HOST) return undefined;\n"
@@ -82,6 +82,8 @@ _PATCHES: list[tuple[str, str, str]] = [
      "      closePanel: () => setRiqPanel(p => { if (p) setTimeout(() => p.res(false)); return null; }),\n"
      "      closeCase: () => setNotifCase(null),\n"
      "      dialCase: (id) => dialCaseViaVici(id),\n"
+     "      startCall: (id, name) => { if (window.ssdStartCall) window.ssdStartCall(id, name); },\n"
+     "      qrDataUrl: (text, size) => { try { const d = document.createElement('div'); new window.QRCode(d, { text, width: size || 160, height: size || 160, correctLevel: window.QRCode.CorrectLevel.M }); const c = d.querySelector('canvas'); return c ? c.toDataURL('image/png') : ((d.querySelector('img') || {}).src || ''); } catch (e) { return ''; } },\n"
      "      dialerStatus: () => dialerStatus(),\n"
      "      openPerf: (id, role, name, peer) => { if (window.__ssdOpenPerf) window.__ssdOpenPerf(id, role, name, peer); },\n"
      "      getXLSX: () => window.XLSX || null,\n"
@@ -138,6 +140,10 @@ _PATCHES: list[tuple[str, str, str]] = [
      "            default: setTimeout(() => done(false)); return null;\n"
      "          }\n"
      "        })()}"),
+    # The new UIs draw their own themed Messages + AI companion; classic keeps voice calls + broadcast popups.
+    ("chat-widget", "      <ChatWidget user={user} />", "      {!RIQ_HOST && <ChatWidget user={user} />}"),
+    ("ai-bot", "      <AiBot user={user} view={view} viewLabel={(nav.find(n => n[0] === view) || [])[2]} />",
+     "      {!RIQ_HOST && <AiBot user={user} view={view} viewLabel={(nav.find(n => n[0] === view) || [])[2]} />}"),
     ("none-view",
      "      case 'dashboard': return <Dashboard user={user} />;",
      "      case 'none': return null;\n      case 'dashboard': return <Dashboard user={user} />;"),
@@ -174,7 +180,7 @@ def _cached(key: str, path: str, build) -> str:
     return out
 
 
-RIQ_REGISTRY = ['UploadModal', 'DprModal', 'UploadsModal', 'CampaignModal', 'ViciPushModal', 'ReassignModal', 'AllocTransferModal', 'JointAllocateModal', 'StaffFormModal', 'LetterModal', 'FlaggedVisitsModal', 'FosVisitReportsModal', 'AttendanceDetail', 'ManageCatalogModal', 'AddProductModal', 'LegalModal', 'TemplateModal', 'TeamLeadOverviewModal', 'AddBranchModal', 'PaymentEditModal', 'LeaveDecisionModal', 'CaseDrawer', 'CycleMIS', 'MyViciAgent', 'EmployeeDocs', 'EIDCard', 'GeocodeButton', 'BackfillAddressButton', 'CorrectColumnsButton', 'RelinkAllocationButton', 'VisitModal', 'StaffModal', 'PerformanceModal', 'EmployeeDashboard', 'RouteHistoryModal', 'LiveRouteModal', 'ReportModal', 'TransferModal', 'MisPivotViewer', 'QR']
+RIQ_REGISTRY = ['UploadModal', 'DprModal', 'UploadsModal', 'CampaignModal', 'ViciPushModal', 'ReassignModal', 'AllocTransferModal', 'JointAllocateModal', 'StaffFormModal', 'LetterModal', 'FlaggedVisitsModal', 'FosVisitReportsModal', 'AttendanceDetail', 'ManageCatalogModal', 'AddProductModal', 'LegalModal', 'TemplateModal', 'TeamLeadOverviewModal', 'AddBranchModal', 'PaymentEditModal', 'LeaveDecisionModal', 'CaseDrawer', 'CycleMIS', 'MyViciAgent', 'EmployeeDocs', 'EIDCard', 'GeocodeButton', 'BackfillAddressButton', 'CorrectColumnsButton', 'RelinkAllocationButton', 'VisitModal', 'StaffModal', 'PerformanceModal', 'EmployeeDashboard', 'RouteHistoryModal', 'LiveRouteModal', 'ReportModal', 'TransferModal', 'MisPivotViewer', 'QR', 'ViciDialTestCall']
 
 
 def host_js(frontend_dir: str) -> str:

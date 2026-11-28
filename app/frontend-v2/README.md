@@ -58,7 +58,9 @@ The runtime is a **patched copy generated on the fly** by `backend/app/classic_h
   - Field Tracking (v2): FOS roster, multi-officer route export, flagged visits, geocoding, day-visit Excel
   - Every case opens the full case screen; complex classic forms open inside the new UI, themed, through `__riqClassic.openPanel('component' | 'inline' | 'tools', …)` (registry in `classic_host.py`, checked at startup). Popups close on Escape and when you change screen.
 - **Field TL** (role key `teamfollower`, IDs `FTL…`): HR / admin / HO create one in Manpower (role “Field TL”, or tick “Also a Field TL” on a team lead / FOS / caller, which issues a second FTL id and a view switch) and pick their FOS / callers under **Manpower → Field TL groups**. The Field TL page shows each member’s complete performance across every portfolio — cases, collections, visits, calls, attendance, live route and history — read-only.
-- Still drawn by the classic runtime inside the new frame (fully re-skinned): AI Assist, Add-ons, Services, Connections, Salary & Payslips (kept locked), and the FOS map in v3/v4 (field-tracking redesign is v2-only).
+- **Round 4:** AI Assist (chats, charts, tables, files, actions), Services (toggles + settings/keys + AI provider test), Add-ons hub, Connections (Autodialer + full ViciDial setup) and a native locked Salary & Payslips screen — in v2 / v3 / v4. Each add-on's own workspace opens in the module area in the active theme.
+- **Field Tracking in v3** (Soft Clay) — the same live map, roster, route replay and My Route as v2, moulded in clay, light and dark.
+- **Dark mode for everything classic:** popups, drawers, forms, tables, the check-in card and add-on screens follow dark mode in v2 and v3 (status / heat-map cells keep their colour with dark text).
 - (superseded) Modules not yet rebuilt (Manpower, Payroll, Litigation, Bank Feedback, Connections, AI Assist, etc.) run the classic screen under a full per-template skin (`classic-skin.css`): tiles, chips, badges, tables, modals and entrance motion follow the template.
 
 Each native page has a **Full module** button that opens the complete classic module.
@@ -91,3 +93,14 @@ To redesign another screen natively:
 3. Add its id to `nativeFor()` in `lib/nav.js`.
 
 Until then, the classic module is shown in its place.
+
+## Round 5 — floating widgets + every add-on rebuilt natively (v2 / v3 / v4)
+- **Messages** (`modules/FloatWidgets.jsx → FloatChat`): chats list, new-chat picker with role filter + search, threads with stickers and read ticks,
+  Office desk, broadcast (select many), Head-Office chat requests, unread badge, voice call (hands off to the classic WebRTC call via `__riqClassic.startCall`).
+- **AI companion** (`FloatBot`): same companions as classic (`modules/Pets.jsx`, ported 1:1 + `styles/pets.css`), drag to move, moods, naps,
+  companion picker, page reading of the native page/modals (`[data-ai-skip]` respected), charts/files/actions via the shared `AiMsg`.
+- In the new UIs the classic ChatWidget + AiBot are not rendered (patched in `backend/app/classic_host.py` only — the classic UI at `/` is unchanged).
+  Voice calls and broadcast popups still come from the classic layer.
+- **Add-ons** open at `/addons/:key` (`modules/AddonHost.jsx`): Compliance, Payment links, Outreach (`AddonsA.jsx`), Settlement, Smart allocation,
+  Legal notices (`AddonsB.jsx`), Analytics, Billing, Skip tracing, Open API (`AddonsC.jsx`). Shared kit: `AddonKit.jsx` (themed prompt/confirm
+  replace browser dialogs). QR codes use the classic QR library through `__riqClassic.qrDataUrl`.

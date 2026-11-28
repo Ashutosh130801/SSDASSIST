@@ -166,3 +166,34 @@ table.t tbody tr:hover { background: transparent; box-shadow: var(--press-sm); }
 .ls-t td input:focus, .ls-t td select:focus { background: var(--surf) !important; box-shadow: var(--press-sm), 0 0 0 2px rgba(var(--t-accent), .35) !important; border-color: transparent !important; }
 .ls-ico:hover { background: var(--surf); box-shadow: var(--raise-xs); }
 .ms-opt:hover { background: transparent; box-shadow: var(--press-sm); }
+
+/* Soft Clay: workspace tools */
+.ai-bubble.bot, .ai-vis, .ai-step, .svc-test, .ai-kpi { background: var(--surf) !important; border: 0 !important; box-shadow: var(--raise-xs); }
+.ai-kpi { border-left: 4px solid var(--c) !important; }
+.ai-conv.on { background: var(--surf); box-shadow: var(--press-sm); }
+.ai-conv:hover { background: transparent; box-shadow: var(--raise-xs); }
+.tgl { background: var(--surf); box-shadow: var(--press-sm); }
+.tgl.on { background: rgb(var(--t-accent)); box-shadow: var(--press-sm); }
+.svc-ic { background: var(--surf); box-shadow: var(--press-sm); }
+.addon { border-top: 0 !important; }
+.addon:hover:not(:disabled) { box-shadow: var(--raise) !important; }
+.ai-input { border-top: 0; }
+
+/* Floating Messages + AI companion — clay surfaces */
+html .fc-panel, html .nb-panel { background: var(--surf) !important; border: 0 !important; border-radius: 28px; box-shadow: 18px 18px 44px var(--sh-d), -12px -12px 34px var(--sh-l) !important; }
+html .fc-head, html .nb-head { background: transparent; border-bottom: 0; }
+html .fc-thread, html .nb-body { background: var(--surf); background-image: none; box-shadow: var(--press-sm); margin: 0 10px; border-radius: 20px; }
+html .fc-compose, html .nb-input, html .fc-bfoot, html .fc-stickers { background: transparent; border-top: 0; }
+html .fc-search { background: var(--surf); border: 0; box-shadow: var(--press-sm); }
+html .fc-row:hover { background: var(--surf-2); box-shadow: 4px 4px 10px var(--sh-d), -4px -4px 10px var(--sh-l); }
+html .fc-msg.them, html .nb-body .ai-bubble.bot, html .nb-hello, html .fc-hint { background: var(--surf-2); border: 0; box-shadow: 4px 4px 10px var(--sh-d), -3px -3px 8px var(--sh-l); }
+html .fc-fab { box-shadow: 8px 8px 18px var(--sh-d), -6px -6px 14px var(--sh-l), inset 0 0 0 1px rgba(255,255,255,.2); }
+html .nb-panel .pet-card { background: var(--surf-2); border: 0; box-shadow: 5px 5px 12px var(--sh-d), -4px -4px 10px var(--sh-l); }
+html .nb-panel .pet-card.on { box-shadow: var(--press-sm), 0 0 0 2px var(--accent); }
+
+/* Add-on workspaces — clay */
+html .ad-search, html .ad-url { background: var(--surf); border: 0; box-shadow: var(--press-sm); }
+html .ad-pick-row, html .ad-stepcard { background: var(--surf-2); border: 0; box-shadow: 4px 4px 10px var(--sh-d), -3px -3px 8px var(--sh-l); }
+html .ad-pick-row.on { box-shadow: var(--press-sm), 0 0 0 2px var(--accent); }
+html .ad-note { background: var(--surf); border: 0; box-shadow: var(--press-sm); }
+html .ad-lead-row, html .ad-code.block { background: var(--surf); border: 0; box-shadow: var(--press-sm); }

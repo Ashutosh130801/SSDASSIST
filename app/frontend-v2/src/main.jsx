@@ -29,6 +29,8 @@ import Todo from './modules/Todo.jsx';
 import Escalations from './modules/Escalations.jsx';
 import MyTeam from './modules/MyTeam.jsx';
 import TeamFollow from './modules/TeamFollow.jsx';
+import { AiAssist, Services, Addons, Connections, SalaryLocked } from './modules/Tools.jsx';
+import AddonHost from './modules/AddonHost.jsx';
 import Leave from './modules/Leave.jsx';
 import { ChangeRequests, Devices, AuditLog, Activity, Rtsb, Monitor } from './modules/Admin.jsx';
 import Team from './modules/Team.jsx';
@@ -115,6 +117,12 @@ function Workspace({ mode, setM, palette, setPal, onLogout }) {
           <Route path="/escalations" element={nativeOr('escalations', <Escalations />)} />
           <Route path="/tldash" element={nativeOr('tldash', <MyTeam />)} />
           <Route path="/followdash" element={nativeOr('followdash', <TeamFollow />)} />
+          <Route path="/ai" element={nativeOr('ai', <AiAssist />)} />
+          <Route path="/services" element={nativeOr('services', <Services />)} />
+          <Route path="/addons" element={nativeOr('addons', <Addons />)} />
+          <Route path="/addons/:key" element={nativeOr('addons', <AddonHost />)} />
+          <Route path="/connections" element={nativeOr('connections', <Connections />)} />
+          <Route path="/payroll" element={nativeOr('payroll', <SalaryLocked />)} />
           <Route path="/leave" element={nativeOr('leave', <Leave />)} />
           <Route path="/preqs" element={nativeOr('preqs', <ChangeRequests />)} />
           <Route path="/devices" element={nativeOr('devices', <Devices />)} />
