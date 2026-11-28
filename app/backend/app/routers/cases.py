@@ -1012,6 +1012,41 @@ def portfolio_export(bank: str, product: str, branch: str | None = None, period:
                              headers={"Content-Disposition": f'attachment; filename="{safe}.xlsx"'})
 
 
+@router.get("/month-export")
+def month_export(month_bucket: str | None = "current", period: str | None = None, branch: str | None = None,
+                 db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """ONE Excel with EVERY case of a month across ALL banks / products (not split by portfolio):
+    full details — customer, portfolio, status, amounts (TOS/ENR/NORM/STAB/received/cash/partial/
+    pending), allocation, last call/visit, remarks and all addresses — plus a summary sheet.
+    Same columns as the portfolio export; scoped to what the viewer may see."""
+    from .. import portfolio_export as _pe
+    import re as _re
+    per = period if (period and _re.fullmatch(r"\d{4}-\d{2}", period)) else \
+        {"current": _current_period(), "next": _next_period(), "last": _last_period()}.get(month_bucket or "current")
+    if not per:
+        raise HTTPException(status_code=400, detail="Pick a month")
+    q = _scope(db.query(models.Case), user, bucket=_bucket_for_period(per)).filter(
+        models.Case.removed.isnot(True), models.Case.period == per)
+    if branch:
+        _br = [x.strip().lower() for x in str(branch).split(",") if x.strip()]
+        if _br:
+            q = q.filter(func.lower(func.trim(models.Case.branch)).in_(_br))
+    cases = q.order_by(models.Case.bank, models.Case.product, models.Case.branch, models.Case.customer_name, models.Case.id).all()
+    if not cases:
+        raise HTTPException(status_code=404, detail=f"No cases for {per} in your view")
+    ports = len({(c.bank, c.product) for c in cases})
+    now = datetime.now(_IST_TZ).strftime("%d-%b-%Y %H:%M")
+    title = f"All portfolios · {per}"
+    subtitle = f"Month {per}   ·   {len(cases)} cases in {ports} portfolio(s)   ·   generated {now} by {user.name}"
+    data = _pe.build(db, cases, title, subtitle)
+    audit.record(db, user, "download", None, entity_type="download",
+                 detail=f"Month Excel — all portfolios {per} ({len(cases)} cases)")
+    db.commit()
+    return StreamingResponse(io.BytesIO(data),
+                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="All_cases_{per}.xlsx"'})
+
+
 @router.get("/sheet-options")
 def sheet_options(month_bucket: str | None = None, db: Session = Depends(get_db),
                   user: models.User = Depends(get_current_user)):

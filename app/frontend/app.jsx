@@ -2264,6 +2264,9 @@ function CasesView({ user }) {
         <CorrectColumnsButton />
         <RelinkAllocationButton />
         {canUpload && <button className="btn gold" onClick={() => setUpload(true)}>⬆ Upload</button>}
+        <button className="btn" title="Every case of the selected month across ALL banks / products, full details, in one Excel"
+          onClick={async () => { const m = monthB || 'current'; toast('Preparing the month Excel — large months can take a minute…');
+            try { await download('/api/cases/month-export?month_bucket=' + m, 'All_cases_' + m + '.xlsx'); } catch (e) { toast(e.message || 'Download failed', 'err'); } }}>⬇ Month Excel (all portfolios)</button>
         {isAdmin && <>
           <button className="btn" onClick={allocate} disabled={busy}>⚡ Auto-allocate</button>
           <button className="btn" onClick={geocode} disabled={busy} title="Fill map coordinates from addresses">📍 Geocode</button>

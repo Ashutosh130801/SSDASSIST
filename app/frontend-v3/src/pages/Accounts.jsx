@@ -145,6 +145,10 @@ export default function Accounts() {
           </div>
           {mode !== 'removed' && <Chips value={mb} onChange={setMb} options={MB} />}
           <div className="grow" />
+          {mode !== 'removed' && <button className="btn sm" title="Every case of the month across ALL banks / products, full details, in one Excel"
+            onClick={async () => { const m = mb || 'current'; toast('Preparing the month Excel — large months can take a minute…');
+              try { await download('/api/cases/month-export?month_bucket=' + m, 'All_cases_' + m + '.xlsx'); } catch (e) { toast(e.message, 'err'); } }}>
+            <Download />Month Excel · all portfolios</button>}
           {isHO && cases && cases.length > 0 && <button className="btn sm" onClick={() => ui.modal('ViciPushModal', { cases })}><PhoneForwarded />Send to ViciDial</button>}
           {isHO && <button className="btn sm" onClick={() => ui.modal('UploadsModal', {}).then(reloadAll)}><Undo2 />Undo upload</button>}
           {canTools && <button className="btn sm" onClick={() => ui.tools(['CorrectColumnsButton', 'BackfillAddressButton', 'RelinkAllocationButton'], 'Data corrections').then(reloadAll)}><Wrench />Corrections</button>}
