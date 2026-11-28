@@ -39,6 +39,7 @@ export default function Dashboard({ edition, branch, embedded }) {
   const leaders = ((d && d.fo_leaderboard) || []).slice(0, 8);
   const topAmt = Math.max(1, ...leaders.map(r => r.collected ?? r.received ?? 0));
   const spark = trend.map(t => t.collected || 0);
+  const collectedToday = trend.length ? (trend[trend.length - 1].collected || 0) : 0;   // same as classic: today's point of the trend
   const pipeTone = ['accent', 'info', 'violet', 'warn', 'good'];
   const isMgr = ['admin', 'manager', 'headoffice'].includes(user && user.role) && !branch;
   const { data: hl } = useLoad(() => (isMgr ? api('/api/mis/highlights').catch(() => null) : Promise.resolve(null)), [isMgr]);
@@ -92,7 +93,7 @@ export default function Dashboard({ edition, branch, embedded }) {
           {loading && !d ? [0, 1, 2, 3].map(i => <div key={i} className="card kpi clay"><Skeleton h={14} w="50%" /><Skeleton h={28} w="70%" style={{ marginTop: 18 }} /></div>) : <>
             <Kpi i={2} icon={Wallet} label="Recovered" value={k.received || 0} format={inrShort} sub={`${pct(k.recovery_rate)} of target`} tone="good" spark={spark} />
             <Kpi i={3} icon={Target} label="Target (ENR)" value={k.target || 0} format={inrShort} sub={`${num(k.total_cases)} accounts`} tone="accent" />
-            <Kpi i={4} icon={Hourglass} label="Pending" value={k.pending || 0} format={inrShort} sub="still to recover" tone="warn" />
+            <Kpi i={4} icon={Hourglass} label="Pending" value={k.pending || 0} format={inrShort} sub={`${inr(collectedToday)} collected today`} tone="warn" />
             <Kpi i={5} icon={CheckCircle2} label="Resolved" value={pct(k.resolution_rate)} sub={`${num(k.paid)} paid · ${num(k.partial)} partial`} tone="violet" />
           </>}
         </div>
